@@ -80,6 +80,31 @@ const PROGRAMS: &[&str] = &[
     "set i 0\nset n 0\nwhile {$i < 5} {incr i; if {$i == 3} {continue}; incr n}\nputs $n",
     "set i 10\nwhile {0} {puts never}\nputs $i",
     "set total 0\nset i 1\nwhile {$i <= 100} {set total [expr {$total + $i}]; incr i}\nputs $total",
+    // Loop rotation: every loop is emitted entered-at-its-test and closed by a
+    // conditional backward branch, so the test runs before the first iteration
+    // and the next test sits below the body. What that moves is where `break`
+    // and `continue` land and at what stack depth — these programs pin both.
+    "for {set i 0} {$i < 3} {incr i} {puts $i}",
+    "for {set i 0} {0} {incr i} {puts never}\nputs done",
+    "for {set i 0} {$i < 9} {incr i} {if {$i == 4} {break}}\nputs $i",
+    "for {set i 0} {$i < 5} {incr i} {if {$i == 2} {continue}; puts $i}",
+    "set n 0\nfor {set i 0} {$i < 4} {incr i} {continue; incr n}\nputs \"$i $n\"",
+    "puts [for {set i 0} {$i < 2} {incr i} {set x $i}]",
+    "foreach x {a b c} {puts $x}",
+    "foreach x {} {puts never}\nputs done",
+    "foreach x {a b c d} {if {$x eq \"c\"} {break}; puts $x}",
+    "foreach x {a b c d} {if {$x eq \"b\"} {continue}; puts $x}",
+    "foreach {a b} {1 2 3} {puts \"$a|$b\"}",
+    "foreach a {1 2} b {x y} {puts \"$a$b\"}",
+    "puts [foreach x {a b} {set y $x}]",
+    // Nested rotated loops: the inner loop's exit must not disturb the outer
+    // loop's own test, and `break` must leave only the inner one.
+    "for {set i 0} {$i < 3} {incr i} {for {set j 0} {$j < 3} {incr j} {if {$j == 1} {break}; puts \"$i$j\"}}",
+    "set i 0\nwhile {$i < 3} {incr i; foreach x {a b} {if {$x eq \"b\"} {continue}; puts \"$i$x\"}}",
+    "foreach x {1 2 3} {set j 0\nwhile {$j < $x} {incr j}\nputs \"$x:$j\"}",
+    // A loop whose body leaves values on the stack per iteration: the exits
+    // discard a statically known number of them.
+    "set i 0\nwhile {$i < 4} {incr i; if {$i == 2} {continue}; if {$i == 3} {break}; puts $i}\nputs $i",
     // incr and its return value.
     "set i 5\nputs [incr i]",
     "set i 5\nputs [incr i 3]",

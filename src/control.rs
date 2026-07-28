@@ -16,7 +16,7 @@
 
 use fusevm::Op;
 
-use crate::compiler::{ext, ext_wide, CompileError, Compiler, LoopCtx};
+use crate::compiler::{ext, ext_wide, CompileError, Compiler};
 use crate::list;
 use crate::parser::Word;
 
@@ -46,34 +46,14 @@ impl Compiler {
         let next = self.body_script(next)?;
 
         self.nested_effect(&start)?;
-        let top = self.b.current_pos();
-        self.expr_word(test)?;
-        let exit = self.emit(Op::JumpIfFalse(usize::MAX), -1);
-
-        self.loops.push(LoopCtx {
-            depth: self.depth,
-            catch_depth: self.catch_depth,
-            breaks: Vec::new(),
-            continues: Vec::new(),
-        });
-        self.nested_effect(&body)?;
-        // `for(n)`: `break` in the step terminates the loop too, so the step
-        // is compiled with the loop still open.
-        let step = self.b.current_pos();
-        self.nested_effect(&next)?;
-        let ctx = self.loops.pop().expect("loop context");
-
-        let backedge = self.emit(Op::Jump(usize::MAX), 0);
-        self.b.patch_jump(backedge, top);
-        // `continue` skips the rest of the body and runs the step.
-        for j in ctx.continues {
-            self.b.patch_jump(j, step);
-        }
-        let end = self.b.current_pos();
-        self.b.patch_jump(exit, end);
-        for j in ctx.breaks {
-            self.b.patch_jump(j, end);
-        }
+        // `continue` skips the rest of the body and runs the step; `break` in
+        // the step terminates the loop, as `for(n)` specifies. Both fall out of
+        // the rotated shape, where the step precedes the next test.
+        self.rotated_loop(
+            |c| c.nested_effect(&body),
+            |c| c.nested_effect(&next),
+            |c| c.expr_word(test),
+        )?;
         self.push_empty();
         Ok(())
     }

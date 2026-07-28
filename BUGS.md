@@ -69,20 +69,30 @@ approximated, and nothing is silently mis-run.
 
 ## Not implemented
 
-- **The JIT compiles nothing for a Tcl script.** Two independent blockers, both
-  measured rather than assumed, both outside this crate's lowering:
-  - A Tcl variable at a script's top level is a VM global, and `Op::GetVar` /
-    `Op::SetVar` are absent from fusevm's `is_block_eligible_op_at`
-    (`fusevm-0.14.20/src/jit.rs:4249`), which both the block tier (`:4419`) and
-    the tracing tier (`is_trace_op_allowed_at`, `:6180`) require. Slot-allocating
-    a top-level variable whose name is known at compile time would fix this
-    half.
-  - Inside a procedure the counter *is* a slot and the loop body *is* reported
-    trace-eligible, and no trace is still installed: fusevm's trace installer
-    takes a do-while whose conditional backward branch closes the loop and
-    declines the while-do shape — a forward conditional exit closed by an
-    unconditional backward `Jump` — that `while` and `for` lower to. Reproduced
-    directly against fusevm 0.14.20 with the same bytecode and no Tcl involved.
+- **The JIT compiles nothing for a loop outside a procedure.** A `while` or `for`
+  loop *inside* a `proc` does reach a compiled trace — `tclrs --tiers` reports
+  `traced=true`, and the benchmark row is 37× the interpreter. Two things had to
+  hold for that, and only one of them generalises:
+  - **Shape — fixed.** Every loop is now emitted rotated: entered at its test,
+    closed by a conditional backward branch (`Compiler::rotated_loop`,
+    `src/compiler.rs`). The textbook `while` shape — a forward `JumpIfFalse` exit
+    closed by an unconditional backward `Jump` — records an op sequence
+    `is_trace_eligible` accepts and fusevm's trace compiler then declines, so
+    nothing was ever installed. Both shapes are pinned by hand-built chunks with
+    no Tcl involved in `src/tiers.rs`.
+  - **Ops — still open at the top level.** A Tcl variable at a script's top level
+    is a VM global, and `Op::GetVar` / `Op::SetVar` are absent from fusevm's
+    `is_block_eligible_op_at` (`fusevm-0.14.20/src/jit.rs:4249`), which both the
+    block tier (`:4419`) and the tracing tier (`is_trace_op_allowed_at`, `:6180`)
+    require. Rotation does not touch this: a top-level loop reports
+    `trace-eligible=false` before its shape is consulted. Slot-allocating a
+    top-level variable whose name is known at compile time would fix it.
+  - **`foreach` and `dict for` reach no tier in any spelling**, procedure locals
+    included. Their loop state is carried by frontend extension ops
+    (`FOREACH_INIT` / `MORE` / `TAKE` / `ADVANCE`, `DICT_PAIRS`) and
+    `is_trace_op_allowed_at` rejects `Op::Extended` outright — an extension
+    handler is arbitrary Rust with no Cranelift lowering. Lowering their state to
+    native ops is the fix; rotation is not.
 - **Ahead-of-time compilation of `catch` or a coroutine.** Both are driven from
   outside `VM::run`, and fusevm's ahead-of-time entry owns the run, so `--aot`
   refuses the script rather than compiling one that would turn a caught error

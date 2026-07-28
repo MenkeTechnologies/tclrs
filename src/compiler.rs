@@ -12,6 +12,12 @@
 //! `Div`/`Mod`/`Pow`, as fusevm's own documentation directs for frontends whose
 //! arithmetic differs. Everything else lowers to native ops so the JIT can see
 //! it.
+//!
+//! Loops are emitted rotated — entered at the test, closed by a conditional
+//! backward branch — because that is the one shape fusevm's tracing JIT installs
+//! a trace for. [`Compiler::rotated_loop`] is the single emitter every loop in
+//! this crate goes through; `while`, `for`, `foreach` and `dict for` differ only
+//! in what they hand it.
 
 use fusevm::{ChunkBuilder, Op, Value};
 use std::collections::{HashMap, HashSet};
@@ -766,30 +772,12 @@ impl Compiler {
         let [cond, body] = args else {
             return self.error("wrong # args: should be \"while test command\"");
         };
-        let top = self.b.current_pos();
-        self.expr_word(cond)?;
-        let exit = self.emit(Op::JumpIfFalse(usize::MAX), -1);
-
-        self.loops.push(LoopCtx {
-            depth: self.depth,
-            catch_depth: self.catch_depth,
-            breaks: Vec::new(),
-            continues: Vec::new(),
-        });
         let script = self.body_script(body)?;
-        self.nested_effect(&script)?;
-        let ctx = self.loops.pop().expect("loop context");
-
-        let backedge = self.emit(Op::Jump(usize::MAX), 0);
-        self.b.patch_jump(backedge, top);
-        for j in ctx.continues {
-            self.b.patch_jump(j, top);
-        }
-        let end = self.b.current_pos();
-        self.b.patch_jump(exit, end);
-        for j in ctx.breaks {
-            self.b.patch_jump(j, end);
-        }
+        self.rotated_loop(
+            |c| c.nested_effect(&script),
+            |_| Ok(()),
+            |c| c.expr_word(cond),
+        )?;
         // A loop's own value is empty.
         self.push_empty();
         Ok(())
@@ -852,37 +840,25 @@ impl Compiler {
 
         // `MORE` and `TAKE` read the state where it lies instead of consuming
         // it, so there is no `Dup` here and no copy of the state per iteration.
-        let top = self.b.current_pos();
-        self.emit(Op::Extended(ext::FOREACH_MORE, 0), 1);
-        let exit = self.emit(Op::JumpIfFalse(usize::MAX), -1);
-
-        self.loops.push(LoopCtx {
-            depth: self.depth,
-            catch_depth: self.catch_depth,
-            breaks: Vec::new(),
-            continues: Vec::new(),
-        });
-        self.emit(Op::Extended(ext::FOREACH_TAKE, width), i32::from(width));
-        for name in names.iter().rev().cloned().collect::<Vec<_>>() {
-            self.emit_set_var(&name);
-        }
         let script = self.body_script(body)?;
-        self.nested_effect(&script)?;
-        let ctx = self.loops.pop().expect("loop context");
-
-        let advance = self.b.current_pos();
-        self.emit(Op::Extended(ext::FOREACH_ADVANCE, 0), 0);
-        let backedge = self.emit(Op::Jump(usize::MAX), 0);
-        self.b.patch_jump(backedge, top);
-        for j in ctx.continues {
-            self.b.patch_jump(j, advance);
-        }
-
-        let end = self.b.current_pos();
-        self.b.patch_jump(exit, end);
-        for j in ctx.breaks {
-            self.b.patch_jump(j, end);
-        }
+        let taken: Vec<String> = names.iter().rev().cloned().collect();
+        self.rotated_loop(
+            |c| {
+                c.emit(Op::Extended(ext::FOREACH_TAKE, width), i32::from(width));
+                for name in &taken {
+                    c.emit_set_var(name);
+                }
+                c.nested_effect(&script)
+            },
+            |c| {
+                c.emit(Op::Extended(ext::FOREACH_ADVANCE, 0), 0);
+                Ok(())
+            },
+            |c| {
+                c.emit(Op::Extended(ext::FOREACH_MORE, 0), 1);
+                Ok(())
+            },
+        )?;
         self.emit(Op::Pop, -1);
         self.push_empty();
         Ok(())
@@ -919,6 +895,81 @@ impl Compiler {
         }
         // The jump leaves; the value keeps the sequencer's arithmetic honest.
         self.push_empty();
+        Ok(())
+    }
+
+    /// Emit a loop in the rotated — do-while — shape, which is the one shape
+    /// fusevm's tracing JIT installs a trace for.
+    ///
+    /// ```text
+    ///     Jump -> cond          ; enter at the test, so it still runs first
+    ///   body:
+    ///     <body>
+    ///   step:
+    ///     <step>
+    ///   cond:
+    ///     <cond>
+    ///     JumpIfTrue -> body    ; conditional BACKWARD branch
+    ///   end:
+    /// ```
+    ///
+    /// fusevm's trace recorder arms at a backward branch and closes the
+    /// recording when a branch lands back on the anchor. A `while`-shaped loop
+    /// — a forward `JumpIfFalse` exit closed by an unconditional backward
+    /// `Jump` — records an eligible op sequence that its trace compiler then
+    /// declines, so the trace is aborted and nothing is ever installed. The
+    /// rotated shape compiles. That is a fusevm property, reproducible against
+    /// the same bytecode with no Tcl involved.
+    ///
+    /// `body` and `step` must leave the stack as they found it; `cond` must
+    /// leave exactly one value, which the closing branch consumes. Because the
+    /// next test is at the bottom, `continue` jumps to `step` and `break` to
+    /// `end` — the loop's entry depth at both.
+    pub(crate) fn rotated_loop<B, S, C>(
+        &mut self,
+        body: B,
+        step: S,
+        cond: C,
+    ) -> Result<(), CompileError>
+    where
+        B: FnOnce(&mut Self) -> Result<(), CompileError>,
+        S: FnOnce(&mut Self) -> Result<(), CompileError>,
+        C: FnOnce(&mut Self) -> Result<(), CompileError>,
+    {
+        let entry = self.depth;
+        let enter = self.emit(Op::Jump(usize::MAX), 0);
+        let top = self.b.current_pos();
+
+        self.loops.push(LoopCtx {
+            depth: entry,
+            catch_depth: self.catch_depth,
+            breaks: Vec::new(),
+            continues: Vec::new(),
+        });
+        // The step is compiled with the loop still open: `for(n)` gives a
+        // `break` there the same meaning it has in the body.
+        let emitted = body(self).and_then(|()| {
+            let at = self.b.current_pos();
+            step(self).map(|()| at)
+        });
+        let ctx = self.loops.pop().expect("loop context");
+        let step_at = emitted?;
+
+        let cond_at = self.b.current_pos();
+        self.b.patch_jump(enter, cond_at);
+        for j in ctx.continues {
+            self.b.patch_jump(j, step_at);
+        }
+        // The body and the step are balanced, so the test is compiled at the
+        // same depth the entry jump reached it with.
+        debug_assert_eq!(self.depth, entry, "rotated loop body is unbalanced");
+        cond(self)?;
+        self.emit(Op::JumpIfTrue(top), -1);
+
+        let end = self.b.current_pos();
+        for j in ctx.breaks {
+            self.b.patch_jump(j, end);
+        }
         Ok(())
     }
 

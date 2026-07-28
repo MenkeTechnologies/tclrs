@@ -194,10 +194,12 @@ fn op_name(op: &Op) -> String {
 mod tests {
     use super::*;
 
-    /// The same counted loop written against fusevm slots instead of Tcl
-    /// variables. The tiers accept it — which is what makes the negative
-    /// results below evidence about Tcl's lowering rather than about a report
-    /// that only ever says no.
+    /// A counted loop written against fusevm slots instead of Tcl variables, in
+    /// the unrotated shape. Both tiers report it eligible — which is what makes
+    /// the refusals below evidence about Tcl's lowering, and about the trace
+    /// compiler's own decision, rather than about a report that only ever says
+    /// no. Eligibility is not installation: see
+    /// [`the_unrotated_shape_of_that_loop_installs_no_trace`].
     #[test]
     fn a_slot_counter_loop_is_accepted_by_both_tiers() {
         let mut b = ChunkBuilder::new();
@@ -234,19 +236,19 @@ mod tests {
         assert!(!report.reaches_native(), "{report}");
     }
 
-    /// The same loop inside a `proc`. A procedure's locals are frame slots, so
-    /// the counter is `GetSlot`/`SetSlot` and the loop body *is* trace-eligible
-    /// — the disqualification the global spelling hits is gone. It still
-    /// reaches no compiled trace: fusevm's trace installer declines the shape
-    /// `while` lowers to, a forward conditional exit closed by an
-    /// unconditional backward jump, and takes only the do-while shape whose
-    /// conditional backward branch closes the loop. That is a fusevm decision,
-    /// reproducible against the same bytecode with no Tcl involved.
+    /// The same loop inside a `proc` reaches native code. Two things have to
+    /// hold at once. A procedure's locals are frame slots, so the counter is
+    /// `GetSlot`/`SetSlot` rather than the globals the tiers refuse; and the
+    /// loop is emitted rotated — entered at its test, closed by a conditional
+    /// backward branch — which is the shape fusevm's trace compiler accepts.
+    /// The unrotated `while` shape, a forward `JumpIfFalse` exit closed by an
+    /// unconditional backward `Jump`, records an eligible op sequence that the
+    /// trace compiler then declines, so nothing is installed.
     ///
     /// The chunk as a whole stays block-ineligible for a different reason: the
     /// call and the `puts` around the loop.
     #[test]
-    fn a_proc_local_counter_loop_is_trace_eligible_but_still_reaches_no_tier() {
+    fn a_proc_local_counter_loop_reaches_a_compiled_trace() {
         let report =
             report("proc f {} {set i 0; while {$i < 200000} {incr i}; return $i}\nputs [f]")
                 .expect("runs");
@@ -259,8 +261,81 @@ mod tests {
             !report.ineligible.contains_key("GetVar") && !report.ineligible.contains_key("SetVar"),
             "a procedure's locals are slots, not globals: {report}"
         );
+        assert!(report.loops[0].traced, "{report}");
+        assert!(!report.loops[0].blacklisted, "{report}");
+        assert!(report.reaches_native(), "{report}");
+    }
+
+    /// The rotation is what installs the trace, not the slot ops alone. The
+    /// same body built by hand in the unrotated shape — the one `while` used to
+    /// emit — records and is then declined, so no trace exists for it. Without
+    /// this the test above could pass for a reason that has nothing to do with
+    /// the loop's shape.
+    #[test]
+    fn the_unrotated_shape_of_that_loop_installs_no_trace() {
+        // `i = 0; while (i < N) { i += 1 }` with a forward exit and an
+        // unconditional backward close.
+        let mut b = ChunkBuilder::new();
+        b.emit(Op::LoadInt(0), 1);
+        b.emit(Op::SetSlot(0), 1);
+        let anchor = b.current_pos();
+        b.emit(Op::GetSlot(0), 1);
+        b.emit(Op::LoadInt(200_000), 1);
+        b.emit(Op::NumLt, 1);
+        let exit = b.emit(Op::JumpIfFalse(usize::MAX), 1);
+        b.emit(Op::GetSlot(0), 1);
+        b.emit(Op::LoadInt(1), 1);
+        b.emit(Op::Add, 1);
+        b.emit(Op::SetSlot(0), 1);
+        b.emit(Op::Jump(anchor), 1);
+        let end = b.current_pos();
+        b.patch_jump(exit, end);
+        b.emit(Op::GetSlot(0), 1);
+        let chunk = b.build();
+
+        let mut vm = fusevm::VM::new(chunk.clone());
+        vm.enable_tracing_jit();
+        vm.run();
+
+        let report = inspect(&chunk);
+        assert_eq!(report.loops.len(), 1, "{report}");
+        assert!(
+            report.loops[0].trace_eligible,
+            "the recorded sequence is eligible; it is the compile that declines: {report}"
+        );
         assert!(!report.loops[0].traced, "{report}");
-        assert!(!report.reaches_native(), "{report}");
+    }
+
+    /// And the rotated spelling of that same hand-built loop does install one,
+    /// with no Tcl in the picture at all.
+    #[test]
+    fn the_rotated_shape_of_that_loop_installs_a_trace() {
+        let mut b = ChunkBuilder::new();
+        b.emit(Op::LoadInt(0), 1);
+        b.emit(Op::SetSlot(0), 1);
+        let enter = b.emit(Op::Jump(usize::MAX), 1);
+        let body = b.current_pos();
+        b.emit(Op::GetSlot(0), 1);
+        b.emit(Op::LoadInt(1), 1);
+        b.emit(Op::Add, 1);
+        b.emit(Op::SetSlot(0), 1);
+        let cond = b.current_pos();
+        b.patch_jump(enter, cond);
+        b.emit(Op::GetSlot(0), 1);
+        b.emit(Op::LoadInt(200_000), 1);
+        b.emit(Op::NumLt, 1);
+        b.emit(Op::JumpIfTrue(body), 1);
+        b.emit(Op::GetSlot(0), 1);
+        let chunk = b.build();
+
+        let mut vm = fusevm::VM::new(chunk.clone());
+        vm.enable_tracing_jit();
+        vm.run();
+
+        let report = inspect(&chunk);
+        assert_eq!(report.loops.len(), 1, "{report}");
+        assert!(report.loops[0].traced, "{report}");
+        assert!(report.reaches_native(), "{report}");
     }
 
     /// Tcl arithmetic lowers to ops the JIT accepts: everything in an `expr`

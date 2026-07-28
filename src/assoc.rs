@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 use fusevm::{Op, Value, VM};
 
-use crate::compiler::{ext, CompileError, Compiler, LoopCtx};
+use crate::compiler::{ext, CompileError, Compiler};
 use crate::parser::{Part, Word};
 use crate::runtime::{parse_num, to_tcl_string, Num};
 
@@ -977,49 +977,37 @@ impl Compiler {
         self.emit(Op::LoadInt(0), 1);
         self.emit(Op::SetVar(cursor), -1);
 
-        let top = self.b.current_pos();
-        self.emit(Op::GetVar(cursor), 1);
-        self.emit(Op::ArrayLen(pairs), 1);
-        self.emit(Op::NumLt, -1);
-        let exit = self.emit(Op::JumpIfFalse(usize::MAX), -1);
-
-        self.scalar_set_guard(&key_name);
-        self.emit(Op::GetVar(cursor), 1);
-        self.emit(Op::ArrayGet(pairs), 0);
-        self.emit_set_var(&key_name);
-
-        self.scalar_set_guard(&value_name);
-        self.emit(Op::GetVar(cursor), 1);
-        self.emit(Op::LoadInt(1), 1);
-        self.emit(Op::Add, -1);
-        self.emit(Op::ArrayGet(pairs), 0);
-        self.emit_set_var(&value_name);
-
-        self.loops.push(LoopCtx {
-            depth: self.depth,
-            catch_depth: self.catch_depth,
-            breaks: Vec::new(),
-            continues: Vec::new(),
-        });
         let script = self.body_script(body)?;
-        self.nested_effect(&script)?;
-        let ctx = self.loops.pop().expect("loop context");
+        self.rotated_loop(
+            |c| {
+                c.scalar_set_guard(&key_name);
+                c.emit(Op::GetVar(cursor), 1);
+                c.emit(Op::ArrayGet(pairs), 0);
+                c.emit_set_var(&key_name);
 
-        let step = self.b.current_pos();
-        self.emit(Op::GetVar(cursor), 1);
-        self.emit(Op::LoadInt(2), 1);
-        self.emit(Op::Add, -1);
-        self.emit(Op::SetVar(cursor), -1);
-        let backedge = self.emit(Op::Jump(usize::MAX), 0);
-        self.b.patch_jump(backedge, top);
-        for j in ctx.continues {
-            self.b.patch_jump(j, step);
-        }
-        let end = self.b.current_pos();
-        self.b.patch_jump(exit, end);
-        for j in ctx.breaks {
-            self.b.patch_jump(j, end);
-        }
+                c.scalar_set_guard(&value_name);
+                c.emit(Op::GetVar(cursor), 1);
+                c.emit(Op::LoadInt(1), 1);
+                c.emit(Op::Add, -1);
+                c.emit(Op::ArrayGet(pairs), 0);
+                c.emit_set_var(&value_name);
+
+                c.nested_effect(&script)
+            },
+            |c| {
+                c.emit(Op::GetVar(cursor), 1);
+                c.emit(Op::LoadInt(2), 1);
+                c.emit(Op::Add, -1);
+                c.emit(Op::SetVar(cursor), -1);
+                Ok(())
+            },
+            |c| {
+                c.emit(Op::GetVar(cursor), 1);
+                c.emit(Op::ArrayLen(pairs), 1);
+                c.emit(Op::NumLt, -1);
+                Ok(())
+            },
+        )?;
         // `dict for` has no value of its own.
         self.push_empty();
         Ok(())

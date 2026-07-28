@@ -488,9 +488,11 @@ impl Hooks {
 /// Whether to arm the JIT — off when `TCLRS_JIT` is `off`, `0` or `no`.
 ///
 /// The switch exists so the benchmark can measure the interpreter and the
-/// JIT-armed VM as separate rows on the same binary. Arming the tracing JIT is
-/// not free even when no trace ever compiles: the dispatch loop checks the
-/// recorder at every op and consults the block tier once per run.
+/// JIT-armed VM as separate rows on the same binary — which cuts both ways. A
+/// loop inside a procedure trace-compiles and the JIT row is a large win; a loop
+/// at a script's top level cannot, and then arming the tier is pure cost: the
+/// dispatch loop checks the recorder at every op and consults the block tier once
+/// per run.
 fn jit_enabled() -> bool {
     !matches!(
         std::env::var("TCLRS_JIT").as_deref(),
