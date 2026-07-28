@@ -151,7 +151,7 @@ A terminal gets a [`reedline`](https://crates.io/crates/reedline) line editor.
 A pipe does not: `tclrs < script` is still the silent loop, byte for byte.
 
 ```text
-─( 14:52:07 )──< command 3 >──────────────────────{ tclrs 0.1.0 }─
+─( 14:52:07 )──< command 3 >──────────────────────{ tclrs 0.2.0 }─
 tclrs❯ proc double {x} {
 ····❯   expr {$x * 2}
 ····❯ }
