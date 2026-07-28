@@ -106,7 +106,9 @@ cargo build
 cargo test
 ```
 
-Requires a stable Rust toolchain, and a C compiler for `--aot` to link with.
+Requires a stable Rust toolchain, and a C compiler for `--aot` to link with. A
+script containing a [`rust { ... }`](#inline-rust) block needs `rustc` at *run*
+time as well, since the block is compiled when the script is.
 
 `cargo build` produces three artifacts: the `tclrs` binary, the `tclrs` rlib,
 and `libtclrs.a` — the staticlib an ahead-of-time object links against.
@@ -199,6 +201,12 @@ line word  kind     value
 `--dump-ast` prints the same parse as the tree it is, with a command
 substitution nested inside the word that contains it.
 
+Each of those wants a whole script before it does anything, so it reads a file,
+a `-c` argument, or all of stdin, and never opens a REPL. `--lsp` and `--dap`
+are the exception: stdio carries the protocol, so neither takes a script there —
+the language server is sent the document's text, and the debug adapter opens the
+file its `launch` request names.
+
 ### The language server
 
 `tclrs --lsp` speaks the Language Server Protocol on stdio. Point an editor's
@@ -233,8 +241,9 @@ is rewritten first into `__rust_compile <base64> <line>`, padded to keep the
 line count so a later error still points where it was written. The compiling,
 `dlopen`ing and marshalling belong to
 [`fusevm::ffi`](https://github.com/MenkeTechnologies/fusevm); the library is
-cached by the hash of the block's body, so the second run of a script does not
-call rustc.
+cached under `~/.cache/fusevm/ffi` by the SHA-256 of the block's body
+(`FUSEVM_FFI_DIR` relocates it), so the second run of a script does not call
+rustc.
 
 **Registration happens while compiling, not while running.** This frontend
 resolves dispatch at compile time — a name is a builtin, a procedure, a
@@ -274,15 +283,16 @@ cost is that an asynchronous `pause` lands at the next command rather than
 mid-command; `stepIn` and `next` both stop at the next command, and `stepOut`
 resumes to the next breakpoint.
 
-Each of those wants a whole script, so it reads a file, a `-c` argument, or all
-of stdin, and never opens a REPL.
+### Environment
 
 `TCLRS_JIT=off` (or `0`, or `no`) skips arming the JIT. It exists so the
 benchmark can measure the interpreter and the JIT-armed VM as separate rows of
 the same binary. `TCLRS_REPL_MODE=vi` picks the REPL's keymap.
+`TCLRS_STATICLIB` points an [`--aot`](#0x09-ahead-of-time-compilation) link at a
+`libtclrs.a` somewhere other than the build's own.
 
 fusevm's own knobs work unchanged: `FUSEVM_JIT_BLOCK_THRESHOLD`,
-`FUSEVM_JIT_TRACE_THRESHOLD`, `FUSEVM_JIT_CACHE_DIR`.
+`FUSEVM_JIT_TRACE_THRESHOLD`, `FUSEVM_JIT_CACHE_DIR` and `FUSEVM_FFI_DIR`.
 
 ---
 
@@ -319,6 +329,10 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | `tclrs::parse` | The parsed `Script` without running it, for tooling that wants the word structure. |
 | `tclrs::aot` | `compile_object`, `compile_executable`, and `run_native` — the same codegen driven in-process. |
 | `tclrs::tiers` | `report` and `inspect`: which fusevm tiers a chunk reaches. |
+| `tclrs::dump` | `tokens` and `ast`: the two listings [`--dump-tokens`](#options-that-do-not-run-the-script-the-ordinary-way) and `--dump-ast` print. |
+| `tclrs::lsp` | `run_stdio` for the whole server, or `diagnostics`, `completion`, `hover`, `signature_help` and `document_symbols` one answer at a time, for a host that already owns the transport. |
+| `tclrs::dap` | `run_stdio`: the debug adapter, over stdio. |
+| `tclrs::cursor` | `word_at` and `context_at`: what a position in a line is inside, which is how the REPL and the language server agree about it. |
 
 ---
 
@@ -337,7 +351,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Coroutines | `coroutine`, `yield`, `yieldto`, `info coroutine` |
 | Run-time evaluation | `eval` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
-| Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `get`, `keys`, `merge`, `remove`, `set`, `values` |
+| Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
 | Strings | `format`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright` |
 
 Command substitution works on any of them.
@@ -547,7 +561,7 @@ repeated four times.
 and the persistent native-code cache:
 
 ```toml
-fusevm = { version = "0.14.20", features = ["jit", "jit-disk-cache", "aot"] }
+fusevm = { version = "0.14.20", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
 ```
 
 | Feature | What it adds |
@@ -555,6 +569,7 @@ fusevm = { version = "0.14.20", features = ["jit", "jit-disk-cache", "aot"] }
 | `jit` | fusevm's Cranelift tiers — linear, block, tracing. |
 | `jit-disk-cache` | Compiled native code persists to `~/.cache/fusevm-jit`, so codegen is not repaid on the next process. Relocate it with `FUSEVM_JIT_CACHE_DIR`, disable it with `FUSEVM_JIT_CACHE_DIR=off`. |
 | `aot` | The closed-world compiler behind [`--aot`](#0x09-ahead-of-time-compilation). |
+| `ffi` | The compile-and-`dlopen` path behind [`rust { ... }`](#inline-rust). |
 
 One call arms the tiers, in the same function that installs every other hook,
 so the interpreter, the binary, a coroutine's VM and an ahead-of-time run all
@@ -1004,6 +1019,15 @@ coroutines, the interpreter's state across evaluations, the binary's stdout /
 stderr / exit status in each of its input modes, and the ahead-of-time path
 against the interpreter.
 
+Three suites drive the binary rather than the library:
+[`tests/lsp_session.rs`](tests/lsp_session.rs) and
+[`tests/dap_session.rs`](tests/dap_session.rs) speak the real protocols to the
+real process over stdio — handshake, diagnostics, breakpoints, stepping, and a
+shutdown that exits — and [`tests/rust_ffi.rs`](tests/rust_ffi.rs) runs a script
+with a `rust { ... }` block in it, so `rustc` is invoked, the library is loaded
+and the exported function is called, rather than the test stopping at the
+desugaring.
+
 Several of them generate their cases rather than listing them: every awkward
 element value driven through every list command, `foreach` through every shape
 its grammar allows, the glob matcher over a pattern × subject grid, and every
@@ -1013,6 +1037,26 @@ compared line for line.
 The differential suites skip when no `tclsh` is on `PATH`. The full
 ahead-of-time link test skips when `libtclrs.a` has not been built or there is
 no `cc`.
+
+### Examples
+
+[`examples/`](examples) holds runnable programs, one per slice of the language —
+variables and substitution, `expr`, control flow, procedures, lists, strings,
+`dict` and `array`, errors, coroutines, `eval`, and a FizzBuzz that prints. Run
+one directly:
+
+```sh
+cargo run --bin tclrs -- examples/lists.tcl
+```
+
+Each is self-checking: results go through a `check` procedure that raises a Tcl
+error — so a non-zero exit — the moment one drifts.
+[`tests/examples.rs`](tests/examples.rs) gates them twice. Every script has to
+exit cleanly under the built binary, which needs no Tcl installed and so runs
+anywhere; and every script's stdout has to match `tclsh` byte for byte, which is
+what keeps an expectation written into a script from being wrong in the same
+direction as the implementation. The second test skips when no `tclsh` is on
+`PATH`, like the other differential suites.
 
 ### Differential fuzzing
 

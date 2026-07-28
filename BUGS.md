@@ -34,7 +34,9 @@ approximated, and nothing is silently mis-run.
   `Tcl_GetIntForIndex`.
 - **Associative data.** Array variables (`a(k)`), `array` — `exists`, `get`,
   `names`, `set`, `size`, `unset` — and `dict` — `create`, `exists`, `get`,
-  `keys`, `merge`, `remove`, `set`, `values` (`src/assoc.rs`).
+  `for`, `keys`, `merge`, `remove`, `set`, `size`, `values` (`src/assoc.rs`).
+  `dict for` is emitted by the same `Compiler::rotated_loop` every other loop
+  goes through, over a cursor the VM's own `ArrayLen` / `ArrayGet` walk.
 - **Strings.** `format` and the `string` ensemble — `cat`, `compare`, `equal`,
   `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`,
   `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`,
@@ -77,6 +79,30 @@ approximated, and nothing is silently mis-run.
   `src/aot.rs` lowers a script to a native object and links it into a standalone
   binary; `src/tiers.rs` reports which tiers a script's bytecode actually
   reaches. What that report says today, and why, is in the README.
+- **Editor servers.** `tclrs --lsp` speaks the Language Server Protocol on
+  stdio — diagnostics from the parser and then the compiler, completion and
+  hover from the same tables the REPL completes from, signature help and
+  document symbols (`src/lsp.rs`, driven end to end over the wire by
+  `tests/lsp_session.rs`). `tclrs --dap` speaks the Debug Adapter Protocol:
+  breakpoints, stepping, stack frame, variables and the program's output as
+  events, stopping on `ext_wide::DBG_LINE` markers `compiler::compile_debug`
+  emits and an ordinary compilation does not (`src/dap.rs`,
+  `tests/dap_session.rs`).
+- **Inline Rust.** A `rust { ... }` block is rewritten before parsing into
+  `__rust_compile <base64> <line>`, compiled to a shared library through
+  `fusevm::ffi` and cached by the hash of its body; its exports become Tcl
+  commands, registered while the block is lowered rather than when the VM runs
+  (`src/rust_ffi.rs`, `tests/rust_ffi.rs`). The signatures are fusevm's
+  marshalling set: up to four `i64` returning `i64`, up to three `f64`
+  returning `f64`, and `*const c_char` returning `i64` or `*const c_char`.
+- **The rest of the toolchain.** `--disasm`, `--dump-tokens` and `--dump-ast`
+  print the bytecode, the lexical output and the parse tree; the zsh completion
+  is `completions/_tclrs`; the manual pages are `man/man1/tclrs.1` and the
+  all-in-one `man/man1/tclrsall.1`; and `docs/reference.html` is generated from
+  the compiler's own tables by `cargo run --bin gen-docs` — every command, every
+  ensemble subcommand with the compiler's own answer for whether it is
+  implemented, the `expr` ladder as the parser binds it, and the `format`
+  conversions the runtime answers to.
 
 ## Not implemented
 
@@ -111,6 +137,14 @@ approximated, and nothing is silently mis-run.
 - **`eval` inside a procedure body.** A procedure's locals are frame slots and
   the nested script is a chunk of its own that addresses globals, so it could not
   see them. Refused rather than run against the wrong variables.
+- **Procedures across an `eval`.** An evaluated script shares the interpreter's
+  variables but not its procedures: it is a chunk of its own, and a call site
+  resolves its command while compiling against that chunk's own `proc`
+  definitions. So `eval {proc twice {x} {…}}` followed by `twice 21` is
+  `invalid command name "twice"`, and so is `eval {twice 21}` for a procedure the
+  outer script defined — both run in tclsh. A runtime command table shared across
+  chunks is the fix; the same one that would move an unknown command name from
+  compile time to run time.
 - **`coroprobe` and `coroinject`.** Inspecting or injecting a command into a
   suspended coroutine is not implemented; both are `invalid command name`.
   Deleting a coroutine by destroying its command needs `rename`, which is not
