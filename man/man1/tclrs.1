@@ -116,8 +116,9 @@ ensemble, and the list commands
 .BR concat ).
 .PP
 All twelve parsing rules: braces, quotes, backslash substitution, command
-substitution, variable and array-element substitution, comments, and \fB{*}\fR
-expansion.
+substitution, variable and array-element substitution, and comments. Rule 5,
+\fB{*}\fR argument expansion, is parsed and recorded on the word but refused when
+the command is lowered.
 .PP
 What is not built yet is refused with a message naming the construct, never
 silently misread.

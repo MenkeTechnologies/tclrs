@@ -44,17 +44,18 @@ it completes, and end of input exits 0. A terminal is the REPL below.
 are described in
 .BR tclrs (1).
 .SH "THE TWELVE RULES"
-Tcl's grammar is twelve substitution rules, and all twelve are implemented:
-command separation by newline and
+Tcl's grammar is twelve substitution rules, and the parser implements all
+twelve: command separation by newline and
 .RB \(dq ; \(dq,
 words separated by whitespace, double quotes, braces, command substitution
 .RB \(dq [] \(dq,
 variable substitution
 .RB \(dq $ \(dq
-including array elements, backslash substitution, comments at a command's
-first word, and
+including array elements, backslash substitution, and comments at a command's
+first word. Rule 5,
 .RB \(dq {*} \(dq
-argument expansion.
+argument expansion, is read and recorded on the word, but a command carrying one
+is refused when it is lowered rather than approximated.
 .PP
 A braced word is literal by construction, and tclrs uses that: an
 .BR if ", " while ", " for " or " foreach
