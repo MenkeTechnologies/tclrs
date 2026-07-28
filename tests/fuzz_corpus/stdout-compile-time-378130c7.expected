@@ -1,5 +1,5 @@
 # tclrs parity fuzz finding
-# seed: 1   case: 00085   depth: 3   generator: scripts/fuzz/gen.tcl
+# seed: 1   case: 00085   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 16 -> 3 lines in 4 round(s), 42/400 candidates checked
 # verdict: DIVERGENCE	stdout-compile-time	line tclsh=1 tclrs=<no more output>
 # tclsh: 9.0.4
 # tclrs: tclrs 0.1.0

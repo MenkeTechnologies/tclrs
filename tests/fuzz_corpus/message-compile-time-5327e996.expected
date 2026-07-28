@@ -1,5 +1,5 @@
 # tclrs parity fuzz finding
-# seed: 1   case: 00032   depth: 3   generator: scripts/fuzz/gen.tcl
+# seed: 1   case: 00032   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 23 -> 4 lines in 4 round(s), 76/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=expected boolean value but got "b" tclrs=wrong # args: should be "p8 r1 ?o1? ?arg ...?"
 # tclsh: 9.0.4
 # tclrs: tclrs 0.1.0

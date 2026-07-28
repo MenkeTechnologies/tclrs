@@ -1,5 +1,5 @@
 # tclrs parity fuzz finding
-# seed: 1   case: 00374   depth: 3   generator: scripts/fuzz/gen.tcl
+# seed: 1   case: 00374   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 19 -> 3 lines in 2 round(s), 28/400 candidates checked
 # verdict: DIVERGENCE	message	msg tclsh=expected floating-point number but got a list tclrs=expected floating-point number but got "1 42 {back\slash}"
 # tclsh: 9.0.4
 # tclrs: tclrs 0.1.0

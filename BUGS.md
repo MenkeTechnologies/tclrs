@@ -173,12 +173,19 @@ approximated, and nothing is silently mis-run.
 
 Found by `scripts/fuzz_parity.sh`, the differential fuzzer: it generates seeded
 random Tcl programs, runs each under both `tclsh` 9.0.4 and tclrs, and minimises
-whatever diverges. One run of 400 programs (seed 1, depth 3) put 181 in parity,
-170 in divergence, 16 in skip, 32 in the allowlist and 1 outside comparison
-because tclsh did not terminate. Each entry below is a **reproduced** divergence
-with the reducer's own one-statement case; every one is pinned in
-`tests/parity_fuzz_findings.rs` against a live tclsh, and the committed corpus of
-minimised cases is `tests/fuzz_corpus/`.
+whatever diverges. One run of 400 programs (`-n 400 -s 1 -m`) puts 182 in parity,
+150 in divergence, 38 in skip, 29 in the allowlist and 1 outside comparison
+because tclsh did not terminate. **105 of the 150 are the one class below that is
+not a defect** — a script's shape refused while compiling — so 45 are behavior.
+The same run before the fixes recorded in this file put 181 in parity and 170 in
+divergence; the shift in skip is the overflow refusal, which now reports rather
+than answering with a double.
+
+Each entry below is a **reproduced** divergence with the reducer's own
+one-statement case; every one is pinned in `tests/parity_fuzz_findings.rs` against
+a live tclsh, and the committed corpus of minimised cases is `tests/fuzz_corpus/`.
+The divergences that *were* here and are now parity are listed under "Fixed by the
+fuzzer's own findings" at the end of the section.
 
 Repro helper:
 
@@ -213,10 +220,16 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
 - **Parse errors inside `expr` are worded differently.** `missing operand at _@_`
   against `premature end of expression`, and `invalid bareword "end"` against
   `invalid bare word "end" in expression`. The *character* diagnostic agrees now.
-- **`expr` does not take Tcl 9's `0d` prefix in a literal.** `expr {0d9 + 1}` is
-  `extra characters after expression` where tclsh answers 10. The runtime number
-  parser does take it, so `set x 0d9; expr {$x + 1}` is right; it is the literal
-  path in `expr::parse_number` that is short.
+- **`expr`'s *literal* number grammar is behind the runtime's.** `expr {0d9}`,
+  `expr {1_0}`, `expr {0x1_0}` and `expr {0b1_0}` all report
+  `extra characters after expression` where tclsh answers 9, 10, 16 and 2. The
+  runtime parser takes the whole grammar — `set x 1_0; expr {$x + 1}` is 11, and
+  a condition reads `0d9` as true — so it is only `expr::parse_number` and
+  `expr::radix_literal` that are short: neither knows `0d`, neither accepts `_`
+  in a decimal literal, and `radix_literal` advances the cursor by the count of
+  digits it *kept* rather than of characters it consumed, so one `_` leaves the
+  cursor a character behind. The grammar exists in `runtime::parse_number`
+  already, so the fix is to scan the token's span here and hand it there.
 - **Unreachable code is still compiled**, so a script tclsh runs to completion can
   be refused outright: `if {0} {incr}` is `wrong # args`, `if {0} {puts [expr {1
   +}]}` is `premature end of expression`, and `if {0} {nosuchcommand}` is
@@ -225,8 +238,10 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   braced body. The mechanism is documented (README [0x05], errors "at compile time
   where the script's shape decides it"); this consequence is not.
 
-  **This is the largest single class by a wide margin: 106 of the 170 divergences
-  in the 400-program run (seed 1, depth 3) are it**, because any dead branch a
+  **This is the largest single class by a wide margin: 105 of the 150 divergences
+  in the 400-program run (seed 1, depth 3) are it** — the harness names them
+  `…-compile-time`, decided by re-running the case under `--disasm`, so the count
+  is measured rather than read off the wording — because any dead branch a
   generated program happens to contain takes the whole script down. The minimal
   case is one line:
 
@@ -247,6 +262,13 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   `100000000000000000000`. The report counts those as skips, not divergences,
   because the refusal is the documented behavior — what was a divergence, and is
   fixed, was answering `1e+20` instead of refusing at all.
+
+  The sharp case is `expr {-9223372036854775808}`, where the *value* fits and the
+  spelling does not: `expr(n)` reads it as unary minus applied to
+  `9223372036854775808`, which is one past `i64::MAX`, so the operand is refused
+  before the negation can bring it back. tclsh answers `-9223372036854775808`.
+  Folding a leading sign into the literal in `expr::parse_number` would close it
+  without a bignum.
 - **`format`'s floating-point conversions lose precision on an integer past
   `i64`.** `format %.2f 99999999999999999999` prints
   `100000000000000016384.00` against tclsh's `100000000000000000000.00`:

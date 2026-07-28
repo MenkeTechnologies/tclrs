@@ -1,5 +1,5 @@
 # tclrs parity fuzz finding
-# seed: 1   case: 00342   depth: 3   generator: scripts/fuzz/gen.tcl
+# seed: 1   case: 00342   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 16 -> 2 lines in 2 round(s), 24/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=invalid bareword "a" tclrs=invalid bare word "a" in expression
 # tclsh: 9.0.4
 # tclrs: tclrs 0.1.0

@@ -1,5 +1,5 @@
 # tclrs parity fuzz finding
-# seed: 1   case: 00325   depth: 3   generator: scripts/fuzz/gen.tcl
+# seed: 1   case: 00325   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 20 -> 3 lines in 5 round(s), 59/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=0.1 tclrs=wrong # args: should be "incr varName ?increment?"
 # tclsh: 9.0.4
 # tclrs: tclrs 0.1.0

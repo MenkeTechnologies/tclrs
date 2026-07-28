@@ -1,5 +1,5 @@
 # tclrs parity fuzz finding
-# seed: 1   case: 00240   depth: 3   generator: scripts/fuzz/gen.tcl
+# seed: 1   case: 00240   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 17 -> 3 lines in 3 round(s), 40/400 candidates checked
 # verdict: DIVERGENCE	message	msg tclsh=cannot use non-numeric string "a" as right operand of "+" tclrs=can't use non-numeric string as operand of "+": "a"
 # tclsh: 9.0.4
 # tclrs: tclrs 0.1.0

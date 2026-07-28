@@ -1,5 +1,5 @@
 # tclrs parity fuzz finding
-# seed: 1   case: 00144   depth: 3   generator: scripts/fuzz/gen.tcl
+# seed: 1   case: 00144   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 21 -> 2 lines in 3 round(s), 51/400 candidates checked
 # verdict: DIVERGENCE	message	msg tclsh=cannot use non-numeric string "b" as right operand of "*" tclrs=can't use non-numeric string as operand of "*": "b"
 # tclsh: 9.0.4
 # tclrs: tclrs 0.1.0

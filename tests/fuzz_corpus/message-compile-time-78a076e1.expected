@@ -1,5 +1,5 @@
 # tclrs parity fuzz finding
-# seed: 1   case: 00280   depth: 3   generator: scripts/fuzz/gen.tcl
+# seed: 1   case: 00280   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 15 -> 3 lines in 4 round(s), 52/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=1000 tclrs=missing close-brace
 # tclsh: 9.0.4
 # tclrs: tclrs 0.1.0
