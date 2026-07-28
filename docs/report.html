@@ -54,7 +54,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/tclrs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">tclrs v0.1.0 · Tcl on fusevm · parse → bytecode → fusevm VM · no bespoke VM · no interpreter loop · MIT · phase 2 of 7</p>
+          <p class="docs-build-line">tclrs v0.1.0 · Tcl on fusevm · parse → bytecode → fusevm VM · no bespoke VM · no interpreter loop · MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -79,7 +79,7 @@
 
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-val accent">17th</div><div class="stat-label">fusevm frontend</div></div>
-        <div class="stat-card"><div class="stat-val">2 / 7</div><div class="stat-label">phase</div></div>
+        <div class="stat-card"><div class="stat-val">47.7%</div><div class="stat-label">official suite, attempted cases</div></div>
         <div class="stat-card"><div class="stat-val">9.0.4</div><div class="stat-label">reference tclsh</div></div>
         <div class="stat-card"><div class="stat-val">MIT</div><div class="stat-label">license · free / OSS</div></div>
       </div>
@@ -87,14 +87,14 @@
       <section class="tutorial-section">
         <h2>Summary</h2>
         <p>Tcl 9 evaluates through its own bytecode engine and object model; tclrs takes a different path. It parses a script once — resolving every substitution the grammar permits at parse time — and lowers each command to <code>fusevm</code> bytecode, the shared bytecode sixteen other language frontends already emit. There is no interpreter loop and no code generator in this crate: execution and codegen belong to the VM. Arithmetic, comparison, bitwise, shift, and short-circuit logic lower to native fusevm ops; the operators whose Tcl meaning differs from the VM's generic one take frontend extension ops; operands the VM cannot compute on natively take the numeric hook.</p>
-        <p>The current tree is phase 2 of 7: the parser (all twelve rules of <code>Tcl(n)</code>), the compiler, and the runtime hooks, with <code>set</code>, <code>puts</code>, <code>expr</code>, <code>incr</code>, <code>if</code>/<code>elseif</code>/<code>else</code>, <code>while</code>, <code>foreach</code>, <code>break</code>, and <code>continue</code> working, plus the list layer — list parsing and canonical quoting, <code>list</code>, <code>llength</code>, <code>lindex</code>, <code>lappend</code>, <code>lrange</code>, <code>lreverse</code>, <code>linsert</code>, <code>lreplace</code>, <code>lsearch</code>, <code>lsort</code>, <code>join</code>, <code>split</code>, <code>concat</code>, and <code>expr</code>'s <code>in</code>/<code>ni</code> — and command substitution of any of them. <code>{*}</code> expansion is the piece of phase 3 still outstanding. The crate is a library — there is no <code>tclsh</code> binary, no LSP, no DAP, and no JIT yet. Everything outside that surface is refused with a Tcl-shaped message rather than approximated. See <a href="https://github.com/MenkeTechnologies/tclrs/blob/main/BUGS.md">BUGS.md</a> for the honest ledger.</p>
+        <p>The tree carries the parser (all twelve rules of <code>Tcl(n)</code>), the compiler, the runtime driver, and a command surface of <code>set</code>, <code>puts</code>, <code>expr</code>, <code>incr</code>, <code>unset</code>, <code>append</code>, <code>if</code>/<code>elseif</code>/<code>else</code>, <code>while</code>, <code>for</code>, <code>foreach</code>, <code>switch</code>, <code>break</code>, <code>continue</code>, <code>proc</code>, <code>return</code>, <code>global</code>, <code>catch</code>, <code>error</code>, <code>eval</code>, <code>coroutine</code>/<code>yield</code>/<code>yieldto</code>/<code>info coroutine</code>, the thirteen list commands, <code>array</code>, <code>dict</code>, array variables, <code>format</code> and the <code>string</code> ensemble — with command substitution of any of them. There is a <code>tclrs</code> binary with a REPL, an ahead-of-time compiler, and fusevm's Cranelift tiers armed on every VM. There is no LSP and no DAP. Everything outside the surface is refused with a Tcl-shaped message rather than approximated. See <a href="https://github.com/MenkeTechnologies/tclrs/blob/main/BUGS.md">BUGS.md</a> for the honest ledger.</p>
       </section>
 
       <hr class="section-rule">
 
       <section class="tutorial-section">
         <h2>Hosting on fusevm</h2>
-        <p>tclrs contains no virtual machine and no JIT of its own. The execution path is:</p>
+        <p>tclrs contains no virtual machine and no code generator of its own. The execution path is:</p>
 <pre>Tcl script  →  parser (Script/Command/Word)  →  lower to fusevm bytecode  →  fusevm VM
                                                        │
                                     numeric hook (string operands, integer overflow)
@@ -102,8 +102,8 @@
         <div class="feature-grid">
           <div class="feature-card"><h4>Shared engine</h4><p><code>fusevm</code> is pulled from crates.io. VM work lands once and benefits zshrs, stryke, awkrs, vimlrs, elisprs, rubylang, pythonrs, phplang, node-js, rlang, go-rs, arb, the JVM frontends, and tclrs together.</p></div>
           <div class="feature-card"><h4>Compiled once, not per evaluation</h4><p>Braces suppress substitution, so a braced body — an <code>if</code> or <code>while</code> body, a braced <code>expr</code> expression — is fully known at parse time and lowers to bytecode once. Words carry a <code>braced</code> flag for exactly this decision.</p></div>
-          <div class="feature-card"><h4>Native arithmetic stays native</h4><p><code>+ - *</code>, the comparisons, <code>&amp; ^ | ~ &lt;&lt; &gt;&gt;</code>, and short-circuiting <code>&amp;&amp;</code> / <code>||</code> lower to native fusevm ops, so the arithmetic a JIT tier cares about stays visible to it when phase 6 turns the feature on.</p></div>
-          <div class="feature-card"><h4>Interpreter tier today</h4><p><code>fusevm</code> is depended on with its default features, so no <code>cranelift-*</code> crate is linked and the VM's interpreter tier executes the chunk. The <code>jit</code> / <code>jit-disk-cache</code> / <code>aot</code> features arrive in phase 6, with the benchmarks that justify them.</p></div>
+          <div class="feature-card"><h4>Native arithmetic stays native</h4><p><code>+ - *</code>, the comparisons, <code>&amp; ^ | ~ &lt;&lt; &gt;&gt;</code>, and short-circuiting <code>&amp;&amp;</code> / <code>||</code> lower to native fusevm ops, so the arithmetic the JIT tiers care about stays visible to them.</p></div>
+          <div class="feature-card"><h4>Tiers armed, and reported</h4><p><code>fusevm</code> is depended on with <code>jit</code>, <code>jit-disk-cache</code> and <code>aot</code>, and every VM this crate builds arms the tracing JIT. No Tcl loop reaches compiled native code yet, for two measured reasons named in the README; <code>tclrs --tiers</code> asks fusevm's own predicates rather than assuming. Ahead-of-time compilation does reach native code, and the benchmarks say by how much.</p></div>
         </div>
       </section>
 
@@ -127,15 +127,15 @@
             <tr><td>Script → fusevm bytecode</td><td>Implemented</td><td>Statically tracked stack depth, backpatched control flow, no local VM (<code>src/compiler.rs</code>).</td></tr>
             <tr><td><code>expr</code> grammar</td><td>Implemented</td><td>Its own recursive-descent grammar at <code>expr(n)</code> precedence, compiled straight from a braced word with no runtime parse (<code>src/expr.rs</code>).</td></tr>
             <tr><td>numeric hook + extension ops</td><td>Implemented</td><td>String operands, integer overflow, floored <code>/</code> and <code>%</code>, integral <code>**</code>, value normalization, Tcl double formatting (<code>src/runtime.rs</code>).</td></tr>
-            <tr><td>commands</td><td>Implemented</td><td><code>set</code>, <code>puts</code> (<code>-nonewline</code>), <code>expr</code>, <code>incr</code>, <code>if</code>/<code>elseif</code>/<code>else</code>, <code>while</code>, <code>foreach</code>, <code>break</code>, <code>continue</code>, the thirteen list commands, and command substitution of any of them.</td></tr>
+            <tr><td>commands</td><td>Implemented</td><td><code>set</code>, <code>puts</code> (<code>-nonewline</code>), <code>expr</code>, <code>incr</code>, <code>unset</code>, <code>append</code>, <code>if</code>/<code>elseif</code>/<code>else</code>, <code>while</code>, <code>for</code>, <code>foreach</code>, <code>switch</code>, <code>break</code>, <code>continue</code>, <code>proc</code>, <code>return</code>, <code>global</code>, <code>catch</code>, <code>error</code>, <code>eval</code>, the coroutine commands, the thirteen list commands, <code>array</code>, <code>dict</code>, <code>format</code>, the <code>string</code> ensemble, and command substitution of any of them.</td></tr>
             <tr><td>loop exits</td><td>Implemented</td><td><code>break</code> and <code>continue</code> unwind with a compile-time-known pop count rather than a runtime unwinder, in <code>foreach</code> as well as <code>while</code>.</td></tr>
             <tr><td>list syntax</td><td>Implemented</td><td>String ⇄ elements ported from <code>TclFindElement</code> and <code>TclScanElement</code>/<code>TclConvertElement</code>, with Tcl's index grammar and glob matcher (<code>src/list.rs</code>).</td></tr>
             <tr><td>list commands / <code>in</code> / <code>ni</code></td><td>Implemented</td><td>Each lowers to one extension op; <code>lsort</code> reproduces the reference merge sort so <code>-unique</code> keeps the element tclsh keeps (<code>src/cmd_list.rs</code>). Unbuilt options are errors, not no-ops.</td></tr>
-            <tr><td><code>{*}</code> expansion</td><td>Phase 3</td><td>Recorded on the word by the parser and still refused by the compiler, though the list splitter it needs now exists.</td></tr>
-            <tr><td><code>proc</code> / arrays / <code>tclsh</code> binary</td><td>Phase 4</td><td>No call frames; <code>$name(index)</code> parses into a <code>Part::Elem</code> the compiler refuses; the crate is a library.</td></tr>
-            <tr><td>command library / math functions</td><td>Phase 5</td><td><code>string</code>, <code>regexp</code>, <code>switch</code>, <code>for</code>, <code>catch</code>/<code>error</code>, channel IO. A math call parses into an <code>Expr::Call</code> the compiler refuses.</td></tr>
-            <tr><td>JIT / AOT / bignum</td><td>Phase 6</td><td><code>fusevm</code> <code>jit</code> / <code>jit-disk-cache</code> / <code>aot</code> features, arbitrary-precision integers, benchmarks.</td></tr>
-            <tr><td>LSP / DAP / completion / man / FFI</td><td>Phase 7</td><td>The toolchain-parity bar the sixteen sibling frontends already meet.</td></tr>
+            <tr><td><code>{*}</code> expansion</td><td>Refused</td><td>Recorded on the word by the parser and still refused by the compiler, though the list splitter it needs exists.</td></tr>
+            <tr><td>the binary, the REPL, <code>eval</code></td><td>Implemented</td><td>A file, <code>-c script</code>, or stdin — a REPL when stdin is a terminal. An <code>Interp</code> holds the variables between evaluations over a source-keyed chunk cache; <code>eval</code> compiles a script built at run time against that state.</td></tr>
+            <tr><td>math functions, <code>regexp</code>, channel IO</td><td>Refused</td><td>A math call parses into an <code>Expr::Call</code> the compiler refuses; an unknown command is a compile-time error.</td></tr>
+            <tr><td>JIT / AOT</td><td>Linked and measured</td><td>The <code>jit</code>, <code>jit-disk-cache</code> and <code>aot</code> features are on; <code>--aot</code> reaches native code and <code>--tiers</code> reports that the JIT tiers do not. Arbitrary-precision integers are still refused, so an <code>i64</code> overflow is an error on every path.</td></tr>
+            <tr><td>LSP / DAP / completion / man / FFI</td><td>Planned</td><td>The toolchain-parity bar the sixteen sibling frontends already meet. <code>--disasm</code> exists.</td></tr>
           </tbody>
         </table>
       </section>
@@ -144,14 +144,17 @@
 
       <section class="tutorial-section">
         <h2>Differential testing</h2>
-        <p>tclsh 9.0.4 is the specification, and the suite compares against it directly — no expected output in the repository is written by hand, so a misreading of the grammar or of Tcl's arithmetic fails the build instead of becoming a baked-in bug. All four suites report a skip when no <code>tclsh</code> (or <code>tclsh9.0</code> / <code>tclsh8.6</code>) is on <code>PATH</code>, so a machine without Tcl still runs the rest.</p>
+        <p>tclsh 9.0.4 is the specification, and the suite compares against it directly — no expected output in the repository is written by hand, so a misreading of the grammar or of Tcl&#39;s arithmetic fails the build instead of becoming a baked-in bug. Every differential suite reports a skip when no <code>tclsh</code> (or <code>tclsh9.0</code> / <code>tclsh8.6</code>) is on <code>PATH</code>, so a machine without Tcl still runs the rest.</p>
         <table class="file-table">
-          <thead><tr><th>Suite</th><th>What it compares</th><th>Corpus</th></tr></thead>
+          <thead><tr><th>What is compared</th><th>How</th></tr></thead>
           <tbody>
-            <tr><td>tests/dodekalogue.rs</td><td>The twelve syntax rules of <code>Tcl(n)</code>, rule by rule, against the parser's own structures.</td><td>14 tests</td></tr>
-            <tr><td>tests/differential_tclsh.rs</td><td>Word splitting, character for character: each case is handed to a Tcl proc that prints its arguments separated by an ASCII record separator, and whatever tclsh reports is the expected value.</td><td>27 cases</td></tr>
-            <tr><td>tests/execution_differential.rs</td><td>Whole programs, byte for byte: each is executed by both implementations and the output compared.</td><td>69 programs</td></tr>
-            <tr><td>tests/list_differential.rs</td><td>The list commands, the same way, plus four generated matrices run as single scripts and compared line for line: awkward element values through every list command, <code>foreach</code> through every shape its grammar allows, the glob matcher over a pattern × subject grid, and every index form against lists of every length. A further set checks that each diagnostic matches the interpreter's wording character for character.</td><td>210 programs + 39 diagnostics + 4 matrices</td></tr>
+            <tr><td>The twelve syntax rules of <code>Tcl(n)</code></td><td>Rule by rule, against the parser&#39;s own structures.</td></tr>
+            <tr><td>Word splitting</td><td>Character for character: each case is handed to a Tcl proc that prints its arguments separated by an ASCII record separator, and whatever tclsh reports is the expected value.</td></tr>
+            <tr><td>Whole programs</td><td>Byte for byte: each is executed by both implementations and the output compared. Covers the expression and control-flow surface, the list commands, the associative commands, the string ensemble, procedures, and coroutines.</td></tr>
+            <tr><td>Generated matrices</td><td>Awkward element values through every list command, <code>foreach</code> through every shape its grammar allows, the glob matcher over a pattern × subject grid, and every index form against lists of every length — each run as one script and compared line for line. A further set checks that each diagnostic matches the interpreter&#39;s wording character for character.</td></tr>
+            <tr><td>Interpreter state</td><td>Variables, arrays and <code>unset</code> surviving between evaluations, the chunk cache&#39;s hit and miss counts, and nesting bounded by an error rather than a stack overflow.</td></tr>
+            <tr><td>The binary</td><td>stdout, stderr and exit status against the reference process, in each of its input modes.</td></tr>
+            <tr><td>Ahead-of-time codegen</td><td>Every program run both ways and compared byte for byte, including the failing ones, so native codegen cannot diverge from the interpreter.</td></tr>
           </tbody>
         </table>
         <p>The execution corpus covers assignment and substitution, values that must stay strings even though they look numeric (<code>05</code>, <code>1.10</code>), floored integer division and remainder in all four sign combinations, integral and floating <code>**</code>, double formatting at the positional/exponential boundary, numeric-preferring versus always-string comparison, short-circuit evaluation, the ternary, nested command substitution, and the control-flow commands — plus the negative cases: an unsupported construct must be refused, and an <code>i64</code> overflow must be an error rather than a wrap.</p>
@@ -166,7 +169,7 @@
         <table class="file-table">
           <thead><tr><th>Crate</th><th>Role</th></tr></thead>
           <tbody>
-            <tr><td>fusevm</td><td>Language-agnostic bytecode VM (default features today; <code>jit</code> / <code>jit-disk-cache</code> / <code>aot</code> in phase 6)</td></tr>
+            <tr><td>fusevm</td><td>Language-agnostic bytecode VM, 0.14.20, with <code>jit</code>, <code>jit-disk-cache</code> and <code>aot</code></td></tr>
           </tbody>
         </table>
         <p>The test suites add nothing: they shell out to the system <code>tclsh</code> through <code>std::process::Command</code> rather than pulling a harness crate.</p>
@@ -179,7 +182,7 @@
         <div class="feature-grid">
           <div class="feature-card"><h4>Reference semantics</h4><p>Behaviour is ported from tclsh 9.0.4 where the slice is implemented, and pinned by suites that diff against the reference interpreter rather than against hand-written expectations.</p></div>
           <div class="feature-card"><h4>Refuse, never approximate</h4><p>Every unimplemented construct is a compile-time error with a Tcl-shaped message and a line number. Nothing silently mis-runs, so the gap list stays honest.</p></div>
-          <div class="feature-card"><h4>Cross-architecture</h4><p>Portable bytecode underneath; macOS aarch64 and Linux x86_64 / aarch64 when the Cranelift tiers turn on in phase 6.</p></div>
+          <div class="feature-card"><h4>Cross-architecture</h4><p>Portable bytecode underneath; the Cranelift tiers cover macOS aarch64 and Linux x86_64 / aarch64. Ahead-of-time compilation targets the host only.</p></div>
           <div class="feature-card"><h4>Standalone crate</h4><p>An explicit empty <code>[workspace]</code> keeps tclrs buildable on its own, independent of the meta repo.</p></div>
         </div>
       </section>

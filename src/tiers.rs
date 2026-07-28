@@ -234,6 +234,35 @@ mod tests {
         assert!(!report.reaches_native(), "{report}");
     }
 
+    /// The same loop inside a `proc`. A procedure's locals are frame slots, so
+    /// the counter is `GetSlot`/`SetSlot` and the loop body *is* trace-eligible
+    /// — the disqualification the global spelling hits is gone. It still
+    /// reaches no compiled trace: fusevm's trace installer declines the shape
+    /// `while` lowers to, a forward conditional exit closed by an
+    /// unconditional backward jump, and takes only the do-while shape whose
+    /// conditional backward branch closes the loop. That is a fusevm decision,
+    /// reproducible against the same bytecode with no Tcl involved.
+    ///
+    /// The chunk as a whole stays block-ineligible for a different reason: the
+    /// call and the `puts` around the loop.
+    #[test]
+    fn a_proc_local_counter_loop_is_trace_eligible_but_still_reaches_no_tier() {
+        let report =
+            report("proc f {} {set i 0; while {$i < 200000} {incr i}; return $i}\nputs [f]")
+                .expect("runs");
+        assert_eq!(report.loops.len(), 1, "{report}");
+        assert!(
+            report.loops[0].trace_eligible,
+            "slot ops make the body traceable: {report}"
+        );
+        assert!(
+            !report.ineligible.contains_key("GetVar") && !report.ineligible.contains_key("SetVar"),
+            "a procedure's locals are slots, not globals: {report}"
+        );
+        assert!(!report.loops[0].traced, "{report}");
+        assert!(!report.reaches_native(), "{report}");
+    }
+
     /// Tcl arithmetic lowers to ops the JIT accepts: everything in an `expr`
     /// but the frontend's own result-normalizing extension op is eligible.
     #[test]
