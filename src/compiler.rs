@@ -64,28 +64,28 @@ struct LoopCtx {
     continues: Vec<usize>,
 }
 
-struct Compiler {
-    b: ChunkBuilder,
+pub(crate) struct Compiler {
+    pub(crate) b: ChunkBuilder,
     depth: usize,
     loops: Vec<LoopCtx>,
     line: usize,
 }
 
 impl Compiler {
-    fn emit(&mut self, op: Op, delta: i32) -> usize {
+    pub(crate) fn emit(&mut self, op: Op, delta: i32) -> usize {
         let idx = self.b.emit(op, self.line as u32);
         self.depth = (self.depth as i32 + delta) as usize;
         idx
     }
 
-    fn error<T>(&self, msg: impl Into<String>) -> Result<T, CompileError> {
+    pub(crate) fn error<T>(&self, msg: impl Into<String>) -> Result<T, CompileError> {
         Err(CompileError {
             msg: msg.into(),
             line: self.line,
         })
     }
 
-    fn push_value(&mut self, v: Value) {
+    pub(crate) fn push_value(&mut self, v: Value) {
         let idx = self.b.add_constant(v);
         self.emit(Op::LoadConst(idx), 1);
     }
@@ -123,7 +123,7 @@ impl Compiler {
     // ── words ────────────────────────────────────────────────────────────
 
     /// Emit a word, leaving its value on the stack.
-    fn word(&mut self, word: &Word) -> Result<(), CompileError> {
+    pub(crate) fn word(&mut self, word: &Word) -> Result<(), CompileError> {
         if word.expand {
             return self.error("{*} argument expansion is not supported yet");
         }
@@ -159,7 +159,11 @@ impl Compiler {
 
     /// The literal text of a word, when the compiler needs it at compile time
     /// (a command name, a variable name, a braced body).
-    fn literal_of<'w>(&self, word: &'w Word, what: &str) -> Result<&'w str, CompileError> {
+    pub(crate) fn literal_of<'w>(
+        &self,
+        word: &'w Word,
+        what: &str,
+    ) -> Result<&'w str, CompileError> {
         word.as_literal().ok_or_else(|| CompileError {
             msg: format!("{what} must be a literal in this phase"),
             line: self.line,
@@ -169,7 +173,7 @@ impl Compiler {
     /// A variable name for a command that writes one. `a(i)` names an array
     /// element even though the parser hands it over as ordinary text — the
     /// parentheses are only syntax inside a `$` substitution.
-    fn var_name_of(&self, word: &Word) -> Result<String, CompileError> {
+    pub(crate) fn var_name_of(&self, word: &Word) -> Result<String, CompileError> {
         let name = self.literal_of(word, "variable name")?;
         if name.ends_with(')') && name.contains('(') {
             return self.error("array variables are not supported yet");
@@ -195,6 +199,7 @@ impl Compiler {
             "incr" => self.cmd_incr(args),
             "if" => self.cmd_if(args),
             "while" => self.cmd_while(args),
+            "string" | "append" | "format" => self.cmd_string_family(&name, args),
             "break" => self.cmd_loop_exit(args, true),
             "continue" => self.cmd_loop_exit(args, false),
             other => self.error(format!("invalid command name \"{other}\"")),

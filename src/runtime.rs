@@ -181,9 +181,7 @@ fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
     };
 
     let value = match (op, x, y) {
-        (NumOp::Neg, Num::Int(i), _) => {
-            i.checked_neg().map(Value::Int).ok_or_else(too_large)?
-        }
+        (NumOp::Neg, Num::Int(i), _) => i.checked_neg().map(Value::Int).ok_or_else(too_large)?,
         (NumOp::Neg, Num::Float(f), _) => Value::Float(-f),
         (_, Num::Int(i), Num::Int(j)) => {
             let folded = match op {
@@ -251,6 +249,7 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             vm.push(normalized);
             Ok(())
         }
+        id if crate::cmd_string::owns(id) => crate::cmd_string::extension(vm, id, arg),
         other => Err(format!("unknown extension op {other}")),
     }
 }

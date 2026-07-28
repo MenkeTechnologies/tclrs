@@ -8,11 +8,19 @@ The reference implementation is tclsh 9.0.4. It is the specification: behavior i
 
 Phase 2 of 7 — scripts compile to fusevm bytecode and run. `tclrs::eval` executes a script and returns its value and output.
 
-Working commands: `set`, `puts` (with `-nonewline`), `expr`, `incr`, `if`/`elseif`/`else`, `while`, `break`, `continue`, and command substitution of any of them.
+Working commands: `set`, `puts` (with `-nonewline`), `expr`, `incr`, `if`/`elseif`/`else`, `while`, `break`, `continue`, `string`, `append`, `format`, and command substitution of any of them.
 
 `expr` covers the whole operator set of `expr(n)` — arithmetic with Tcl's floored integer division and remainder, integral `**`, numeric-preferring comparisons with string fallback, the always-string comparisons, bitwise and shift operators, short-circuit `&&`/`||`, and the ternary — over operands drawn from literals, variables, nested commands, and parenthesised subexpressions. Doubles print in Tcl's format.
 
-Not built yet, and refused at compile time rather than approximated: `proc` and every other command, arrays, `{*}` expansion, math functions, `in`/`ni` (list support), variable and body words that are not literal, and arbitrary-precision integers — an operation that overflows `i64` is an error instead of silently wrapping.
+Not built yet, and refused at compile time rather than approximated: `proc` and the commands outside the list above, arrays, `{*}` expansion, math functions, `in`/`ni` (list support), variable and body words that are not literal, and arbitrary-precision integers — an operation that overflows `i64` is an error instead of silently wrapping.
+
+### Strings
+
+The `string` ensemble covers `cat`, `compare`, `equal`, `first`, `index`, `insert`, `is`, `last`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft` and `trimright`, each with its options and each abbreviable to a unique prefix as the interpreter allows. `append` builds a value in place, and `format` implements the `%d %i %u %o %x %X %b %c %s %f %e %E %g %G %%` conversions with the `- + space 0 #` flags, field widths, precisions, `*` for either, the `h l ll j q z t L` size modifiers, and XPG3 `%N$` positions.
+
+Everything is indexed and counted by code point, and the index forms `end`, `end±N`, `M±N` and the radix-prefixed integers behave as the reference does, down to `1_0` being ten. Case conversion is exact against tclsh for every code point up to U+2FFFF, including the three places where Tcl departs from Unicode's full mappings: a converted character that would need more bytes than the original is left alone, the Greek ypogegrammeni letters take their simple capitals, and Georgian Mkhedruli has no titlecase.
+
+Two things are refused rather than approximated. Tcl's `graph`, `print`, `punct` and `dict` classes, and non-ASCII input to `alnum`, `alpha`, `control`, `digit`, `lower`, `upper` and `wordchar`, need Tcl's own Unicode general-category tables — a different Unicode revision than the standard library's, so answering from those would be wrong rather than merely different. `string is -failindex` needs to assign a variable from inside an operation and is not built. The classes that do not need category tables — `ascii`, `space`, `xdigit`, `boolean`, `true`, `false`, `integer`, `entier`, `wideinteger`, `double`, `list` — work over the whole range.
 
 ### Parser
 
@@ -48,7 +56,7 @@ cargo build
 cargo test
 ```
 
-The differential tests run every program through both `tclsh` and tclrs and compare the output byte for byte. They invoke `tclsh` from `PATH` and report a skip when none is installed.
+The differential tests run every program through both `tclsh` and tclrs and compare the output byte for byte. They invoke `tclsh` from `PATH` and report a skip when none is installed. The string suite sweeps code points with `format %c` inside a `while` loop, so a single program compares tens of thousands of characters of classification or case conversion rather than a handful of hand-picked ones.
 
 ## License
 

@@ -164,6 +164,29 @@ pub(crate) fn quoted_at(src: &str, at: usize) -> Result<(Vec<Part>, usize), Pars
     Ok((parts, p.pos))
 }
 
+/// Resolve one backslash sequence at `at`, which must index a `\`. Returns its
+/// value and the offset just past it.
+///
+/// Rule 9's escape table is shared: a Tcl list element carries its backslash
+/// sequences verbatim and the caller resolves them, so the list splitter
+/// reaches them through here rather than keeping a second copy of the table.
+pub(crate) fn backslash_at(src: &str, at: usize) -> (String, usize) {
+    let mut p = Parser {
+        src: src.as_bytes(),
+        pos: at,
+        line: 1,
+    };
+    let mut out = String::new();
+    if p.at(1) == Some(b'\n') {
+        // Rule 9's pre-pass: the sequence collapses to one space.
+        p.skip_line_continuation();
+        out.push(' ');
+    } else {
+        p.parse_backslash(&mut out);
+    }
+    (out, p.pos)
+}
+
 /// Parse a braced operand at `at`, which must index a `{`. The text is literal
 /// (rule 6).
 pub(crate) fn braced_at(src: &str, at: usize) -> Result<(String, usize), ParseError> {
