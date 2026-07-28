@@ -167,7 +167,12 @@ fn script_value_is_the_last_command() {
 #[test]
 fn unsupported_constructs_are_refused() {
     for (src, expected) in [
-        ("proc f {} {}", "invalid command name \"proc\""),
+        // `proc` is built now; `foreach` still stands in for a command that
+        // this frontend has no implementation of at all.
+        (
+            "foreach x {1 2} {puts $x}",
+            "invalid command name \"foreach\"",
+        ),
         ("set a(1) x", "array variables are not supported yet"),
         (
             "puts [expr {sin(1)}]",

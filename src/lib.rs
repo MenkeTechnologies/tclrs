@@ -12,8 +12,12 @@
 //! hot loops.
 
 pub mod compiler;
+pub mod control;
 pub mod expr;
+pub mod glob;
+pub mod list;
 pub mod parser;
+pub mod procs;
 pub mod runtime;
 
 pub use parser::{parse, Command, ParseError, Part, Script, Word};
