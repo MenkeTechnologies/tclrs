@@ -1,0 +1,254 @@
+.\" tclrsall(1) — comprehensive all-in-one man page for tclrs.
+.\" Modeled after zshall(1): every page in one document.
+.\" Render with:  man -l man/man1/tclrsall.1
+.\" Install:      cp man/man1/tclrsall.1 /usr/local/share/man/man1/
+.TH TCLRSALL 1 "2026-07-28" "tclrs 0.1.0" "User Commands"
+.SH NAME
+tclrsall \- the tclrs comprehensive reference (invocation, the twelve rules,
+commands, expressions, the REPL, the editor servers, inline Rust, compilation)
+.SH OVERVIEW
+This is the all-in-one
+.B tclrs
+reference. For the concise command page see
+.BR tclrs (1).
+.PP
+.B tclrs
+runs Tcl by parsing it once and lowering each command to
+.B fusevm
+bytecode \(em the same bytecode the other fusevm frontends emit, among them
+.BR zshrs ", " stryke ", " awkrs ", " vimlrs " and " elisprs .
+There is no interpreter loop and no code generator in this crate: execution,
+the three-tier Cranelift JIT and the ahead-of-time compiler all belong to the
+VM.
+.PP
+The reference implementation is
+.BR tclsh (1)
+9.0.4. Behavior is ported from it rather than reinvented, and the test suite
+runs every program through both and compares the output byte for byte \(em no
+expected output in the repository is written by hand.
+.SH INVOCATION
+.TP
+.B tclrs \fIFILE\fR [\fIarg\fR ...]
+Run a script file. One script: the first failure ends it and exits 1.
+.TP
+.B tclrs \-c \fISCRIPT\fR [\fIarg\fR ...]
+Run the script given on the command line.
+.TP
+.B tclrs
+Read from standard input. A pipe is a sequence of commands, each evaluated as
+it completes, and end of input exits 0. A terminal is the REPL below.
+.PP
+.BR \-\-aot ", " \-\-aot\-object ", " \-\-tiers ", " \-\-dump\-tokens ", "
+.BR \-\-dump\-ast ", " \-\-disasm ", " \-\-lsp ", " \-\-dap ", " \-\-help ", "
+.B \-\-version
+are described in
+.BR tclrs (1).
+.SH "THE TWELVE RULES"
+Tcl's grammar is twelve substitution rules, and all twelve are implemented:
+command separation by newline and
+.RB \(dq ; \(dq,
+words separated by whitespace, double quotes, braces, command substitution
+.RB \(dq [] \(dq,
+variable substitution
+.RB \(dq $ \(dq
+including array elements, backslash substitution, comments at a command's
+first word, and
+.RB \(dq {*} \(dq
+argument expansion.
+.PP
+A braced word is literal by construction, and tclrs uses that: an
+.BR if ", " while ", " for " or " foreach
+body, and a braced
+.B expr
+expression, is fully known while compiling, so it is lowered to bytecode once
+instead of being re-parsed on every evaluation.
+.SH COMMANDS
+.TP
+.B Variables
+.BR set ", " unset ", " incr ", " append ", " global .
+A procedure's variables are frame slots; a script's are VM globals.
+.TP
+.B Control flow
+.BR if ", " while ", " for ", " foreach ", " switch ", " break ", "
+.BR continue ", " return ", " catch ", " error .
+Every loop is emitted rotated \(em entered at the test, closed by a conditional
+backward branch \(em because that is the shape the tracing JIT installs a trace
+for.
+.TP
+.B Procedures
+.BR proc .
+Parameters and locals are frame slots; defaults and a trailing
+.B args
+are resolved at the call site.
+.TP
+.B Coroutines
+.BR coroutine ", " yield ", " yieldto ", " "info coroutine" .
+A coroutine is a second VM over the same chunk, with the transfer owned by the
+driver.
+.TP
+.B Lists
+.BR list ", " llength ", " lindex ", " lappend ", " lrange ", " lreverse ", "
+.BR linsert ", " lreplace ", " lsearch ", " lsort ", " join ", " split ", "
+.BR concat .
+.B lsort
+reproduces the reference merge sort element for element, because with
+.B \-unique
+the algorithm decides which of two equal elements survives.
+.TP
+.B Strings
+.BR format ", " append ,
+and the
+.B string
+ensemble.
+.TP
+.B Associative data
+The
+.B array
+ensemble (over a variable) and the
+.B dict
+ensemble (over a value).
+.PP
+.BR eval ", " puts " and " expr
+complete the set. The generated reference at
+https://menketechnologies.github.io/tclrs/reference.html lists every command,
+every ensemble subcommand with whether it is implemented, and the operator
+ladder \(em all emitted from the compiler's own tables.
+.SH EXPRESSIONS
+.B expr
+compiles its argument rather than interpreting it. The comparisons, the
+bitwise and shift operators, the short-circuiting
+.RB \(dq && \(dq
+and
+.RB \(dq || \(dq,
+and
+.BR + " " \- " " *
+lower to native fusevm ops. Only the operators whose Tcl meaning differs from
+the VM's generic one \(em
+.RB \(dq / \(dq,
+.RB \(dq % \(dq
+and
+.RB \(dq ** \(dq,
+which floor toward negative infinity and stay integral for integral operands
+\(em take a frontend extension op.
+.PP
+Integers are 64-bit here where Tcl's are arbitrary-precision: an overflow is an
+error, raised by the numeric hook, rather than a wrapped result. The chunk asks
+fusevm for the overflow-checked lowering so the JIT and the AOT compiler agree
+with the interpreter about it.
+.SH "THE REPL"
+A terminal gets a reedline editor. Multi-line editing is decided by the parser
+itself \(em a command with a brace, quote or bracket still open keeps the
+editor on the same buffer \(em so the editor and the evaluator cannot disagree
+about where a command ends. Tab completes command names, an ensemble's
+subcommands, the session's procedures, and variables after
+.RB \(dq $ \(dq.
+History is
+.IR ~/.tclrs/history .
+.PP
+A procedure is compiled into the chunk of the script that defines it, so it
+would otherwise last exactly one line; the REPL keeps the text of each
+definition and prefixes the set to every later evaluation, which is what makes
+a procedure answer on the line after it was written. Coroutines are not carried
+that way, since replaying one would run its body again.
+.PP
+.B TCLRS_REPL_MODE=vi
+or
+.B mode = "vi"
+under
+.B [repl]
+in
+.I ~/.tclrs/config.toml
+selects modal editing.
+.SH "EDITOR SERVERS"
+.B tclrs \-\-lsp
+speaks the Language Server Protocol on stdio: diagnostics (the parser's failure
+and then the compiler's, so the editor reports what running the file would
+report), completion, hover, signature help and document symbols. The vocabulary
+is the compiler's own tables, and a test fails if a name is offered that the
+compiler does not know.
+.PP
+.B tclrs \-\-dap
+speaks the Debug Adapter Protocol on stdio: breakpoints, stepping, stack frame,
+variables, and the program's output as events. Stopping is compiled in \(em a
+line marker before every command, emitted only for a debug compilation \(em so
+an ordinary run pays nothing, and a breakpoint inside a procedure is reachable.
+.SH "INLINE RUST"
+A
+.B rust { ... }
+block compiles to a shared library and its
+.B pub extern "C" fn
+exports become commands. The block is rewritten out of the source before
+parsing, compiled while the script is lowered (this frontend resolves dispatch
+at compile time, so the name must be known before the VM starts), and cached by
+the hash of its body. A procedure of the same name shadows an exported
+function. Signatures are fusevm's marshalling set: up to four
+.B i64
+returning
+.BR i64 ,
+up to three
+.B f64
+returning
+.BR f64 ,
+and
+.B *const c_char
+returning
+.B i64
+or
+.BR "*const c_char" .
+.SH COMPILATION
+.TP
+.B JIT
+Every VM arms fusevm's three tiers. A hot loop inside a procedure reaches a
+compiled trace, because its variables are frame slots; the same loop at a
+script's top level reaches nothing, because a top-level variable is a VM
+global.
+.B \-\-tiers
+reports which tiers a given script actually reached, rather than asserting it.
+.TP
+.B AOT
+.B \-\-aot
+lowers the whole chunk through fusevm's closed-world compiler and links it into
+a native executable with no parser and no bytecode dispatch loop inside it.
+Refused for a script using
+.B catch
+or a coroutine, which need a driver outside
+.BR VM::run .
+.SH "WHAT IS REFUSED"
+A construct that is not built yet is refused by name \(em
+.RI \(dq " ... " \(dq
+.B is not supported yet
+\(em rather than silently misread. That includes
+.BR "string wordend" / wordstart ,
+the
+.B array
+search-token subcommands,
+several
+.B dict
+subcommands, every
+.B info
+subcommand but
+.BR coroutine ,
+.B switch \-regexp
+and
+.B return \-code
+other than
+.B ok
+or
+.BR error .
+.SH TESTING
+Every program in the differential suites is executed by both
+.BR tclsh (1)
+and tclrs and the outputs compared byte for byte; the suites skip with a note
+when no tclsh is installed. A differential fuzzer generates terminating
+programs and compares the two engines, and the corpus of divergences it found is
+replayed as a regression suite.
+.SH "SEE ALSO"
+.BR tclrs (1),
+.BR tclsh (1).
+.PP
+Reference, engineering report and command reference:
+https://menketechnologies.github.io/tclrs/ .
+.br
+fusevm: https://github.com/MenkeTechnologies/fusevm .
+.SH LICENSE
+MIT.

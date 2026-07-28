@@ -128,8 +128,8 @@ tclrs --help                print the usage      (also -h)
 ```
 
 Shell completion is [`completions/_tclrs`](completions/_tclrs) — put that
-directory on `fpath`. The manual page is
-[`man/man1/tclrs.1`](man/man1/tclrs.1): `man ./man/man1/tclrs.1`.
+directory on `fpath`. The manual pages are [`man/man1/tclrs.1`](man/man1/tclrs.1) and the all-in-one
+[`man/man1/tclrsall.1`](man/man1/tclrsall.1): `man ./man/man1/tclrsall.1`.
 
 `tclsh` is the specification for what the binary prints and what it exits with.
 
