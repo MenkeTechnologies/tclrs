@@ -1,0 +1,14 @@
+# tclrs parity fuzz finding
+# seed: 1   case: 00106   depth: 4   generator: scripts/fuzz/gen.tcl   reduced by hand to the specifier
+# verdict: DIVERGENCE	stdout	line tclsh=1.50 tclrs=00001.50
+# tclsh: 9.0.4
+# tclrs: tclrs 0.1.0
+# tclsh-status: 0
+# tclsh-stdout: 1.50    \n\x1e
+# tclsh-stderr: 
+# tclrs-status: 0
+# tclrs-stdout: 00001.50\n\x1e
+# tclrs-stderr: 
+#
+# The case itself is the sibling .tcl file. It is run spliced into
+# scripts/fuzz/drive.tcl, which is what the captured output above is of.

@@ -41,8 +41,9 @@ approximated, and nothing is silently mis-run.
   `trimleft`, `trimright` (`src/cmd_string.rs`).
 - **`expr`.** The whole operator set of `expr(n)` with `expr(n)` precedence,
   compiled straight from a braced word with no runtime parse: `+ - * / % **`,
-  unary `+ - ~ !`, `< > <= >= == !=`, the always-string `lt gt le ge eq ne`,
-  `& ^ | << >>`, short-circuiting `&& ||`, and the ternary (`src/expr.rs`).
+  unary `+ - ~ !`, `< > <= >= == !=`, `lt gt le ge eq ne`, `& ^ | << >>`,
+  short-circuiting `&& ||`, and the ternary (`src/expr.rs`). `lt` … `eq` are
+  meant to be always-string and are not yet: see the divergence recorded below.
 - **Tcl arithmetic.** Floored integer division and remainder, integral `**` for
   integral operands — a negative exponent included, where the integral result
   truncates to 0 or ±1 and a zero base is an error — numeric-preferring comparison
@@ -164,7 +165,8 @@ approximated, and nothing is silently mis-run.
   `integer value too large to represent` rather than a silent wrap. `i64::MIN`
   divided by `-1` is the same case, and so is an integer *literal* or operand that
   does not fit at all — `expr {99999999999999999999 + 1}` is the overflow, not the
-  `1e+20` a fall-through to the double parser used to answer.
+  `1e+20` a fall-through to the double parser used to answer. `<<` is the one
+  operator that does *not* report and does wrap; it is a defect, recorded below.
 - **Editor tooling.** No LSP, no DAP, no inline `rust {}` FFI. `--disasm`,
   `--dump-tokens` and `--dump-ast` exist, the zsh completion is
   `completions/_tclrs` and the man page is `man/man1/tclrs.1`, and
@@ -184,6 +186,20 @@ not a defect** — a script's shape refused while compiling — so 45 are behavi
 The same run before the fixes recorded in this file put 181 in parity and 170 in
 divergence; the shift in skip is the overflow refusal, which now reports rather
 than answering with a double.
+
+A later, wider run (`-n 2000 -s 1 -d 4`, 410 s) puts 399 in parity, 1272 in
+divergence, 215 in skip, 107 in the allowlist and 7 outside comparison. 1192 of
+the 1272 are again the compile-time class; 80 are behavior. The same command
+against the generator as it was before the reach work put 880 in parity, 860 in
+divergence and 99 in skip — more passes, because a narrower generator writes
+programs with fewer places to disagree.
+
+Mutation mode reaches the same buckets from the other direction: `-M -n 500 -s 21
+-m` recombines the committed corpus and puts 68 in parity, 368 in divergence, 20
+in skip and 44 in the allowlist, with **no case in `CRITICAL` and none in
+`EXCLUDED`** — which is the evidence that the mutator's termination guard holds,
+since a mutant that failed to terminate would be a timeout in one bucket or the
+other.
 
 Each entry below is a **reproduced** divergence with the reducer's own
 one-statement case; every one is pinned in `tests/parity_fuzz_findings.rs` against
@@ -280,6 +296,62 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   converts the bignum. The same missing bignum as above, in the one place that
   answers rather than refusing.
 
+### Reached by the widened generator
+
+Seven more, from the 2000-program run above. Each is pinned in
+`tests/parity_fuzz_findings.rs` against a live tclsh, and each is reachable only
+because the generator now builds `format`'s specifier matrix, draws shift counts
+with a sign, and carries `nan` / `inf` in its value pools.
+
+- **`expr`'s always-string operators compare numeric *literals* as numbers.**
+  `expr {1.0 eq 1}` is 1 where tclsh says 0, and `expr {2.5e-3 gt 123456789}` is
+  0 where tclsh compares `"2"` against `"1"` and says 1. `expr(n)` defines `eq`,
+  `ne`, `lt`, `gt`, `le` and `ge` as string comparisons — that is the whole
+  reason they sit beside `==` and `<`. Quoting either operand restores the string
+  comparison in both engines, so what is wrong is that a bare numeric literal was
+  interned as a number and the operator then saw numbers. The "Implemented"
+  section above claims these are always-string; on this evidence they are not.
+- **A shift by a negative count answers 0.** `expr {10 << -1}` and
+  `expr {10 >> -2}` are both 0; `expr(n)` makes a negative shift count illegal
+  and tclsh reports `negative shift argument`. 29 of the 2000 cases reach it,
+  against 2 before shift counts were drawn with a sign.
+- **A left shift past the word width wraps silently.** `expr {1 << 63}` is
+  `i64::MIN` and `expr {1 << 64}` is 1, where tclsh promotes and answers
+  `9223372036854775808` and `18446744073709551616`. Every other overflow reports
+  `integer value too large to represent` rather than wrapping — that is the
+  documented stance on the missing bignum — and `<<` is the one operator that
+  does not take part. `expr {1 << 9223372036854775807}` is
+  `-9223372036854775808` against tclsh's own `integer value too large to
+  represent`.
+- **`format`'s `-` flag does not override `0`.** `format %-08.2f 1.5` is
+  `00001.50` against tclsh's `1.50    `, and `format %-08s ab` is `000000ab`
+  against `ab000000`. The integer conversions already agree — `format %-08d 5` is
+  `00000005` in both — so this is the `-`-against-`0` rule for `e`, `f`, `g` and
+  `s`, not the padding as a whole. Reached only because the generator builds the
+  specifier from its axes rather than drawing a fixed spelling.
+- **Zero over a floating-point zero is `NaN`, not a domain error.**
+  `expr {0 / -0.0}` and `expr {0.0 / 0.0}` answer `NaN`; tclsh reports
+  `domain error: argument not in valid range`. A non-zero numerator agrees —
+  `expr {3 / -0.0}` is `-Inf` in both — so it is the indeterminate form alone.
+- **`expr`'s literal grammar has no `nan` or `inf`.** `expr {inf > 1}` is
+  `invalid bare word "inf" in expression` where tclsh answers 1, and so are
+  `nan`, `NaN` and `Inf`. The runtime's parser has them — `string is double inf`
+  is 1 — so this is the same `expr::parse_number` gap as `0d9` and `1_0` above,
+  in the two spellings that are words rather than digits. It is the largest
+  single class in the widened run: 342 of 2000 cases for `inf` and 204 for `nan`.
+- **A quoted `nan` is a usable arithmetic operand.** `expr {"nan" + 1}` is `NaN`;
+  tclsh reports `cannot use non-numeric floating-point value "nan" as left
+  operand of "+"`, because `Tcl_GetDoubleFromObj` refuses a NaN that came from a
+  string.
+- **A refusal decided at run time is catchable, so `catch` sees a message where
+  tclsh saw an answer.** `catch {lsearch -sorted {a} b} m` leaves `m` as
+  `lsearch -sorted is not supported yet` and the script runs on, where tclsh
+  leaves `-1`; the same for `lsort -nocase`. The refusals decided while
+  *compiling* — `string is punct`, `string wordstart` — are not catchable and do
+  take the whole case out of comparison as a skip. The two halves are pinned
+  together, because which side a refusal falls on is what decides whether the
+  harness counts it as a skip or as a divergence.
+
 ### Fixed by the fuzzer's own findings
 
 Each of these was a divergence in the run above and is now parity, pinned in
@@ -317,6 +389,42 @@ get` sorted where tclsh hashes (order is unspecified in `array(n)`), arity
 refused before anything runs, and a message carrying ` (line N)` through the
 library. `scripts/fuzz/classify.pl` holds them with their reasons, and every run
 prints a hit count per entry.
+
+## What the differential fuzzer cannot reach
+
+The generator's own blind spots, so a gap in the report is a known gap rather
+than an unexamined one. Measured against the 2000-program run above.
+
+- **Commands tclrs does not have.** `{*}` expansion, `regexp`, `upvar`,
+  `uplevel`, `namespace`, `apply`, `lassign`, `lset`, `lmap`, `rename`, `source`
+  and file I/O are outside the command set entirely, so a generated use of one is
+  `invalid command name` and says nothing about parity. They are deliberately not
+  generated, and belong in the generator on the day the commands exist.
+- **`array` on a procedure local, `unset` of one, and `eval` inside a procedure
+  body** *are* generated now, at `REFUSAL_RATE` — so are `lsort -command`,
+  `lsearch -regexp`, `string wordstart`, `string is -failindex`, the `string is`
+  classes that need the Unicode tables, and the `dict` subcommands outside the
+  implemented set. Each lands in the skip bucket under the refusal's own wording,
+  which is coverage waiting for the refusal to go rather than a hole. The rate is
+  low because these refusals are decided while compiling, so one of them anywhere
+  takes the whole case out of comparison: at 8 percent the run is 215 skips of
+  2000; at roughly one in two it was 44 percent skips.
+- **The two `format` crashes are out of the value pools on purpose.** An
+  unbounded field width aborts the process on the allocation and a precision
+  above 65535 panics; both are recorded under "Crashes reachable from a script"
+  below and both are pinned. Drawing them would spend a run re-finding the same
+  two aborts, so the generator bounds width and precision at two digits and the
+  run's report prints that bound. Nothing about the classification changes: a
+  case that reaches either crash from any other route is still `CRITICAL`.
+- **Anything that needs a value the pools do not hold.** `format %c 55296` is a
+  lone surrogate: tclsh fails the write with `invalid or incomplete multibyte or
+  wide character` and tclrs prints U+FFFD. That was found by hand, not by the
+  fuzzer, because no pool holds 55296.
+- **Depth beyond the corpus contract.** One statement per line is what lets the
+  shrinker reduce by deleting a line, so a body is inlined inside braces rather
+  than spread over lines. A program whose *structure* spans lines — a procedure
+  written across ten of them — is not generated, and a parse error that needs one
+  is out of reach.
 
 ## Crashes reachable from a script
 

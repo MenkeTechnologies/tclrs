@@ -993,3 +993,232 @@ fn deep_nesting_is_refused_rather_than_exhausting_the_stack() {
     let indices = format!("puts $a({}", "$b(".repeat(100_000));
     assert_eq!(run(&subject, &indices, "sub-index"), refusal);
 }
+
+// ── bugs the widened generator reached ──────────────────────────────────────
+//
+// Each of these came out of the run recorded in BUGS.md as "the widened
+// generator": 2000 programs, seed 1, depth 4. The reproducers below are the
+// shrinker's, reduced by hand to the one expression that carries the finding.
+
+/// `expr`'s always-string operators compare numerically when both operands are
+/// numeric *literals*.
+///
+/// `expr(n)` is explicit that `eq`, `ne`, `lt`, `gt`, `le` and `ge` "compare
+/// operands as strings", which is the whole reason the operators exist next to
+/// `==` and `<`. tclrs interns a bare numeric literal as a number and the
+/// comparison then runs on the numbers, so `1.0 eq 1` is true where tclsh says
+/// false and `2.5e-3 gt 123456789` is false where tclsh compares `"2"` against
+/// `"1"` and says true. Quoting either operand restores the string comparison in
+/// both engines, so the defect is in what the literal became, not in the
+/// operator.
+#[test]
+fn bug_expr_string_operators_compare_numeric_literals_as_numbers() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    diverges(&tclsh, "puts [expr {1.0 eq 1}]", out("0\n"), out("1\n"));
+    diverges(
+        &tclsh,
+        "puts [expr {2.5e-3 gt 123456789}]",
+        out("1\n"),
+        out("0\n"),
+    );
+    // Quoted, both engines compare as strings — which is what the operator means.
+    agrees(
+        &tclsh,
+        "puts [expr {\"2.5e-3\" gt \"123456789\"}]",
+        out("1\n"),
+    );
+}
+
+/// A shift by a negative count answers 0 instead of raising.
+///
+/// `expr(n)`: "It is illegal to shift by a negative number of bits." tclsh
+/// reports `negative shift argument`; tclrs answers 0 for `<<` and for `>>`.
+#[test]
+fn bug_expr_negative_shift_count_answers_zero() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    diverges(
+        &tclsh,
+        "puts [expr {10 << -1}]",
+        err("negative shift argument"),
+        out("0\n"),
+    );
+    diverges(
+        &tclsh,
+        "puts [expr {10 >> -2}]",
+        err("negative shift argument"),
+        out("0\n"),
+    );
+}
+
+/// A left shift past the word width wraps silently.
+///
+/// Everywhere else an operation that leaves `i64` reports `integer value too
+/// large to represent` rather than wrapping — that is the documented stance on
+/// the missing bignum (BUGS.md, "Arbitrary-precision integers"). `<<` does not
+/// take part: `1 << 63` answers `i64::MIN` and `1 << 64` answers 1, where tclsh
+/// promotes and answers exactly. This is the one place a value silently changes
+/// rather than being refused.
+#[test]
+fn bug_expr_left_shift_past_the_word_width_wraps() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    diverges(
+        &tclsh,
+        "puts [expr {1 << 63}]",
+        out("9223372036854775808\n"),
+        out("-9223372036854775808\n"),
+    );
+    diverges(
+        &tclsh,
+        "puts [expr {1 << 64}]",
+        out("18446744073709551616\n"),
+        out("1\n"),
+    );
+}
+
+/// `format`'s `-` flag does not override `0` for the conversions where tclsh
+/// says it does.
+///
+/// tclsh applies `-` for `e`, `f`, `g` and `s` — `format %-08.2f 1.5` is
+/// `1.50    ` — and keeps the zero padding for `d`, `i`, `x` and `o`, where
+/// `format %-08d 5` is `00000005` in both engines. tclrs zero-pads on the left
+/// for every conversion, so the floating-point and string cases come out
+/// `00001.50` and `000000ab`.
+#[test]
+fn bug_format_minus_flag_does_not_override_zero_padding() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    diverges(
+        &tclsh,
+        "puts [format %-08.2f 1.5]",
+        out("1.50    \n"),
+        out("00001.50\n"),
+    );
+    diverges(
+        &tclsh,
+        "puts [format %-08s ab]",
+        out("ab000000\n"),
+        out("000000ab\n"),
+    );
+    // The integer conversions already agree, which is why this is `-` against
+    // `0` rather than the padding as a whole.
+    agrees(&tclsh, "puts [format %-08d 5]", out("00000005\n"));
+    agrees(&tclsh, "puts [format %-08x 255]", out("000000ff\n"));
+}
+
+/// Zero divided by a floating-point zero is `NaN` rather than a domain error.
+///
+/// tclsh reports `domain error: argument not in valid range` for `0 / 0.0` and
+/// for `0.0 / 0.0`; tclrs answers `NaN`. The non-zero numerator agrees — `3 /
+/// -0.0` is `-Inf` in both — so this is the indeterminate form specifically.
+#[test]
+fn bug_expr_zero_over_float_zero_is_nan_not_a_domain_error() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    diverges(
+        &tclsh,
+        "puts [expr {0 / -0.0}]",
+        err("domain error: argument not in valid range"),
+        out("NaN\n"),
+    );
+    agrees(&tclsh, "puts [expr {3 / -0.0}]", out("-Inf\n"));
+}
+
+/// `nan` and `inf` are floating-point literals to `expr(n)` and barewords to
+/// `expr::parse_number`.
+///
+/// The same shape as the `0d9` / `1_0` entry above: the runtime's number parser
+/// takes them — `string is double inf` is 1, and `expr {"inf" + 0.0}` works —
+/// but `expr`'s own literal parser does not, so a bare `inf` in an expression is
+/// `invalid bare word "inf" in expression` where tclsh evaluates it. It is the
+/// single largest divergence class in the widened run: 342 of 2000 cases.
+#[test]
+fn bug_expr_literal_grammar_lacks_nan_and_inf() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    diverges(
+        &tclsh,
+        "puts [expr {inf > 1}]",
+        out("1\n"),
+        err("invalid bare word \"inf\" in expression"),
+    );
+    diverges(
+        &tclsh,
+        "puts [expr {nan == nan}]",
+        out("0\n"),
+        err("invalid bare word \"nan\" in expression"),
+    );
+    // The runtime parser has both, which is what makes this `expr::parse_number`
+    // rather than the number grammar as a whole.
+    agrees(&tclsh, "puts [string is double inf]", out("1\n"));
+}
+
+/// A quoted `nan` is a usable number in arithmetic where tclsh refuses it.
+///
+/// `Tcl_GetDoubleFromObj` rejects a NaN read from a string operand —
+/// `cannot use non-numeric floating-point value "nan" as left operand of "+"` —
+/// and tclrs answers `NaN`.
+#[test]
+fn bug_expr_accepts_a_quoted_nan_as_an_arithmetic_operand() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    diverges(
+        &tclsh,
+        "puts [expr {\"nan\" + 1}]",
+        err("cannot use non-numeric floating-point value \"nan\" as left operand of \"+\""),
+        out("NaN\n"),
+    );
+}
+
+/// A refusal decided at *run* time is catchable, so a `catch` around it sees a
+/// message where tclsh saw an answer.
+///
+/// `lsearch -sorted` and `lsort -nocase` are recognised by the reference option
+/// parser and refused when the command runs, so `catch` captures the refusal and
+/// the script carries on with it as a value — the harness calls the case a
+/// divergence rather than a skip, because tclrs exited 0. The refusals decided
+/// while *compiling* — `string is punct`, `string wordstart` — are not catchable
+/// and do make the case a skip. Both halves are pinned here so the distinction
+/// cannot drift without a test failing.
+#[test]
+fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    diverges(
+        &tclsh,
+        "catch {lsearch -sorted {a} b} m; puts m:$m",
+        out("m:-1\n"),
+        out("m:lsearch -sorted is not supported yet\n"),
+    );
+    diverges(
+        &tclsh,
+        "catch {lsort -nocase {a}} m; puts m:$m",
+        out("m:a\n"),
+        out("m:lsort -nocase is not supported yet\n"),
+    );
+    // Decided while compiling, so `catch` never runs at all.
+    diverges(
+        &tclsh,
+        "catch {string is punct a} m; puts m:$m",
+        out("m:0\n"),
+        err("the \"punct\" character class needs Unicode category tables, which are not built yet"),
+    );
+}
