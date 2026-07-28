@@ -1,0 +1,2 @@
+if {"abc" ? 0 : ($s1)} {set v12 8; switch -exact -- {a b c} {a?c {puts {}; append s2 42 x}}}
+if {[string length "x"] - -7} {puts [dict values $d5]; puts "x"} else {foreach e14 {q"r} {puts [expr {1 % 0}]; continue}; foreach {e15 e16} 1.5 {unset s2; incr s3 2}}; if {"b" % [llength { padded }]} {if {"9" ni 1.5} {eval {puts b}; puts $a4(k)}} elseif {255 * 3} {set w17 0; while {$w17 < 1} {incr w17; set d18 [dict create 2 x A-B 255]}} else {}

@@ -1,0 +1,2 @@
+proc p4 {r1 r2 {o1 "x"} args} {set __o {}; if {[llength {a b c}] || -7} {puts [format %+d 10]; puts [lsearch -start 2 ? a*]} else {if {10 ** 0.0} {puts [format %s -7]; puts {cost$}} else {puts [string index 0 0]}; puts [format %#o {}]}; return $__o}
+for {set f5 0} {$f5 < 5} {incr f5} {switch -- [string length abc] {* {if {(100) > 0} {set d6 [dict create 1 { padded } 0 {hello world}]} else {puts [p4 1]; set v9 $s1} m7; puts [string match *b {a b c}]} a*b*c {catch {puts [p4 "x" end hello x]; puts 1.5} m10; puts m:$m10} default {foreach e11 ? {}}}; continue}

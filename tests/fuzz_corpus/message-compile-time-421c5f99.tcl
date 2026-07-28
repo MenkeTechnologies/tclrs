@@ -1,0 +1,4 @@
+set s2 3
+catch {set w13 0; while {$w13 < 4} {incr w13; if {($s2) % [llength {q"r}]} {set d14 [dict create A-B 2 1.5 {#comment}]; set v15 {$x}} else {puts [string repeat hello 2]}; puts m:$m16}; while {$w18 < 2} {incr w18; foreach {e19 e20} 1.5 {puts [string length {}]; puts [string index hello end-1]}}} m12
+switch -glob $m12 {a* {set d25 [dict create 5 hello hello x]} default {if {-7} {set v26 1} elseif {7 ? $w10 : (123456789)} {puts [string tolower +5]; incr w10 1}}}; if {$s2 >= 5} {foreach e27 {} {unset m12}; foreach e28 "x" {error -1; set v29 [expr {$s2 & 1}]}} elseif {"1.0" % "9"} {foreach e30 0.1 {set d31 [dict create xyz -7 7 {he said "hi"}]}} else {puts $s1; for {set f32 0} {$f32 < 4} {incr f32} {}}
+switch -exact -7 {* {puts [string index c1 7]} *b {if {1 & 0} {puts -nonewline {}} else {}}}

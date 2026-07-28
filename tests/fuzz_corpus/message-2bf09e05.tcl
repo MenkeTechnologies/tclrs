@@ -1,0 +1,1 @@
+if {4 % "b" - 5} {set w15 0; while {$w15 < 3} {incr w15; switch -- [expr {3 && 10}] {*b {append d3 +5 1.5} default {puts [expr {-1 * 16}]}}}; set v16 1} elseif {("a") ^ 0} {foreach e17 {x]y} {foreach e18 "x" {}}}

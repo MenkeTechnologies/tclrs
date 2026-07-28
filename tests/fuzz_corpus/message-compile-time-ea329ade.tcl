@@ -1,0 +1,3 @@
+proc p4 {r1 r2 {o1 -0.0}} {set __o {}; while {$w5 < 1} {incr w5; for {set f7 0} {$f7 < 2} {incr f7} {}}; return $__o}
+error -0.0
+switch -glob b {x {if {(0) / 100} {if {$s2 ? -7 : 2} {puts [string first "x" 1]}} elseif {$s2 * [llength 10]} {puts "pre-$m9-post"; while {$w11 < 1} {incr w11; puts [p4 $s2]}} elseif {$s2 << 4} {unset m9}; array set a12 {a 1 b 2 c 3}} a?c {switch -exact [string length 0] {{} {set v13 5} a* {foreach e14 1 {puts [linsert +5 5 0]; if {"1.0" * 0.1} {continue}}; foreach e16 10 {set l17 [list "x" -7 {a b c}]; incr s2 3}} default {puts [p8 ]; puts [format %i [format %s "x"]]}}} default {error "x"; if {-7} {switch -glob 42 {x {puts -nonewline [list {x} "x"]} default {}}}}}

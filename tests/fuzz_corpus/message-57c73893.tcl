@@ -1,0 +1,2 @@
+if {1.0e-7 >= (0.1)} {for {set f10 0} {$f10 < 4} {incr f10} {foreach e11 "x" {incr s2 0}; while {$w12 < 5} {incr w12; puts [array size a3]}}; while {$w13 < 4} {incr w13; for {set f14 0} {$f14 < 2} {incr f14} {set v15 7}}} elseif {-1.5 ^ 2} {set w16 0; while {$w16 < 1} {incr w16; foreach e17 x {puts [llength "x"]}}; if {-8} {if {1 || "10"} {puts [string replace {#comment} 10 end xyz]; puts "x"} else {puts [dict keys $d4]}; array set a18 {x 1 y 2}}} else {}
+if {"b" + (0.5)} {foreach e21 -0 {foreach e22 ? {puts [string index hello end+1]; eval {}}; break}}

@@ -819,6 +819,48 @@ The differential suites skip when no `tclsh` is on `PATH`. The full
 ahead-of-time link test skips when `libtclrs.a` has not been built or there is
 no `cc`.
 
+### Differential fuzzing
+
+```sh
+cargo build
+bash scripts/fuzz_parity.sh -n 400 -s 1 -m
+```
+
+`scripts/fuzz/gen.tcl` generates whole Tcl programs from a seed — the same seed
+gives the byte-identical corpus, so a divergence reproduces from the seed and the
+case index alone — and `scripts/fuzz_parity.sh` runs every one under both `tclsh`
+and `tclrs` through one driver, `scripts/fuzz/drive.tcl`. Loop bounds are
+structural, so a generated program always terminates, and values come from a pool
+of awkward literals: empty strings, braces, brackets, quotes, backslashes, `$`, a
+leading `#`, leading zeros, `1_0`, the `i64` boundaries, exponent-form floats and
+non-ASCII text.
+
+Every case lands in exactly one bucket, and every bucket is counted: **pass**,
+**skip** (tclrs refused something it documents as unimplemented, with the
+refusal's own wording as the reason), **allowed** (one of the enumerated known
+divergences, each with a per-entry hit count so an over-broad suppression is
+visible rather than silent), **divergence**, **critical** (tclrs died or hung —
+never suppressible), and **excluded** (tclsh died or hung, so there is no
+reference behavior; never charged against tclrs). `-m` minimises each divergence
+to the statement that causes it and writes it to `tests/fuzz_corpus/` with both
+engines' observed output; `tests/parity_fuzz_corpus.rs` replays that corpus, and
+`tests/parity_fuzz_findings.rs` pins each finding against a live tclsh. The exit
+status is the number of unsuppressed divergences, capped at 250. `-h` prints the
+whole interface.
+
+What it has found is [`BUGS.md`](BUGS.md).
+
+A second fuzzer needs no `tclsh`: `fuzz/fuzz_targets/` holds cargo-fuzz targets
+over the parser and the compiler, for the inputs a grammar never produces — a
+lone `\x00`, a truncated escape, thousands of nested brackets.
+
+```sh
+cargo +nightly fuzz run parse      # or: compile
+```
+
+`tests/fuzz_smoke.rs` replays their seed corpus and a hostile-input list under
+stable, so `cargo test` keeps the scaffolding honest without nightly.
+
 ---
 
 ## [0xFF] LICENSE

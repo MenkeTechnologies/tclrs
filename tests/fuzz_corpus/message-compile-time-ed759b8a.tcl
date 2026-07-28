@@ -1,0 +1,1 @@
+switch -- [format %s "x"] {* {puts [string cat "x" abc 2]} x {puts [string index 1000 5]} {} {array set a14 "x"} default {switch -glob -1 {a?c {puts [p4 ]} default {eval {}; puts [lreplace $s1 1 2 xyz]}}}}

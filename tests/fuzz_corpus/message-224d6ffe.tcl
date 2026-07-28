@@ -1,0 +1,1 @@
+if {0 % 0.0} {puts -nonewline [string length 0.1]; foreach e12 1.5 {error {}; if {42 && "9"} {continue}}} elseif {1 >= 1} {puts "pre-$s2-post"} else {foreach e13 10 {for {set f14 0} {$f14 < 5} {incr f14} {puts [split * ab]; if {3 % -1} {}}; continue}}

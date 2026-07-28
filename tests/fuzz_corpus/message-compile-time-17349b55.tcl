@@ -1,0 +1,2 @@
+set s2 1.5
+set w14 0; while {$w14 < 1} {incr w14; switch -glob -- $s2 {a* {append s2 a*b 42; puts "a} default {puts a}; set d15 [dict create ? 10 7 b]}}; switch -exact -- [string length 1000] {{} {foreach e16 7 {set v17 1000}; if {[llength +5] <= 4} {set v18 "x"} else {error {a b c}}} a*b*c {set w19 0; while {$w19 < 2} {incr w19; puts [linsert "x" 10 "x"]; set v20 -7}; catch {puts [string replace hello 1 2 { padded }]} m21; puts m:$m21} default {set w22 0; while {$w22 < 3} {}}}}

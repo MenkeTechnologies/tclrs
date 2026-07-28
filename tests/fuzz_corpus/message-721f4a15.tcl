@@ -1,0 +1,1 @@
+switch -exact -- [format %s { padded }] {*b {puts [format %i [string length a]]; foreach e15 "x" {switch -glob [string length 2] {* {puts 1} {} {puts "pre-$d4-post"; puts [string index 1 10]}}}} default {if {1.0 >> 2} {unset s2; if {(3) / ($s1)} {set v16 5; puts [list "x" 7]} else {}}}}

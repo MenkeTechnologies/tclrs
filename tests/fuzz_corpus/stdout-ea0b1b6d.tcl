@@ -1,0 +1,2 @@
+set s1 {}
+switch -glob [list {a b c} 42] {* {puts [lreplace $s1 7 1 5]; catch {puts [lsearch -decreasing $s1 x]; if {[llength $s2] || 16} {unset e3} elseif {-1 / -1 / (4)} {set d20 [dict create 0d9 hello +5 -0.0]}} m19; puts m:$m19} * {puts [string length "x"]; while {$w21 < 1} {incr w21; for {set f22 0} {$f22 < 5} {incr f22} {puts [string length x]; continue}; if {42 ** 1} {break}}} a*b*c {puts [expr {255 ? 100 : 1}]}}

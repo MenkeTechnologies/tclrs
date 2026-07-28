@@ -1,0 +1,14 @@
+# tclrs parity fuzz finding
+# seed: 1   case: 00271   depth: 3   generator: scripts/fuzz/gen.tcl
+# verdict: DIVERGENCE	message	msg tclsh= tclrs=can't use non-numeric string as operand of "+": ""
+# tclsh: 9.0.4
+# tclrs: tclrs 0.1.0
+# tclsh-status: 0
+# tclsh-stdout: \n\x1e
+# tclsh-stderr: 
+# tclrs-status: 1
+# tclrs-stdout: 
+# tclrs-stderr: can't use non-numeric string as operand of "+": ""\n
+#
+# The case itself is the sibling .tcl file. It is run spliced into
+# scripts/fuzz/drive.tcl, which is what the captured output above is of.

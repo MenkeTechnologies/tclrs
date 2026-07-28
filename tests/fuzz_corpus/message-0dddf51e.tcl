@@ -1,0 +1,1 @@
+if {-1.5 << 4} {set v11 1000; append f8 b 1} else {switch -glob a {a*b*c {error 42} {[ab]*} {for {set f12 0} {$f12 < 5} {incr f12} {incr s1 4; set v13 "pre-$u14-post"}} a?c {switch -exact 7 {{[ab]*} {eval {puts a}}}; while {$w15 < 2} {incr w15; eval {puts a}}}}; foreach {e16 e17} {cost$} {if {1.5 gt 255} {set d18 [dict create -1 {} c1 a]; array set a19 {}}}}

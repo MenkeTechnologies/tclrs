@@ -1,0 +1,1 @@
+if {("9") / "b"} {switch -- end {a* {puts [string index a#b -1]; puts $d5} default {puts 42}}; while {$w21 < 2} {incr w21; error "x"}} elseif {(100) << 1} {puts $} else {unset d5; catch {puts [format %s {}]; append s3 2 a} m22; puts m:$m22}

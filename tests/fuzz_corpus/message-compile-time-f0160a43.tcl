@@ -1,0 +1,1 @@
+switch -exact [format %s "x"] {*b {puts "a} default {if {3 ^ 0} {puts [string index {[} 0]} elseif {"b" / $s3} {puts [lsort [array get a16]]}; catch {set l18 [list "x" {} 42]; error "x"} m17; puts m:$m17}}

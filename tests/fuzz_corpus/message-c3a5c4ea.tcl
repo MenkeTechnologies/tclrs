@@ -1,0 +1,1 @@
+switch -glob -- [string length a#b] {a?c {if {-7 ni 1} {puts [string index 1.5 end+1]; set v4 $s2}; puts [format %c [expr {-1 == 1}]]} default {foreach e5 1.5 {set v6 5; for {set f7 0} {$f7 < 4} {incr f7} {puts [format %G "\{a b\} c"]; puts [format %c "pre-$s1-post"]}}}}
