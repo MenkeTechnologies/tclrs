@@ -120,6 +120,62 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
     Ok(script)
 }
 
+/// Parse one `$...` substitution at `at`, which must index a `$`. Returns the
+/// part and the offset just past it, or `None` when the dollar introduces no
+/// name and is therefore literal text.
+///
+/// The `expr` language embeds the same substitutions as a word (`$x`, `$a(i)`,
+/// `${x}`), so its parser reaches them through here rather than reimplementing
+/// rule 8.
+pub(crate) fn substitution_at(src: &str, at: usize) -> Result<Option<(Part, usize)>, ParseError> {
+    let mut p = Parser {
+        src: src.as_bytes(),
+        pos: at,
+        line: 1,
+    };
+    Ok(p.parse_dollar()?.map(|part| (part, p.pos)))
+}
+
+/// Parse one `[...]` command substitution at `at`, which must index a `[`.
+pub(crate) fn command_at(src: &str, at: usize) -> Result<(Script, usize), ParseError> {
+    let mut p = Parser {
+        src: src.as_bytes(),
+        pos: at + 1,
+        line: 1,
+    };
+    let script = p.parse_script(true)?;
+    if p.peek() != Some(b']') {
+        return Err(p.error("missing close-bracket"));
+    }
+    p.pos += 1;
+    Ok((script, p.pos))
+}
+
+/// Parse a double-quoted operand at `at`, which must index a `"`. Substitutions
+/// inside it are resolved as in a quoted word (rule 4).
+pub(crate) fn quoted_at(src: &str, at: usize) -> Result<(Vec<Part>, usize), ParseError> {
+    let mut p = Parser {
+        src: src.as_bytes(),
+        pos: at + 1,
+        line: 1,
+    };
+    let parts = p.parse_parts(Ctx::Quoted, false)?;
+    p.pos += 1; // closing quote
+    Ok((parts, p.pos))
+}
+
+/// Parse a braced operand at `at`, which must index a `{`. The text is literal
+/// (rule 6).
+pub(crate) fn braced_at(src: &str, at: usize) -> Result<(String, usize), ParseError> {
+    let mut p = Parser {
+        src: src.as_bytes(),
+        pos: at,
+        line: 1,
+    };
+    let text = p.parse_braced()?;
+    Ok((text, p.pos))
+}
+
 /// Where a run of substitutable text sits, which decides what ends it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ctx {

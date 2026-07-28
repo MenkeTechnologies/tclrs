@@ -11,6 +11,10 @@
 //! point — the reference interpreter re-derives string representations inside
 //! hot loops.
 
+pub mod compiler;
+pub mod expr;
 pub mod parser;
+pub mod runtime;
 
 pub use parser::{parse, Command, ParseError, Part, Script, Word};
+pub use runtime::{eval, Outcome};

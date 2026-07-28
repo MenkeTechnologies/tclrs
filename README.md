@@ -6,7 +6,17 @@ The reference implementation is tclsh 9.0.4. It is the specification: behavior i
 
 ## Status
 
-Phase 1 of 7 — the parser. `tclrs::parse` implements all twelve syntax rules of `Tcl(n)`:
+Phase 2 of 7 — scripts compile to fusevm bytecode and run. `tclrs::eval` executes a script and returns its value and output.
+
+Working commands: `set`, `puts` (with `-nonewline`), `expr`, `incr`, `if`/`elseif`/`else`, `while`, `break`, `continue`, and command substitution of any of them.
+
+`expr` covers the whole operator set of `expr(n)` — arithmetic with Tcl's floored integer division and remainder, integral `**`, numeric-preferring comparisons with string fallback, the always-string comparisons, bitwise and shift operators, short-circuit `&&`/`||`, and the ternary — over operands drawn from literals, variables, nested commands, and parenthesised subexpressions. Doubles print in Tcl's format.
+
+Not built yet, and refused at compile time rather than approximated: `proc` and every other command, arrays, `{*}` expansion, math functions, `in`/`ni` (list support), variable and body words that are not literal, and arbitrary-precision integers — an operation that overflows `i64` is an error instead of silently wrapping.
+
+### Parser
+
+`tclrs::parse` implements all twelve syntax rules of `Tcl(n)`:
 
 | Rule | Covered by |
 |---|---|
@@ -20,8 +30,6 @@ Phase 1 of 7 — the parser. `tclrs::parse` implements all twelve syntax rules o
 | 9 Backslash substitution | full escape table, including the backslash-newline pre-pass |
 | 10 Comments | `#` in first-word position only |
 | 11, 12 Order and word boundaries | single pass, substitution never splits a word |
-
-Not yet present: the compiler, builtins, a runtime, the CLI. Nothing here executes Tcl yet.
 
 ## Why this shape
 
@@ -40,7 +48,7 @@ cargo build
 cargo test
 ```
 
-The differential tests invoke `tclsh` from `PATH` and report a skip when none is installed.
+The differential tests run every program through both `tclsh` and tclrs and compare the output byte for byte. They invoke `tclsh` from `PATH` and report a skip when none is installed.
 
 ## License
 
