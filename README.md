@@ -265,6 +265,13 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 
 Command substitution works on any of them.
 
+`docs/reference.html` is the same surface as a page, generated rather than
+written: `cargo run --bin gen-docs` renders every command from the compiler's
+own tables (`src/names.rs`), asks the compiler about each ensemble subcommand
+and the runtime about each `format` conversion, and prints the `expr` ladder
+from the table the parser binds with. A command it lists exists; one it does not
+is `invalid command name`.
+
 ### `expr`
 
 The whole operator set of `expr(n)`:

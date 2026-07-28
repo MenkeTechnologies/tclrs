@@ -91,8 +91,10 @@ pub(crate) const SUBCOMMANDS: &[&str] = &[
     "wordstart",
 ];
 
-/// The `string is` classes, in the interpreter's listing order.
-const CLASSES: &[&str] = &[
+/// The `string is` classes, in the interpreter's listing order. Public for the
+/// same reason as [`crate::expr::LEVELS`]: the reference page lists them, and
+/// the list it prints has to be the one `string is` resolves against.
+pub const CLASSES: &[&str] = &[
     "alnum",
     "alpha",
     "ascii",

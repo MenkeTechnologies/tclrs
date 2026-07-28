@@ -30,6 +30,12 @@ crate-type = ["rlib", "staticlib"]
 name = "tclrs"
 path = "src/main.rs"
 
+# Writes docs/reference.html from the compiler's own tables. Offline: run it
+# before publishing the docs, never as part of a script's run.
+[[bin]]
+name = "gen-docs"
+path = "src/bin/gen_docs.rs"
+
 [dependencies]
 # Execution and codegen live in fusevm; this crate only lowers to its ops.
 #

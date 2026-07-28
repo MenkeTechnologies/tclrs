@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="tclrs — Command reference. The 40 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
+  <title>tclrs &mdash; Command Reference</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Share+Tech+Mono&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 76rem; }
+    .file-table { width:100%;border-collapse:collapse;margin:0.6rem 0;font-size:12px; }
+    .file-table th { background:var(--bg-secondary);color:var(--cyan);font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;text-align:left;padding:7px 10px;border:1px solid var(--border); }
+    .file-table td { padding:6px 10px;border:1px solid var(--border);color:var(--text-dim);vertical-align:middle; }
+    .file-table tr:hover td { background:var(--bg-hover); }
+    .file-table td:first-child { font-family:'Share Tech Mono',monospace;color:var(--accent-light);font-weight:600;white-space:nowrap; }
+    .file-table code { font-size:11px;color:var(--accent-light);background:var(--bg-primary);padding:1px 4px;border-radius:2px; }
+    .stat-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(14rem,1fr));gap:0.75rem;margin:1.2rem 0; }
+    .stat-card { border:1px solid var(--border);border-top:3px solid var(--cyan);background:var(--bg-card);padding:1rem 1.2rem;border-radius:2px;text-align:center; }
+    .stat-card .stat-val { font-family:'Orbitron',sans-serif;font-size:28px;font-weight:900;color:var(--cyan);line-height:1.1;text-shadow:0 0 20px var(--cyan-glow); }
+    .stat-card .stat-val.accent { color:var(--accent);text-shadow:0 0 20px var(--accent-glow); }
+    .stat-card .stat-label { font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text-muted);margin-top:0.5rem; }
+    .docs-build-line { margin:0.35rem 0 0;font-family:'Share Tech Mono',ui-monospace,monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;max-width:42rem;opacity:0.75; }
+    .state-yes { color:var(--green,#39ff14);font-weight:600; }
+    .state-no { color:var(--accent,#ff2a6d);font-weight:600; }
+  </style>
+</head>
+<body>
+  <div class="app tutorial-app" id="docsApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <div>
+          <h1 class="tutorial-brand">// TCLRS &mdash; COMMAND REFERENCE</h1>
+          <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+            <a href="index.html">Docs</a>
+            <span class="sep">/</span>
+            <a href="report.html">Engineering Report</a>
+            <span class="sep">/</span>
+            <span class="current">Command Reference</span>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/tclrs" target="_blank" rel="noopener noreferrer">GitHub</a>
+          </nav>
+          <p class="docs-build-line">tclrs v0.1.0 &middot; generated from the compiler's own tables &middot; MIT</p>
+        </div>
+        <div class="tutorial-toolbar">
+          <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+          <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+          <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+          <a class="btn btn-secondary" href="index.html">Docs</a>
+          <a class="btn btn-secondary" href="report.html">Report</a>
+          <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/tclrs" target="_blank" rel="noopener noreferrer">GitHub</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="tutorial-main">
+      <section id="commands">
+        <h2>Commands</h2>
+        <p>Every command the current build compiles. A name absent from this
+        table is <code>invalid command name "&hellip;"</code> at <em>compile</em>
+        time, not a runtime lookup that fails — resolving the name while
+        compiling is what turns a call into a <code>Op::Call</code> to a known
+        entry. The list is the compiler's own: the names it matches itself, plus
+        the list commands it forwards.</p>
+
+        <div class="stat-grid">
+          <div class="stat-card">
+            <div class="stat-val">40</div>
+            <div class="stat-label">Commands</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-val">38/59</div>
+            <div class="stat-label">Ensemble subcommands</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-val">27</div>
+            <div class="stat-label">expr binary operators</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-val accent">v0.1.0</div>
+            <div class="stat-label">Build</div>
+          </div>
+        </div>
+
+        <table class="file-table">
+          <thead><tr><th>command</th><th>synopsis</th><th>what it does</th></tr></thead>
+          <tbody>
+        <tr><td><code>append</code></td><td><code>append varName ?value ...?</code></td><td>Append every value to the variable's string; yields the new value.</td></tr>
+        <tr><td><code>array</code></td><td><code>array subcommand ?arg ...?</code></td><td>The array ensemble, over a variable rather than a value: an array is never itself a value.</td></tr>
+        <tr><td><code>break</code></td><td><code>break</code></td><td>Leave the innermost loop. The stack is unwound by a count the compiler knows statically.</td></tr>
+        <tr><td><code>catch</code></td><td><code>catch script ?resultVarName?</code></td><td>Run the script and trap an error from it, including one raised inside a procedure it called; yields the completion code.</td></tr>
+        <tr><td><code>concat</code></td><td><code>concat ?arg ...?</code></td><td>Trim each argument of surrounding whitespace and join them with single spaces into one list.</td></tr>
+        <tr><td><code>continue</code></td><td><code>continue</code></td><td>Begin the innermost loop's next iteration; in a `for`, its step still runs first.</td></tr>
+        <tr><td><code>coroutine</code></td><td><code>coroutine name cmd ?arg ...?</code></td><td>Create a coroutine context — a second VM over the same chunk — running one of the script's procedures, and enter it.</td></tr>
+        <tr><td><code>dict</code></td><td><code>dict subcommand ?arg ...?</code></td><td>The dict ensemble, over a value: a dict is a list of alternating keys and values, so it can be passed and printed like any string.</td></tr>
+        <tr><td><code>error</code></td><td><code>error message</code></td><td>Raise an error carrying the message.</td></tr>
+        <tr><td><code>eval</code></td><td><code>eval arg ?arg ...?</code></td><td>Concatenate the arguments and run the result as a script against the interpreter's own variables. The chunk is cached by source text.</td></tr>
+        <tr><td><code>expr</code></td><td><code>expr arg ?arg ...?</code></td><td>Evaluate the arguments as an expression. A braced argument is compiled once, not re-parsed per evaluation.</td></tr>
+        <tr><td><code>for</code></td><td><code>for start test next body</code></td><td>Run start, then the body while test holds, running next after each iteration. Emitted rotated, like every loop here.</td></tr>
+        <tr><td><code>foreach</code></td><td><code>foreach varList list ?varList list ...? command</code></td><td>Iterate over one or more lists in parallel; the longest fixes the count and shorter ones supply empty values.</td></tr>
+        <tr><td><code>format</code></td><td><code>format formatString ?arg ...?</code></td><td>Format the arguments the way `sprintf` does, with Tcl's conversion set.</td></tr>
+        <tr><td><code>global</code></td><td><code>global ?varName ...?</code></td><td>Address the named variables in the global table rather than the procedure's frame slots. Outside a procedure it does nothing.</td></tr>
+        <tr><td><code>if</code></td><td><code>if test ?then? body ?elseif test ?then? body ...? ?else? ?body?</code></td><td>The first branch whose test is a true Tcl boolean; a test that is not a boolean is an error, not a false branch.</td></tr>
+        <tr><td><code>incr</code></td><td><code>incr varName ?increment?</code></td><td>Add the increment (1 by default) to the variable; yields the new value.</td></tr>
+        <tr><td><code>info</code></td><td><code>info subcommand ?argument ...?</code></td><td>Interpreter introspection. Only `info coroutine` is implemented; every other subcommand is refused by name.</td></tr>
+        <tr><td><code>join</code></td><td><code>join list ?joinString?</code></td><td>Concatenate the list's elements, separated by joinString (a space by default).</td></tr>
+        <tr><td><code>lappend</code></td><td><code>lappend varName ?value ...?</code></td><td>Append each value to the list held in the variable; yields the new list.</td></tr>
+        <tr><td><code>lindex</code></td><td><code>lindex list ?index ...?</code></td><td>The element at an index path, or the list itself when no index is given.</td></tr>
+        <tr><td><code>linsert</code></td><td><code>linsert list index ?element ...?</code></td><td>A copy of the list with the elements inserted before the index.</td></tr>
+        <tr><td><code>list</code></td><td><code>list ?arg ...?</code></td><td>A list of the arguments, quoted by the reference algorithm so it reads back as the same elements.</td></tr>
+        <tr><td><code>llength</code></td><td><code>llength list</code></td><td>How many elements the list has.</td></tr>
+        <tr><td><code>lrange</code></td><td><code>lrange list first last</code></td><td>The sublist between two indices, inclusive.</td></tr>
+        <tr><td><code>lreplace</code></td><td><code>lreplace list first last ?element ...?</code></td><td>A copy of the list with the range replaced by the elements.</td></tr>
+        <tr><td><code>lreverse</code></td><td><code>lreverse list</code></td><td>The list, reversed.</td></tr>
+        <tr><td><code>lsearch</code></td><td><code>lsearch ?-option value ...? list pattern</code></td><td>The index of the first matching element, or -1. Option parsing is the reference one, abbreviation included.</td></tr>
+        <tr><td><code>lsort</code></td><td><code>lsort ?-option value ...? list</code></td><td>The list sorted by the reference merge sort — the algorithm, not just the ordering, because `-unique` observes it.</td></tr>
+        <tr><td><code>proc</code></td><td><code>proc name args body</code></td><td>Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.</td></tr>
+        <tr><td><code>puts</code></td><td><code>puts ?-nonewline? string</code></td><td>Write the string to stdout.</td></tr>
+        <tr><td><code>return</code></td><td><code>return ?-code code? ?result?</code></td><td>Return from the enclosing procedure with the result. `-code ok` and `-code error` are the codes implemented.</td></tr>
+        <tr><td><code>set</code></td><td><code>set varName ?newValue?</code></td><td>Read or write a variable; yields its value. A procedure's variables are slots, a script's are VM globals.</td></tr>
+        <tr><td><code>split</code></td><td><code>split string ?splitChars?</code></td><td>Split the string at any of the characters into a list.</td></tr>
+        <tr><td><code>string</code></td><td><code>string subcommand ?arg ...?</code></td><td>The string ensemble. Subcommands, options and the `string is` class are resolved while compiling.</td></tr>
+        <tr><td><code>switch</code></td><td><code>switch ?options? string {pattern body ...}</code></td><td>Run the body of the first pattern that matches, `-exact` or `-glob`.</td></tr>
+        <tr><td><code>unset</code></td><td><code>unset ?-nocomplain? ?--? ?name ...?</code></td><td>Remove variables or array elements.</td></tr>
+        <tr><td><code>while</code></td><td><code>while test command</code></td><td>Run the body while the test holds. Inside a procedure this is the loop that reaches a compiled trace.</td></tr>
+        <tr><td><code>yield</code></td><td><code>yield ?value?</code></td><td>Suspend the running coroutine and hand the value to whoever resumed it.</td></tr>
+        <tr><td><code>yieldto</code></td><td><code>yieldto command ?arg ...?</code></td><td>Suspend and donate the resumer to another coroutine of the script, which is what makes the transfer symmetric rather than a queue.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="ensembles">
+        <h2>Ensemble subcommands</h2>
+        <p>An ensemble resolves its subcommand the way
+        <code>Tcl_GetIndexFromObj</code> does — an exact match, else a prefix
+        that fits exactly one entry — so the tables below carry the names the
+        frontend <em>recognises</em>, which is what decides whether an
+        abbreviation is ambiguous. Recognising a name is not implementing it:
+        the second column is the answer the compiler actually gives when the
+        subcommand is put through it.</p>
+        <h3><code>string</code> &mdash; 21 of 23 implemented</h3>
+        <table class="file-table">
+          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
+          <tbody>
+        <tr><td><code>string cat</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string compare</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string equal</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string first</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string index</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string insert</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string is</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string last</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string length</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string map</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string match</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string range</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string repeat</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string replace</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string reverse</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string tolower</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string totitle</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string toupper</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string trim</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string trimleft</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string trimright</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string wordend</code></td><td><span class="state-no">"string wordend" is not supported yet</span></td></tr>
+        <tr><td><code>string wordstart</code></td><td><span class="state-no">"string wordstart" is not supported yet</span></td></tr>
+          </tbody>
+        </table>
+        <h3><code>array</code> &mdash; 6 of 13 implemented</h3>
+        <table class="file-table">
+          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
+          <tbody>
+        <tr><td><code>array anymore</code></td><td><span class="state-no">array anymore is not supported yet</span></td></tr>
+        <tr><td><code>array default</code></td><td><span class="state-no">array default is not supported yet</span></td></tr>
+        <tr><td><code>array donesearch</code></td><td><span class="state-no">array donesearch is not supported yet</span></td></tr>
+        <tr><td><code>array exists</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>array for</code></td><td><span class="state-no">array for is not supported yet</span></td></tr>
+        <tr><td><code>array get</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>array names</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>array nextelement</code></td><td><span class="state-no">array nextelement is not supported yet</span></td></tr>
+        <tr><td><code>array set</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>array size</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>array startsearch</code></td><td><span class="state-no">array startsearch is not supported yet</span></td></tr>
+        <tr><td><code>array statistics</code></td><td><span class="state-no">array statistics is not supported yet</span></td></tr>
+        <tr><td><code>array unset</code></td><td><span class="state-yes">implemented</span></td></tr>
+          </tbody>
+        </table>
+        <h3><code>dict</code> &mdash; 10 of 22 implemented</h3>
+        <table class="file-table">
+          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
+          <tbody>
+        <tr><td><code>dict append</code></td><td><span class="state-no">dict append is not supported yet</span></td></tr>
+        <tr><td><code>dict create</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>dict exists</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>dict filter</code></td><td><span class="state-no">dict filter is not supported yet</span></td></tr>
+        <tr><td><code>dict for</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>dict get</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>dict getdef</code></td><td><span class="state-no">dict getdef is not supported yet</span></td></tr>
+        <tr><td><code>dict getwithdefault</code></td><td><span class="state-no">dict getwithdefault is not supported yet</span></td></tr>
+        <tr><td><code>dict incr</code></td><td><span class="state-no">dict incr is not supported yet</span></td></tr>
+        <tr><td><code>dict info</code></td><td><span class="state-no">dict info is not supported yet</span></td></tr>
+        <tr><td><code>dict keys</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>dict lappend</code></td><td><span class="state-no">dict lappend is not supported yet</span></td></tr>
+        <tr><td><code>dict map</code></td><td><span class="state-no">dict map is not supported yet</span></td></tr>
+        <tr><td><code>dict merge</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>dict remove</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>dict replace</code></td><td><span class="state-no">dict replace is not supported yet</span></td></tr>
+        <tr><td><code>dict set</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>dict size</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>dict unset</code></td><td><span class="state-no">dict unset is not supported yet</span></td></tr>
+        <tr><td><code>dict update</code></td><td><span class="state-no">dict update is not supported yet</span></td></tr>
+        <tr><td><code>dict values</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>dict with</code></td><td><span class="state-no">dict with is not supported yet</span></td></tr>
+          </tbody>
+        </table>
+        <h3><code>info</code> &mdash; 1 of 1 implemented</h3>
+        <table class="file-table">
+          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
+          <tbody>
+        <tr><td><code>info coroutine</code></td><td><span class="state-yes">implemented</span></td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="expr">
+        <h2>The <code>expr</code> operator ladder</h2>
+        <p>Precedence levels, tightest last, printed from the table the parser
+        binds with. Unary <code>+ - ~ !</code> bind tighter than every level
+        below, and the ternary <code>?:</code> looser; <code>**</code> is the
+        one right-associative level. The string comparisons share a level with
+        their numeric counterparts, as <code>expr(n)</code> specifies — so
+        <code>"a" eq "a" == 1</code> is 1.</p>
+        <table class="file-table">
+          <thead><tr><th>level</th><th>operators</th><th>associativity</th></tr></thead>
+          <tbody>
+        <tr><td>11</td><td><code>||</code></td><td>left</td></tr>
+        <tr><td>10</td><td><code>&amp;&amp;</code></td><td>left</td></tr>
+        <tr><td>9</td><td><code>|</code></td><td>left</td></tr>
+        <tr><td>8</td><td><code>^</code></td><td>left</td></tr>
+        <tr><td>7</td><td><code>&amp;</code></td><td>left</td></tr>
+        <tr><td>6</td><td><code>==</code> <code>!=</code> <code>eq</code> <code>ne</code> <code>in</code> <code>ni</code></td><td>left</td></tr>
+        <tr><td>5</td><td><code>&lt;=</code> <code>&gt;=</code> <code>&lt;</code> <code>&gt;</code> <code>lt</code> <code>gt</code> <code>le</code> <code>ge</code></td><td>left</td></tr>
+        <tr><td>4</td><td><code>&lt;&lt;</code> <code>&gt;&gt;</code></td><td>left</td></tr>
+        <tr><td>3</td><td><code>+</code> <code>-</code></td><td>left</td></tr>
+        <tr><td>2</td><td><code>*</code> <code>/</code> <code>%</code></td><td>left</td></tr>
+        <tr><td>1</td><td><code>**</code></td><td>right</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="classes">
+        <h2><code>string is</code> classes</h2>
+        <p>Resolved while compiling, in the interpreter's own listing order. The
+        classes that need Tcl's Unicode general-category tables accept ASCII and
+        report an error otherwise, rather than answering from a different
+        Unicode revision than the reference interpreter's.</p>
+        <p><code>alnum</code> · <code>alpha</code> · <code>ascii</code> · <code>control</code> · <code>boolean</code> · <code>dict</code> · <code>digit</code> · <code>double</code> · <code>entier</code> · <code>false</code> · <code>graph</code> · <code>integer</code> · <code>list</code> · <code>lower</code> · <code>print</code> · <code>punct</code> · <code>space</code> · <code>true</code> · <code>upper</code> · <code>wideinteger</code> · <code>wordchar</code> · <code>xdigit</code></p>
+      </section>
+
+      <section id="format">
+        <h2><code>format</code> conversions</h2>
+        <p>21 conversions, established by running one of each
+        through the runtime and reading the answer. A conversion missing from
+        this table is <code>bad field specifier</code>.</p>
+        <table class="file-table">
+          <thead><tr><th>conversion</th><th>state</th></tr></thead>
+          <tbody>
+        <tr><td><code>%a</code></td><td><span class="state-no">the "%a" conversion is not supported yet</span></td></tr>
+        <tr><td><code>%b</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%c</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%d</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%e</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%f</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%g</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%h</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%i</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%j</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%l</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%o</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%p</code></td><td><span class="state-no">the "%p" conversion is not supported yet</span></td></tr>
+        <tr><td><code>%q</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%s</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%t</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%u</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%x</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%z</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%A</code></td><td><span class="state-no">the "%A" conversion is not supported yet</span></td></tr>
+        <tr><td><code>%E</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%G</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%L</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>%X</code></td><td><span class="state-yes">implemented</span></td></tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+  <script src="hud-theme.js"></script>
+</body>
+</html>

@@ -87,7 +87,10 @@ pub fn parse(src: &str) -> Result<Expr, ParseError> {
 
 /// Binding powers, lowest first. Each entry is one precedence level; every
 /// level is left-associative except `**`, handled in [`ExprParser::parse_binary`].
-const LEVELS: &[&[(&str, BinOp)]] = &[
+///
+/// Public because the reference page prints the ladder, and printing it from
+/// anywhere but the table the parser binds with would let the two disagree.
+pub const LEVELS: &[&[(&str, BinOp)]] = &[
     &[("||", BinOp::Or)],
     &[("&&", BinOp::And)],
     &[("|", BinOp::BitOr)],

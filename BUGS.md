@@ -165,9 +165,13 @@ approximated, and nothing is silently mis-run.
   divided by `-1` is the same case, and so is an integer *literal* or operand that
   does not fit at all — `expr {99999999999999999999 + 1}` is the overflow, not the
   `1e+20` a fall-through to the double parser used to answer.
-- **Editor tooling.** No LSP, no DAP, no zsh completion, no man pages, no
-  `reference.html`, no inline `rust {}` FFI, no `--dump-tokens` / `--dump-ast`.
-  `--disasm` exists.
+- **Editor tooling.** No LSP, no DAP, no inline `rust {}` FFI. `--disasm`,
+  `--dump-tokens` and `--dump-ast` exist, the zsh completion is
+  `completions/_tclrs` and the man page is `man/man1/tclrs.1`, and
+  `docs/reference.html` is generated from the compiler's own tables by
+  `cargo run --bin gen-docs` — every command, every ensemble subcommand with the
+  compiler's own answer for whether it is implemented, the `expr` ladder as the
+  parser binds it, and the `format` conversions the runtime answers to.
 
 ## Divergences from tclsh where behavior *is* implemented
 
