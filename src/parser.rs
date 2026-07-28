@@ -164,6 +164,28 @@ pub(crate) fn quoted_at(src: &str, at: usize) -> Result<(Vec<Part>, usize), Pars
     Ok((parts, p.pos))
 }
 
+/// Resolve one backslash sequence at `at`, which must index a `\`. Returns the
+/// text it stands for and the offset just past it, including rule 9's
+/// backslash-newline folding.
+///
+/// List element parsing (`assoc`) needs the same escape table, and reaching it
+/// here keeps one definition of rule 9 in the crate.
+pub(crate) fn backslash_at(src: &str, at: usize) -> (String, usize) {
+    let mut p = Parser {
+        src: src.as_bytes(),
+        pos: at,
+        line: 1,
+    };
+    let mut out = String::new();
+    if p.at(1) == Some(b'\n') {
+        p.skip_line_continuation();
+        out.push(' ');
+    } else {
+        p.parse_backslash(&mut out);
+    }
+    (out, p.pos)
+}
+
 /// Parse a braced operand at `at`, which must index a `{`. The text is literal
 /// (rule 6).
 pub(crate) fn braced_at(src: &str, at: usize) -> Result<(String, usize), ParseError> {

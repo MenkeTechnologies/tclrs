@@ -16,6 +16,7 @@
 use fusevm::{ChunkBuilder, Op, Value};
 use std::fmt;
 
+use crate::assoc::{self, ArrayNames, Target};
 use crate::expr::{self, BinOp, Expr, UnOp};
 use crate::parser::{Command, Part, Script, Word};
 
@@ -29,6 +30,56 @@ pub mod ext {
     /// Convert a VM-native result into its Tcl value: booleans become 1 or 0,
     /// doubles take Tcl's formatting.
     pub const NORM: u16 = 5;
+
+    // Associative data (`assoc`). The operand order in each comment is the
+    // order the compiler pushes them, so the handler pops them in reverse.
+
+    /// `[name, value]` → `value`, refusing an array. `arg` 1 assigns instead of
+    /// reading and leaves nothing behind.
+    pub const SCALAR: u16 = 6;
+    /// `[name, index, slot]` → the element's value.
+    pub const ELEM_GET: u16 = 7;
+    /// `[name, index, value, slot]` → `value`, stored.
+    pub const ELEM_SET: u16 = 8;
+    /// `[name, index, increment, slot]` → the incremented element.
+    pub const ELEM_INCR: u16 = 9;
+    /// `[name, index, slot, complain]`, leaving nothing.
+    pub const UNSET_ELEM: u16 = 10;
+    /// `[name, slot, complain]`, leaving nothing.
+    pub const UNSET_VAR: u16 = 11;
+    /// `[slot]` → 1 when the variable holds an array.
+    pub const ARR_EXISTS: u16 = 12;
+    /// `[slot]` → the element count.
+    pub const ARR_SIZE: u16 = 13;
+    /// `[mode, pattern, given, slot]` → the matching element names, as a list.
+    pub const ARR_NAMES: u16 = 14;
+    /// `[mode, pattern, given, slot]` → matching name/value pairs, as a list.
+    pub const ARR_GET: u16 = 15;
+    /// `[mode, pattern, given, slot]` → `""`, having removed the matches.
+    pub const ARR_UNSET: u16 = 16;
+    /// `[name, list, slot]` → `""`, having merged the list into the array.
+    pub const ARR_SET: u16 = 17;
+    /// `[k, v, …, count]` → a dict.
+    pub const DICT_CREATE: u16 = 18;
+    /// `[dict, key, …, count]` → the value at the key path.
+    pub const DICT_GET: u16 = 19;
+    /// `[dict, key, …, count]` → 1 when the key path resolves.
+    pub const DICT_EXISTS: u16 = 20;
+    /// `[dict, key, …, count]` → the dict without those keys.
+    pub const DICT_REMOVE: u16 = 21;
+    /// `[dict, …, count]` → the dicts combined left to right.
+    pub const DICT_MERGE: u16 = 22;
+    /// `[dict, mode, pattern, given]` → the matching keys, as a list.
+    pub const DICT_KEYS: u16 = 23;
+    /// `[dict, mode, pattern, given]` → the matching values, as a list.
+    pub const DICT_VALUES: u16 = 24;
+    /// `[dict]` → the number of pairs.
+    pub const DICT_SIZE: u16 = 25;
+    /// `[name, current, key, …, value, count]` → the updated dict.
+    pub const DICT_SET: u16 = 26;
+    /// `[dict]` → a `Value::Array` of alternating keys and values, which
+    /// `dict for` walks with the VM's own `ArrayLen` and `ArrayGet`.
+    pub const DICT_PAIRS: u16 = 27;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,51 +97,72 @@ impl fmt::Display for CompileError {
 impl std::error::Error for CompileError {}
 
 /// Compile a parsed script into a chunk whose result is the script's value.
+///
+/// Two passes. Reading `$x` lowers to a bare `GetVar`, which cannot fail, but
+/// reading a variable that holds an array must — and the `set a(i) v` that makes
+/// it one may be compiled after the `$a` that reads it. The first pass records
+/// every name used as an array; the second, knowing them, guards just those
+/// names. Nothing else differs between the passes, so a script with no arrays
+/// compiles exactly as it did before and pays nothing.
 pub fn compile(script: &Script) -> Result<fusevm::Chunk, CompileError> {
-    let mut c = Compiler {
-        b: ChunkBuilder::new(),
-        depth: 0,
-        loops: Vec::new(),
-        line: 1,
-    };
-    c.script_value(script)?;
-    Ok(c.b.build())
+    let first = Compiler::run(script, ArrayNames::new())?;
+    if first.seen_arrays.is_empty() {
+        return Ok(first.b.build());
+    }
+    Ok(Compiler::run(script, first.seen_arrays)?.b.build())
 }
 
-struct LoopCtx {
+pub(crate) struct LoopCtx {
     /// Stack depth on entry, so an early exit knows how much to discard.
-    depth: usize,
-    breaks: Vec<usize>,
-    continues: Vec<usize>,
+    pub(crate) depth: usize,
+    pub(crate) breaks: Vec<usize>,
+    pub(crate) continues: Vec<usize>,
 }
 
-struct Compiler {
-    b: ChunkBuilder,
-    depth: usize,
-    loops: Vec<LoopCtx>,
-    line: usize,
+pub(crate) struct Compiler {
+    pub(crate) b: ChunkBuilder,
+    pub(crate) depth: usize,
+    pub(crate) loops: Vec<LoopCtx>,
+    pub(crate) line: usize,
+    /// Names known to be used as arrays, from the previous pass.
+    pub(crate) arrays: ArrayNames,
+    /// Names found to be used as arrays during this pass.
+    pub(crate) seen_arrays: ArrayNames,
 }
 
 impl Compiler {
-    fn emit(&mut self, op: Op, delta: i32) -> usize {
+    fn run(script: &Script, arrays: ArrayNames) -> Result<Compiler, CompileError> {
+        let mut c = Compiler {
+            b: ChunkBuilder::new(),
+            depth: 0,
+            loops: Vec::new(),
+            line: 1,
+            arrays,
+            seen_arrays: ArrayNames::new(),
+        };
+        c.script_value(script)?;
+        Ok(c)
+    }
+
+    pub(crate) fn emit(&mut self, op: Op, delta: i32) -> usize {
         let idx = self.b.emit(op, self.line as u32);
         self.depth = (self.depth as i32 + delta) as usize;
         idx
     }
 
-    fn error<T>(&self, msg: impl Into<String>) -> Result<T, CompileError> {
+    pub(crate) fn error<T>(&self, msg: impl Into<String>) -> Result<T, CompileError> {
         Err(CompileError {
             msg: msg.into(),
             line: self.line,
         })
     }
 
-    fn push_value(&mut self, v: Value) {
+    pub(crate) fn push_value(&mut self, v: Value) {
         let idx = self.b.add_constant(v);
         self.emit(Op::LoadConst(idx), 1);
     }
 
-    fn push_empty(&mut self) {
+    pub(crate) fn push_empty(&mut self) {
         self.push_value(Value::Str(std::sync::Arc::new(String::new())));
     }
 
@@ -112,7 +184,7 @@ impl Compiler {
     }
 
     /// Emit a script for its effect, leaving the stack as it was found.
-    fn script_effect(&mut self, script: &Script) -> Result<(), CompileError> {
+    pub(crate) fn script_effect(&mut self, script: &Script) -> Result<(), CompileError> {
         for cmd in &script.commands {
             self.command(cmd)?;
             self.emit(Op::Pop, -1);
@@ -123,7 +195,7 @@ impl Compiler {
     // ── words ────────────────────────────────────────────────────────────
 
     /// Emit a word, leaving its value on the stack.
-    fn word(&mut self, word: &Word) -> Result<(), CompileError> {
+    pub(crate) fn word(&mut self, word: &Word) -> Result<(), CompileError> {
         if word.expand {
             return self.error("{*} argument expansion is not supported yet");
         }
@@ -148,33 +220,35 @@ impl Compiler {
                 Ok(())
             }
             Part::Var(name) => {
-                let idx = self.b.add_name(name);
-                self.emit(Op::GetVar(idx), 1);
+                self.scalar_get(name);
                 Ok(())
             }
-            Part::Elem { .. } => self.error("array variables are not supported yet"),
+            Part::Elem { name, index } => self.elem_get(name, index),
             Part::Script(script) => self.script_value(script),
         }
     }
 
     /// The literal text of a word, when the compiler needs it at compile time
     /// (a command name, a variable name, a braced body).
-    fn literal_of<'w>(&self, word: &'w Word, what: &str) -> Result<&'w str, CompileError> {
+    pub(crate) fn literal_of<'w>(
+        &self,
+        word: &'w Word,
+        what: &str,
+    ) -> Result<&'w str, CompileError> {
         word.as_literal().ok_or_else(|| CompileError {
             msg: format!("{what} must be a literal in this phase"),
             line: self.line,
         })
     }
 
-    /// A variable name for a command that writes one. `a(i)` names an array
-    /// element even though the parser hands it over as ordinary text — the
-    /// parentheses are only syntax inside a `$` substitution.
-    fn var_name_of(&self, word: &Word) -> Result<String, CompileError> {
-        let name = self.literal_of(word, "variable name")?;
-        if name.ends_with(')') && name.contains('(') {
-            return self.error("array variables are not supported yet");
-        }
-        Ok(name.to_string())
+    /// What a variable-name word names. `a(i)` is an array element even though
+    /// the parser hands it over as ordinary text — the parentheses are only
+    /// syntax inside a `$` substitution, so the interpretation happens here.
+    fn target_of(&self, word: &Word) -> Result<Target, CompileError> {
+        assoc::target_of(word).ok_or_else(|| CompileError {
+            msg: "variable name must be a literal in this phase".to_string(),
+            line: self.line,
+        })
     }
 
     // ── commands ─────────────────────────────────────────────────────────
@@ -197,27 +271,34 @@ impl Compiler {
             "while" => self.cmd_while(args),
             "break" => self.cmd_loop_exit(args, true),
             "continue" => self.cmd_loop_exit(args, false),
+            "array" => self.cmd_array(args),
+            "dict" => self.cmd_dict(args),
+            "unset" => self.cmd_unset(args),
             other => self.error(format!("invalid command name \"{other}\"")),
         }
     }
 
     fn cmd_set(&mut self, args: &[Word]) -> Result<(), CompileError> {
         match args.len() {
-            1 => {
-                let name = self.var_name_of(&args[0])?;
-                let idx = self.b.add_name(&name);
-                self.emit(Op::GetVar(idx), 1);
-                Ok(())
-            }
-            2 => {
-                let name = self.var_name_of(&args[0])?;
-                self.word(&args[1])?;
-                // `set` yields the value it assigned.
-                self.emit(Op::Dup, 1);
-                let idx = self.b.add_name(&name);
-                self.emit(Op::SetVar(idx), -1);
-                Ok(())
-            }
+            1 => match self.target_of(&args[0])? {
+                Target::Scalar(name) => {
+                    self.scalar_get(&name);
+                    Ok(())
+                }
+                Target::Elem { name, index } => self.elem_get(&name, &index),
+            },
+            2 => match self.target_of(&args[0])? {
+                Target::Scalar(name) => {
+                    self.scalar_set_guard(&name);
+                    self.word(&args[1])?;
+                    // `set` yields the value it assigned.
+                    self.emit(Op::Dup, 1);
+                    let idx = self.b.add_name(&name);
+                    self.emit(Op::SetVar(idx), -1);
+                    Ok(())
+                }
+                Target::Elem { name, index } => self.elem_set(&name, &index, &args[1]),
+            },
             _ => self.error("wrong # args: should be \"set varName ?newValue?\""),
         }
     }
@@ -268,9 +349,12 @@ impl Compiler {
             [n, by] => (n, Some(by)),
             _ => return self.error("wrong # args: should be \"incr varName ?increment?\""),
         };
-        let name = self.var_name_of(name)?;
+        let name = match self.target_of(name)? {
+            Target::Scalar(name) => name,
+            Target::Elem { name, index } => return self.elem_incr(&name, &index, by),
+        };
         let idx = self.b.add_name(&name);
-        self.emit(Op::GetVar(idx), 1);
+        self.scalar_get(&name);
         match by {
             Some(w) => self.word(w)?,
             None => {
@@ -411,7 +495,7 @@ impl Compiler {
         self.script_value(&script)
     }
 
-    fn body_script(&mut self, word: &Word) -> Result<Script, CompileError> {
+    pub(crate) fn body_script(&mut self, word: &Word) -> Result<Script, CompileError> {
         let text = self.literal_of(word, "script body")?;
         crate::parser::parse(text).map_err(|e| CompileError {
             msg: e.msg,
