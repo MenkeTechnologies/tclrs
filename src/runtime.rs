@@ -45,6 +45,7 @@
 //! actually reaches — see the JIT section of the README for what that measures
 //! on Tcl today.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::Write;
@@ -53,7 +54,7 @@ use std::sync::{Arc, Mutex};
 use fusevm::{Chunk, Frame, NumOp, VMResult, Value, VM};
 
 use crate::cache::ChunkCache;
-use crate::compiler::{ext, ext_wide};
+use crate::compiler::{ext, ext_wide, Place};
 use crate::coro::{self, Request};
 use crate::list;
 
@@ -1443,13 +1444,73 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
     }
 }
 
+/// The storage a variable lives in, grown to reach it — the same growth
+/// `VM::set_var` and `VM::set_slot` do, which those cannot be used for here
+/// because both hand back a clone rather than the value itself.
+///
+/// An op that *takes* the value out of this leaves it unshared, which is what
+/// lets `lappend` and `append` extend the string the variable already holds
+/// instead of building a copy of it every time (`crate::cmd_list`,
+/// `crate::cmd_string`). `None` only for a frame slot with no frame.
+pub(crate) fn var_cell(vm: &mut VM, place: Place) -> Option<&mut Value> {
+    match place {
+        Place::Global(index) => {
+            let index = index as usize;
+            if index >= vm.globals.len() {
+                vm.globals.resize(index + 1, Value::Undef);
+            }
+            Some(&mut vm.globals[index])
+        }
+        Place::Slot(slot) => {
+            let frame = vm.frames.last_mut()?;
+            let slot = slot as usize;
+            if slot >= frame.slots.len() {
+                frame.slots.resize(slot + 1, Value::Undef);
+            }
+            Some(&mut frame.slots[slot])
+        }
+    }
+}
+
+/// Take a variable's value, leaving its place empty.
+pub(crate) fn take_var(vm: &mut VM, place: Place) -> Value {
+    match var_cell(vm, place) {
+        Some(value) => std::mem::replace(value, Value::Undef),
+        None => Value::Undef,
+    }
+}
+
+/// Where an in-place op was told its variable lives: the operand the compiler
+/// pushed, read back as a [`Place`].
+pub(crate) fn place_of(vm: &mut VM, slot_form: bool) -> Result<Place, String> {
+    let operand = vm.pop();
+    place_at(&operand, slot_form)
+}
+
+/// The same, for an operand read where it sits on the stack.
+pub(crate) fn place_at(operand: &Value, slot_form: bool) -> Result<Place, String> {
+    match operand {
+        Value::Int(index) => Ok(if slot_form {
+            Place::Slot(*index as u16)
+        } else {
+            Place::Global(*index as u16)
+        }),
+        other => Err(format!("not a variable place: {other:?}")),
+    }
+}
+
+/// A value's Tcl string form, borrowed when the value already carries one.
+pub(crate) fn tcl_str(v: &Value) -> Cow<'_, str> {
+    match v {
+        Value::Float(f) => Cow::Owned(format_double(*f)),
+        Value::Bool(b) => Cow::Borrowed(if *b { "1" } else { "0" }),
+        other => other.as_str_cow(),
+    }
+}
+
 /// A value's Tcl string form.
 pub fn to_tcl_string(v: &Value) -> String {
-    match v {
-        Value::Float(f) => format_double(*f),
-        Value::Bool(b) => (*b as i64).to_string(),
-        other => other.as_str_cow().into_owned(),
-    }
+    tcl_str(v).into_owned()
 }
 
 /// Format a double the way Tcl does: the shortest representation that reads

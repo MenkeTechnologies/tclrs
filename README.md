@@ -410,6 +410,24 @@ would suggest.
 | **`foreach`** | Any number of variable lists and value lists; the longest list fixes the iteration count and shorter ones supply empty values. The loop state rides the VM stack rather than a variable a script could reach, and is read in place, so no copy happens per iteration. |
 | **`lappend`** | The op reaches the variable itself rather than taking its value through `GetVar`, so the list's string is unshared while it runs and the new elements are appended to it — growing a list is linear, not quadratic. What makes that safe without re-deriving the elements is identity: the value the last `lappend` produced is remembered, and a string that *is* that value is known to be canonical without a scan. A list another variable holds is copied instead, since the string it shares must not change under it. |
 
+### Growing a variable
+
+`append x …` reaches its variable itself — the compiler pushes where the
+variable lives, not its value — so the op takes the string out of it, finds it
+unshared, and appends to it. Nothing is copied per append, which makes building
+a string linear rather than quadratic.
+
+`set x "$x…"` is lowered as the same op, because that is what it is: an
+assignment whose word begins with the variable it assigns to only grows it. The
+rewrite applies when everything after that first `$x` is text or another
+variable's value, and not when a command substitution follows it — `append`
+reads its variable *after* its arguments run, a word reads `$x` *before* the
+parts after it, and `set x "$x[set x y]"` is where those two disagree.
+
+A value another variable holds is copied rather than extended, so a script never
+sees a string change under it. `lappend` works the same way, with one more
+question to answer first — see [Lists](#lists).
+
 ### Procedures
 
 A procedure's parameters and locals are **frame slots**, not entries in the
@@ -892,53 +910,75 @@ them pays for an exec the others do not:
 
 Apple M5 Max, macOS 26.5.2, rustc 1.97.0, `--release` (`lto = true`,
 `codegen-units = 1`), tclsh 9.0.4 from `/opt/homebrew/bin`, 20 runs after 5
-warmup runs, load average 4.3 at the start of the run. Mean ± σ in milliseconds,
-copied from the `target/bench/*.md` hyperfine exports that run produced.
+warmup runs. The machine is a shared workstation and its load average sat above
+20 for this run, so every row's *mean* carries whatever else was running;
+**the table is the minimum of the 20 runs**, the least contaminated figure
+hyperfine reports, and the means are below it so the spread is visible rather
+than hidden. Both come from the `target/bench/*.md` exports that run produced.
+
+Minimum of 20 runs, in milliseconds:
 
 | Benchmark | tclsh 9.0.4 | tclrs interp | tclrs JIT | tclrs AOT |
 | --- | ---: | ---: | ---: | ---: |
-| `startup` — the empty script | 12.1 ± 0.8 | 3.6 ± 0.4 | **3.5 ± 0.4** | 3.9 ± 0.4 |
-| `counted_loop_proc` — 3M × `incr`, inside a `proc` | 56.6 ± 2.6 | 192.8 ± 6.6 | **6.3 ± 0.5** | 6.5 ± 0.8 |
-| `counted_loop` — 3M × `incr`, at the top level | 417.0 ± 6.9 | 187.3 ± 9.2 | 230.6 ± 6.2 | **6.4 ± 0.7** |
-| `counted_loop_expr` — 3M × `set i [expr {$i + 1}]` | 487.5 ± 7.1 | **209.5 ± 4.7** | 267.0 ± 4.7 | 259.5 ± 4.9 |
-| `integer_arith` — 1M × `$sum + $i * $i - ($i >> 3)` | 304.4 ± 11.9 | **157.8 ± 6.3** | 187.9 ± 6.4 | 167.4 ± 3.0 |
-| `string_build` — 100k × `set s "$s$i"` | 787.2 ± 114.1 | **680.1 ± 99.7** | 699.6 ± 165.7 | 681.3 ± 387.7 |
-| `list_iterate` — 5k × `lappend`, then `foreach` | 13.0 ± 0.6 | **5.6 ± 0.4** | 6.3 ± 0.5 | 6.8 ± 1.4 |
+| `startup` — the empty script | 13.3 | 2.8 | **2.5** | 2.6 |
+| `counted_loop_proc` — 3M × `incr`, inside a `proc` | 52.9 | 189.1 | **4.7** | 5.4 |
+| `counted_loop` — 3M × `incr`, at the top level | 413.9 | 179.0 | 224.7 | **5.8** |
+| `counted_loop_expr` — 3M × `set i [expr {$i + 1}]` | 492.9 | **200.8** | 258.3 | 251.5 |
+| `integer_arith` — 1M × `$sum + $i * $i - ($i >> 3)` | 285.1 | **150.9** | 175.2 | 165.1 |
+| `string_build` — 100k × `set s "$s$i"` | 535.2 | 26.8 | 21.2 | **16.9** |
+| `list_iterate` — 5k × `lappend`, then `foreach` | 10.1 | **3.0** | 3.6 | **3.0** |
 
-Every ratio below is that table's means divided; nothing else is inferred.
+Mean ± σ over the same runs:
+
+| Benchmark | tclsh 9.0.4 | tclrs interp | tclrs JIT | tclrs AOT |
+| --- | ---: | ---: | ---: | ---: |
+| `startup` | 37.0 ± 22.5 | 6.9 ± 3.1 | 3.1 ± 0.6 | 3.0 ± 0.2 |
+| `counted_loop_proc` | 73.6 ± 30.9 | 251.0 ± 116.3 | 5.9 ± 0.6 | 6.7 ± 1.1 |
+| `counted_loop` | 534.9 ± 193.6 | 245.9 ± 145.6 | 318.2 ± 183.9 | 9.8 ± 3.5 |
+| `counted_loop_expr` | 642.1 ± 179.9 | 267.2 ± 137.7 | 331.3 ± 127.2 | 313.3 ± 121.9 |
+| `integer_arith` | 379.6 ± 150.8 | 207.3 ± 83.4 | 237.7 ± 115.5 | 224.8 ± 97.3 |
+| `string_build` | 832.2 ± 190.2 | 40.4 ± 6.2 | 23.4 ± 1.0 | 19.1 ± 1.3 |
+| `list_iterate` | 11.5 ± 0.9 | 3.4 ± 0.2 | 4.4 ± 0.7 | 3.3 ± 0.1 |
+
+Every ratio below is the first table's numbers divided; nothing else is
+inferred.
 
 **What the JIT is worth when it fires.** `counted_loop_proc` is `counted_loop`
 with the loop moved inside a `proc`, which is the whole difference: the counter
 becomes a frame slot and the tracing tier takes it (`--tiers` says
-`traced=true`; see [JIT Compilation](#0x08-jit-compilation)). 6.3 ms against
-192.8 ms interpreted — **30.6× tclrs interpreted and 9.0× tclsh** — with
-`startup` measured at 3.5 ms on the same run, so the 3,000,000 iterations
-themselves are inside the noise of process startup. Scaling the same script to
-30,000,000 iterations takes 15.6 ± 2.1 ms (5 runs, 2 warmup), which puts the
-marginal cost at about 0.40 ns per iteration: native code, not a dispatch loop.
+`traced=true`; see [JIT Compilation](#0x08-jit-compilation)). 4.7 ms against
+189.1 ms interpreted — **40× tclrs interpreted and 11× tclsh** — with `startup`
+measured at 2.5 ms on the same run, so the 3,000,000 iterations themselves are
+inside the noise of process startup. Scaling the script to 30,000,000 iterations
+does not move it out: 5.8 ± 1.2 ms, minimum 4.5 (12 runs, 3 warmup). Ten times
+the iterations for the same wall clock is not a per-iteration cost at all —
+Cranelift can close a counted loop whose result is its own bound — so read that
+row as the loop disappearing, not as nanoseconds per iteration.
 
 That row also inverts tclsh's own ranking. tclsh compiles a procedure's locals
-too, so it runs the proc-local loop in 56.6 ms against 417.0 ms for the
-top-level one — a 7.4× spread on the same arithmetic. tclrs interpreted is nearly
-indifferent, and slightly the other way (192.8 vs 187.3 ms); it is the JIT that
-turns the procedure boundary into 31×.
+too, so it runs the proc-local loop in 52.9 ms against 413.9 ms for the
+top-level one — a 7.8× spread on the same arithmetic. tclrs interpreted is nearly
+indifferent, and slightly the other way (189.1 vs 179.0 ms); it is the JIT that
+turns the procedure boundary into 40×.
 
-**Where tclrs wins without the JIT.** Interpreted, tclrs is 2.2× tclsh on the
-top-level counted loop, 2.3× on the same loop written with `expr`, 2.3× on
-`list_iterate`, 1.9× on integer arithmetic, 1.2× on string building, and starts
-in 3.6 ms against tclsh's 12.1. Ahead-of-time compiled, the top-level counted
-loop is **65× tclsh and 29× tclrs interpreted**: 6.4 ms for the whole process, of
-which 3.9 is the ahead-of-time binary's own startup. That script contains no
-extension op in its loop, so fusevm's ahead-of-time compiler lowers all of it,
-counter included, to native registers — AOT is a closed-world compile and is not
-bound by the slot/global split the tracing tier is.
+**Where tclrs wins without the JIT.** Interpreted, tclrs is **20× tclsh on
+`string_build`**, 3.4× on `list_iterate`, 2.5× on the counted loop written with
+`expr`, 2.3× on the top-level counted loop, 1.9× on integer arithmetic, and
+starts in 2.8 ms against tclsh's 13.3. Ahead-of-time compiled, the top-level
+counted loop is **71× tclsh and 31× tclrs interpreted**: 5.8 ms for the whole
+process, of which 2.6 is the ahead-of-time binary's own startup. That script
+contains no extension op in its loop, so fusevm's ahead-of-time compiler lowers
+all of it, counter included, to native registers — AOT is a closed-world compile
+and is not bound by the slot/global split the tracing tier is.
 
 **Where the AOT win disappears.** `counted_loop_expr` is the same loop with the
 increment written as `expr` instead of `incr`. That adds one op — the extension
-op `expr` emits to normalize its result — and AOT goes from 6.4 ms to 259.5 ms,
-1.24× *slower* than interpreting, because the native path deopts there and hands
-the rest of the run over. `integer_arith` is the same shape and nearly level
-(1.06×), and `string_build`'s four rows are inside each other's σ.
+op `expr` emits to normalize its result — and AOT goes from 5.8 ms to 251.5 ms,
+1.25× *slower* than interpreting, because the native path deopts there and hands
+the rest of the run over. `integer_arith` is the same shape and closer to level
+(1.09×). `string_build` now runs the other way — 16.9 ms compiled and 21.2 ms
+JIT-armed against 26.8 interpreted — because with the copying gone what is left
+in that loop is the loop itself, which is the part those tiers do reach.
 
 **`lappend` builds a list in place.** `list_iterate` was the one row tclrs lost,
 by 14×: the list lived in the variable as its string representation and every
@@ -954,30 +994,47 @@ ones tclsh has, and `tests/list_differential.rs` compares them against it.
 Measured on the machine above, the same tree either side of the change, 15 runs
 after 3 warmup: the benchmark went from **435.7 ± 5.4 ms to 6.3 ± 0.4 ms, 69.7 ±
 4.1×**, and the shape changed with it. Building 5,000 / 50,000 / 500,000 elements
-now takes 7.5 / 24.3 / 193.0 ms — linear in the element count — against 48,455 ±
-6,926 ms for 50,000 before, which is the quadratic curve. tclsh takes 202.1 ±
-2.5 ms for the 500,000-element run, so the two are level where tclsh used to be
-2,000× ahead.
+now takes 1.3 / 13.5 / 154.5 ms — linear in the element count — against 48,455 ±
+6,926 ms for 50,000 before, which is the quadratic curve. tclsh takes 163.8 ms
+for the 500,000-element run, so the two are level where tclsh used to be 2,000×
+ahead.
+
+**`append` builds a string in place, and so does `set x "$x…"`.**
+`string_build` is the same problem in the other data type, and it was the row
+where tclrs and tclsh were level: both copied the whole accumulated string every
+iteration, so a 100,000-iteration build moved about 24 GB of bytes to produce
+half a megabyte. `append` now reaches its variable the way `lappend` does and
+appends to the string the variable already holds; a string needs no canonical
+form, so no memory of the last value is needed to know that is safe — only that
+nothing else holds it. `set x "$x…"` is lowered as the same op whenever the word
+only grows `x` and nothing after that first `$x` can run a script, which is what
+keeps the read order the same as the word's (`src/compiler.rs`,
+`src/cmd_string.rs`).
+
+Same tree either side, 12 runs after 3 warmup: `bench/string_build.tcl` went from
+**734.5 ± 153.6 ms to 26.8 ± 6.3 ms** (minima 497.2 and 18.3), which is 27× on
+either statistic, and tclsh runs it in 535.2 ms at its own best. The benchmark
+also prints `string length $s` now, so a build that skipped the work would print
+the wrong number rather than a fast time.
 
 **What the JIT costs where it does not fire.** The `tclrs JIT` column is the same
 binary as `tclrs interp` with the tracing JIT armed. On a script whose loops it
-cannot take it is not free: 23% slower on `counted_loop`, 27% on
-`counted_loop_expr`, 19% on `integer_arith`, and within noise on the two
-benchmarks whose time goes elsewhere. That is the recorder check in the dispatch
-loop plus the once-per-run block-tier lookup, and on `counted_loop` it is paid
-for a tier that never fires — the loop's `GetVar`/`SetVar` disqualify it. The
-same overhead on `counted_loop_proc` buys a 31× win. It stays on unconditionally
-because which of those two a script gets is not knowable before the script runs,
-and hiding the cost would make the table dishonest.
+cannot take it is not free: 26% slower on `counted_loop`, 29% on
+`counted_loop_expr`, 16% on `integer_arith`, and 20% on `list_iterate`. That is
+the recorder check in the dispatch loop plus the once-per-run block-tier lookup,
+and on `counted_loop` it is paid for a tier that never fires — the loop's
+`GetVar`/`SetVar` disqualify it. The same overhead on `counted_loop_proc` buys a
+40× win, and on `string_build` it now pays for itself (21.2 against 26.8). It
+stays on unconditionally because which of those a script gets is not knowable
+before the script runs, and hiding the cost would make the table dishonest.
 
-Caveats worth knowing before quoting any of this: the machine was not idle (a
-shared workstation whose load average moved between 4 and 17 during the run),
-which is where `string_build`'s σ of ±100 ms and the AOT row's ±388 come from —
-that whole benchmark is noise-dominated and its four rows should be read as one
-number, not four; `startup`, the `counted_loop_proc` and `counted_loop` JIT and
-AOT rows and the whole `list_iterate` row are all a few milliseconds, close
-enough to hyperfine's calibration floor that it warns, so treat those ratios as
-lower bounds on the work and not as precise process-level figures; and the AOT
+Caveats worth knowing before quoting any of this: the machine was not idle — a
+shared workstation at a load average above 20 — which is why the minima are the
+table and the means are the second table, and why the two disagree by as much as
+3× on the rows that run longest; `startup`, the two counted-loop JIT and AOT
+rows and the whole `list_iterate` row are a few milliseconds, close enough to
+hyperfine's calibration floor that it warns, so treat those ratios as lower
+bounds on the work and not as precise process-level figures; and the AOT
 rows run with the JIT armed too, since the ahead-of-time runtime hook goes
 through the same install point.
 

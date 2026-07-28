@@ -43,7 +43,13 @@ approximated, and nothing is silently mis-run.
 - **Strings.** `format` and the `string` ensemble — `cat`, `compare`, `equal`,
   `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`,
   `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`,
-  `trimleft`, `trimright` (`src/cmd_string.rs`).
+  `trimleft`, `trimright` (`src/cmd_string.rs`). `append` reaches its variable
+  itself instead of taking the value through `GetVar`, so the values go onto the
+  string the variable already holds and growing a string is linear rather than
+  quadratic; `set x "$x…"` is lowered as the same op when the word only grows
+  `x` and nothing after the leading `$x` can run a script, which is the case
+  where the two would read the variable at different times. A string another
+  value holds is copied instead of extended.
 - **`expr`.** The whole operator set of `expr(n)` with `expr(n)` precedence,
   compiled straight from a braced word with no runtime parse: `+ - * / % **`,
   unary `+ - ~ !`, `< > <= >= == !=`, `lt gt le ge eq ne`, `& ^ | << >>`,
@@ -216,13 +222,14 @@ approximated, and nothing is silently mis-run.
 
 Found by `scripts/fuzz_parity.sh`, the differential fuzzer: it generates seeded
 random Tcl programs, runs each under both `tclsh` 9.0.4 and tclrs, and minimises
-whatever diverges. One run of 400 programs (`-n 400 -s 1 -m`) puts 182 in parity,
-150 in divergence, 38 in skip, 29 in the allowlist and 1 outside comparison
-because tclsh did not terminate. **105 of the 150 are the one class below that is
-not a defect** — a script's shape refused while compiling — so 45 are behavior.
-The same run before the fixes recorded in this file put 181 in parity and 170 in
-divergence; the shift in skip is the overflow refusal, which now reports rather
-than answering with a double.
+whatever diverges. One run of 400 programs (`-n 400 -s 1`) puts 103 in parity,
+227 in divergence, 50 in skip, 18 in the allowlist and 2 outside comparison
+because tclsh did not terminate. **213 of the 227 are the one class below that is
+not a defect** — a script's shape refused while compiling, which lands as a
+message on a channel tclsh never reached — so 14 are behavior. The same command
+against the generator as it was before the reach work put 182 in parity and 150
+in divergence: a wider generator writes programs with more places to disagree,
+not a worse implementation.
 
 A later, wider run (`-n 2000 -s 1 -d 4`, 410 s) puts 399 in parity, 1272 in
 divergence, 215 in skip, 107 in the allowlist and 7 outside comparison. 1192 of

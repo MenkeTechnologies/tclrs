@@ -24,7 +24,7 @@ use fusevm::{Op, Value, VM};
 use crate::compiler::{ext, CompileError, Compiler, Place};
 use crate::list;
 use crate::parser::Word;
-use crate::runtime::to_tcl_string;
+use crate::runtime::{place_of, take_var, to_tcl_string, var_cell};
 
 // ── compiling ────────────────────────────────────────────────────────────
 
@@ -246,50 +246,16 @@ thread_local! {
 fn lappend_at(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     let mut values: Vec<String> = (1..arg).map(|_| to_tcl_string(&vm.pop())).collect();
     values.reverse();
-    let index = match vm.pop() {
-        Value::Int(index) => index as u16,
-        other => return Err(format!("lappend: not a variable place: {other:?}")),
-    };
-    let place = if id == ext::LAPPEND_SLOT {
-        Place::Slot(index)
-    } else {
-        Place::Global(index)
-    };
+    let place = place_of(vm, id == ext::LAPPEND_SLOT)?;
 
-    let current = match cell(vm, place) {
-        Some(value) => std::mem::replace(value, Value::Undef),
-        None => Value::Undef,
-    };
+    let current = take_var(vm, place);
     let extended = extend(current, &values)?;
-    if let Some(value) = cell(vm, place) {
-        *value = Value::Str(Arc::clone(&extended));
+    if let Some(cell) = var_cell(vm, place) {
+        *cell = Value::Str(Arc::clone(&extended));
     }
     remember(&extended);
     vm.push(Value::Str(extended));
     Ok(())
-}
-
-/// The variable's storage, grown to reach it — the same growth `VM::set_var`
-/// and `VM::set_slot` do, which those cannot be used for here because both hand
-/// back a clone rather than the value itself.
-fn cell(vm: &mut VM, place: Place) -> Option<&mut Value> {
-    match place {
-        Place::Global(index) => {
-            let index = index as usize;
-            if index >= vm.globals.len() {
-                vm.globals.resize(index + 1, Value::Undef);
-            }
-            Some(&mut vm.globals[index])
-        }
-        Place::Slot(slot) => {
-            let frame = vm.frames.last_mut()?;
-            let slot = slot as usize;
-            if slot >= frame.slots.len() {
-                frame.slots.resize(slot + 1, Value::Undef);
-            }
-            Some(&mut frame.slots[slot])
-        }
-    }
 }
 
 /// The variable's new value. A list this module built and has not lost sight of

@@ -625,6 +625,95 @@ fn string_handling_matches_tclsh() {
     );
 }
 
+/// `append`, and every `set x "$x…"` lowered as one, extends the string the
+/// variable already holds instead of building a copy of it. The cases below are
+/// what that path can get wrong and a single append cannot, because each needs
+/// either a *sequence* of appends or a second holder of the same value:
+///
+/// * a value another variable is holding, which must not change under it;
+/// * the read order — `append`'s arguments are evaluated before it reads the
+///   variable, and a word's `$x` is read before the parts after it, so
+///   `append x [set x y]` and `set x "$x[set x y]"` do not agree, and neither
+///   may be lowered as the other;
+/// * a variable appended to itself, where the value is held twice;
+/// * a frame slot, and a global reached from inside a procedure;
+/// * a variable that is not a string yet, and one that does not exist yet.
+#[test]
+fn append_in_place_matches_tclsh() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+
+    let program = concat!(
+        // A held value must not change under its holder, either way in.
+        "set g {}\n",
+        "append g hello\n",
+        "set held $g\n",
+        "append g \" world\"\n",
+        "puts \"<$g> <$held>\"\n",
+        "set again $g\n",
+        "set g \"$g!\"\n",
+        "puts \"<$g> <$again>\"\n",
+        // Read order: the argument runs before `append` reads the variable, and
+        // the word's own `$p` is read before the part after it.
+        "set t start\n",
+        "append t [set t middle]\n",
+        "puts <$t>\n",
+        "set p abc\n",
+        "set p \"$p[set p X]\"\n",
+        "puts <$p>\n",
+        // A variable appended to itself.
+        "set d ab\n",
+        "set d \"$d$d\"\n",
+        "append d $d\n",
+        "puts <$d>\n",
+        // Growing in a loop, both spellings, and the value each yields.
+        "set a {}\n",
+        "set b {}\n",
+        "for {set i 0} {$i < 40} {incr i} {\n",
+        "    append a $i,\n",
+        "    set b \"$b$i,\"\n",
+        "}\n",
+        "puts \"[string length $a] [string equal $a $b]\"\n",
+        "puts <[append a end]>\n",
+        // Frame slots, and a global reached from inside a procedure.
+        "proc grow {n} {\n",
+        "    set out {}\n",
+        "    for {set i 0} {$i < $n} {incr i} { set out \"$out$i\" }\n",
+        "    return $out\n",
+        "}\n",
+        "puts <[grow 12]>\n",
+        "set acc {}\n",
+        "proc add {x} {\n",
+        "    global acc\n",
+        "    append acc $x\n",
+        "    return $acc\n",
+        "}\n",
+        "add p\n",
+        "puts \"<[add q]> <$acc>\"\n",
+        // A variable that is not a string yet, and mid-word text.
+        "set n 5\n",
+        "append n 6\n",
+        "puts <$n>\n",
+        "set m 1\n",
+        "set m \"${m}x${m}y\"\n",
+        "puts <$m>\n",
+        // A variable that does not exist yet.
+        "append fresh a b\n",
+        "puts <$fresh>\n",
+    );
+
+    let expected = reference_output(&tclsh, usize::MAX, program);
+    let outcome = tclrs::eval(program).expect("tclrs runs the program");
+    assert_eq!(
+        outcome.output,
+        expected,
+        "append diverges from tclsh: {}",
+        divergence(&expected, &outcome.output)
+    );
+}
+
 /// What the crate cannot do faithfully must say so rather than answer wrongly.
 #[test]
 fn unsupported_string_features_are_refused() {

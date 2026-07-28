@@ -27,9 +27,9 @@ use std::sync::Arc;
 
 use fusevm::{Op, Value, VM};
 
-use crate::compiler::{CompileError, Compiler};
+use crate::compiler::{CompileError, Compiler, Place};
 use crate::parser::Word;
-use crate::runtime::to_tcl_string;
+use crate::runtime::{place_at, take_var, tcl_str, to_tcl_string, var_cell};
 
 /// Extension opcode ids owned by this module. The base is declared with every
 /// other module's in [`crate::compiler::ext`], which is where the frontend's
@@ -60,6 +60,15 @@ pub mod ext {
     pub const TRIMRIGHT: u16 = BASE + 20;
     pub const APPEND: u16 = BASE + 21;
     pub const FORMAT: u16 = BASE + 22;
+    /// `[name, place, value …]` → the extended string, stored in the variable
+    /// the op reaches itself: `APPEND_VAR` at a name index in the VM's global
+    /// table, `APPEND_SLOT` at a frame slot. Reaching the variable here rather
+    /// than through `GetVar` / `SetVar` is what lets the values be appended to
+    /// the string the variable already holds instead of a copy of it. The name
+    /// travels along only so an unset variable can be reported by name.
+    /// [`APPEND`] is still emitted for a name the script also uses as an array.
+    pub const APPEND_VAR: u16 = BASE + 23;
+    pub const APPEND_SLOT: u16 = BASE + 24;
 }
 
 /// Every subcommand the ensemble knows, in the order the interpreter lists them
@@ -381,24 +390,56 @@ impl Compiler {
         self.string_op(ext::IS, 3)
     }
 
-    /// `append varName ?value ...?` — read, concatenate, store, and yield the
-    /// new value. The name travels as an operand so the op can report reading
-    /// an unset variable the way the interpreter does.
+    /// `append varName ?value ...?` — append to the variable's own string and
+    /// yield the new value.
+    ///
+    /// The values are on the stack before the op runs, and the variable is read
+    /// by the op itself, which is the order `Tcl_AppendObjCmd` reads them in:
+    /// `append s [set s x]` appends to what the argument left behind. Reaching
+    /// the variable there is also what makes the append in place — see
+    /// [`append_at`]. A name the script also uses as an array keeps the
+    /// read-concatenate-store lowering, whose operand is a guarded read that
+    /// refuses an array rather than stringifying one.
     fn cmd_append(&mut self, args: &[Word]) -> Result<(), CompileError> {
         let Some(target) = args.first() else {
             return self.error("wrong # args: should be \"append varName ?value ...?\"");
         };
         let name = self.var_name_of(target)?;
 
-        self.push_str(&name);
-        self.scalar_get(&name);
+        if self.is_array(&name) {
+            self.push_str(&name);
+            self.scalar_get(&name);
+            for w in &args[1..] {
+                self.word(w)?;
+            }
+            self.string_op(ext::APPEND, args.len() + 1)?;
+            self.emit(Op::Dup, 1);
+            self.emit_set_var(&name);
+            return Ok(());
+        }
+
+        let id = self.append_target(&name);
         for w in &args[1..] {
             self.word(w)?;
         }
-        self.string_op(ext::APPEND, args.len() + 1)?;
-        self.emit(Op::Dup, 1);
-        self.emit_set_var(&name);
-        Ok(())
+        self.string_op(id, args.len() + 1)
+    }
+
+    /// Push what an in-place append addresses — the variable's name, then where
+    /// it lives — and answer with the op that closes it. The caller pushes the
+    /// values and emits `id` with `2 + values` operands.
+    pub(crate) fn append_target(&mut self, name: &str) -> u16 {
+        self.push_str(name);
+        match self.var_place(name) {
+            Place::Slot(slot) => {
+                self.emit(Op::LoadInt(slot as i64), 1);
+                ext::APPEND_SLOT
+            }
+            Place::Global(idx) => {
+                self.emit(Op::LoadInt(idx as i64), 1);
+                ext::APPEND_VAR
+            }
+        }
     }
 
     fn cmd_format(&mut self, args: &[Word]) -> Result<(), CompileError> {
@@ -413,6 +454,9 @@ impl Compiler {
 
 /// Run one of this module's ops: pop `argc` operands, push one result.
 pub(crate) fn extension(vm: &mut VM, id: u16, argc: u8) -> Result<(), String> {
+    if id == ext::APPEND_VAR || id == ext::APPEND_SLOT {
+        return append_at(vm, id, argc);
+    }
     let mut operands = Vec::with_capacity(argc as usize);
     for _ in 0..argc {
         operands.push(vm.pop());
@@ -421,6 +465,75 @@ pub(crate) fn extension(vm: &mut VM, id: u16, argc: u8) -> Result<(), String> {
     let result = dispatch(id, &operands)?;
     vm.push(Value::Str(Arc::new(result)));
     Ok(())
+}
+
+/// `append`, and every `set x "$x…"` that is one, with the variable as the op's
+/// own operand: `[name, place, value …]`, leaving the new value.
+///
+/// The value is taken out of the variable rather than read from it, so the
+/// string it holds is unshared and the values are appended to it. Growing a
+/// string that way is amortized linear in the bytes appended; the
+/// read-concatenate-store shape it replaces copied the whole accumulated string
+/// on every iteration, which made a build loop quadratic. A string another
+/// value is holding is copied instead — it must not change under whoever holds
+/// it — and so is one the variable does not hold as a string at all.
+fn append_at(vm: &mut VM, id: u16, argc: u8) -> Result<(), String> {
+    // The operands are read where they sit rather than popped one at a time:
+    // the values are already in order there, and a value that is a string is
+    // appended straight out of the one it holds, with nothing copied on the way.
+    let count = argc as usize - 2;
+    let base = vm.stack.len() - count;
+    let place = place_at(&vm.stack[base - 1], id == ext::APPEND_SLOT)?;
+
+    let current = take_var(vm, place);
+    // Reading an unset variable is an error only when there is nothing to
+    // append — `append x a` creates `x`, `append x` cannot.
+    if count == 0 && current == Value::Undef {
+        let name = to_tcl_string(&vm.stack[base - 2]);
+        vm.stack.truncate(base - 2);
+        return Err(format!("can't read \"{name}\": no such variable"));
+    }
+
+    let extended = append_onto(current, &vm.stack[base..]);
+    vm.stack.truncate(base - 2);
+    if let Some(cell) = var_cell(vm, place) {
+        *cell = Value::Str(Arc::clone(&extended));
+    }
+    vm.push(Value::Str(extended));
+    Ok(())
+}
+
+fn append_onto(current: Value, values: &[Value]) -> Arc<String> {
+    let extra: usize = values.iter().map(|value| tcl_str(value).len()).sum();
+    if let Value::Str(mut held) = current {
+        match Arc::get_mut(&mut held) {
+            // Unshared: the values go onto the string the variable held.
+            Some(text) => {
+                text.reserve(extra);
+                extend(text, values);
+                return held;
+            }
+            // Shared with a value the script kept, which must not change under
+            // it, so the append lands on a copy.
+            None => {
+                let mut text = String::with_capacity(held.len() + extra);
+                text.push_str(&held);
+                extend(&mut text, values);
+                return Arc::new(text);
+            }
+        }
+    }
+    // Not a string yet — a number, or an unset variable being created.
+    let mut text = to_tcl_string(&current);
+    text.reserve(extra);
+    extend(&mut text, values);
+    Arc::new(text)
+}
+
+fn extend(text: &mut String, values: &[Value]) {
+    for value in values {
+        text.push_str(&tcl_str(value));
+    }
 }
 
 fn dispatch(id: u16, operands: &[Value]) -> Result<String, String> {

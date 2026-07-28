@@ -434,6 +434,44 @@ impl Compiler {
             .is_some_and(|s| !s.globals.contains(name))
     }
 
+    /// Whether `set name word` only *grows* `name`: the word begins with that
+    /// variable and everything after it is text or another variable's value.
+    ///
+    /// Such an assignment is the same operation `append` is, and lowering it
+    /// that way is what keeps a build loop — `set s "$s$i"` — from copying the
+    /// whole accumulated string every iteration.
+    ///
+    /// The parts after the first have to be substitutions that cannot run a
+    /// script, because the op reads the variable *after* they are evaluated
+    /// while the word reads it before: `set s "$s[set s x]"` would answer
+    /// differently. Text and a scalar read cannot change a variable, so those
+    /// are the two allowed. A name the script also uses as an array is left
+    /// alone as well, so that the guarded read still refuses one.
+    fn grows_itself(&self, name: &str, word: &Word) -> bool {
+        !word.expand
+            && word.parts.len() > 1
+            && !self.is_array(name)
+            && matches!(&word.parts[0], Part::Var(first) if first == name)
+            && word.parts[1..]
+                .iter()
+                .all(|part| matches!(part, Part::Lit(_) | Part::Var(_)))
+    }
+
+    /// Emit an in-place append of `parts` onto `name`, leaving the new value —
+    /// the lowering `append` uses, reached from `set` through [`grows_itself`].
+    fn append_parts(&mut self, name: &str, parts: &[Part]) -> Result<(), CompileError> {
+        let id = self.append_target(name);
+        for part in parts {
+            self.part(part)?;
+        }
+        let argc = parts.len() + 2;
+        let Ok(argc8) = u8::try_from(argc) else {
+            return self.error("too many arguments for one command");
+        };
+        self.emit(Op::Extended(id, argc8), 1 - argc as i32);
+        Ok(())
+    }
+
     /// Where a variable lives, for an op that reaches it itself rather than
     /// through `GetVar` / `SetVar` — [`crate::cmd_list`]'s `lappend` is the one
     /// that does, so that it can extend the list in place.
@@ -711,6 +749,9 @@ impl Compiler {
             },
             2 => match self.target_of(&args[0])? {
                 Target::Scalar(name) => {
+                    if self.grows_itself(&name, &args[1]) {
+                        return self.append_parts(&name, &args[1].parts[1..]);
+                    }
                     self.scalar_set_guard(&name);
                     self.word(&args[1])?;
                     // `set` yields the value it assigned.
