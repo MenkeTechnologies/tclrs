@@ -44,6 +44,22 @@ pub mod ext {
     /// its end without an error.
     pub const CATCH_END: u16 = 9;
 
+    // Coroutines (`coro`). Every one but [`CORO_INFO`] parks the VM with a
+    // request the driver in [`crate::runtime`] services; see [`crate::coro`].
+
+    /// `[arg …, name, command]` with `arg` actual arguments — create the
+    /// coroutine `name` running `command`, and enter it.
+    pub const CORO_CREATE: u16 = 10;
+    /// `[arg …, name]` with `arg` actual arguments — resume the coroutine.
+    pub const CORO_RESUME: u16 = 11;
+    /// `[value]` — suspend this coroutine, handing `value` to its resumer.
+    pub const CORO_YIELD: u16 = 12;
+    /// `[name, arg …]` with `arg` actual arguments — suspend this coroutine and
+    /// enter the coroutine `name`, which inherits this one's resumer.
+    pub const CORO_YIELDTO: u16 = 13;
+    /// `info coroutine`: the running coroutine's qualified name, or `""`.
+    pub const CORO_INFO: u16 = 14;
+
     /// Where the list commands' ops begin. Everything at or above this id is
     /// dispatched to [`crate::cmd_list`]; the inline operand is the number of
     /// stack values the op consumes.
@@ -204,11 +220,19 @@ pub(crate) struct Compiler {
     pub(crate) procs: HashMap<String, Signature>,
     /// Procedures whose body has been compiled, so a redefinition is caught.
     pub(crate) defined: HashSet<String>,
+    /// Names the script's own `coroutine` commands create. A call to one of
+    /// them resumes the coroutine instead of calling a procedure.
+    pub(crate) coros: HashSet<String>,
     /// How many `catch` regions enclose the code being compiled.
     pub(crate) catch_depth: usize,
     /// Whether the command being compiled is one of the script's own, rather
     /// than one inside a body or a command substitution.
     pub(crate) top_level: bool,
+    /// Whether the command being compiled runs exactly once, at a position
+    /// [`crate::coro::prescan`] also reaches: the script's own commands and the
+    /// command substitutions inside them. A `coroutine` command may only appear
+    /// there, since its name has to be known to every call site.
+    pub(crate) static_ctx: bool,
 }
 
 impl Compiler {
@@ -225,13 +249,16 @@ impl Compiler {
             scope: None,
             procs: HashMap::new(),
             defined: HashSet::new(),
+            coros: HashSet::new(),
             catch_depth: 0,
             top_level: true,
+            static_ctx: true,
         };
         // Signatures are collected before anything is emitted so a procedure
         // may call one that the script defines further down, which is legal in
         // Tcl as long as the call is not reached first.
         crate::procs::prescan(&mut c.procs, script);
+        crate::coro::prescan(&mut c.coros, script);
         c.script_value(script)?;
         Ok(c)
     }
@@ -326,20 +353,35 @@ impl Compiler {
 
     // ── scripts ──────────────────────────────────────────────────────────
 
-    /// Emit a nested script — a body, or a command substitution — for its
-    /// value. Commands that may only appear at the script's own top level are
-    /// refused inside one.
+    /// Emit a nested script — a body — for its value. Commands that may only
+    /// appear at the script's own top level are refused inside one, and so are
+    /// the ones that need a position the prescan reaches: a body may run any
+    /// number of times, or not at all.
     pub(crate) fn nested_value(&mut self, script: &Script) -> Result<(), CompileError> {
         let outer = std::mem::replace(&mut self.top_level, false);
+        let outer_static = std::mem::replace(&mut self.static_ctx, false);
         let result = self.script_value(script);
         self.top_level = outer;
+        self.static_ctx = outer_static;
         result
     }
 
     /// Emit a nested script for its effect, leaving the stack as it was found.
     pub(crate) fn nested_effect(&mut self, script: &Script) -> Result<(), CompileError> {
         let outer = std::mem::replace(&mut self.top_level, false);
+        let outer_static = std::mem::replace(&mut self.static_ctx, false);
         let result = self.script_effect(script);
+        self.top_level = outer;
+        self.static_ctx = outer_static;
+        result
+    }
+
+    /// Emit a command substitution for its value. Unlike a body it runs exactly
+    /// where it is written, once per evaluation of the command it belongs to,
+    /// so a command the prescan needs to see may appear in one.
+    fn subst_value(&mut self, script: &Script) -> Result<(), CompileError> {
+        let outer = std::mem::replace(&mut self.top_level, false);
+        let result = self.script_value(script);
         self.top_level = outer;
         result
     }
@@ -400,7 +442,7 @@ impl Compiler {
                 Ok(())
             }
             Part::Elem { name, index } => self.elem_get(name, index),
-            Part::Script(script) => self.nested_value(script),
+            Part::Script(script) => self.subst_value(script),
         }
     }
 
@@ -445,9 +487,32 @@ impl Compiler {
     /// keep winning. The list commands are absent on purpose — they are
     /// dispatched after `procs`, so a procedure does replace one.
     pub(crate) const BUILTINS: &'static [&'static str] = &[
-        "set", "puts", "expr", "incr", "if", "while", "for", "foreach", "switch", "string",
-        "append", "format", "break", "continue", "proc", "return", "global", "catch", "error",
-        "array", "dict", "unset",
+        "set",
+        "puts",
+        "expr",
+        "incr",
+        "if",
+        "while",
+        "for",
+        "foreach",
+        "switch",
+        "string",
+        "append",
+        "format",
+        "break",
+        "continue",
+        "proc",
+        "return",
+        "global",
+        "catch",
+        "error",
+        "array",
+        "dict",
+        "unset",
+        "coroutine",
+        "yield",
+        "yieldto",
+        "info",
     ];
 
     fn command(&mut self, cmd: &Command) -> Result<(), CompileError> {
@@ -480,6 +545,13 @@ impl Compiler {
             "array" => self.cmd_array(args),
             "dict" => self.cmd_dict(args),
             "unset" => self.cmd_unset(args),
+            "coroutine" => self.cmd_coroutine(args),
+            "yield" => self.cmd_yield(args),
+            "yieldto" => self.cmd_yieldto(args),
+            "info" => self.cmd_info(args),
+            // A coroutine's context command. Its name is refused to `proc`, so
+            // there is never both a procedure and a coroutine to choose from.
+            other if self.coros.contains(other) => self.call_coro(other, args),
             // A procedure the script defines shadows nothing built in: the
             // names above are refused to `proc` at its definition.
             other if self.procs.contains_key(other) => self.call_proc(other, args),

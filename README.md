@@ -131,6 +131,52 @@ an operation that overflows `i64` is an error instead of silently wrapping.
 Refusal is at compile time where the script's shape decides it and at run time
 where a value does. See [`BUGS.md`](BUGS.md) for the ledger.
 
+### Coroutines
+
+`coroutine name command ?arg ...?`, `yield ?value?`, `yieldto`, `info
+coroutine`, and the lifecycle of the context command a coroutine creates:
+calling it resumes the body, the body returning deletes it, and calling it after
+that is `invalid command name`.
+
+A coroutine is a second `fusevm::VM` over the same chunk — the arrangement
+`fusevm`'s scheduler uses for a goroutine — positioned at the body's sub entry
+with the actual arguments below a frame that returns past the end of the
+program. `yield` stashes a request and calls `VM::request_halt`, exactly as a
+channel op stashes a `SchedReq`; the driver reads it after `run()` returns,
+pushes the yielded value onto the resumer's stack and runs the resumer. Because
+the op has already advanced `ip`, resuming is just a value on the stack and
+another `run()`. Tcl needs two things the Go model does not have: control
+transfer names its successor rather than taking the next goroutine off a queue
+(so each context records the resumer to return to, and `yieldto` donates it to
+the target), and every context shares one global variable table (so the driver
+owns it and moves it into whichever VM runs — one at a time, so no copy).
+
+```tcl
+proc allNumbers {} {
+    yield
+    set i 0
+    while 1 {
+        yield $i
+        incr i 2
+    }
+}
+coroutine nextNumber allNumbers
+for {set i 0} {$i < 10} {incr i} {
+    puts "received [nextNumber]"
+}
+```
+
+The name a `coroutine` command creates has to be known to every call site, since
+this frontend resolves a command to bytecode rather than to a runtime command
+table. So the name and the body command are literals, the body is a procedure
+the script defines, and the `coroutine` command itself appears at the top level
+of the script or in a command substitution in one — the positions the prescan
+that collects those names reaches. `yieldto` cedes control to a coroutine of the
+script; ceding it to an arbitrary command would have to evaluate that command in
+the resumer's context, which this frontend cannot do, so it is refused. `info`
+has one subcommand, `coroutine`; `coroprobe`, `coroinject` and deleting a
+coroutine by renaming its command are not implemented.
+
 ### Lists
 
 A Tcl list is a string, so every list command re-derives its elements from one.
@@ -195,6 +241,7 @@ Tcl script → parser (Script/Command/Word) → lower to fusevm bytecode → fus
 | **Numeric hook** | Catches operands the VM cannot compute on natively. An operand that parses as a number is one (including the `0x` / `0o` / `0b` radix prefixes); comparisons fall back to string order when it does not; arithmetic on a non-number is an error. |
 | **Extension ops** | `/` and `%` floor toward negative infinity (`-57 / 10` is `-6`, `-57 % 10` is `3`), `**` stays integral for integral operands, and a normalize op converts a VM-native result into its Tcl value — booleans to `1`/`0`, doubles to Tcl's double format. |
 | **No object heap** | Tcl's value model needs none on top of fusevm's: strings, integers and floats map onto `Value` directly. |
+| **One driver, two jobs** | An op that cannot finish on its own stashes something in a cell and halts; the driver reads the cell after `run()` returns. `catch` uses it to resume the same VM at a handler, a coroutine uses it to run a different VM — the pattern `fusevm`'s scheduler is built on, and the only runtime unwinding in the crate. |
 
 Static stack tracking is what keeps the lowering cheap: each command leaves its
 result on the stack and the compiler tracks that depth as it goes, so `break`
@@ -223,7 +270,7 @@ with the benchmarks that justify them.
 
 ### Differential test harness
 
-Four suites, all comparing against the reference interpreter rather than
+Five suites, all comparing against the reference interpreter rather than
 against hand-written expectations:
 
 ```sh
@@ -231,6 +278,7 @@ cargo test --test dodekalogue            # the twelve parse rules
 cargo test --test differential_tclsh     # word splitting vs tclsh, character for character
 cargo test --test execution_differential # whole programs vs tclsh, byte for byte
 cargo test --test list_differential      # the list commands, plus generated matrices
+cargo test --test coroutine_differential # coroutines: generators, transfers, lifecycle
 ```
 
 `list_differential` also generates its cases: every awkward element value is

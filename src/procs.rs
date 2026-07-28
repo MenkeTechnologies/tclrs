@@ -175,6 +175,12 @@ impl Compiler {
                 "redefining the built-in command \"{name}\" is not supported"
             ));
         }
+        if self.coros.contains(&name) {
+            return self.error(format!(
+                "procedure \"{name}\" collides with a coroutine of the same name, which is \
+                 not supported"
+            ));
+        }
         let spec = self.literal_of(spec_w, "argument list")?.to_string();
         let sig = match parse_signature(&name, &spec) {
             Ok(sig) => sig,
@@ -204,6 +210,7 @@ impl Compiler {
         let outer_catch = std::mem::replace(&mut self.catch_depth, 0);
         let outer_scope = self.scope.replace(scope_for(&sig));
         let outer_top = std::mem::replace(&mut self.top_level, false);
+        let outer_static = std::mem::replace(&mut self.static_ctx, false);
 
         for slot in (0..slots).rev() {
             self.emit(Op::SetSlot(slot as u16), -1);
@@ -217,6 +224,7 @@ impl Compiler {
         self.catch_depth = outer_catch;
         self.scope = outer_scope;
         self.top_level = outer_top;
+        self.static_ctx = outer_static;
         compiled?;
 
         let after = self.b.current_pos();
@@ -230,6 +238,24 @@ impl Compiler {
 
     /// A call to a procedure this script defines.
     pub(crate) fn call_proc(&mut self, name: &str, args: &[Word]) -> Result<(), CompileError> {
+        let slots = self.push_actuals(name, args)?;
+        let name_idx = self.b.add_name(name);
+        self.emit(Op::Call(name_idx, slots as u8), 1 - slots as i32);
+        Ok(())
+    }
+
+    /// Push exactly one value per formal parameter of the procedure `name`,
+    /// which is what its fixed prologue expects, and answer how many. This is
+    /// where a call adapts to the signature: an omitted parameter's default is
+    /// pushed here, and surplus arguments are collected into `args` here.
+    ///
+    /// `coroutine` uses it too — the body of a coroutine is entered with the
+    /// same convention as a call, only from a fresh VM the driver positions.
+    pub(crate) fn push_actuals(
+        &mut self,
+        name: &str,
+        args: &[Word],
+    ) -> Result<usize, CompileError> {
         let sig = self.procs.get(name).cloned().expect("known procedure");
         let fixed = sig.fixed();
         if args.len() < sig.required || (!sig.variadic && args.len() > fixed) {
@@ -257,11 +283,7 @@ impl Compiler {
             }
             self.emit(Op::Extended(ext::LIST, count), 1 - extra.len() as i32);
         }
-
-        let slots = sig.params.len();
-        let name_idx = self.b.add_name(name);
-        self.emit(Op::Call(name_idx, slots as u8), 1 - slots as i32);
-        Ok(())
+        Ok(sig.params.len())
     }
 
     /// `return ?-code code? ?result?`.

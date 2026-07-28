@@ -16,6 +16,7 @@ pub mod cmd_list;
 pub mod cmd_string;
 pub mod compiler;
 pub mod control;
+pub mod coro;
 pub mod expr;
 pub mod list;
 pub mod parser;

@@ -1,5 +1,6 @@
 //! Running a compiled chunk: the numeric hook and extension ops that give
-//! fusevm Tcl's arithmetic, plus Tcl's number formatting.
+//! fusevm Tcl's arithmetic, the driver that owns error unwinding and coroutine
+//! switching, and Tcl's number formatting.
 //!
 //! Two hooks carry all of the language-specific behavior:
 //!
@@ -13,12 +14,21 @@
 //!
 //! Everything else runs as native ops, so the arithmetic the JIT cares about
 //! stays visible to it.
+//!
+//! The [`Machine`] below is the driver. A script that uses no coroutine is one
+//! VM run in a loop that only ever restarts it at a `catch` handler; a script
+//! that creates coroutines has one VM per context, and the same loop also
+//! services the requests their ops raise. Both paths share one mechanism: an
+//! op stashes something in a cell and halts, and the driver reads the cell
+//! after `run()` returns — the pattern fusevm's scheduler is built on.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use fusevm::{NumOp, VMResult, Value, VM};
+use fusevm::{Chunk, Frame, NumOp, VMResult, Value, VM};
 
 use crate::compiler::{self, ext, ext_wide};
+use crate::coro::{self, Request};
 use crate::list;
 
 /// The outcome of running a script.
@@ -45,86 +55,434 @@ struct CatchFrame {
     frames: usize,
 }
 
+/// The cells every VM's hooks write into. One set is shared by the main VM and
+/// every coroutine's; the driver swaps the per-context ones (`catches`,
+/// `current`) around each `run()`, so a hook never has to know which VM it is
+/// running inside.
+struct Cells {
+    output: Arc<Mutex<String>>,
+    error: Arc<Mutex<Option<String>>>,
+    /// `catch` regions the *running* VM has entered and not yet left.
+    catches: Arc<Mutex<Vec<CatchFrame>>>,
+    /// The coroutine request an op raised, for the driver to service.
+    pending: Arc<Mutex<Option<Request>>>,
+    /// The name of the coroutine whose VM is running, for `info coroutine`.
+    current: Arc<Mutex<Option<String>>>,
+}
+
+impl Cells {
+    fn new() -> Cells {
+        Cells {
+            output: Arc::new(Mutex::new(String::new())),
+            error: Arc::new(Mutex::new(None)),
+            catches: Arc::new(Mutex::new(Vec::new())),
+            pending: Arc::new(Mutex::new(None)),
+            current: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Give `vm` the frontend's hooks. Every VM gets the same ones: a coroutine
+    /// prints to the same stdout and raises errors through the same cell as the
+    /// script that created it.
+    fn install(&self, vm: &mut VM) {
+        let sink = Arc::clone(&self.output);
+        vm.set_output_sink(Box::new(move |s: &str| {
+            sink.lock().expect("output lock").push_str(s);
+        }));
+        vm.set_numeric_hook(Arc::new(numeric));
+
+        let err_cell = Arc::clone(&self.error);
+        let open = Arc::clone(&self.catches);
+        let pending = Arc::clone(&self.pending);
+        let current = Arc::clone(&self.current);
+        vm.set_extension_handler(Box::new(move |vm: &mut VM, id: u16, arg: u8| {
+            if id == ext::CATCH_END {
+                open.lock().expect("catch lock").pop();
+                return;
+            }
+            if coro::is_op(id) {
+                let name = current.lock().expect("coroutine lock").clone();
+                if let Some(request) = coro::extension(vm, id, arg, name.as_deref()) {
+                    *pending.lock().expect("request lock") = Some(request);
+                    vm.request_halt();
+                }
+                return;
+            }
+            if let Err(msg) = extension(vm, id, arg) {
+                *err_cell.lock().expect("error lock") = Some(msg);
+                // `VM::run` pops one value when it stops, so leave it one to
+                // pop: the stack then still holds what the failing op left, and
+                // the catch driver's depth arithmetic stays exact.
+                vm.push(Value::Undef);
+                vm.request_halt();
+            }
+        }));
+
+        let entered = Arc::clone(&self.catches);
+        vm.set_extension_wide_handler(Box::new(move |vm: &mut VM, id: u16, payload: usize| {
+            if id == ext_wide::CATCH {
+                entered.lock().expect("catch lock").push(CatchFrame {
+                    handler: payload,
+                    stack: vm.stack.len(),
+                    frames: vm.frames.len(),
+                });
+            }
+        }));
+    }
+}
+
+/// How a context is suspended, which decides what resuming it may pass in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Park {
+    /// Running, or about to be — the main script's context always is.
+    Running,
+    /// Suspended by `yield`, which takes at most one resumption value.
+    AtYield,
+    /// Suspended by `yieldto`, whose value is the whole resumption argument
+    /// list.
+    AtYieldTo,
+}
+
+/// One execution context: the main script, or a live coroutine.
+struct Context {
+    /// `None` once the context has been retired.
+    vm: Option<VM>,
+    /// The `catch` regions this context has open, parked while another runs.
+    catches: Vec<CatchFrame>,
+    /// The coroutine's name; `None` for the main script.
+    name: Option<String>,
+    /// Where control goes when this context yields, finishes or fails.
+    resumer: Option<usize>,
+    park: Park,
+}
+
+/// The driver: every execution context of one script, and the loop that runs
+/// them.
+struct Machine {
+    cells: Cells,
+    /// The compiled program, from which each coroutine's VM is built.
+    chunk: Chunk,
+    contexts: Vec<Context>,
+    /// Live coroutines by name. A name leaves as soon as its body ends, which
+    /// is what makes a later call report `invalid command name`.
+    live: HashMap<String, usize>,
+    /// Every name this run has ever made a coroutine of, so a `yieldto` at a
+    /// name that is not one can be told apart from one at a coroutine that has
+    /// since finished.
+    created: HashSet<String>,
+    /// The one global variable table, moved into whichever VM runs.
+    globals: Vec<Value>,
+    /// The context currently running.
+    current: usize,
+}
+
 /// Compile and run a script, capturing its output.
 pub fn eval(src: &str) -> Result<Outcome, String> {
     let script = crate::parser::parse(src).map_err(|e| e.to_string())?;
     let chunk = compiler::compile(&script).map_err(|e| e.to_string())?;
 
-    let output = Arc::new(Mutex::new(String::new()));
-    let error = Arc::new(Mutex::new(None::<String>));
-    let catches: Arc<Mutex<Vec<CatchFrame>>> = Arc::new(Mutex::new(Vec::new()));
+    let cells = Cells::new();
+    let mut main = VM::new(chunk.clone());
+    cells.install(&mut main);
+    let globals = std::mem::take(&mut main.globals);
 
-    let mut vm = VM::new(chunk);
-    let sink = Arc::clone(&output);
-    vm.set_output_sink(Box::new(move |s: &str| {
-        sink.lock().expect("output lock").push_str(s);
-    }));
-    vm.set_numeric_hook(Arc::new(numeric));
-    let err_cell = Arc::clone(&error);
-    let open = Arc::clone(&catches);
-    vm.set_extension_handler(Box::new(move |vm: &mut VM, id: u16, arg: u8| {
-        if id == ext::CATCH_END {
-            open.lock().expect("catch lock").pop();
-            return;
-        }
-        if let Err(msg) = extension(vm, id, arg) {
-            *err_cell.lock().expect("error lock") = Some(msg);
-            // `VM::run` pops one value when it stops, so leave it one to pop:
-            // the stack then still holds what the failing op left, and the
-            // catch driver's depth arithmetic stays exact.
-            vm.push(Value::Undef);
-            vm.request_halt();
-        }
-    }));
-    let entered = Arc::clone(&catches);
-    vm.set_extension_wide_handler(Box::new(move |vm: &mut VM, id: u16, payload: usize| {
-        if id == ext_wide::CATCH {
-            entered.lock().expect("catch lock").push(CatchFrame {
-                handler: payload,
-                stack: vm.stack.len(),
-                frames: vm.frames.len(),
-            });
-        }
-    }));
+    let mut machine = Machine {
+        cells,
+        chunk,
+        contexts: vec![Context {
+            vm: Some(main),
+            catches: Vec::new(),
+            name: None,
+            resumer: None,
+            park: Park::Running,
+        }],
+        live: HashMap::new(),
+        created: HashSet::new(),
+        globals,
+        current: 0,
+    };
+    let outcome = machine.drive();
+    let output = machine.cells.output.lock().expect("output lock").clone();
 
-    loop {
+    match outcome {
+        Ok(VMResult::Ok(v)) => Ok(Outcome {
+            result: to_tcl_string(&v),
+            output,
+        }),
+        Ok(_) => Ok(Outcome {
+            result: String::new(),
+            output,
+        }),
+        Err(msg) => Err(msg),
+    }
+}
+
+impl Machine {
+    /// Run contexts until the main script finishes or an error escapes it.
+    fn drive(&mut self) -> Result<VMResult, String> {
+        loop {
+            let outcome = self.run_current();
+
+            let raised = self
+                .cells
+                .error
+                .lock()
+                .expect("error lock")
+                .take()
+                .or_else(|| match &outcome {
+                    VMResult::Error(e) => Some(e.clone()),
+                    _ => None,
+                });
+            if let Some(msg) = raised {
+                self.raise(msg)?;
+                continue;
+            }
+
+            let request = self.cells.pending.lock().expect("request lock").take();
+            if let Some(request) = request {
+                // The op halted mid-expression, so `run` popped a live value
+                // from underneath it. Put it back before anything else touches
+                // this stack.
+                if let VMResult::Ok(v) = outcome {
+                    self.vm(self.current).stack.push(v);
+                }
+                if let Err(msg) = self.service(request) {
+                    self.raise(msg)?;
+                }
+                continue;
+            }
+
+            // Nothing was raised and nothing was requested: this context ran to
+            // the end of its program.
+            if self.current == 0 {
+                return Ok(outcome);
+            }
+            self.retire(outcome);
+        }
+    }
+
+    /// Swap the running context's state in, run its VM, and take the state back
+    /// out. Only one VM runs at a time, so the global table and the open
+    /// `catch` regions move rather than being copied.
+    fn run_current(&mut self) -> VMResult {
+        let current = self.current;
+        *self.cells.current.lock().expect("coroutine lock") = self.contexts[current].name.clone();
+        *self.cells.catches.lock().expect("catch lock") =
+            std::mem::take(&mut self.contexts[current].catches);
+        let globals = std::mem::take(&mut self.globals);
+
+        let vm = self.vm(current);
+        vm.globals = globals;
+        vm.clear_halt();
         let outcome = vm.run();
-        let raised = error
-            .lock()
-            .expect("error lock")
-            .take()
-            .or_else(|| match &outcome {
-                VMResult::Error(e) => Some(e.clone()),
-                _ => None,
-            });
+        let globals = std::mem::take(&mut vm.globals);
 
-        if let Some(msg) = raised {
-            let Some(frame) = catches.lock().expect("catch lock").pop() else {
+        self.globals = globals;
+        self.contexts[current].catches =
+            std::mem::take(&mut self.cells.catches.lock().expect("catch lock"));
+        outcome
+    }
+
+    fn vm(&mut self, context: usize) -> &mut VM {
+        self.contexts[context].vm.as_mut().expect("live context")
+    }
+
+    /// Report a Tcl error in the running context: resume at its innermost open
+    /// `catch` handler, or — for a coroutine with none — end the coroutine and
+    /// report the error to whoever resumed it, as the reference implementation
+    /// does. `Err` means nothing was left to catch it.
+    fn raise(&mut self, msg: String) -> Result<(), String> {
+        loop {
+            if let Some(frame) = self.contexts[self.current].catches.pop() {
+                let vm = self.vm(self.current);
+                // Unwind to the guarded script's entry state and hand the
+                // handler the message.
+                vm.frames.truncate(frame.frames);
+                vm.stack.truncate(frame.stack);
+                vm.stack.resize(frame.stack, Value::Undef);
+                vm.push(Value::Str(Arc::new(msg)));
+                vm.ip = frame.handler;
+                return Ok(());
+            }
+            if self.current == 0 {
                 return Err(msg);
-            };
-            // Unwind to the guarded script's entry state and hand the handler
-            // the message.
-            vm.frames.truncate(frame.frames);
-            vm.stack.truncate(frame.stack);
-            vm.stack.resize(frame.stack, Value::Undef);
-            vm.push(Value::Str(Arc::new(msg)));
-            vm.ip = frame.handler;
-            vm.clear_halt();
-            continue;
+            }
+            match self.discard(self.current) {
+                Some(resumer) => self.current = resumer,
+                None => return Err(msg),
+            }
         }
+    }
 
-        let output = output.lock().expect("output lock").clone();
-        return match outcome {
-            VMResult::Ok(v) => Ok(Outcome {
-                result: to_tcl_string(&v),
-                output,
-            }),
-            VMResult::Halted => Ok(Outcome {
-                result: String::new(),
-                output,
-            }),
-            VMResult::Error(e) => Err(e),
+    /// The running coroutine's body returned: its value is the value of the
+    /// call that resumed it, and the coroutine is gone.
+    fn retire(&mut self, outcome: VMResult) {
+        let result = match outcome {
+            VMResult::Ok(v) => v,
+            _ => Value::Str(Arc::new(String::new())),
         };
+        let resumer = self
+            .discard(self.current)
+            .expect("a running coroutine has a resumer");
+        self.vm(resumer).stack.push(result);
+        self.current = resumer;
+    }
+
+    /// Delete a coroutine's context, answering where control returns to.
+    fn discard(&mut self, context: usize) -> Option<usize> {
+        if let Some(name) = self.contexts[context].name.take() {
+            self.live.remove(&name);
+        }
+        self.contexts[context].vm = None;
+        self.contexts[context].catches.clear();
+        self.contexts[context].resumer.take()
+    }
+
+    /// Service one coroutine request. `Err` is a Tcl error raised in the
+    /// context that made the request.
+    fn service(&mut self, request: Request) -> Result<(), String> {
+        match request {
+            Request::Create {
+                name,
+                command,
+                args,
+            } => self.create(name, &command, args),
+            Request::Resume { name, args } => {
+                let target = self.suspended(&name)?;
+                let value = self.resumption(target, &name, args)?;
+                let resumer = self.current;
+                self.enter(target, value, Some(resumer));
+                Ok(())
+            }
+            Request::Yield(value) => {
+                self.in_coroutine("yield")?;
+                self.contexts[self.current].park = Park::AtYield;
+                let resumer = self.contexts[self.current]
+                    .resumer
+                    .take()
+                    .expect("a running coroutine has a resumer");
+                self.vm(resumer).stack.push(value);
+                self.current = resumer;
+                Ok(())
+            }
+            Request::YieldTo { name, args } => {
+                self.in_coroutine("yieldto")?;
+                // `info coroutine` reports a qualified name and the juggler
+                // example cedes control to exactly that; with one namespace,
+                // `::c` and `c` are the same command.
+                let name = name.strip_prefix("::").unwrap_or(&name).to_string();
+                if !self.created.contains(&name) {
+                    // A `yieldto` whose target is a word could name any
+                    // command; only a coroutine of this script can be ceded to.
+                    return Err(format!(
+                        "\"yieldto {name}\": ceding control to a command that is not a \
+                         coroutine of this script is not supported"
+                    ));
+                }
+                let target = self.suspended(&name)?;
+                // The argument check happens before control moves, so a bad
+                // one is an error in the coroutine that wrote the `yieldto`.
+                let value = self.resumption(target, &name, args)?;
+                self.contexts[self.current].park = Park::AtYieldTo;
+                // The target inherits this coroutine's resumer: whatever it
+                // eventually produces is the value of the call that got us
+                // here, and this coroutine now has nowhere of its own to
+                // return to until something resumes it.
+                let inherited = self.contexts[self.current].resumer.take();
+                self.enter(target, value, inherited);
+                Ok(())
+            }
+        }
+    }
+
+    /// `coroutine name command ?arg…?`: a fresh VM over the same chunk,
+    /// positioned at the command's entry with the actual arguments below a
+    /// frame that returns past the end of the program, so the body returning
+    /// ends that VM's run.
+    fn create(&mut self, name: String, command: &str, args: Vec<Value>) -> Result<(), String> {
+        let entry = self
+            .chunk
+            .names
+            .iter()
+            .position(|n| n == command)
+            .and_then(|idx| self.chunk.find_sub(idx as u16))
+            .ok_or_else(|| format!("invalid command name \"{command}\""))?;
+
+        let mut vm = VM::new(self.chunk.clone());
+        self.cells.install(&mut vm);
+        let base = vm.stack.len();
+        for a in args {
+            vm.stack.push(a);
+        }
+        vm.frames.push(Frame {
+            return_ip: self.chunk.ops.len(),
+            stack_base: base,
+            slots: Vec::new(),
+        });
+        vm.ip = entry;
+
+        // A name that is still live is being re-created: the old context goes,
+        // as it does in the reference implementation.
+        if let Some(&old) = self.live.get(&name) {
+            self.discard(old);
+        }
+        let context = self.contexts.len();
+        self.contexts.push(Context {
+            vm: Some(vm),
+            catches: Vec::new(),
+            name: Some(name.clone()),
+            resumer: Some(self.current),
+            park: Park::Running,
+        });
+        self.created.insert(name.clone());
+        self.live.insert(name, context);
+        self.current = context;
+        Ok(())
+    }
+
+    /// Give a suspended context its resumption value and run it, recording
+    /// where it returns to.
+    fn enter(&mut self, target: usize, value: Value, resumer: Option<usize>) {
+        self.vm(target).stack.push(value);
+        self.contexts[target].resumer = resumer;
+        self.contexts[target].park = Park::Running;
+        self.current = target;
+    }
+
+    /// The context of the suspended coroutine `name`.
+    fn suspended(&self, name: &str) -> Result<usize, String> {
+        let Some(&context) = self.live.get(name) else {
+            return Err(format!("invalid command name \"{name}\""));
+        };
+        if self.contexts[context].park == Park::Running {
+            return Err(format!("coroutine \"{name}\" is already running"));
+        }
+        Ok(context)
+    }
+
+    /// The single value a resumption delivers, which depends on how the
+    /// coroutine suspended: `yield` produces its argument, so it takes at most
+    /// one; `yieldto` produces the whole argument list.
+    fn resumption(&self, target: usize, name: &str, args: Vec<Value>) -> Result<Value, String> {
+        match self.contexts[target].park {
+            Park::AtYieldTo => {
+                let words: Vec<String> = args.iter().map(to_tcl_string).collect();
+                Ok(Value::Str(Arc::new(list::join(&words))))
+            }
+            _ => match <[Value; 1]>::try_from(args) {
+                Ok([value]) => Ok(value),
+                Err(rest) if rest.is_empty() => Ok(Value::Str(Arc::new(String::new()))),
+                Err(_) => Err(format!("wrong # args: should be \"{name} ?arg?\"")),
+            },
+        }
+    }
+
+    /// `yield` and `yieldto` are errors outside a coroutine.
+    fn in_coroutine(&self, command: &str) -> Result<(), String> {
+        if self.contexts[self.current].name.is_none() {
+            return Err(format!("{command} can only be called in a coroutine"));
+        }
+        Ok(())
     }
 }
 

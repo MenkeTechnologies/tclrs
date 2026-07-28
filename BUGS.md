@@ -28,11 +28,31 @@ approximated, and nothing is silently mis-run.
 - **Tcl arithmetic.** Floored integer division and remainder, integral `**` for
   integral operands, numeric-preferring comparison with string-order fallback,
   and Tcl's double formatting (`src/runtime.rs`).
+- **Coroutines.** `coroutine`, `yield`, `yieldto`, `info coroutine` and the
+  lifecycle of a context command (`src/coro.rs`). A coroutine is a second
+  `fusevm::VM` over the same chunk, suspended by the halt-and-request mechanism
+  fusevm's scheduler is built on; the driver in `src/runtime.rs` owns the
+  transfer and the one global variable table every context shares. A body may
+  suspend at any depth, inside a loop, and inside an open `catch` region; an
+  error that escapes a body deletes the coroutine and is reported to whatever
+  resumed it.
 
 ## Not implemented
 
-- **`proc`.** No procedure definition, no `return`, no `upvar` / `global`, no
-  call frames. Phase 4.
+- **`coroprobe` and `coroinject`.** Inspecting or injecting a command into a
+  suspended coroutine is not implemented; both are `invalid command name`.
+  Deleting a coroutine by destroying its command needs `rename`, which is not
+  implemented either — a coroutine goes away when its body ends.
+- **Coroutines of anything but a procedure of the script.** `coroutine`'s name
+  and command are literals, its command is one of the script's own procedures,
+  and the command appears at the top level of a script or in a command
+  substitution in one, because the name has to be known to every call site and
+  the body is entered through the chunk's sub table. `yieldto` at a command that
+  is not a coroutine of the script is refused: it would have to evaluate that
+  command in the resumer's context, which needs the runtime evaluator that
+  arrives with `eval`.
+- **`info`, apart from `info coroutine`.** Every other subcommand is refused by
+  name rather than mis-answered.
 - **Every command outside those above.** `for`, `switch`, `string`, `regexp`,
   `catch` / `error`, `lassign`, `lset`, `lrepeat`, `lremove`, `lpop`, `ledit`,
   `lmap`, `lseq`, `dict`, `open` / `read` / `close`, `source`, `eval`, `format`,
@@ -77,7 +97,7 @@ approximated, and nothing is silently mis-run.
 None known. Every implemented construct is covered by a differential test that
 runs the same source through `tclsh` 9.0.4 and tclrs and compares the output
 byte for byte (`tests/execution_differential.rs`, `tests/list_differential.rs`,
-`tests/differential_tclsh.rs`). A divergence found here is a bug to fix, not a
+`tests/coroutine_differential.rs`, `tests/differential_tclsh.rs`). A divergence found here is a bug to fix, not a
 documented difference.
 
 ## Defects in the reference implementation
