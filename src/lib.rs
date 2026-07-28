@@ -10,7 +10,15 @@
 //! representation until something demands its string form. That deferral is the
 //! point — the reference interpreter re-derives string representations inside
 //! hot loops.
+//!
+//! Execution reaches for fusevm's higher tiers, not just its interpreter: every
+//! VM this crate builds has the three-tier Cranelift JIT armed
+//! ([`runtime::install_hooks`]), [`aot`] compiles a script to a native object
+//! and links it into a standalone binary, and [`tiers`] reports which of those
+//! tiers a given script's bytecode actually reaches.
 
+pub mod aot;
+pub mod aot_runtime;
 pub mod assoc;
 pub mod cmd_list;
 pub mod compiler;
@@ -18,6 +26,7 @@ pub mod expr;
 pub mod list;
 pub mod parser;
 pub mod runtime;
+pub mod tiers;
 
 pub use parser::{parse, Command, ParseError, Part, Script, Word};
 pub use runtime::{eval, Outcome};

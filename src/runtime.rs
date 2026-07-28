@@ -13,7 +13,15 @@
 //!
 //! Everything else runs as native ops, so the arithmetic the JIT cares about
 //! stays visible to it.
+//!
+//! The VM is asked for its highest tier: [`install_hooks`] calls
+//! `enable_tracing_jit`, which makes `VM::run` consult fusevm's block JIT for a
+//! wholly-eligible chunk and arm the trace recorder at every backward branch
+//! otherwise. [`crate::tiers`] reports which of those tiers a given script
+//! actually reaches — see the JIT section of the README for what that measures
+//! on Tcl today.
 
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use fusevm::{NumOp, VMResult, Value, VM};
@@ -29,30 +37,74 @@ pub struct Outcome {
     pub output: String,
 }
 
+/// Where an extension op parks the error it cannot return.
+///
+/// The VM's extension handler has no `Result` in its signature, so a failing
+/// op stores its message here and halts the VM; the driver reads it once
+/// `run` returns and reports it in place of the chunk's value.
+#[derive(Clone, Default)]
+pub struct Errors(Arc<Mutex<Option<String>>>);
+
+impl Errors {
+    /// Take the parked error, if an extension op raised one.
+    pub fn take(&self) -> Option<String> {
+        self.0.lock().expect("error lock").take()
+    }
+}
+
+/// Install everything a Tcl chunk needs on a VM: the numeric hook, the
+/// extension dispatch, and fusevm's tracing JIT.
+///
+/// Shared by every driver — [`eval`], the `tclrs` binary, and the AOT runtime
+/// hook ([`crate::aot_runtime`]) — so a script behaves the same whichever one
+/// runs it. Output is left alone: a caller that wants the script's writes
+/// captured installs its own sink afterwards.
+pub fn install_hooks(vm: &mut VM) -> Errors {
+    vm.set_numeric_hook(Arc::new(numeric));
+    let errors = Errors::default();
+    let cell = Arc::clone(&errors.0);
+    vm.set_extension_handler(Box::new(move |vm: &mut VM, id: u16, arg: u8| {
+        if let Err(msg) = extension(vm, id, arg) {
+            *cell.lock().expect("error lock") = Some(msg);
+            vm.request_halt();
+        }
+    }));
+    // Hot loops trace-compile through fusevm's Cranelift JIT, and a chunk the
+    // block tier can take whole runs in native code with no dispatch loop at
+    // all. With `jit-disk-cache` the compiled code outlives the process.
+    if jit_enabled() {
+        vm.enable_tracing_jit();
+    }
+    errors
+}
+
+/// Whether to arm the JIT — off when `TCLRS_JIT` is `off`, `0` or `no`.
+///
+/// The switch exists so the benchmark can measure the interpreter and the
+/// JIT-armed VM as separate rows on the same binary. Arming the tracing JIT is
+/// not free even when no trace ever compiles: the dispatch loop checks the
+/// recorder at every op and consults the block tier once per run.
+fn jit_enabled() -> bool {
+    !matches!(
+        std::env::var("TCLRS_JIT").as_deref(),
+        Ok("off") | Ok("0") | Ok("no")
+    )
+}
+
 /// Compile and run a script, capturing its output.
 pub fn eval(src: &str) -> Result<Outcome, String> {
-    let script = crate::parser::parse(src).map_err(|e| e.to_string())?;
-    let chunk = compiler::compile(&script).map_err(|e| e.to_string())?;
+    let chunk = compile(src)?;
 
     let output = Arc::new(Mutex::new(String::new()));
-    let error = Arc::new(Mutex::new(None::<String>));
-
     let mut vm = VM::new(chunk);
+    let errors = install_hooks(&mut vm);
     let sink = Arc::clone(&output);
     vm.set_output_sink(Box::new(move |s: &str| {
         sink.lock().expect("output lock").push_str(s);
     }));
-    vm.set_numeric_hook(Arc::new(numeric));
-    let err_cell = Arc::clone(&error);
-    vm.set_extension_handler(Box::new(move |vm: &mut VM, id: u16, arg: u8| {
-        if let Err(msg) = extension(vm, id, arg) {
-            *err_cell.lock().expect("error lock") = Some(msg);
-            vm.request_halt();
-        }
-    }));
 
     let outcome = vm.run();
-    if let Some(msg) = error.lock().expect("error lock").take() {
+    if let Some(msg) = errors.take() {
         return Err(msg);
     }
     let output = output.lock().expect("output lock").clone();
@@ -65,6 +117,54 @@ pub fn eval(src: &str) -> Result<Outcome, String> {
             result: String::new(),
             output,
         }),
+        VMResult::Error(e) => Err(e),
+    }
+}
+
+/// Parse and lower a script, with both failures reported the same way.
+pub fn compile(src: &str) -> Result<fusevm::Chunk, String> {
+    let script = crate::parser::parse(src).map_err(|e| e.to_string())?;
+    let mut chunk = compiler::compile(&script).map_err(|e| e.to_string())?;
+    // Tcl's integers are arbitrary-precision, and this frontend has no bignum:
+    // an `i64` that overflows is an error, raised by the numeric hook. Native
+    // codegen would wrap instead, so ask fusevm for the overflow-checked
+    // lowering — `Add`/`Sub`/`Mul` stay native registers on the common path and
+    // deopt into the hook when a result does not fit. Without this, AOT prints
+    // -9223372036854775808 where the interpreter reports "integer value too
+    // large to represent" (`tests/aot_differential.rs`).
+    chunk.int_overflow_deopt = true;
+    Ok(chunk)
+}
+
+/// Compile and run a script, writing its output straight to stdout.
+///
+/// What the `tclrs` binary does, and what the AOT runtime does for a linked
+/// script. Output goes through one buffered writer rather than a locked
+/// `write_all` per `puts`, so a script that prints in a loop is not measuring
+/// the cost of a syscall per line.
+pub fn run_to_stdout(src: &str) -> Result<(), String> {
+    let mut vm = VM::new(compile(src)?);
+    let errors = install_hooks(&mut vm);
+    install_stdout_sink(&mut vm);
+    let outcome = vm.run();
+    finish(outcome, &errors)
+}
+
+/// Buffer the VM's output into one writer, flushed when the VM is dropped.
+pub(crate) fn install_stdout_sink(vm: &mut VM) {
+    let out = Mutex::new(std::io::BufWriter::new(std::io::stdout()));
+    vm.set_output_sink(Box::new(move |s: &str| {
+        let _ = out.lock().expect("output lock").write_all(s.as_bytes());
+    }));
+}
+
+/// Reduce a finished run to success or the message that explains it.
+pub(crate) fn finish(outcome: VMResult, errors: &Errors) -> Result<(), String> {
+    if let Some(msg) = errors.take() {
+        return Err(msg);
+    }
+    match outcome {
+        VMResult::Ok(_) | VMResult::Halted => Ok(()),
         VMResult::Error(e) => Err(e),
     }
 }

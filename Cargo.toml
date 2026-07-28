@@ -18,11 +18,25 @@ categories = ["command-line-utilities", "compilers"]
 [lib]
 name = "tclrs"
 path = "src/lib.rs"
+# `staticlib` produces libtclrs.a so an AOT object (fusevm::aot) can be linked
+# against the Tcl runtime — the `fusevm_aot_register_builtins` hook in
+# `src/aot_runtime.rs` plus fusevm's AOT runtime — into a standalone executable.
+crate-type = ["rlib", "staticlib"]
+
+[[bin]]
+name = "tclrs"
+path = "src/main.rs"
 
 [dependencies]
 # Execution and codegen live in fusevm; this crate only lowers to its ops.
-# The JIT features arrive in phase 6, with the benchmarks that justify them.
-fusevm = "0.14.12"
+#
+# `jit` is fusevm's three-tier Cranelift JIT (linear / block / tracing);
+# `jit-disk-cache` adds the persistent on-disk cache of compiled native code
+# (`~/.cache/fusevm-jit`, `FUSEVM_JIT_CACHE_DIR` to relocate or `=off` to
+# disable) so codegen is not repaid on every process start; `aot` is the
+# closed-world compiler that lowers a whole `Chunk` to a relocatable object
+# (`src/aot.rs` here links one into a native executable).
+fusevm = { version = "0.14.12", features = ["jit", "jit-disk-cache", "aot"] }
 
 [profile.release]
 lto = true
