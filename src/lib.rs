@@ -34,4 +34,4 @@ pub mod runtime;
 pub mod tiers;
 
 pub use parser::{parse, Command, ParseError, Part, Script, Word};
-pub use runtime::{eval, Interp, Outcome, TclError};
+pub use runtime::{eval, eval_captured, Interp, Outcome, TclError};

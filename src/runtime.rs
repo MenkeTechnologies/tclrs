@@ -112,12 +112,21 @@ pub fn compile(src: &str) -> Result<Chunk, String> {
 /// A one-shot convenience over [`Interp`]: the state it builds is discarded
 /// when it returns.
 pub fn eval(src: &str) -> Result<Outcome, String> {
+    let (result, output) = eval_captured(src);
+    result.map(|result| Outcome { result, output })
+}
+
+/// Compile and run a script, reporting what it wrote even when it fails.
+///
+/// [`eval`] drops the output of a failing script, which is the convenient
+/// shape for a caller that only wants the value. A conformance harness needs
+/// both halves: a Tcl program that prints and then fails has an observable
+/// outcome on stdout as well as an error, and comparing only the error would
+/// let a divergence in the printed part go unnoticed.
+pub fn eval_captured(src: &str) -> (Result<String, String>, String) {
     let mut interp = Interp::capturing();
-    let result = interp.eval(src).map_err(|e| e.to_string())?;
-    Ok(Outcome {
-        result,
-        output: interp.take_output(),
-    })
+    let result = interp.eval(src).map_err(|e| e.to_string());
+    (result, interp.take_output())
 }
 
 // ── the interpreter ──────────────────────────────────────────────────────
