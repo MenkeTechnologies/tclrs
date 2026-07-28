@@ -1046,15 +1046,37 @@ whole interface.
 What it has found is [`BUGS.md`](BUGS.md).
 
 A second fuzzer needs no `tclsh`: `fuzz/fuzz_targets/` holds cargo-fuzz targets
-over the parser and the compiler, for the inputs a grammar never produces — a
-lone `\x00`, a truncated escape, thousands of nested brackets.
+for the inputs a grammar never produces — a lone `\x00`, a truncated escape,
+thousands of nested brackets.
+
+| target     | surface                                                    |
+| ---------- | ---------------------------------------------------------- |
+| `parse`    | the command language, on arbitrary bytes                   |
+| `compiler` | parse and lowering, without running anything               |
+| `expr`     | the expression grammar, which `parse` never reaches        |
+| `eval`     | a generated script, compiled and run                       |
+| `vm`       | one chunk run twice, on two interpreters                   |
 
 ```sh
-cargo +nightly fuzz run parse      # or: compile
+cargo +nightly fuzz run parse -- -max_total_time=1500
+cargo +nightly fuzz run expr  -- -max_total_time=1500 -max_len=32768
 ```
 
-`tests/fuzz_smoke.rs` replays their seed corpus and a hostile-input list under
-stable, so `cargo test` keeps the scaffolding honest without nightly.
+`expr` wants the larger `-max_len`: its deepest seed is the 16 KB of nested
+parentheses that used to abort the process, and libfuzzer skips a seed above the
+default 4 KB.
+
+`eval` and `vm` do not feed their bytes to the VM. A byte string is a weak input
+for a runtime — almost every mutation of one is a parse error, so nothing
+executes — so `fuzz/fuzz_targets/shared.rs` reads the input as a sequence of
+fragments and builds a Tcl program from fixed command skeletons, with the
+fuzzer's bytes as the *arguments*. That is where the crashes have been: a
+`format` field width, a `string repeat` count, a list index. Every generated loop
+counts to a literal and no command in this frontend touches the filesystem, so a
+generated script terminates and a libfuzzer timeout is a real finding.
+
+`tests/fuzz_smoke.rs` replays every target's seed corpus and a hostile-input list
+under stable, so `cargo test` keeps the scaffolding honest without nightly.
 
 ---
 

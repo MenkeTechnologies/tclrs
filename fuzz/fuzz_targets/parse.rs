@@ -9,15 +9,23 @@
 //! Run under cargo-fuzz:
 //!   cargo +nightly fuzz run parse
 #![no_main]
+#![allow(non_upper_case_globals)]
 
 use libfuzzer_sys::fuzz_target;
 
+#[allow(dead_code)]
+#[path = "shared.rs"]
+mod shared;
+
 fuzz_target!(|data: &[u8]| {
-    let Ok(src) = std::str::from_utf8(data) else {
+    let Some(src) = shared::source(data) else {
         return;
     };
-    if src.len() > 65_536 {
-        return;
-    }
-    let _ = tclrs::parse(src);
+    // On a thread of `runtime::RECOMMENDED_STACK`: the parser's own depth bound
+    // is calibrated for that stack, not for the 8 MiB libfuzzer's main thread
+    // has. See `shared::on_deep_stack`.
+    let src = src.to_string();
+    shared::on_deep_stack(move || {
+        let _ = tclrs::parse(&src);
+    });
 });

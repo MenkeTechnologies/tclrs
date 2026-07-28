@@ -28,6 +28,27 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "expr"
+path = "fuzz_targets/expr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "eval"
+path = "fuzz_targets/eval.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vm"
+path = "fuzz_targets/vm.rs"
+test = false
+doc = false
+bench = false
+
 # Standalone — not part of the main crate's build, so the fuzz dependencies stay
 # off it.
 [workspace]

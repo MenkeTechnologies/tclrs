@@ -13,17 +13,25 @@
 //! structurally.
 //!
 //! Run under cargo-fuzz:
-//!   cargo +nightly fuzz run compile
+//!   cargo +nightly fuzz run compiler
 #![no_main]
+#![allow(non_upper_case_globals)]
 
 use libfuzzer_sys::fuzz_target;
 
+#[allow(dead_code)]
+#[path = "shared.rs"]
+mod shared;
+
 fuzz_target!(|data: &[u8]| {
-    let Ok(src) = std::str::from_utf8(data) else {
+    let Some(src) = shared::source(data) else {
         return;
     };
-    if src.len() > 65_536 {
-        return;
-    }
-    let _ = tclrs::runtime::compile(src);
+    // On a thread of `runtime::RECOMMENDED_STACK` — see
+    // `shared::on_deep_stack`. Lowering recurses on the same nesting the parser
+    // does, so it needs the same stack.
+    let src = src.to_string();
+    shared::on_deep_stack(move || {
+        let _ = tclrs::runtime::compile(&src);
+    });
 });

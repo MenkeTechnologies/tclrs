@@ -11,11 +11,25 @@
 //! suites are for.
 //!
 //! When adding a target under `fuzz/fuzz_targets/`, add its
-//! `<target>_corpus_does_not_panic` test here.
+//! `<target>_corpus_does_not_panic` test here. A target is a `[[bin]]` in
+//! `fuzz/Cargo.toml`; `shared.rs` is not one, and is included below for the
+//! input decoder the `eval` and `vm` seeds need.
 
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
+
+/// The `eval` and `vm` targets do not run their input; they run a Tcl script
+/// built from it. Their seeds are therefore encoded fragments, not Tcl, and
+/// replaying them means decoding them the way the targets do — so the generator
+/// is included here rather than copied.
+#[allow(dead_code, non_upper_case_globals)]
+#[path = "../fuzz/fuzz_targets/shared.rs"]
+mod shared;
+
+/// As in the targets: a script this file runs must not need the stack
+/// [`tclrs::runtime::DEFAULT_RECURSION_LIMIT`] is calibrated for.
+const RECURSION_LIMIT: usize = 32;
 
 fn corpus(target: &str) -> Vec<(PathBuf, String)> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -61,10 +75,92 @@ fn no_panics(target: &str, f: impl Fn(&str)) {
     );
 }
 
+/// As [`no_panics`], for a target whose input is bytes rather than Tcl text.
+fn no_panics_bytes(target: &str, f: impl Fn(&[u8])) {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("fuzz")
+        .join("corpus")
+        .join(target);
+    let mut entries: Vec<PathBuf> = fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    entries.sort();
+    assert!(
+        !entries.is_empty(),
+        "fuzz/corpus/{target} must have seed files"
+    );
+    let mut panicked = Vec::new();
+    for path in entries {
+        let data = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        if catch_unwind(AssertUnwindSafe(|| f(&data))).is_err() {
+            panicked.push(path);
+        }
+    }
+    assert!(
+        panicked.is_empty(),
+        "{} seed(s) panicked: {:?}",
+        panicked.len(),
+        panicked
+    );
+}
+
 #[test]
 fn parse_corpus_does_not_panic() {
     no_panics("parse", |src| {
         let _ = tclrs::parse(src);
+    });
+}
+
+/// The `expr` target's seeds, on a thread of [`tclrs::runtime::RECOMMENDED_STACK`].
+///
+/// The expression parser recurses on nesting, bounded by
+/// [`tclrs::expr::MAX_EXPR_DEPTH`], and that bound is calibrated for the stack
+/// this crate documents a host must provide — not for the 2 MiB a test thread
+/// gets. `deep-parens.tcl` is the input that aborted the process before the
+/// bound existed, so replaying it anywhere smaller would abort for the stack
+/// rather than for the bug.
+#[test]
+fn expr_corpus_does_not_panic() {
+    std::thread::Builder::new()
+        .stack_size(tclrs::runtime::RECOMMENDED_STACK)
+        .spawn(|| {
+            no_panics("expr", |src| {
+                let _ = tclrs::expr::parse(src);
+                let _ = tclrs::runtime::compile(&format!("expr {{{src}}}"));
+            });
+        })
+        .expect("spawn")
+        .join()
+        .expect("the expr corpus sweep panicked");
+}
+
+/// The `eval` target's seeds: decoded into a script, compiled, and run.
+#[test]
+fn eval_corpus_does_not_panic() {
+    no_panics_bytes("eval", |data| {
+        let mut interp = tclrs::Interp::capturing();
+        interp.set_recursion_limit(RECURSION_LIMIT);
+        let _ = interp.eval(&shared::script(data));
+    });
+}
+
+/// The `vm` target's seeds: compiled once, then run twice, on two interpreters.
+/// A chunk is not consumed by being executed, and the second run is what would
+/// catch lowering that depended on the state of the VM the first one used.
+#[test]
+fn vm_corpus_does_not_panic() {
+    no_panics_bytes("vm", |data| {
+        let Ok(chunk) = tclrs::runtime::compile(&shared::script(data)) else {
+            return;
+        };
+        for _ in 0..2 {
+            let mut interp = tclrs::Interp::capturing();
+            interp.set_recursion_limit(RECURSION_LIMIT);
+            let _ = interp.run_chunk(chunk.clone());
+        }
     });
 }
 
