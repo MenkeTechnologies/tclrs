@@ -459,7 +459,11 @@ fn a_dump_describes_the_script_instead_of_running_it() {
         assert_eq!(run.stderr, "", "{flag} wrote to stderr");
         assert!(!run.stdout.contains("x is 5"), "{flag} ran the script");
         // The `$x` was read as a substitution, and the dump says so.
-        assert!(run.stdout.contains("var"), "{flag} printed {:?}", run.stdout);
+        assert!(
+            run.stdout.contains("var"),
+            "{flag} printed {:?}",
+            run.stdout
+        );
     }
 }
 
@@ -470,6 +474,10 @@ fn a_dump_refuses_a_script_that_does_not_parse() {
     let tclrs_bin = PathBuf::from(TCLRS);
     let run = run(&tclrs_bin, &["--dump-ast", "-c", "puts {unclosed"], "");
     assert_eq!(run.stdout, "");
-    assert!(run.stderr.contains("missing close-brace"), "{:?}", run.stderr);
+    assert!(
+        run.stderr.contains("missing close-brace"),
+        "{:?}",
+        run.stderr
+    );
     assert_eq!(run.status, Some(1));
 }
