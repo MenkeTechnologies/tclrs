@@ -71,6 +71,11 @@ pub mod ext {
     /// `info coroutine`: the running coroutine's qualified name, or `""`.
     pub const CORO_INFO: u16 = 14;
 
+    /// `[name, arg …]` with the count in the inline operand — call the function
+    /// an inline `rust { ... }` block exported. Emitted only for a name
+    /// [`crate::rust_ffi::is_exported`] answered for while compiling.
+    pub const FFI_CALL: u16 = 63;
+
     /// Pop a value and push Tcl's boolean reading of it — 1 or 0 — or refuse it.
     /// `arg` is 0 for a condition and 1 for `!`, which differ in how they word
     /// the refusal. Emitted only where the value could be a string, so the
@@ -654,12 +659,19 @@ impl Compiler {
             "yield" => self.cmd_yield(args),
             "yieldto" => self.cmd_yieldto(args),
             "info" => self.cmd_info(args),
+            // The command an inline `rust { ... }` block was rewritten into.
+            name if name == crate::rust_ffi::COMPILE_COMMAND => self.cmd_rust_compile(args),
             // A coroutine's context command. Its name is refused to `proc`, so
             // there is never both a procedure and a coroutine to choose from.
             other if self.coros.contains(other) => self.call_coro(other, args),
             // A procedure the script defines shadows nothing built in: the
             // names above are refused to `proc` at its definition.
             other if self.procs.contains_key(other) => self.call_proc(other, args),
+            // A function an inline `rust { ... }` block exported. Asked after
+            // the procedures, so a Tcl procedure of the same name still wins —
+            // a script's own definition is never shadowed by a library it
+            // loaded.
+            other if crate::rust_ffi::is_exported(other) => self.call_ffi(other, args),
             // The list commands own the tail of the dispatch, and report the
             // unknown-command error for anything no module claims.
             other => crate::cmd_list::compile(self, other, args),

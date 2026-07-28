@@ -36,6 +36,7 @@ pub mod names;
 pub mod parser;
 pub mod procs;
 pub mod runtime;
+pub mod rust_ffi;
 pub mod tiers;
 
 pub use parser::{parse, Command, ParseError, Part, Script, Word};

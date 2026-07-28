@@ -216,6 +216,39 @@ module the REPL's completer uses, so the editor and the prompt agree.
 [`tests/lsp_session.rs`](tests/lsp_session.rs) drives the real binary over the
 wire: handshake, unsolicited diagnostics, edits, and a shutdown that exits.
 
+### Inline Rust
+
+A `rust { ... }` block compiles to a shared library and its exports become Tcl
+commands:
+
+```tcl
+rust {
+    pub extern "C" fn add(a: i64, b: i64) -> i64 { a + b }
+}
+puts [add 21 21]        ;# → 42
+```
+
+`rust {` is not a Tcl command, so the block never reaches the parser: the source
+is rewritten first into `__rust_compile <base64> <line>`, padded to keep the
+line count so a later error still points where it was written. The compiling,
+`dlopen`ing and marshalling belong to
+[`fusevm::ffi`](https://github.com/MenkeTechnologies/fusevm); the library is
+cached by the hash of the block's body, so the second run of a script does not
+call rustc.
+
+**Registration happens while compiling, not while running.** This frontend
+resolves dispatch at compile time — a name is a builtin, a procedure, a
+coroutine, or an error before the VM starts — so the block is compiled and
+registered as its command is lowered, which is what makes `add` a known name by
+the next line. A procedure of the same name still wins: dispatch asks the
+script's own definitions first.
+
+Signatures are fusevm's marshalling set: up to four `i64` arguments returning
+`i64`, up to three `f64` returning `f64`, and `*const c_char` returning either
+`i64` or `*const c_char` (`c_char`, `CStr` and `CString` are already in scope
+inside a block). Anything else is not exported, and the block is refused for
+having no exports.
+
 ### The debugger
 
 `tclrs --dap` speaks the Debug Adapter Protocol on stdio: breakpoints, stepping,

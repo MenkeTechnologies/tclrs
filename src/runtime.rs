@@ -103,7 +103,10 @@ impl std::error::Error for TclError {}
 /// keeps what it compiled; this is the entry for the callers that want the
 /// chunk itself — the ahead-of-time compiler, the tier report, and `--disasm`.
 pub fn compile(src: &str) -> Result<Chunk, String> {
-    let script = crate::parser::parse(src).map_err(|e| e.to_string())?;
+    // As in [`crate::cache::ChunkCache::compile`]: an inline `rust { ... }`
+    // block is rewritten into a command before the parser sees the script.
+    let rewritten = crate::rust_ffi::desugar(src);
+    let script = crate::parser::parse(&rewritten).map_err(|e| e.to_string())?;
     crate::compiler::compile(&script).map_err(|e| e.to_string())
 }
 
@@ -473,6 +476,7 @@ impl Hooks {
             }
             let outcome = match id {
                 ext::EVAL => eval_op(&interp, vm, arg),
+                ext::FFI_CALL => ffi_op(vm, arg).map_err(TclError::plain),
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
             if let Err(e) = outcome {
@@ -526,6 +530,21 @@ fn jit_enabled() -> bool {
         std::env::var("TCLRS_JIT").as_deref(),
         Ok("off") | Ok("0") | Ok("no")
     )
+}
+
+/// A call to a function an inline `rust { ... }` block exported: the name was
+/// pushed first, then the arguments. The library is already loaded — the
+/// compiler registered it while lowering the block — so this only marshals.
+fn ffi_op(vm: &mut VM, argc: u8) -> Result<(), String> {
+    let mut values = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        values.push(vm.pop());
+    }
+    values.reverse();
+    let (name, args) = values.split_first().expect("the name is pushed first");
+    let result = crate::rust_ffi::call(&to_tcl_string(name), args)?;
+    vm.push(result);
+    Ok(())
 }
 
 /// The `eval` command: concatenate the arguments and run the result as a

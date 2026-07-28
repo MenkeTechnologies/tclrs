@@ -121,6 +121,24 @@ expansion.
 .PP
 What is not built yet is refused with a message naming the construct, never
 silently misread.
+.SH INLINE RUST
+A \fBrust { ... }\fR block at the start of a command compiles to a shared
+library, and every \fBpub extern "C" fn\fR it exports becomes a command:
+.PP
+.RS
+.nf
+rust {
+    pub extern "C" fn add(a: i64, b: i64) -> i64 { a + b }
+}
+puts [add 21 21]      \(rh 42
+.fi
+.RE
+.PP
+The block is rewritten out of the source before parsing, compiled while the
+script is being lowered, and cached by the hash of its body. A procedure of the
+same name shadows an exported function. Signatures are limited to i64 (up to
+four arguments), f64 (up to three), and \fB*const c_char\fR returning i64 or
+\fB*const c_char\fR.
 .SH ENVIRONMENT
 .TP
 .B TCLRS_JIT

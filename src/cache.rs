@@ -61,7 +61,12 @@ impl ChunkCache {
             return Ok(Arc::clone(chunk));
         }
         self.misses += 1;
-        let script = crate::parser::parse(src).map_err(|e| TclError {
+        // An inline `rust { ... }` block is not Tcl and never reaches the
+        // parser: it is rewritten into a command first. The cache is keyed by
+        // the source as written, so the rewrite is paid once per distinct
+        // script, like the parse and the lowering it is part of.
+        let rewritten = crate::rust_ffi::desugar(src);
+        let script = crate::parser::parse(&rewritten).map_err(|e| TclError {
             msg: e.msg,
             line: Some(e.line),
         })?;
