@@ -1,6 +1,6 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00015   depth: 3   generator: scripts/fuzz/gen.tcl
-# verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=unexpected character 'Ã' in expression
+# verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=invalid character "Ü"
 # tclsh: 9.0.4
 # tclrs: tclrs 0.1.0
 # tclsh-status: 0
@@ -8,7 +8,7 @@
 # tclsh-stderr: 
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: unexpected character 'Ã' in expression\n    (file "target/fuzz/work/record/driven.tcl" line 1)\n
+# tclrs-stderr: invalid character "Ü"\n    (file "target/fuzz/work/record/driven.tcl" line 22)\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

@@ -903,57 +903,252 @@ impl Num {
     }
 }
 
-/// Interpret a value as a Tcl number, or `None` when it has no numeric
-/// interpretation. Leading and trailing whitespace is allowed, as are the
-/// radix prefixes `0x`, `0o` and `0b`.
-fn tcl_num(v: &Value) -> Option<Num> {
+/// Why a string is not a number this frontend can use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotNumeric {
+    /// No numeric spelling at all.
+    Unparsable,
+    /// An integer spelling whose value does not fit an `i64`. Tcl promotes it to
+    /// a bignum; this frontend has none, so the operand is refused rather than
+    /// silently becoming the nearest double — `expr {99999999999999999999 + 1}`
+    /// is the overflow error, not `1e+20`.
+    TooLarge,
+}
+
+/// Interpret a value as a Tcl number. Leading and trailing whitespace is
+/// allowed, as are the radix prefixes `0x`, `0o` and `0b`.
+fn tcl_num(v: &Value) -> Result<Num, NotNumeric> {
     match v {
-        Value::Int(i) => Some(Num::Int(*i)),
-        Value::Float(f) => Some(Num::Float(*f)),
-        Value::Bool(b) => Some(Num::Int(*b as i64)),
-        _ => parse_num(v.as_str_cow().trim()),
+        Value::Int(i) => Ok(Num::Int(*i)),
+        Value::Float(f) => Ok(Num::Float(*f)),
+        Value::Bool(b) => Ok(Num::Int(*b as i64)),
+        _ => parse_number(v.as_str_cow().trim()),
     }
 }
 
-pub(crate) fn parse_num(text: &str) -> Option<Num> {
-    if text.is_empty() {
+/// A number, reading an integer too large for an `i64` as the nearest double.
+///
+/// Only comparison uses this. An operator that computes has to refuse the
+/// operand, since answering with the nearest double would be answering with a
+/// value the script never wrote; ordering has no exact answer without a bignum
+/// either way, and the nearest double orders far better than the string does —
+/// `99999999999999999999 < 200000000000000000000` is true as doubles and false
+/// as text.
+fn approx_num(v: &Value) -> Option<Num> {
+    if let Ok(n) = tcl_num(v) {
+        return Some(n);
+    }
+    let text = v.as_str_cow();
+    let body = text.trim();
+    let (sign, digits) = match body.strip_prefix('-') {
+        Some(rest) => (-1.0, rest),
+        None => (1.0, body.strip_prefix('+').unwrap_or(body)),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
+    }
+    digits.parse::<f64>().ok().map(|f| Num::Float(sign * f))
+}
+
+pub(crate) fn parse_number(text: &str) -> Result<Num, NotNumeric> {
+    if text.is_empty() {
+        return Err(NotNumeric::Unparsable);
     }
     let (sign, body) = match text.as_bytes()[0] {
         b'-' => (-1i64, &text[1..]),
         b'+' => (1, &text[1..]),
         _ => (1, text),
     };
+    // Tcl 9's radix prefixes. A leading zero is *not* one of them: `010` is ten,
+    // as `0d10` is, which is why there is a `0d` at all.
     let radix = if body.len() > 2 {
         match &body[..2] {
             "0x" | "0X" => Some(16),
             "0o" | "0O" => Some(8),
             "0b" | "0B" => Some(2),
+            "0d" | "0D" => Some(10),
             _ => None,
         }
     } else {
         None
     };
+
+    // `_` is numeric whitespace, not part of any value.
+    let cleaned;
+    let body = if body.contains('_') {
+        match without_separators(body, radix.unwrap_or(10)) {
+            Some(text) => {
+                cleaned = text;
+                cleaned.as_str()
+            }
+            None => return Err(NotNumeric::Unparsable),
+        }
+    } else {
+        body
+    };
+
     if let Some(radix) = radix {
-        return i64::from_str_radix(&body[2..], radix)
-            .ok()
-            .map(|v| Num::Int(sign * v));
+        let digits = &body[2..];
+        return match i64::from_str_radix(digits, radix) {
+            Ok(v) => Ok(Num::Int(sign * v)),
+            // Digits of the right shape that do not fit are the bignum case; a
+            // `0x` with no valid digit at all is simply not a number.
+            Err(_) if !digits.is_empty() && digits.chars().all(|c| c.is_digit(radix)) => {
+                Err(NotNumeric::TooLarge)
+            }
+            Err(_) => Err(NotNumeric::Unparsable),
+        };
     }
     if let Ok(i) = body.parse::<i64>() {
-        return Some(Num::Int(sign * i));
+        return Ok(Num::Int(sign * i));
+    }
+    // An integer spelling that does not fit is the bignum case, and must not
+    // fall through to the double parser — which would take it, exactly, and
+    // answer with a value the script never wrote.
+    if !body.is_empty() && body.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(NotNumeric::TooLarge);
     }
     // Tcl accepts Inf and NaN spellings that Rust's parser also takes; it does
     // not accept a bare `.` or an empty mantissa, and neither does Rust's.
     body.parse::<f64>()
-        .ok()
         .map(|f| Num::Float(sign as f64 * f))
+        .map_err(|_| NotNumeric::Unparsable)
+}
+
+/// Remove Tcl 9's numeric whitespace, or answer `None` when one of the `_` runs
+/// is not where a separator may be.
+///
+/// `TclParseNumber` (`tclStrToD.c`) accepts a run of `_` only between two digits
+/// of the number's own radix, and never at either end: `1_0`, `1__0`,
+/// `1_000_000`, `0x1_0` and `1e1_0` are numbers, and `_1`, `1_`, `1_.5`,
+/// `1_e3` and `0x_10` are not.
+fn without_separators(body: &str, radix: u32) -> Option<String> {
+    let bytes = body.as_bytes();
+    let digit = |i: usize| -> bool { bytes.get(i).is_some_and(|b| (*b as char).is_digit(radix)) };
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'_' {
+            i += 1;
+            continue;
+        }
+        let run_start = i;
+        while i < bytes.len() && bytes[i] == b'_' {
+            i += 1;
+        }
+        if run_start == 0 || !digit(run_start - 1) || !digit(i) {
+            return None;
+        }
+    }
+    Some(body.replace('_', ""))
+}
+
+/// Tcl's boolean rule, which is not the VM's truthiness rule: a condition must
+/// be a number or one of the words `true`, `false`, `yes`, `no`, `on`, `off`,
+/// abbreviated to any non-ambiguous prefix and in any case.
+///
+/// Ported from `ParseBoolean` and `Tcl_GetBoolFromObj` (`tclObj.c`): the word
+/// table is tried first, and anything it rejects is offered to the number
+/// parser, so `007`, `0x10`, `1_0`, ` 1 ` and `1e3` are all true and `b`, `o`
+/// and `""` are errors. `o` is an error because it is a prefix of both `on` and
+/// `off`, which is why the two are only accepted from two characters up.
+pub(crate) fn tcl_bool(v: &Value) -> Result<bool, String> {
+    match v {
+        Value::Int(i) => return Ok(*i != 0),
+        Value::Bool(b) => return Ok(*b),
+        Value::Float(f) => return float_bool(*f),
+        _ => {}
+    }
+    let text = v.as_str_cow();
+    if let Some(b) = boolean_word(&text) {
+        return Ok(b);
+    }
+    match parse_number(text.trim()) {
+        Ok(Num::Int(i)) => Ok(i != 0),
+        Ok(Num::Float(f)) => float_bool(f),
+        Err(NotNumeric::TooLarge) => Err(too_large()),
+        Err(NotNumeric::Unparsable) => Err(format!(
+            "expected boolean value but got {}",
+            named(&text, 50)
+        )),
+    }
+}
+
+fn float_bool(f: f64) -> Result<bool, String> {
+    if f.is_nan() {
+        return Err("floating point value is Not a Number".to_string());
+    }
+    Ok(f != 0.0)
+}
+
+/// `ParseBoolean`'s word table. `None` means "not one of the words", which is
+/// the cue to try the number parser rather than to fail.
+fn boolean_word(text: &str) -> Option<bool> {
+    // "false" is the longest spelling, so nothing longer can be one of these —
+    // and the reference implementation measures bytes, not characters.
+    if text.is_empty() || text.len() > 5 {
+        return None;
+    }
+    if text == "0" {
+        return Some(false);
+    }
+    if text == "1" {
+        return Some(true);
+    }
+    let lower = text.to_ascii_lowercase();
+    // Only the letters the six words are spelled with; anything else is not a
+    // word, which keeps `0x10` out of the prefix matching below.
+    if !lower.bytes().all(|b| b"aeflnorstuy".contains(&b)) {
+        return None;
+    }
+    for (word, value) in [
+        ("yes", true),
+        ("no", false),
+        ("true", true),
+        ("false", false),
+        ("on", true),
+        ("off", false),
+    ] {
+        // `on` and `off` share their first letter, so a one-character prefix of
+        // either is ambiguous and rejected.
+        let shortest = if word.starts_with('o') { 2 } else { 1 };
+        if lower.len() >= shortest && word.starts_with(&lower) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// How the reference interpreter names an unusable value in a diagnostic: `a
+/// list` when the text could be one, and otherwise the text quoted and cut at
+/// `limit` bytes.
+pub(crate) fn named(text: &str, limit: usize) -> String {
+    if list::looks_like_a_list(text) {
+        return "a list".to_string();
+    }
+    let mut end = text.len().min(limit);
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("\"{}\"", &text[..end])
+}
+
+/// An integer operand, in the wording of the commands that want one — `incr`
+/// and `format`'s integer conversions — rather than of `expr`'s operators.
+pub(crate) fn tcl_int(v: &Value) -> Result<i64, String> {
+    if let Value::Int(i) = v {
+        return Ok(*i);
+    }
+    let text = to_tcl_string(v);
+    match parse_number(text.trim()) {
+        Ok(Num::Int(i)) => Ok(i),
+        Err(NotNumeric::TooLarge) => Err(too_large()),
+        _ => Err(format!("expected integer but got {}", named(&text, 50))),
+    }
 }
 
 /// The numeric hook: called when an operand is not something the VM can
 /// compute on natively, or when an integer operation overflows.
 fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
-    let (x, y) = (tcl_num(a), tcl_num(b));
-
     // Comparisons prefer numbers but fall back to string order, which is what
     // makes `expr {"10" < "9"}` false and `expr {10 < 9}` also false while
     // `expr {"abc" < "abd"}` is true.
@@ -962,7 +1157,7 @@ fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
         NumOp::Lt | NumOp::Gt | NumOp::Le | NumOp::Ge | NumOp::Eq | NumOp::Ne
     );
     if cmp {
-        let ordering = match (x, y) {
+        let ordering = match (approx_num(a), approx_num(b)) {
             (Some(Num::Int(i)), Some(Num::Int(j))) => i.cmp(&j),
             (Some(p), Some(q)) => p
                 .as_f64()
@@ -991,11 +1186,11 @@ fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
         NumOp::Neg => "-",
         _ => "?",
     };
-    let x = x.ok_or_else(|| non_numeric(a, sym))?;
+    let x = tcl_num(a).map_err(|why| operand_error(why, a, sym))?;
     let y = if matches!(op, NumOp::Neg) {
         Num::Int(0)
     } else {
-        y.ok_or_else(|| non_numeric(b, sym))?
+        tcl_num(b).map_err(|why| operand_error(why, b, sym))?
     };
 
     let value = match (op, x, y) {
@@ -1030,6 +1225,15 @@ fn non_numeric(v: &Value, op: &str) -> String {
     )
 }
 
+/// What an operator says about an operand it cannot use: the overflow this
+/// frontend documents in place of a bignum, or the non-numeric refusal.
+fn operand_error(why: NotNumeric, v: &Value, op: &str) -> String {
+    match why {
+        NotNumeric::TooLarge => too_large(),
+        NotNumeric::Unparsable => non_numeric(v, op),
+    }
+}
+
 /// Tcl promotes an overflowing integer to arbitrary precision. This frontend
 /// has no bignum yet, so the operation fails rather than wrapping silently.
 fn too_large() -> String {
@@ -1042,9 +1246,31 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         ext::DIV | ext::MOD | ext::POW => {
             let b = vm.pop();
             let a = vm.pop();
-            let x = tcl_num(&a).ok_or_else(|| non_numeric(&a, sym_of(id)))?;
-            let y = tcl_num(&b).ok_or_else(|| non_numeric(&b, sym_of(id)))?;
+            let x = tcl_num(&a).map_err(|why| operand_error(why, &a, sym_of(id)))?;
+            let y = tcl_num(&b).map_err(|why| operand_error(why, &b, sym_of(id)))?;
             vm.push(arith(id, x, y)?);
+            Ok(())
+        }
+        // Tcl's boolean rule, which the VM's own truthiness is not: the value a
+        // condition produced is 1 or 0, or the condition is refused.
+        ext::BOOL => {
+            let v = vm.pop();
+            let truth = if arg == 1 {
+                // `!`, whose refusal is an operand error rather than a boolean
+                // one, because `expr(n)` gives it a numeric operand and accepts
+                // a boolean word only as a second reading.
+                match tcl_num(&v) {
+                    Ok(Num::Int(i)) => i == 0,
+                    Ok(Num::Float(f)) => !float_bool(f)?,
+                    Err(NotNumeric::TooLarge) => return Err(too_large()),
+                    Err(NotNumeric::Unparsable) => {
+                        !boolean_word(&v.as_str_cow()).ok_or_else(|| non_numeric(&v, "!"))?
+                    }
+                }
+            } else {
+                tcl_bool(&v)?
+            };
+            vm.push(Value::Int(truth as i64));
             Ok(())
         }
         // Membership is a string test against the list's elements: `1 in {01}`
@@ -1137,9 +1363,29 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
             let exp = u32::try_from(j).map_err(|_| too_large())?;
             i.checked_pow(exp).map(Value::Int).ok_or_else(too_large)
         }
+        // Integral operands keep an integral result even when the exponent is
+        // negative, so the true value is truncated toward zero: `2 ** -1` is 0,
+        // not 0.5. Only ±1 survives, and 1/0 has no value at all. Measured
+        // against tclsh 9.0.4, which answers 0 / 1 / -1 / the error here and
+        // uses `powf` only when an operand is itself a double.
+        (ext::POW, Num::Int(i), Num::Int(j)) => match i {
+            0 => Err("exponentiation of zero by negative power".to_string()),
+            1 => Ok(Value::Int(1)),
+            // `j` may be `i64::MIN`, whose `abs()` does not fit, so read the
+            // parity off the low bit rather than off a negated copy.
+            -1 => Ok(Value::Int(if j % 2 == 0 { 1 } else { -1 })),
+            _ => Ok(Value::Int(0)),
+        },
         (ext::DIV, p, q) => Ok(Value::Float(p.as_f64() / q.as_f64())),
         (ext::MOD, _, _) => Err("can't use floating-point value as operand of \"%\"".to_string()),
-        (_, p, q) => Ok(Value::Float(p.as_f64().powf(q.as_f64()))),
+        // A double operand anywhere makes the result a double, and a zero base
+        // raised to a negative power still has no value.
+        (_, p, q) => {
+            if p.as_f64() == 0.0 && q.as_f64() < 0.0 {
+                return Err("exponentiation of zero by negative power".to_string());
+            }
+            Ok(Value::Float(p.as_f64().powf(q.as_f64())))
+        }
     }
 }
 

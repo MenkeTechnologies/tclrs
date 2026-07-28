@@ -1,14 +1,14 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00349   depth: 3   generator: scripts/fuzz/gen.tcl
-# verdict: DIVERGENCE	stdout	line tclsh=-1844674407370955162-1844674407370955162-18446744073709551621.000000e+00 tclrs=-1.8446744073709553e+18-1.8446744073709553e+18-1.8446744073709553e+181.000000e+00
+# verdict: SKIP	integer value too large to represent	BUGS.md — arbitrary-precision integers
 # tclsh: 9.0.4
 # tclrs: tclrs 0.1.0
 # tclsh-status: 0
 # tclsh-stdout: -1844674407370955162-1844674407370955162-18446744073709551621.000000e+00\n\x1e
 # tclsh-stderr: 
-# tclrs-status: 0
-# tclrs-stdout: -1.8446744073709553e+18-1.8446744073709553e+18-1.8446744073709553e+181.000000e+00\n\x1e
-# tclrs-stderr: 
+# tclrs-status: 1
+# tclrs-stdout: 
+# tclrs-stderr: integer value too large to represent\n    (file "target/fuzz/work/record/driven.tcl" line 23)\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

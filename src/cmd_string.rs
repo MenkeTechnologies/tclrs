@@ -1730,7 +1730,16 @@ fn parse_double(text: &str) -> Option<f64> {
         for d in lit.digits.chars().filter_map(|c| c.to_digit(lit.radix)) {
             value = value * lit.radix as f64 + d as f64;
         }
-        return Some(if lit.negative { -value } else { value });
+        // An integer spelling is converted as an integer, and an integer has no
+        // negative zero — so `format %.2f -0` prints `0.00` where the *double*
+        // `-0.0` prints `-0.00`. Measured against tclsh 9.0.4, which agrees for
+        // `-00`, `-0x0`, `-0_0` and ` -0 ` and keeps the sign of every nonzero
+        // magnitude, including one too large for an `i64`.
+        return Some(if lit.negative && value != 0.0 {
+            -value
+        } else {
+            value
+        });
     }
     if !is_double(body) {
         return None;

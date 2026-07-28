@@ -1,13 +1,13 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00387   depth: 3   generator: scripts/fuzz/gen.tcl
-# verdict: DIVERGENCE	stdout	line tclsh=s1=3.0 tclrs=s1=3
+# verdict: PASS	ran	
 # tclsh: 9.0.4
 # tclrs: tclrs 0.1.0
 # tclsh-status: 0
 # tclsh-stdout: s1=3.0\n\x1e
 # tclsh-stderr: 
 # tclrs-status: 0
-# tclrs-stdout: s1=3\n\x1e
+# tclrs-stdout: s1=3.0\n\x1e
 # tclrs-stderr: 
 #
 # The case itself is the sibling .tcl file. It is run spliced into

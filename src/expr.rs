@@ -272,10 +272,18 @@ impl<'a> ExprParser<'a> {
             }
             Some(b) if b.is_ascii_digit() || b == b'.' => self.parse_number(),
             Some(b) if b.is_ascii_alphabetic() || b == b'_' => self.parse_call(),
-            Some(b) => Err(self.error(&format!(
-                "unexpected character {:?} in expression",
-                b as char
-            ))),
+            // A whole character, not the byte at the cursor: `expr {Ü}` reports
+            // `invalid character "Ü"`, and reporting `self.src[pos]` named the
+            // lead byte of its UTF-8 encoding (`Ã`) instead. The wording is
+            // tclsh 9.0.4's, measured, and covers ASCII too — `expr {@}` is
+            // `invalid character "@"`.
+            Some(_) => {
+                let c = self.src[self.pos..]
+                    .chars()
+                    .next()
+                    .expect("a byte at the cursor is part of a character");
+                Err(self.error(&format!("invalid character \"{c}\"")))
+            }
         }
     }
 
@@ -329,12 +337,14 @@ impl<'a> ExprParser<'a> {
                 .map(Expr::Float)
                 .map_err(|_| self.error(&format!("invalid floating-point number {text:?}")))
         } else {
+            // Out of `i64` range: Tcl promotes to a bignum, which this frontend
+            // does not have. Refusing the literal here is the documented
+            // overflow; keeping the text as an operand let the runtime's number
+            // parser take it as a double, so `expr {99999999999999999999 + 1}`
+            // answered `1e+20` — a value the script never wrote.
             text.parse::<i64>()
                 .map(Expr::Int)
-                // Out of i64 range: Tcl promotes to a bignum, which this
-                // frontend does not have yet, so keep the text and let the
-                // numeric hook report it rather than silently wrapping.
-                .or_else(|_| Ok(Expr::Subst(vec![Part::Lit(text.to_string())])))
+                .map_err(|_| self.error("integer value too large to represent"))
         }
     }
 
@@ -355,7 +365,9 @@ impl<'a> ExprParser<'a> {
         self.pos += prefix_len + digits.len();
         i64::from_str_radix(&digits, radix)
             .map(Expr::Int)
-            .map_err(|_| self.error("integer literal out of range"))
+            // The same bignum case as a decimal literal's, and the same wording:
+            // `expr {0x10000000000000000}` is the documented overflow.
+            .map_err(|_| self.error("integer value too large to represent"))
     }
 
     fn parse_call(&mut self) -> Result<Expr, ParseError> {

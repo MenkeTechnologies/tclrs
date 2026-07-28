@@ -141,6 +141,21 @@ fn err(error: &str) -> Observed {
     }
 }
 
+/// Assert that tclsh and tclrs now agree on `program` — the shape a finding
+/// takes once it is fixed. tclsh is still run, so the expectation is still the
+/// reference interpreter's own answer and not a hand-written one; `expected` is
+/// checked against it as well, so a test cannot pass by both engines being
+/// wrong in the same new way.
+fn agrees(tclsh: &PathBuf, program: &str, expected: Observed) {
+    let reference = reference(tclsh, program);
+    assert_eq!(
+        reference, expected,
+        "tclsh no longer behaves as recorded for {program:?} — the reference \
+         interpreter changed, so this expectation needs re-measuring"
+    );
+    assert_eq!(subject(program), reference, "{program:?}");
+}
+
 // ── deviations the harness allowlists ───────────────────────────────────────
 
 /// A1: reading a variable that was never set. tclrs collapses no-such-variable,
@@ -221,36 +236,137 @@ fn deviation_unterminated_brace_reports_the_last_line() {
 
 // ── bugs ────────────────────────────────────────────────────────────────────
 
-/// `expr` coerces a non-numeric string to zero in every context that wants a
-/// number, where `expr(n)` requires an error: "cannot use non-numeric string".
-/// This is the widest finding of the run — the boolean cases change which branch
-/// runs, so a script that tclsh refuses to run silently takes a path here.
+/// **Fixed.** A condition has to be a Tcl boolean, and `if {"b"}` is
+/// `expected boolean value but got "b"` rather than a taken branch.
+///
+/// The rule is `ParseBoolean` plus `TclParseNumber` (`tclObj.c`), ported in
+/// `runtime::tcl_bool` and reached through `ext::BOOL`: a number in any radix, or
+/// one of `true` / `false` / `yes` / `no` / `on` / `off` abbreviated to any
+/// unambiguous prefix, in any case. `o` is ambiguous between `on` and `off`, so
+/// it is not one.
+///
+/// The conversion is only emitted where the value could be a string — a
+/// relational or arithmetic condition already produces a number — because it is
+/// an extension op, and one of those inside a loop body would cost the loop
+/// fusevm's tracing tier. `tiers::tests` pins that it does not.
 #[test]
-fn bug_non_numeric_strings_are_coerced_instead_of_refused() {
+fn conditions_are_tcl_booleans_not_the_vms_truthiness() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    // Boolean contexts: `if`, `while` and `?:` all take the string as true.
-    diverges(
+    // The reproducers, in each of the contexts that branch on a value.
+    agrees(
         &tclsh,
         "if {\"b\"} {puts taken}",
         err("expected boolean value but got \"b\""),
-        out("taken\n"),
     );
-    diverges(
+    agrees(
         &tclsh,
         "while {\"b\"} {puts once; break}",
         err("expected boolean value but got \"b\""),
-        out("once\n"),
     );
-    diverges(
+    agrees(
+        &tclsh,
+        "for {} {\"b\"} {} {puts once}",
+        err("expected boolean value but got \"b\""),
+    );
+    agrees(
         &tclsh,
         "puts [expr {\"b\" ? 1 : 2}]",
         err("expected boolean value but got \"b\""),
-        out("1\n"),
     );
-    // Bitwise and shift contexts: the string becomes 0.
+    agrees(
+        &tclsh,
+        "puts [expr {\"b\" && 1}]",
+        err("expected boolean value but got \"b\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {1 && \"b\"}]",
+        err("expected boolean value but got \"b\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {0 || \"b\"}]",
+        err("expected boolean value but got \"b\""),
+    );
+    // The word table, its abbreviations and its one ambiguity.
+    for program in [
+        "if {\"true\"} {puts t}",
+        "if {\"tRuE\"} {puts t}",
+        "if {\"t\"} {puts t}",
+        "if {\"fals\"} {puts t} else {puts f}",
+        "if {\"y\"} {puts t}",
+        "if {\"n\"} {puts t} else {puts f}",
+        "if {\"on\"} {puts t}",
+        "if {\"of\"} {puts t} else {puts f}",
+        "if {\"o\"} {puts t}",
+        "puts [expr {\"yes\" && \"no\"}]",
+        "puts [expr {!\"true\"}]",
+        "puts [expr {!\"off\"}]",
+    ] {
+        assert_eq!(reference(&tclsh, program), subject(program), "{program}");
+    }
+    // Numbers in a boolean position, in every spelling the number parser takes,
+    // and the strings that are neither a word nor a number.
+    for value in [
+        "0",
+        "1",
+        "2",
+        "-1",
+        "007",
+        "010",
+        "0x10",
+        "0o17",
+        "0b101",
+        "0d9",
+        "1_0",
+        "1_000_000",
+        "0.0",
+        "-0.0",
+        "1.5",
+        "1e3",
+        " 1 ",
+        "inf",
+        "",
+        " ",
+        "b",
+        "abc",
+        "a b",
+        "1x",
+        "_1",
+        "1_",
+        "0x_10",
+        "099",
+        "0.",
+    ] {
+        // Braced, so an empty value is still an assignment rather than a read.
+        let program = format!("set x {{{value}}}\nif {{$x}} {{puts t}} else {{puts f}}");
+        assert_eq!(reference(&tclsh, &program), subject(&program), "{program}");
+    }
+    // Only the operand that is evaluated is held to the rule: the left one
+    // decided these, so the right one is never read.
+    for program in [
+        "puts [expr {0 && \"b\"}]",
+        "puts [expr {1 || \"b\"}]",
+        "puts [expr {0 && [error nope]}]",
+    ] {
+        assert_eq!(reference(&tclsh, program), subject(program), "{program}");
+    }
+}
+
+/// The other half of the same coercion, still open: outside a boolean position
+/// `expr` takes a non-numeric string as zero. What tclsh reports there is the
+/// operand wording of `bug_expr_operand_errors_use_the_older_wording`, and `!`
+/// now joins that class — it refuses the operand rather than answering 0, in
+/// tclrs's own wording for a refused operand.
+#[test]
+fn bug_non_numeric_strings_are_coerced_outside_a_boolean_position() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
     diverges(
         &tclsh,
         "puts [expr {\"b\" >> 1}]",
@@ -275,95 +391,173 @@ fn bug_non_numeric_strings_are_coerced_instead_of_refused() {
         err("cannot use non-numeric string \"b\" as operand of \"~\""),
         out("-1\n"),
     );
+    // `!` no longer answers 0; only the wording of the refusal differs now.
     diverges(
         &tclsh,
         "puts [expr {!\"b\"}]",
         err("cannot use non-numeric string \"b\" as operand of \"!\""),
-        out("0\n"),
+        err("can't use non-numeric string as operand of \"!\": \"b\""),
     );
 }
 
-/// A literal word whose value is an integral decimal loses its spelling: it is
-/// interned as a number and printed from that, so `puts 3.0` prints `3`. Tcl's
-/// first rule is that a value's string representation is what the script wrote —
-/// `expr {3.0}` does print `3.0` here, so it is the literal path, and `--disasm`
-/// shows the word reaching `LoadConst`.
+/// **Fixed.** A literal keeps the spelling the script wrote: `puts 3.0` prints
+/// `3.0`.
 ///
-/// The smallest divergence the fuzzer found, and the only one that silently
-/// changes a value rather than a message.
+/// The cause was `compiler::literal_value` interning a literal as a
+/// `Value::Float` when the canonical spelling round-tripped. A `Value::Float`
+/// reaching `puts` is stringified by fusevm's `as_str_cow`, not by Tcl's
+/// formatter — only an `expr` result passes through the `NORM` extension op that
+/// applies that — so the double `3.0` printed as `3`. No literal is interned as a
+/// `Float` now; an integer still is, because `i64::to_string` *is* the spelling
+/// Tcl prints.
 #[test]
-fn bug_integral_decimal_literals_lose_their_spelling() {
+fn literals_keep_the_spelling_the_script_wrote() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(&tclsh, "puts 3.0", out("3.0\n"), out("3\n"));
-    diverges(&tclsh, "puts 1.0", out("1.0\n"), out("1\n"));
-    diverges(&tclsh, "puts 0.0", out("0.0\n"), out("0\n"));
-    diverges(&tclsh, "set x 3.0\nputs s=$x", out("s=3.0\n"), out("s=3\n"));
-    diverges(
-        &tclsh,
-        "set x -0.0\nputs v=$x",
-        out("v=-0.0\n"),
-        out("v=-0\n"),
-    );
-    // A fractional part that is not zero keeps its spelling, which is why the
-    // existing suites — `set x 1.10` — did not catch this.
-    let same = "set x 1.10\nputs a=$x";
-    assert_eq!(reference(&tclsh, same), subject(same));
-    let same = "puts 2.50";
-    assert_eq!(reference(&tclsh, same), subject(same));
-    // Neither does an exponent form, or a leading zero.
-    for same in ["puts 3.0e0", "puts 1e3", "puts 007.0"] {
+    agrees(&tclsh, "puts 3.0", out("3.0\n"));
+    agrees(&tclsh, "puts 1.0", out("1.0\n"));
+    agrees(&tclsh, "puts 0.0", out("0.0\n"));
+    agrees(&tclsh, "set x 3.0\nputs s=$x", out("s=3.0\n"));
+    agrees(&tclsh, "set x -0.0\nputs v=$x", out("v=-0.0\n"));
+    // The spellings that always survived, kept as a guard against a fix that
+    // trades one direction for the other.
+    for same in [
+        "set x 1.10\nputs a=$x",
+        "puts 2.50",
+        "puts 3.0e0",
+        "puts 1e3",
+        "puts 007.0",
+        "puts 5",
+        "puts 007",
+        "puts -0",
+    ] {
+        assert_eq!(reference(&tclsh, same), subject(same), "{same}");
+    }
+    // A double that reaches a string by any other route is formatted by Tcl's
+    // rules, which is what the literal path was bypassing.
+    for same in [
+        "puts [expr {3.0}]",
+        "puts [expr {1.5 + 1.5}]",
+        "set x 2.5\nputs [expr {$x * 2}]",
+        "set x 3.0\nputs [string length $x]",
+        "set x 3.0\nputs [list $x]",
+        "set x 3.0\nappend x !\nputs $x",
+        "puts [lindex {3.0 4.0} 0]",
+        "foreach v {3.0 1.0} {puts $v}",
+        "set a(k) 3.0\nputs $a(k)",
+        "puts [format %s 3.0]",
+        "switch -- 3.0 {3.0 {puts hit} default {puts miss}}",
+    ] {
         assert_eq!(reference(&tclsh, same), subject(same), "{same}");
     }
 }
 
-/// The integer literal `-0` reaches `format`'s floating-point conversions with its
-/// sign. tclsh converts the integer first, which loses the sign, so it prints a
-/// positive zero. The double `-0.0` keeps its sign in both.
+/// **Fixed.** `format`'s floating-point conversions convert an integer spelling
+/// as an integer, and an integer has no negative zero: `format %.2f -0` is
+/// `0.00`. The double `-0.0` keeps its sign, in both engines.
 #[test]
-fn bug_format_keeps_the_sign_of_integer_negative_zero() {
+fn format_drops_the_sign_of_integer_negative_zero() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
-        &tclsh,
-        "puts [format %.2f -0]",
-        out("0.00\n"),
-        out("-0.00\n"),
-    );
-    diverges(
-        &tclsh,
-        "puts [format %e -0]",
-        out("0.000000e+00\n"),
-        out("-0.000000e+00\n"),
-    );
-    diverges(&tclsh, "puts [format %g -0]", out("0\n"), out("-0\n"));
-    // The double keeps its sign under both, and `%d` drops it under both.
-    for same in ["puts [format %.2f -0.0]", "puts [format %d -0]"] {
+    agrees(&tclsh, "puts [format %.2f -0]", out("0.00\n"));
+    agrees(&tclsh, "puts [format %e -0]", out("0.000000e+00\n"));
+    agrees(&tclsh, "puts [format %g -0]", out("0\n"));
+    // Every other spelling of an integer zero, and the doubles that do keep the
+    // sign — the boundary the fix has to land on.
+    for same in [
+        "puts [format %.2f -00]",
+        "puts [format %.2f -0x0]",
+        "puts [format %.2f -0_0]",
+        "puts [format %.2f { -0 }]",
+        "puts [format %.2f -0.0]",
+        "puts [format %.2f -0e0]",
+        "puts [format %.2f -1e-400]",
+        "puts [format %d -0]",
+        "puts [format %.2f -5]",
+    ] {
         assert_eq!(reference(&tclsh, same), subject(same), "{same}");
     }
 }
 
-/// `incr` on a value that is not an integer reports an `expr` operand error
-/// rather than `incr`'s own diagnostic.
+/// **Fixed for an increment the script wrote.** `incr x abc` is
+/// `expected integer but got "abc"`, checked while compiling, where the
+/// increment is a literal word.
 #[test]
-fn bug_incr_reports_an_expr_error_instead_of_its_own() {
+fn incr_reports_its_own_diagnostic_for_a_literal_increment() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
+    agrees(
         &tclsh,
         "set x 5\nincr x abc",
+        err("expected integer but got \"abc\""),
+    );
+    agrees(
+        &tclsh,
+        "set x 5\nincr x 1.0",
+        err("expected integer but got \"1.0\""),
+    );
+    agrees(
+        &tclsh,
+        "set x 5\nincr x {}",
+        err("expected integer but got \"\""),
+    );
+    // A value whose text could be several list elements is named as a list, and
+    // one that merely contains a space still is — the looser of the reference
+    // implementation's two list screens (`list::looks_like_a_list`).
+    agrees(
+        &tclsh,
+        "set x 5\nincr x {a b}",
+        err("expected integer but got a list"),
+    );
+    agrees(
+        &tclsh,
+        "set x 5\nincr x a\\ b",
+        err("expected integer but got a list"),
+    );
+    // The increments that are integers keep working, in every spelling.
+    for same in [
+        "set x 5\nincr x\nputs $x",
+        "set x 5\nincr x -3\nputs $x",
+        "set x 5\nincr x +3\nputs $x",
+        "set x 5\nincr x 0x10\nputs $x",
+        "set x 5\nincr x { 3 }\nputs $x",
+        "set x 5\nincr x 1_0\nputs $x",
+        "set a(k) 5\nincr a(k) abc",
+    ] {
+        assert_eq!(reference(&tclsh, same), subject(same), "{same}");
+    }
+}
+
+/// The rest of the same finding, still open: when it is the *variable* that does
+/// not hold an integer, the refusal comes from the numeric hook behind
+/// `Op::Add`, in `expr`'s wording.
+///
+/// The fix would be an extension op in `incr`'s lowering, and fusevm's tracing
+/// tier rejects `Op::Extended` inside a loop body — so it would take the
+/// compiled trace away from every loop that counts with `incr`, which
+/// `tiers::tests::a_proc_local_counter_loop_reaches_a_compiled_trace` and
+/// `bench/counted_loop_proc.tcl` both depend on. Not taken; recorded instead.
+#[test]
+fn bug_incr_reports_an_expr_error_for_a_non_integer_variable() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    diverges(
+        &tclsh,
+        "set x abc\nincr x",
         err("expected integer but got \"abc\""),
         err("can't use non-numeric string as operand of \"+\": \"abc\""),
     );
     diverges(
         &tclsh,
-        "set x abc\nincr x",
+        "set x 5\nset y abc\nincr x $y",
         err("expected integer but got \"abc\""),
         err("can't use non-numeric string as operand of \"+\": \"abc\""),
     );
@@ -414,69 +608,129 @@ fn bug_expr_operand_errors_use_the_older_wording() {
     );
 }
 
-/// `**` with two integer operands and a negative exponent. `expr(n)` keeps the
-/// result integral for integral operands, which truncates to zero; tclrs returns
-/// the floating-point power. README [0x04] claims the integral rule.
+/// **Fixed.** `**` keeps an integral result for integral operands even when the
+/// exponent is negative, so the true value truncates toward zero: `2 ** -1` is 0.
+/// Only ±1 survives, and a zero base has no value at all there.
 #[test]
-fn bug_integer_exponentiation_with_a_negative_exponent_returns_a_double() {
+fn integer_exponentiation_stays_integral_for_a_negative_exponent() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(&tclsh, "puts [expr {2 ** -1}]", out("0\n"), out("0.5\n"));
-    diverges(&tclsh, "puts [expr {2 ** -3}]", out("0\n"), out("0.125\n"));
-    diverges(
+    agrees(&tclsh, "puts [expr {2 ** -1}]", out("0\n"));
+    agrees(&tclsh, "puts [expr {2 ** -3}]", out("0\n"));
+    agrees(&tclsh, "puts [expr {(-2) ** -65536}]", out("0\n"));
+    agrees(&tclsh, "puts [expr {1 ** -100}]", out("1\n"));
+    agrees(&tclsh, "puts [expr {(-1) ** -101}]", out("-1\n"));
+    agrees(&tclsh, "puts [expr {(-1) ** -100}]", out("1\n"));
+    agrees(
         &tclsh,
-        "puts [expr {(-2) ** -65536}]",
-        out("0\n"),
-        out("0.0\n"),
+        "puts [expr {0 ** -1}]",
+        err("exponentiation of zero by negative power"),
     );
+    // A double operand anywhere makes it a floating-point power again, and the
+    // exponent's own sign does not change that.
+    for same in [
+        "puts [expr {2.0 ** -1}]",
+        "puts [expr {2 ** -1.0}]",
+        "puts [expr {4 ** 0.5}]",
+        "puts [expr {0.5 ** -1}]",
+        "puts [expr {0.0 ** -1}]",
+        "puts [expr {0 ** -1.5}]",
+        "puts [expr {0 ** 0}]",
+        "puts [expr {2 ** 62}]",
+        // `i64::MIN` has no negated form, so the parity of the exponent has to be
+        // read off its low bit. Written as a subtraction because the literal
+        // `-9223372036854775808` is `-(9223372036854775808)`, and the positive
+        // half of that is past `i64` — the bignum case, not this one.
+        "puts [expr {2 ** (-9223372036854775807 - 1)}]",
+        "puts [expr {(-1) ** (-9223372036854775807 - 1)}]",
+    ] {
+        assert_eq!(reference(&tclsh, same), subject(same), "{same}");
+    }
 }
 
-/// An integer literal too large for an `i64` becomes a double instead of the
-/// documented `integer value too large to represent` (BUGS.md, README [0x05]),
-/// so the answer is silently wrong rather than refused — and an operator with no
-/// floating-point meaning then reports the wrong error.
+/// **Fixed**, in the sense this frontend documents: an integer beyond `i64` is
+/// now the refusal the crate promises rather than a silently wrong answer.
+///
+/// tclsh still differs, and will until there is a bignum — it promotes and
+/// answers exactly. What changed is that tclrs reports
+/// `integer value too large to represent` instead of switching to floating point
+/// and answering `1e+20`, so the divergence is a refusal the harness counts as a
+/// documented skip rather than a wrong value. Both halves of the cause are
+/// closed: `expr::parse_number` refuses the literal, and `runtime::parse_number`
+/// no longer hands an out-of-range integer spelling to the double parser.
 #[test]
-fn bug_out_of_range_integer_literals_become_doubles() {
+fn out_of_range_integers_are_refused_rather_than_becoming_doubles() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
+    let refused = || err("integer value too large to represent");
     diverges(
         &tclsh,
         "puts [expr {99999999999999999999 + 1}]",
         out("100000000000000000000\n"),
-        out("1e+20\n"),
+        refused(),
     );
+    // The operator with no floating-point meaning now reports the overflow
+    // rather than complaining about a double it was never given.
     diverges(
         &tclsh,
         "puts [expr {99999999999999999999 % 3}]",
         out("0\n"),
-        err("can't use floating-point value as operand of \"%\""),
+        refused(),
     );
+    // Through a variable, which is the runtime half of the same cause.
+    diverges(
+        &tclsh,
+        "set x 99999999999999999999\nputs [expr {$x + 1}]",
+        out("100000000000000000000\n"),
+        refused(),
+    );
+    // And in the radix spellings.
+    diverges(
+        &tclsh,
+        "puts [expr {0x10000000000000000}]",
+        out("18446744073709551616\n"),
+        refused(),
+    );
+    // The `i64` ends themselves are not overflow, and still agree.
+    for same in [
+        "puts [expr {9223372036854775807 - 1}]",
+        "puts [expr {-9223372036854775807 + 1}]",
+        "puts [expr {0x7fffffffffffffff}]",
+    ] {
+        assert_eq!(reference(&tclsh, same), subject(same), "{same}");
+    }
 }
 
-/// A character `expr` cannot use is reported as the first *byte* of its UTF-8
-/// encoding: `Ã` is 0xC3, the lead byte of `Ü`. tclsh names the character.
+/// **Fixed.** A character `expr` cannot use is named as a character, in tclsh's
+/// own wording: `invalid character "Ü"`, not the `Ã` that is the lead byte of its
+/// UTF-8 encoding.
 #[test]
-fn bug_non_ascii_in_an_expression_is_reported_by_byte() {
+fn an_unusable_character_in_an_expression_is_named_as_a_character() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
-        &tclsh,
-        "puts [expr {Ü}]",
-        err("invalid character \"Ü\""),
-        err("unexpected character 'Ã' in expression"),
-    );
-    diverges(
+    agrees(&tclsh, "puts [expr {Ü}]", err("invalid character \"Ü\""));
+    agrees(
         &tclsh,
         "puts [expr {1 + αβγ}]",
         err("invalid character \"α\""),
-        err("unexpected character 'Î' in expression"),
     );
+    // The same wording covers the ASCII characters, which were named correctly
+    // before but with the other message.
+    agrees(&tclsh, "puts [expr {@}]", err("invalid character \"@\""));
+    for same in [
+        "puts [expr {1 + @}]",
+        "puts [expr {é}]",
+        "puts [expr {日}]",
+        "puts [expr {\u{1F600}}]",
+    ] {
+        assert_eq!(reference(&tclsh, same), subject(same), "{same}");
+    }
 }
 
 /// tclrs lowers a whole script before running any of it, so a compile-time error
@@ -522,11 +776,18 @@ fn bug_unreachable_code_is_still_compiled() {
     );
 }
 
-/// A compile-time error inside a *nested body* is located at line 1, whatever
-/// line the body is on. At a script's own top level the line is right, which is
-/// what makes this a body-scoped bug rather than a missing line counter.
+/// **Fixed.** A failure inside a body is located at the script's own command,
+/// which is the line tclsh's `(file "…" line N)` names.
+///
+/// A braced body is parsed as a script of its own, so its commands are numbered
+/// from 1 relative to the body's text; the compiler used that number, so an error
+/// inside `if {1} {f}` on line 3 was reported at line 1. tclsh reports the
+/// *top-level command's* line there and gives the position inside the body as a
+/// separate relative line (`("while" body line 2)`), which tclrs has no
+/// equivalent of — so the fix is to stop a body's own numbering from moving the
+/// reported line, not to make it absolute.
 #[test]
-fn bug_compile_time_errors_inside_a_body_are_located_at_line_one() {
+fn compile_time_errors_are_located_at_the_scripts_own_command() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
@@ -557,47 +818,51 @@ fn bug_compile_time_errors_inside_a_body_are_located_at_line_one() {
             .unwrap_or_default()
     };
 
-    // The call is on line 3, inside a body. tclsh reports line 3.
-    let nested = "proc f {a} {return $a}\nputs one\nif {1} {f}\n";
-    assert_eq!(reference_location(nested), "line 3");
-    assert_eq!(
-        location(nested),
-        "line 1",
-        "tclrs no longer reports line 1 for a failure inside a body — if it now \
-         reports line 3 this is fixed"
-    );
-
-    // The same call at the script's top level is located correctly, so the line
-    // counter itself works.
-    let flat = "proc f {a} {return $a}\nputs one\nf\n";
-    assert_eq!(reference_location(flat), "line 3");
-    assert_eq!(location(flat), "line 3");
+    // Every shape is checked against tclsh's own location rather than against a
+    // number written here: the command on one line with its body, a body that
+    // spans lines so the failing line and the command's line differ, a body
+    // reached through a line continuation, and the same call at the top level.
+    for program in [
+        "proc f {a} {return $a}\nputs one\nif {1} {f}\n",
+        "proc f {a} {return $a}\nputs one\nif {1} {\n    f\n}\n",
+        "proc f {a} {return $a}\nputs one\nif {1} \\\n   {f}\n",
+        "proc f {a} {return $a}\nputs one\nf\n",
+        "while {1} {\n   incr\n}\n",
+        "\nif {1} {\n   nosuchcmd\n}\n",
+        "puts a\nputs b\nputs c\nif {1} {puts [expr {1 +}]}\n",
+        "puts a\nfor {set i 0} {$i < 1} {incr i} {\n  incr\n}\n",
+    ] {
+        assert_eq!(
+            location(program),
+            reference_location(program),
+            "{program:?}"
+        );
+    }
 }
 
-/// Nesting depth is bounded only by the stack, in both implementations. Run as
-/// subprocesses because a stack overflow aborts the process rather than
-/// panicking, so it cannot be caught in-process.
+/// **Fixed for tclrs.** Input nesting is bounded by
+/// [`tclrs::parser::MAX_NESTING_DEPTH`] rather than by the stack, so the deepest
+/// input reports a Tcl error instead of aborting the process. tclsh has no such
+/// bound and still segfaults, well before the depth tclrs refuses at.
 ///
 /// Found by the `parse` cargo-fuzz target rather than by the differential
 /// fuzzer: the generator only writes programs, and no program has fifty thousand
 /// open brackets.
 ///
-/// The two limits are far apart, and tclsh's is the lower one — which is why this
-/// input is not a case the differential harness can charge against tclrs at
-/// 50_000 (tclsh has no answer to compare with) and is a `CRITICAL` at 100_000
-/// (tclrs aborts, and that is never suppressible).
+/// Run as subprocesses because a stack overflow aborts the process rather than
+/// panicking, so it cannot be caught in-process. The limit is above every depth
+/// tclsh survives on purpose — nothing tclsh can parse becomes a refusal here.
 #[test]
-fn bug_deep_nesting_exhausts_the_stack_in_both_engines() {
+fn deep_nesting_is_refused_rather_than_exhausting_the_stack() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
     // `code()` is `None` for a process killed by a signal, which is how both a
     // segfault and a Rust stack-overflow abort arrive here.
-    let run = |binary: &PathBuf, depth: usize| -> (Option<i32>, String) {
-        let program = "[".repeat(depth);
-        let path = case_path(&format!("depth-{depth}"), "nest");
-        std::fs::write(&path, &program).expect("write case");
+    let run = |binary: &PathBuf, program: &str, label: &str| -> (Option<i32>, String) {
+        let path = case_path(label, "nest");
+        std::fs::write(&path, program).expect("write case");
         let out = Command::new(binary).arg(&path).output().expect("run");
         (
             out.status.code(),
@@ -608,31 +873,48 @@ fn bug_deep_nesting_exhausts_the_stack_in_both_engines() {
                 .to_string(),
         )
     };
+    let brackets = |depth: usize| "[".repeat(depth);
     let subject = PathBuf::from(TCLRS);
+    let limit = tclrs::parser::MAX_NESTING_DEPTH;
 
-    // 10_000 levels: both report the parse error.
-    assert_eq!(run(&tclsh, 10_000).1, "missing close-bracket");
-    assert_eq!(run(&subject, 10_000).1, "missing close-bracket");
+    // 10_000 levels: both report the parse error, and that parity is what keeps
+    // the limit from being set anywhere tclsh still works.
+    assert_eq!(
+        run(&tclsh, &brackets(10_000), "ref-10k").1,
+        "missing close-bracket"
+    );
+    assert_eq!(
+        run(&subject, &brackets(10_000), "sub-10k").1,
+        "missing close-bracket"
+    );
 
-    // 50_000: tclsh dies on a signal, tclrs still reports. The harness calls
-    // this EXCLUDED — there is no reference behavior to compare against.
-    let (status, _) = run(&tclsh, 50_000);
+    // 50_000: tclsh dies on a signal, tclrs still parses. The harness calls this
+    // EXCLUDED — there is no reference behavior to compare against.
+    let (status, _) = run(&tclsh, &brackets(50_000), "ref-50k");
     assert!(
         status.is_none(),
         "tclsh no longer dies on a signal at 50_000 levels (exit {status:?}) — if \
          it now reports an error, this case becomes a plain parity comparison"
     );
     assert_eq!(
-        run(&subject, 50_000),
+        run(&subject, &brackets(50_000), "sub-50k"),
         (Some(1), "missing close-bracket".to_string())
     );
 
-    // 100_000: tclrs aborts too. On the driver's own thread, which is
-    // RECOMMENDED_STACK, so this is not a small-stack artifact.
-    let (status, _) = run(&subject, 100_000);
-    assert!(
-        status.is_none(),
-        "tclrs no longer aborts at 100_000 levels (exit {status:?}) — if the \
-         parser now bounds its recursion, this is fixed"
+    // Exactly at the limit still parses; one past it is the refusal, and so is
+    // the 100_000 that used to abort.
+    assert_eq!(
+        run(&subject, &brackets(limit), "sub-limit"),
+        (Some(1), "missing close-bracket".to_string())
     );
+    let refusal = (
+        Some(1),
+        "too many nested substitutions (infinite loop?)".to_string(),
+    );
+    assert_eq!(run(&subject, &brackets(limit + 1), "sub-over"), refusal);
+    assert_eq!(run(&subject, &brackets(100_000), "sub-100k"), refusal);
+
+    // The other recursion in the parser is an array index, and it is bounded too.
+    let indices = format!("puts $a({}", "$b(".repeat(100_000));
+    assert_eq!(run(&subject, &indices, "sub-index"), refusal);
 }

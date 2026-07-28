@@ -39,7 +39,7 @@ use fusevm::{Op, Value, VM};
 
 use crate::compiler::{ext, CompileError, Compiler};
 use crate::parser::{Part, Word};
-use crate::runtime::{parse_num, to_tcl_string, Num};
+use crate::runtime::{tcl_int, to_tcl_string};
 
 // ─── Tcl list syntax ──────────────────────────────────────────────────────
 
@@ -1483,19 +1483,6 @@ fn pop_str(vm: &mut VM) -> String {
 
 fn push_str(vm: &mut VM, text: String) {
     vm.push(Value::Str(Arc::new(text)));
-}
-
-/// A value read as an integer, with Tcl's `incr` diagnostic. The reference
-/// implementation reports the operand exactly as it was written, untrimmed.
-fn tcl_int(v: &Value) -> Result<i64, String> {
-    if let Value::Int(i) = v {
-        return Ok(*i);
-    }
-    let text = to_tcl_string(v);
-    match parse_num(text.trim()) {
-        Some(Num::Int(i)) => Ok(i),
-        _ => Err(format!("expected integer but got \"{text}\"")),
-    }
 }
 
 /// Names that were used as arrays anywhere in a script, collected on the

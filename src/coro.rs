@@ -196,9 +196,10 @@ impl Compiler {
         }
 
         let slots = self.push_actuals(&command, actuals)?;
-        let count = u8::try_from(slots).map_err(|_| CompileError {
-            msg: format!("procedure \"{command}\" has more than 255 formal parameters"),
-            line: self.line,
+        let count = u8::try_from(slots).map_err(|_| {
+            self.err(format!(
+                "procedure \"{command}\" has more than 255 formal parameters"
+            ))
         })?;
         self.push_str(&name);
         self.push_str(&command);
@@ -214,9 +215,10 @@ impl Compiler {
     /// one at most after `yield`, any number after `yieldto` — so the count is
     /// checked by the driver, which knows, and not here.
     pub(crate) fn call_coro(&mut self, name: &str, args: &[Word]) -> Result<(), CompileError> {
-        let count = u8::try_from(args.len()).map_err(|_| CompileError {
-            msg: format!("more than 255 arguments to the coroutine \"{name}\""),
-            line: self.line,
+        let count = u8::try_from(args.len()).map_err(|_| {
+            self.err(format!(
+                "more than 255 arguments to the coroutine \"{name}\""
+            ))
         })?;
         for w in args {
             self.word(w)?;
@@ -257,10 +259,8 @@ impl Compiler {
                 ));
             }
         }
-        let count = u8::try_from(actuals.len()).map_err(|_| CompileError {
-            msg: "more than 255 arguments to \"yieldto\"".to_string(),
-            line: self.line,
-        })?;
+        let count = u8::try_from(actuals.len())
+            .map_err(|_| self.err("more than 255 arguments to \"yieldto\"".to_string()))?;
         self.word(target_w)?;
         for w in actuals {
             self.word(w)?;

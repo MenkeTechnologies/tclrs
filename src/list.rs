@@ -81,9 +81,27 @@ fn max_length(src: &str) -> usize {
 }
 
 /// Is this string a list of more than one element? The screen the reference
-/// implementation applies before treating a string as a single index or number.
+/// implementation applies before treating a string as a single index
+/// (`tclUtil.c`, `TclIndexEncode`: `TclMaxListLength(...) > 1` **and** a parse
+/// that yields more than one element), which is what keeps a list of indices
+/// distinguishable from one index.
 fn is_multi_element(src: &str) -> bool {
     max_length(src) > 1 && split(src).map(|v| v.len() > 1).unwrap_or(false)
+}
+
+/// Whether a value that is not the number or boolean a command wanted is named
+/// as “a list” rather than quoted verbatim.
+///
+/// A looser screen than [`is_multi_element`], and deliberately so: the
+/// reference implementation asks only whether the string *could* hold several
+/// elements and whether it parses at all (`tclObj.c`, `TclSetBooleanFromAny`
+/// and `TclNewIntObj`'s error path — `TclMaxListLength(...) > 1` and
+/// `Tcl_SplitList == TCL_OK`, with no test on the element count). The
+/// difference is observable: `a\ b` is one element whose text holds a space, and
+/// `incr x a\ b` reports `expected integer but got a list` while
+/// `lindex {a b c} a\ b` reports `bad index "a b"`.
+pub fn looks_like_a_list(src: &str) -> bool {
+    max_length(src) > 1 && split(src).is_ok()
 }
 
 /// Locate the element starting at `from`, which must index a non-space byte.

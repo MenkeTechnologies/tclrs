@@ -200,12 +200,7 @@ impl Compiler {
     fn switch_body(&mut self, text: &str) -> Result<(), CompileError> {
         let script = match crate::parser::parse(text) {
             Ok(s) => s,
-            Err(e) => {
-                return Err(CompileError {
-                    msg: e.msg,
-                    line: self.line,
-                })
-            }
+            Err(e) => return Err(self.err(e.msg)),
         };
         self.nested_value(&script)
     }

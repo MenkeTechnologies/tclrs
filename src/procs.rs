@@ -192,9 +192,10 @@ impl Compiler {
             ));
         }
         let slots = u8::try_from(sig.params.len())
-            .map_err(|_| CompileError {
-                msg: format!("procedure \"{name}\" has more than 255 formal parameters"),
-                line: self.line,
+            .map_err(|_| {
+                self.err(format!(
+                    "procedure \"{name}\" has more than 255 formal parameters"
+                ))
             })?
             .into();
         self.procs.insert(name.clone(), sig.clone());
@@ -274,9 +275,10 @@ impl Compiler {
         }
         if sig.variadic {
             let extra = &args[fixed.min(args.len())..];
-            let count = u8::try_from(extra.len()).map_err(|_| CompileError {
-                msg: format!("more than 255 arguments collected into \"args\" of \"{name}\""),
-                line: self.line,
+            let count = u8::try_from(extra.len()).map_err(|_| {
+                self.err(format!(
+                    "more than 255 arguments collected into \"args\" of \"{name}\""
+                ))
             })?;
             for w in extra {
                 self.word(w)?;

@@ -105,12 +105,31 @@ pub struct Script {
     pub commands: Vec<Command>,
 }
 
+/// How deeply command substitutions and array indices may nest before the parser
+/// refuses to go further.
+///
+/// The parse of `[...]` and of a `$name(...)` index is recursive, so nesting
+/// costs native stack — and running out of it is a signal, not an error, which
+/// kills the process with nothing to report. Refusing at a fixed depth turns
+/// that into a Tcl error the input can be blamed for.
+///
+/// The number is measured, not chosen for looks. On the stack the `tclrs` binary
+/// gives the parser ([`crate::runtime::RECOMMENDED_STACK`], which is what a host
+/// embedding this crate is documented to provide) a script of nothing but `[`
+/// still parses at 80_000 levels and aborts by 90_000; the reference interpreter
+/// segfaults on the same input between 20_000 and 30_000. 64_000 is under the
+/// measured floor with room for the deeper frames a nested index or quoted word
+/// adds, and above every depth tclsh itself survives, so nothing tclsh can parse
+/// is refused here.
+pub const MAX_NESTING_DEPTH: usize = 64_000;
+
 /// Parse a complete script.
 pub fn parse(src: &str) -> Result<Script, ParseError> {
     let mut p = Parser {
         src: src.as_bytes(),
         pos: 0,
         line: 1,
+        depth: 0,
     };
     let script = p.parse_script(false)?;
     // A `]` with no opening `[` reaches here as an unconsumed terminator.
@@ -132,6 +151,7 @@ pub(crate) fn substitution_at(src: &str, at: usize) -> Result<Option<(Part, usiz
         src: src.as_bytes(),
         pos: at,
         line: 1,
+        depth: 0,
     };
     Ok(p.parse_dollar()?.map(|part| (part, p.pos)))
 }
@@ -142,6 +162,7 @@ pub(crate) fn command_at(src: &str, at: usize) -> Result<(Script, usize), ParseE
         src: src.as_bytes(),
         pos: at + 1,
         line: 1,
+        depth: 0,
     };
     let script = p.parse_script(true)?;
     if p.peek() != Some(b']') {
@@ -158,6 +179,7 @@ pub(crate) fn quoted_at(src: &str, at: usize) -> Result<(Vec<Part>, usize), Pars
         src: src.as_bytes(),
         pos: at + 1,
         line: 1,
+        depth: 0,
     };
     let parts = p.parse_parts(Ctx::Quoted, false)?;
     p.pos += 1; // closing quote
@@ -176,6 +198,7 @@ pub(crate) fn backslash_at(src: &str, at: usize) -> (String, usize) {
         src: src.as_bytes(),
         pos: at,
         line: 1,
+        depth: 0,
     };
     let mut out = String::new();
     if p.at(1) == Some(b'\n') {
@@ -194,6 +217,7 @@ pub(crate) fn braced_at(src: &str, at: usize) -> Result<(String, usize), ParseEr
         src: src.as_bytes(),
         pos: at,
         line: 1,
+        depth: 0,
     };
     let text = p.parse_braced()?;
     Ok((text, p.pos))
@@ -214,9 +238,24 @@ struct Parser<'a> {
     src: &'a [u8],
     pos: usize,
     line: usize,
+    /// How many command substitutions and array indices are open at the cursor —
+    /// the recursion this parser does, bounded by [`MAX_NESTING_DEPTH`].
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
+    /// Descend one nesting level, or refuse. The message names what ran out, in
+    /// the shape the reference interpreter words its own depth refusals
+    /// (`too many nested evaluations (infinite loop?)`), because there is no
+    /// reference behavior to copy: tclsh has no limit here and dies on a signal.
+    fn descend(&mut self) -> Result<(), ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            return Err(self.error("too many nested substitutions (infinite loop?)"));
+        }
+        Ok(())
+    }
+
     fn peek(&self) -> Option<u8> {
         self.src.get(self.pos).copied()
     }
@@ -469,7 +508,9 @@ impl<'a> Parser<'a> {
                 b'[' => {
                     flush(&mut lit, &mut parts);
                     self.bump();
+                    self.descend()?;
                     let inner = self.parse_script(true)?;
+                    self.depth -= 1;
                     if self.peek() != Some(b']') {
                         return Err(self.error("missing close-bracket"));
                     }
@@ -509,7 +550,9 @@ impl<'a> Parser<'a> {
 
         if self.peek() == Some(b'(') {
             self.bump();
+            self.descend()?;
             let index = self.parse_parts(Ctx::Index, false)?;
+            self.depth -= 1;
             if self.peek() != Some(b')') {
                 return Err(self.error("missing )"));
             }

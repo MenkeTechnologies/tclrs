@@ -71,6 +71,13 @@ pub mod ext {
     /// `info coroutine`: the running coroutine's qualified name, or `""`.
     pub const CORO_INFO: u16 = 14;
 
+    /// Pop a value and push Tcl's boolean reading of it — 1 or 0 — or refuse it.
+    /// `arg` is 0 for a condition and 1 for `!`, which differ in how they word
+    /// the refusal. Emitted only where the value could be a string, so the
+    /// arithmetic a condition is usually made of stays native and traceable;
+    /// [`super::Compiler::yields_number`] is the test.
+    pub const BOOL: u16 = 15;
+
     /// Where the list commands' ops begin. Everything at or above this id is
     /// dispatched to [`crate::cmd_list`]; the inline operand is the number of
     /// stack values the op consumes.
@@ -229,7 +236,13 @@ pub(crate) struct Compiler {
     pub(crate) b: ChunkBuilder,
     pub(crate) depth: usize,
     pub(crate) loops: Vec<LoopCtx>,
+    /// The line of the command being lowered, recorded against every op it
+    /// emits so `--disasm` can attribute them. Inside a body this is relative to
+    /// the body's own text, because a body is parsed as a script of its own.
     pub(crate) line: usize,
+    /// The line of the script's own command that is being lowered — the line a
+    /// failure is reported at. See [`Compiler::err`].
+    pub(crate) command_line: usize,
     /// Names known to be used as arrays, from the previous pass.
     pub(crate) arrays: ArrayNames,
     /// Names found to be used as arrays during this pass.
@@ -246,6 +259,11 @@ pub(crate) struct Compiler {
     pub(crate) coros: HashSet<String>,
     /// How many `catch` regions enclose the code being compiled.
     pub(crate) catch_depth: usize,
+    /// How many re-parsed bodies enclose the code being compiled. Nonzero means
+    /// the commands being lowered are numbered relative to a body's own text
+    /// rather than to the script, so they must not move
+    /// [`Compiler::command_line`].
+    pub(crate) body_depth: usize,
     /// Whether the command being compiled is one of the script's own, rather
     /// than one inside a body or a command substitution.
     pub(crate) top_level: bool,
@@ -265,6 +283,7 @@ impl Compiler {
             depth: 0,
             loops: Vec::new(),
             line: 1,
+            command_line: 1,
             arrays,
             seen_arrays: ArrayNames::new(),
             scope: None,
@@ -272,6 +291,7 @@ impl Compiler {
             defined: HashSet::new(),
             coros: HashSet::new(),
             catch_depth: 0,
+            body_depth: 0,
             top_level: true,
             static_ctx: true,
         };
@@ -291,10 +311,26 @@ impl Compiler {
     }
 
     pub(crate) fn error<T>(&self, msg: impl Into<String>) -> Result<T, CompileError> {
-        Err(CompileError {
+        Err(self.err(msg))
+    }
+
+    /// A failure located where the reference interpreter locates one: at the
+    /// script's own command, not at the position inside a body that a re-parse
+    /// gave its own line numbers.
+    ///
+    /// A braced body is parsed as a script of its own, so its commands are
+    /// numbered from 1 relative to the body's text — which is why an error
+    /// inside `if {1} {f}` on line 3 used to be reported at line 1. tclsh's
+    /// `(file "…" line N)` names the top-level command that was running
+    /// (measured: `while {1} {\n incr\n}` reports `("while" body line 2)` for
+    /// the position inside the body and `(file … line 1)` for the file), and
+    /// that is the line this reports. [`Compiler::line`] keeps the per-op line
+    /// the disassembler shows, so the two are tracked separately.
+    pub(crate) fn err(&self, msg: impl Into<String>) -> CompileError {
+        CompileError {
             msg: msg.into(),
-            line: self.line,
-        })
+            line: self.command_line,
+        }
     }
 
     pub(crate) fn push_value(&mut self, v: Value) {
@@ -379,19 +415,26 @@ impl Compiler {
     /// the ones that need a position the prescan reaches: a body may run any
     /// number of times, or not at all.
     pub(crate) fn nested_value(&mut self, script: &Script) -> Result<(), CompileError> {
-        let outer = std::mem::replace(&mut self.top_level, false);
-        let outer_static = std::mem::replace(&mut self.static_ctx, false);
-        let result = self.script_value(script);
-        self.top_level = outer;
-        self.static_ctx = outer_static;
-        result
+        self.in_body(|c| c.script_value(script))
     }
 
     /// Emit a nested script for its effect, leaving the stack as it was found.
     pub(crate) fn nested_effect(&mut self, script: &Script) -> Result<(), CompileError> {
+        self.in_body(|c| c.script_effect(script))
+    }
+
+    /// Run `emit` with the compiler inside a body: not the script's top level,
+    /// not a position the prescan reaches, and numbered relative to the body's
+    /// own text.
+    fn in_body(
+        &mut self,
+        emit: impl FnOnce(&mut Self) -> Result<(), CompileError>,
+    ) -> Result<(), CompileError> {
         let outer = std::mem::replace(&mut self.top_level, false);
         let outer_static = std::mem::replace(&mut self.static_ctx, false);
-        let result = self.script_effect(script);
+        self.body_depth += 1;
+        let result = emit(self);
+        self.body_depth -= 1;
         self.top_level = outer;
         self.static_ctx = outer_static;
         result
@@ -474,20 +517,16 @@ impl Compiler {
         word: &'w Word,
         what: &str,
     ) -> Result<&'w str, CompileError> {
-        word.as_literal().ok_or_else(|| CompileError {
-            msg: format!("{what} must be a literal in this phase"),
-            line: self.line,
-        })
+        word.as_literal()
+            .ok_or_else(|| self.err(format!("{what} must be a literal in this phase")))
     }
 
     /// What a variable-name word names. `a(i)` is an array element even though
     /// the parser hands it over as ordinary text — the parentheses are only
     /// syntax inside a `$` substitution, so the interpretation happens here.
     fn target_of(&self, word: &Word) -> Result<Target, CompileError> {
-        assoc::target_of(word).ok_or_else(|| CompileError {
-            msg: "variable name must be a literal in this phase".to_string(),
-            line: self.line,
-        })
+        assoc::target_of(word)
+            .ok_or_else(|| self.err("variable name must be a literal in this phase".to_string()))
     }
 
     /// The plain name of a scalar variable, for the commands that take only
@@ -539,6 +578,13 @@ impl Compiler {
 
     fn command(&mut self, cmd: &Command) -> Result<(), CompileError> {
         self.line = cmd.line;
+        // A command substitution is parsed from the script's own text, so its
+        // commands carry absolute lines and may set this; a body is re-parsed
+        // and carries lines of its own, so it may not. `top_level` is false in
+        // both, which is why the two are told apart by `body_depth`.
+        if self.body_depth == 0 {
+            self.command_line = cmd.line;
+        }
         let Some(first) = cmd.words.first() else {
             self.push_empty();
             return Ok(());
@@ -630,10 +676,8 @@ impl Compiler {
                  reach the procedure's local variables",
             );
         }
-        let count = u8::try_from(args.len()).map_err(|_| CompileError {
-            msg: "too many arguments for \"eval\"".to_string(),
-            line: self.line,
-        })?;
+        let count = u8::try_from(args.len())
+            .map_err(|_| self.err("too many arguments for \"eval\"".to_string()))?;
         for arg in args {
             self.word(arg)?;
         }
@@ -672,10 +716,7 @@ impl Compiler {
             }
             text.push_str(piece);
         }
-        let parsed = expr::parse(&text).map_err(|e| CompileError {
-            msg: e.msg,
-            line: self.line,
-        })?;
+        let parsed = expr::parse(&text).map_err(|e| self.err(e.msg))?;
         self.expr(&parsed)?;
         self.emit(Op::Extended(ext::NORM, 0), 0);
         Ok(())
@@ -687,6 +728,19 @@ impl Compiler {
             [n, by] => (n, Some(by)),
             _ => return self.error("wrong # args: should be \"incr varName ?increment?\""),
         };
+        // `incr` takes an integer, not an `expr` operand, and says so in its own
+        // words. An increment the script wrote out is checked here, where the
+        // check is free; see the note on the lowering below for the one it
+        // cannot reach.
+        if let Some(text) = by.and_then(|w| w.as_literal()) {
+            if crate::runtime::tcl_int(&Value::Str(std::sync::Arc::new(text.to_string()))).is_err()
+            {
+                return self.error(format!(
+                    "expected integer but got {}",
+                    crate::runtime::named(text, 50)
+                ));
+            }
+        }
         let name = match self.target_of(name)? {
             Target::Scalar(name) => name,
             Target::Elem { name, index } => return self.elem_incr(&name, &index, by),
@@ -698,6 +752,12 @@ impl Compiler {
                 self.emit(Op::LoadInt(1), 1);
             }
         }
+        // Native `Op::Add`, deliberately: an extension op here would put one
+        // inside every loop that counts with `incr`, and fusevm's tracing tier
+        // rejects `Op::Extended`, so `bench/counted_loop_proc.tcl` would stop
+        // reaching native code. The cost is that a *variable* holding something
+        // that is not an integer is refused by the numeric hook in `expr`'s
+        // wording rather than `incr`'s — recorded in BUGS.md.
         self.emit(Op::Add, -1);
         self.emit(Op::Dup, 1);
         self.emit_set_var(&name);
@@ -825,14 +885,10 @@ impl Compiler {
             self.push_value(Value::Int(count as i64));
             self.word(&pair[1])?;
         }
-        let lists = u8::try_from(pairs.len() / 2).map_err(|_| CompileError {
-            msg: "too many lists for \"foreach\"".to_string(),
-            line: self.line,
-        })?;
-        let width = u8::try_from(names.len()).map_err(|_| CompileError {
-            msg: "too many variables for \"foreach\"".to_string(),
-            line: self.line,
-        })?;
+        let lists = u8::try_from(pairs.len() / 2)
+            .map_err(|_| self.err("too many lists for \"foreach\"".to_string()))?;
+        let width = u8::try_from(names.len())
+            .map_err(|_| self.err("too many variables for \"foreach\"".to_string()))?;
         self.emit(
             Op::Extended(ext::FOREACH_INIT, lists),
             1 - pairs.len() as i32,
@@ -981,20 +1037,57 @@ impl Compiler {
 
     pub(crate) fn body_script(&mut self, word: &Word) -> Result<Script, CompileError> {
         let text = self.literal_of(word, "script body")?;
-        crate::parser::parse(text).map_err(|e| CompileError {
-            msg: e.msg,
-            line: self.line,
-        })
+        crate::parser::parse(text).map_err(|e| self.err(e.msg))
     }
 
-    /// A word used as a condition: its text is an expression.
+    /// A word used as a condition: its text is an expression, and its value has
+    /// to be a Tcl boolean.
     pub(crate) fn expr_word(&mut self, word: &Word) -> Result<(), CompileError> {
         let text = self.literal_of(word, "condition")?.to_string();
-        let parsed = expr::parse(&text).map_err(|e| CompileError {
-            msg: e.msg,
-            line: self.line,
-        })?;
-        self.expr(&parsed)
+        let parsed = expr::parse(&text).map_err(|e| self.err(e.msg))?;
+        self.condition(&parsed)
+    }
+
+    /// Emit an expression whose value a branch will consume, as Tcl's rule for a
+    /// condition rather than as the VM's truthiness: `if {"b"}` is
+    /// `expected boolean value but got "b"`, not a taken branch.
+    ///
+    /// The conversion is an extension op, and an extension op inside a loop body
+    /// makes the body ineligible for fusevm's tracing tier
+    /// (`is_trace_op_allowed_at` rejects `Op::Extended`), so it is emitted only
+    /// where it can change the answer — where the expression's value could be a
+    /// string. An arithmetic or relational condition, which is what a counted
+    /// loop's test is, already produces a number and keeps the loop traceable.
+    pub(crate) fn condition(&mut self, e: &Expr) -> Result<(), CompileError> {
+        self.expr(e)?;
+        if !Self::yields_number(e) {
+            self.emit(Op::Extended(ext::BOOL, 0), 0);
+        }
+        Ok(())
+    }
+
+    /// Whether this expression's value is necessarily a number, whatever the
+    /// variables in it hold — which is what decides whether a condition needs
+    /// [`ext::BOOL`] at all.
+    ///
+    /// Every operator lowers to an op that answers with an `Int`, a `Float` or a
+    /// `Bool`; the exceptions are an operand that is substituted text
+    /// ([`Expr::Subst`]) and unary `+`, which is the identity and so passes its
+    /// operand's value straight through.
+    fn yields_number(e: &Expr) -> bool {
+        match e {
+            Expr::Int(_) | Expr::Float(_) => true,
+            Expr::Subst(_) => false,
+            Expr::Unary(UnOp::Plus, operand) => Self::yields_number(operand),
+            Expr::Unary(_, _) => true,
+            Expr::Binary(_, _, _) => true,
+            // Either arm may be the value, so both have to answer with a number.
+            Expr::Ternary(_, then, other) => {
+                Self::yields_number(then) && Self::yields_number(other)
+            }
+            // Refused when lowered; the answer here does not matter.
+            Expr::Call(_, _) => true,
+        }
     }
 
     // ── expressions ──────────────────────────────────────────────────────
@@ -1015,6 +1108,14 @@ impl Compiler {
                     ..Word::default()
                 };
                 self.word(&word)
+            }
+            // `!` wants a number or a boolean word, so a numeric operand is
+            // `Op::LogNot` — whose truthiness agrees with Tcl's on every number
+            // — and anything that could be a string goes through `ext::BOOL`.
+            Expr::Unary(UnOp::Not, operand) if !Self::yields_number(operand) => {
+                self.expr(operand)?;
+                self.emit(Op::Extended(ext::BOOL, 1), 0);
+                Ok(())
             }
             Expr::Unary(op, operand) => {
                 self.expr(operand)?;
@@ -1073,7 +1174,7 @@ impl Compiler {
                 Ok(())
             }
             Expr::Ternary(cond, then, other) => {
-                self.expr(cond)?;
+                self.condition(cond)?;
                 let to_else = self.emit(Op::JumpIfFalse(usize::MAX), -1);
                 let branch_depth = self.depth;
                 self.expr(then)?;
@@ -1094,15 +1195,19 @@ impl Compiler {
 
     /// `&&` and `||` evaluate their right operand only when the left does not
     /// decide the result.
+    ///
+    /// Both operands are conditions, so both are held to Tcl's boolean rule —
+    /// and only the one that is evaluated is: `expr {0 && "b"}` is 0 in tclsh,
+    /// not an error, because the left operand already decided it.
     fn short_circuit(&mut self, a: &Expr, b: &Expr, on_true: bool) -> Result<(), CompileError> {
-        self.expr(a)?;
+        self.condition(a)?;
         let jump = if on_true {
             self.emit(Op::JumpIfTrueKeep(usize::MAX), 0)
         } else {
             self.emit(Op::JumpIfFalseKeep(usize::MAX), 0)
         };
         self.emit(Op::Pop, -1);
-        self.expr(b)?;
+        self.condition(b)?;
         // Normalize both arms to a boolean, as Tcl's logical operators yield
         // 1 or 0 rather than the operand that decided the result.
         let end = self.b.current_pos();
@@ -1114,19 +1219,22 @@ impl Compiler {
 
 /// A literal word's runtime value.
 ///
-/// Tcl values are strings, but a value whose string form is exactly the
-/// canonical spelling of an integer or double can be carried as a number
-/// without observable difference — and that keeps arithmetic on the VM's fast
-/// path. `05` and `1.10` are not canonical, so they stay strings.
+/// Tcl's first rule is that a value's string representation is what the script
+/// wrote, so a literal is a string unless carrying it as a number cannot be
+/// observed. That holds for an integer — `i64::to_string` is exactly the
+/// spelling Tcl prints, and `05` fails the round-trip and stays a string — and
+/// it does **not** hold for a double: a `Value::Float` reaching `puts` is
+/// stringified by fusevm's `as_str_cow`, and only an `expr` result passes
+/// through the `NORM` op that applies Tcl's formatting. `puts 3.0` printed `3`
+/// for exactly that reason, so no literal is interned as a `Float`.
+///
+/// A double literal inside an `expr` still becomes `Op::LoadFloat`
+/// ([`Compiler::expr`]), which is the arithmetic fast path this used to be
+/// about; what it costs here is one parse of a literal double at run time.
 pub(crate) fn literal_value(text: &str) -> Value {
     if let Ok(i) = text.parse::<i64>() {
         if i.to_string() == text {
             return Value::Int(i);
-        }
-    }
-    if let Ok(f) = text.parse::<f64>() {
-        if crate::runtime::format_double(f) == text {
-            return Value::Float(f);
         }
     }
     Value::Str(std::sync::Arc::new(text.to_string()))
