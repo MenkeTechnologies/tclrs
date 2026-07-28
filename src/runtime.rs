@@ -352,6 +352,10 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
         (ext::DIV, Num::Int(_), Num::Int(0)) | (ext::MOD, Num::Int(_), Num::Int(0)) => {
             Err("divide by zero".to_string())
         }
+        // `i64::MIN / -1` is the one integer division whose true quotient does
+        // not fit. Tcl answers with a bignum; this frontend has none, so it
+        // reports the overflow rather than trapping on it.
+        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => Err(too_large()),
         (ext::DIV, Num::Int(i), Num::Int(j)) => Ok(Value::Int(
             i.div_euclid(j)
                 - i64::from(
@@ -361,7 +365,9 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
                 ),
         )),
         (ext::MOD, Num::Int(i), Num::Int(j)) => {
-            let r = i % j;
+            // The same pair overflows `%` on the way to a remainder that is
+            // plainly 0, so answer directly instead of computing it.
+            let r = i.checked_rem(j).unwrap_or(0);
             Ok(Value::Int(if r != 0 && (r < 0) != (j < 0) {
                 r + j
             } else {

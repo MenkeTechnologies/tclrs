@@ -202,3 +202,18 @@ fn integer_overflow_is_an_error_not_a_wrap() {
     let err = tclrs::eval("puts [expr {9223372036854775807 + 1}]").expect_err("should overflow");
     assert!(err.contains("too large"), "got {err:?}");
 }
+
+/// `i64::MIN % -1` and `i64::MIN / -1` are the two integer operations whose
+/// hardware form traps. Tcl answers 0 and a bignum; this frontend must answer
+/// 0 and report the overflow, and must not abort the process either way.
+/// Found by the conformance run against the official suite.
+#[test]
+fn min_int_over_negative_one_does_not_trap() {
+    let min = "set min [expr {-9223372036854775807 - 1}]\n";
+    let outcome = tclrs::eval(&format!("{min}puts [expr {{$min % -1}}]")).expect("remainder");
+    assert_eq!(outcome.output, "0\n", "tclsh prints 0 for this remainder");
+
+    let err = tclrs::eval(&format!("{min}puts [expr {{$min / -1}}]"))
+        .expect_err("the quotient does not fit in i64");
+    assert!(err.contains("too large"), "got {err:?}");
+}
