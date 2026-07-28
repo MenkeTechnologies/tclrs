@@ -1014,7 +1014,7 @@ impl Compiler {
     }
 }
 
-const ARRAY_SUBCOMMANDS: &[&str] = &[
+pub(crate) const ARRAY_SUBCOMMANDS: &[&str] = &[
     "anymore",
     "default",
     "donesearch",
@@ -1030,7 +1030,7 @@ const ARRAY_SUBCOMMANDS: &[&str] = &[
     "unset",
 ];
 
-const DICT_SUBCOMMANDS: &[&str] = &[
+pub(crate) const DICT_SUBCOMMANDS: &[&str] = &[
     "append",
     "create",
     "exists",

@@ -546,7 +546,7 @@ impl Compiler {
     /// definition replace the command, and here the built-in lowering would
     /// keep winning. The list commands are absent on purpose — they are
     /// dispatched after `procs`, so a procedure does replace one.
-    pub(crate) const BUILTINS: &'static [&'static str] = &[
+    pub const BUILTINS: &'static [&'static str] = &[
         "set",
         "eval",
         "puts",

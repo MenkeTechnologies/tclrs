@@ -133,13 +133,36 @@ tclrs --help                print the usage      (also -h)
 | --- | --- |
 | A script file | One script. The first failure ends it: the message goes to stderr, followed by `    (file "…" line N)` when the failure was located while compiling, and the process exits 1. |
 | Stdin, not a terminal | A sequence of commands. Each is evaluated as it completes, a failure is reported on stderr and the next command still runs, and end of input exits 0 — which is why `tclrs < script` exits 0 where `tclrs script` exits 1. |
-| Stdin, a terminal | The same loop with a `% ` prompt and the value of each command echoed. A command spanning lines keeps reading while a brace, quote or bracket is still open; the continuation prompt is empty, as `tclsh`'s is. |
+| Stdin, a terminal | The same evaluation, driven by a line editor: prompt, history, completion, multi-line editing, and the value of each command echoed. See [The REPL](#the-repl). |
 | `argv0`, `argc`, `argv` | Set before the script runs, as `tclsh` sets them. |
 | Errors | stderr only. No banner, no prompt outside a terminal, and no output the binary produces that the script did not ask for. |
 
 An unknown option is refused (`tclrs: unknown option "--wat"`) rather than
 treated as a file name — the one place this binary deliberately differs from
 `tclsh`, which reads stdin for any argument starting with `-`.
+
+### The REPL
+
+A terminal gets a [`reedline`](https://crates.io/crates/reedline) line editor.
+A pipe does not: `tclrs < script` is still the silent loop, byte for byte.
+
+```text
+─( 14:52:07 )──< command 3 >──────────────────────{ tclrs 0.1.0 }─
+tclrs❯ proc double {x} {
+····❯   expr {$x * 2}
+····❯ }
+tclrs❯ double 21
+42
+```
+
+| | |
+| --- | --- |
+| Multi-line editing | A command left open keeps the editor on the same buffer. What counts as open is the parser's own answer — the `Validator` is `repl::incomplete` and nothing else — so the editor and the evaluator cannot disagree about where a command ends. Text that is malformed rather than unfinished is evaluated, and its error reported, instead of hanging the prompt. |
+| Completion | Tab offers what the compiler would accept in that position: command names at the head of a command, an ensemble's subcommands after `string` / `array` / `dict` / `info`, this session's procedures, and the interpreter's variables after `$`. The vocabulary is assembled from the compiler's own tables (`src/names.rs`), and a test fails if a name is offered that the compiler does not know. |
+| Procedures | A procedure is compiled into the chunk of the script that defines it, so it would otherwise last exactly one line. The REPL keeps the text of each definition and prefixes the set to every later evaluation, which is what makes `double` answer on the line after it was written. Writing a definition again replaces the earlier one. Coroutines are not carried this way — replaying `coroutine` would run its body again. |
+| History | `~/.tclrs/history`, 5,000 commands, shared across sessions. |
+| Keys | Emacs by default. `TCLRS_REPL_MODE=vi`, or `mode = "vi"` under `[repl]` in `~/.tclrs/config.toml`, switches to modal editing; Tab and Shift-Tab drive the completion menu in either. |
+| Leaving | `exit`, `exit N`, `quit`, or Ctrl-D. Ctrl-C abandons the line being typed. |
 
 ### Options that do not run the script the ordinary way
 
@@ -155,7 +178,7 @@ of stdin, and never opens a REPL.
 
 `TCLRS_JIT=off` (or `0`, or `no`) skips arming the JIT. It exists so the
 benchmark can measure the interpreter and the JIT-armed VM as separate rows of
-the same binary.
+the same binary. `TCLRS_REPL_MODE=vi` picks the REPL's keymap.
 
 fusevm's own knobs work unchanged: `FUSEVM_JIT_BLOCK_THRESHOLD`,
 `FUSEVM_JIT_TRACE_THRESHOLD`, `FUSEVM_JIT_CACHE_DIR`.

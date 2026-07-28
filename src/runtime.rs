@@ -265,6 +265,16 @@ impl Interp {
         self.lock().globals.get(name).map(to_tcl_string)
     }
 
+    /// Every variable this interpreter holds, sorted. The REPL completes `$`
+    /// from it; nothing about evaluation reads it. An array is one variable
+    /// here, under its own name — its elements are inside its value, and
+    /// `array names` is what lists those.
+    pub fn global_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.lock().globals.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     /// Take everything captured so far, leaving the buffer empty. Always empty
     /// for an interpreter built by [`Interp::new`], which does not capture.
     pub fn take_output(&mut self) -> String {

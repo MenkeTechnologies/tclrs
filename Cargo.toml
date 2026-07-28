@@ -44,6 +44,19 @@ path = "src/main.rs"
 # (`src/aot.rs` here links one into a native executable).
 fusevm = { version = "0.14.20", features = ["jit", "jit-disk-cache", "aot"] }
 
+# The interactive line editor: history, completion menu, emacs/vi keymaps and
+# multi-line editing driven by the parser's own "still open" answer. Used by
+# the binary only — a library user never enters the REPL — but a Cargo
+# `[[bin]]` shares the package's dependency list, so it is declared here.
+reedline = "0.49"
+# Colors for the prompt's status bar. reedline's own re-export covers only the
+# key types, not the style API.
+nu-ansi-term = "0.50"
+# Local time for the status bar clock and `TIOCGWINSZ` for its width. The
+# alternative is a second copy of crossterm's terminal module; libc is already
+# under reedline and gives both answers directly.
+libc = "0.2"
+
 [profile.release]
 lto = true
 codegen-units = 1

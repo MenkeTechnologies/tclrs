@@ -11,9 +11,13 @@
 //! A script read from a file is one script: it stops at the first failure and
 //! exits 1. A script read from stdin is a sequence of commands: each is
 //! evaluated as it completes, a failure is reported and the next one runs, and
-//! end of input exits 0. Both write errors to stderr and nothing else — there
-//! is no banner, no prompt outside a terminal, and no output this binary
-//! produces that the script did not ask for.
+//! end of input exits 0. Both write errors to stderr and nothing else — no
+//! banner, no prompt, and no output this binary produces that the script did
+//! not ask for.
+//!
+//! A terminal is the exception, and only a terminal: there the session is a
+//! REPL, which is a thing to sit in rather than a thing to pipe through, and
+//! [`repl_line`] gives it a line editor, a prompt, completion and a greeting.
 //!
 //! `-c` and `--version` have no `tclsh` equivalent. `tclsh` reads stdin for any
 //! argument starting with `-`; tclrs recognizes its own options and rejects any
@@ -32,6 +36,7 @@ use std::process::ExitCode;
 use tclrs::Interp;
 
 mod repl;
+mod repl_line;
 
 const USAGE: &str = "\
 usage: tclrs [options] FILE ?arg ...?
@@ -135,7 +140,13 @@ fn drive() -> ExitCode {
     // wants the whole script before it does anything.
     if let (Action::Run, Source::Stdin) = (&action, &source) {
         let mut interp = interp_for(&program, script_args);
-        return repl::run(&mut interp, repl::stdin_is_terminal());
+        // A terminal gets the line editor — history, completion, multi-line
+        // editing. A pipe gets the plain loop, which prints nothing of its own
+        // and is what `tclsh < script` is compared against.
+        return match repl::stdin_is_terminal() {
+            true => repl_line::run(&mut interp),
+            false => repl::run(&mut interp, false),
+        };
     }
 
     let (src, file) = match &source {

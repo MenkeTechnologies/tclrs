@@ -27,6 +27,14 @@ use crate::runtime::to_tcl_string;
 
 // ── compiling ────────────────────────────────────────────────────────────
 
+/// The names [`compile`] accepts. The match below is the authority; this list
+/// exists so the REPL can offer the names for completion, and
+/// `every_listed_command_compiles` fails if the two ever disagree.
+pub const COMMANDS: &[&str] = &[
+    "list", "llength", "lindex", "lrange", "lreverse", "linsert", "lreplace", "lsearch", "lsort",
+    "join", "split", "concat", "lappend",
+];
+
 /// Compile one of the list commands. Every command name the compiler does not
 /// handle itself arrives here, so an unknown one is rejected here too.
 pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(), CompileError> {
@@ -688,5 +696,36 @@ fn borrow_state(value: &Value) -> Result<(i64, i64, &[Value]), String> {
             _ => Err(CORRUPT.to_string()),
         },
         _ => Err(CORRUPT.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::COMMANDS;
+
+    /// [`COMMANDS`] is a second spelling of the match in [`super::compile`], and
+    /// the REPL completes from it. Compiling each listed name must therefore
+    /// reach a real command: a name the match does not know is reported as
+    /// `invalid command name`, and nothing else here is. Argument counts are not
+    /// the subject — a bare name may well be the wrong number of arguments.
+    #[test]
+    fn every_listed_command_compiles() {
+        for name in COMMANDS {
+            let err = crate::runtime::compile(name).err().unwrap_or_default();
+            assert!(
+                !err.contains("invalid command name"),
+                "{name} is listed but the compiler does not know it: {err}"
+            );
+        }
+    }
+
+    /// The other half: a name that is not a command is still refused, so the
+    /// test above is not passing because nothing is refused.
+    #[test]
+    fn an_unlisted_name_is_refused() {
+        let err = crate::runtime::compile("lnotacommand")
+            .err()
+            .unwrap_or_default();
+        assert!(err.contains("invalid command name"), "got {err:?}");
     }
 }

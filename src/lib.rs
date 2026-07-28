@@ -28,6 +28,7 @@ pub mod control;
 pub mod coro;
 pub mod expr;
 pub mod list;
+pub mod names;
 pub mod parser;
 pub mod procs;
 pub mod runtime;

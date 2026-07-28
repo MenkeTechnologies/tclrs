@@ -65,7 +65,7 @@ pub mod ext {
 /// Every subcommand the ensemble knows, in the order the interpreter lists them
 /// when it rejects one. `wordend` and `wordstart` are listed because their
 /// presence decides whether an abbreviation is ambiguous, but they are refused.
-const SUBCOMMANDS: &[&str] = &[
+pub(crate) const SUBCOMMANDS: &[&str] = &[
     "cat",
     "compare",
     "equal",
