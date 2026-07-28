@@ -139,15 +139,15 @@ pub(crate) fn split(src: &str, kind: &str) -> Result<Vec<String>, String> {
 
 /// The "followed by junk" diagnostic, which quotes up to twenty bytes of the
 /// offending text.
+///
+/// The quoted text comes from [`crate::list::junk_prefix`] rather than from a
+/// second copy of the same walk: the rule is the reference implementation's,
+/// and it has a boundary case — a twenty-byte cap landing inside a multi-byte
+/// character — that is a panic when it is got wrong.
 fn junk(src: &str, at: usize, kind: &str, what: &str) -> String {
-    let s = src.as_bytes();
-    let mut end = at;
-    while end < s.len() && !is_space(s[end]) && end < at + 20 {
-        end += 1;
-    }
     format!(
         "{kind} element in {what} followed by \"{}\" instead of space",
-        &src[at..end]
+        crate::list::junk_prefix(src, at)
     )
 }
 

@@ -70,9 +70,44 @@ pub enum Expr {
     Call(String, Vec<Expr>),
 }
 
+/// How deeply subexpressions may nest before the parser refuses to go further.
+///
+/// This parser is recursive descent, so nesting costs native stack — and running
+/// out of it is a signal, not an error, which kills the process with nothing to
+/// report. [`crate::parser::MAX_NESTING_DEPTH`] bounds the command language's
+/// recursion for the same reason; this is the same mechanism for the expression
+/// language.
+///
+/// The number is measured, not chosen for looks. On the stack the `tclrs` binary
+/// gives the parser ([`crate::runtime::RECOMMENDED_STACK`], which is what a host
+/// embedding this crate is documented to provide), an unoptimized build of
+/// `expr {((…1…))}` still parses and compiles at 7_500 parentheses and aborts by
+/// 8_000; a chain of unary operators, whose frames are far cheaper, survives
+/// 100_000 and aborts by 150_000. 5_000 is a third under the parenthesis floor,
+/// which is the expensive descent of the two.
+///
+/// The unoptimized build is the one to calibrate against: it is the weakest this
+/// crate is built as, and the one `cargo test` runs. An optimized build's frames
+/// are small enough to survive 32_000 parentheses on the same stack, so a limit
+/// set from *its* floor would leave a debug build aborting where a release build
+/// only reported an error.
+///
+/// Unlike the command parser's limit, this one is *not* above every depth the
+/// reference interpreter survives: tclsh 9.0.4 parses expressions with an
+/// explicit stack (`tclCompExpr.c`) rather than by recursion, and evaluates
+/// 1_000_000 nested parentheses without complaint. Bounding here therefore
+/// refuses a handful of inputs tclsh accepts. That is the deliberate trade — an
+/// input past the limit gets a Tcl error the script can catch, where before it
+/// took the whole process down.
+pub const MAX_EXPR_DEPTH: usize = 5_000;
+
 /// Parse a complete expression.
 pub fn parse(src: &str) -> Result<Expr, ParseError> {
-    let mut p = ExprParser { src, pos: 0 };
+    let mut p = ExprParser {
+        src,
+        pos: 0,
+        depth: 0,
+    };
     p.skip_space();
     let e = p.parse_binary(0)?;
     p.skip_space();
@@ -123,11 +158,39 @@ pub const LEVELS: &[&[(&str, BinOp)]] = &[
 struct ExprParser<'a> {
     src: &'a str,
     pos: usize,
+    /// How many subexpressions are open at the cursor — the recursion this
+    /// parser does, bounded by [`MAX_EXPR_DEPTH`].
+    depth: usize,
 }
 
 impl<'a> ExprParser<'a> {
     fn bytes(&self) -> &'a [u8] {
         self.src.as_bytes()
+    }
+
+    /// Parse one nesting level deeper, or refuse.
+    ///
+    /// Every recursive call that opens a subexpression goes through here: a
+    /// parenthesized operand, a function argument, both arms of a ternary, the
+    /// right operand of the right-associative `**`, and a unary operator's
+    /// operand. The level walk inside [`ExprParser::parse_binary`] does not,
+    /// because it is bounded by [`LEVELS`] rather than by the input.
+    ///
+    /// The wording follows the shape the reference interpreter uses for its own
+    /// depth refusals (`too many nested evaluations (infinite loop?)`), because
+    /// there is no reference behavior to copy: tclsh's expression parser does
+    /// not recurse and so has no limit to match.
+    fn nested<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        if self.depth >= MAX_EXPR_DEPTH {
+            return Err(self.error("too many nested subexpressions (infinite loop?)"));
+        }
+        self.depth += 1;
+        let parsed = parse(self);
+        self.depth -= 1;
+        parsed
     }
 
     fn peek(&self) -> Option<u8> {
@@ -194,7 +257,7 @@ impl<'a> ExprParser<'a> {
             self.skip_space();
             // Exponentiation is the one right-associative level.
             let rhs = if op == BinOp::Pow {
-                self.parse_binary(level)?
+                self.nested(|p| p.parse_binary(level))?
             } else {
                 self.parse_binary(level + 1)?
             };
@@ -206,14 +269,14 @@ impl<'a> ExprParser<'a> {
             if self.peek() == Some(b'?') {
                 self.pos += 1;
                 self.skip_space();
-                let then = self.parse_binary(0)?;
+                let then = self.nested(|p| p.parse_binary(0))?;
                 self.skip_space();
                 if self.peek() != Some(b':') {
                     return Err(self.error("missing : in ternary"));
                 }
                 self.pos += 1;
                 self.skip_space();
-                let other = self.parse_binary(0)?;
+                let other = self.nested(|p| p.parse_binary(0))?;
                 lhs = Expr::Ternary(Box::new(lhs), Box::new(then), Box::new(other));
             }
         }
@@ -231,7 +294,7 @@ impl<'a> ExprParser<'a> {
         };
         if let Some(op) = op {
             self.pos += 1;
-            let operand = self.parse_unary()?;
+            let operand = self.nested(|p| p.parse_unary())?;
             return Ok(Expr::Unary(op, Box::new(operand)));
         }
         self.parse_operand()
@@ -243,7 +306,7 @@ impl<'a> ExprParser<'a> {
             None => Err(self.error("premature end of expression")),
             Some(b'(') => {
                 self.pos += 1;
-                let e = self.parse_binary(0)?;
+                let e = self.nested(|p| p.parse_binary(0))?;
                 self.skip_space();
                 if self.peek() != Some(b')') {
                     return Err(self.error("missing close-paren"));
@@ -404,7 +467,7 @@ impl<'a> ExprParser<'a> {
             return Ok(Expr::Call(name, args));
         }
         loop {
-            args.push(self.parse_binary(0)?);
+            args.push(self.nested(|p| p.parse_binary(0))?);
             self.skip_space();
             match self.peek() {
                 Some(b',') => {

@@ -279,6 +279,17 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   `cmd_string::parse_double` accumulates the digits in an `f64`, and tclsh
   converts the bignum. The same missing bignum as above, in the one place that
   answers rather than refusing.
+- **`format`'s size limit is not checked for `%s` and `%c`.** Both refuse a field
+  *width* past the limit, like every other conversion, but a *precision* past it
+  is accepted: `format %.9223372036854775807s abc` is `abc` here and
+  `max size for a Tcl value exceeded` under tclsh. Neither allocates — a `%s`
+  precision truncates and a `%c` ignores it — so this is a message tclsh produces
+  and tclrs does not, not a crash. Found while closing the size crashes below.
+- **A field width too large for an `i64` reports the wrong message.**
+  `format %99999999999999999999d 1` is `integer value too large to represent`
+  here and `max size for a Tcl value exceeded` under tclsh. The *precision* in the
+  same position saturates and reports tclsh's message
+  (`cmd_string::format`); the width still parses and fails.
 
 ### Fixed by the fuzzer's own findings
 
@@ -323,31 +334,85 @@ prints a hit count per entry.
 A crash is worse than any divergence: the differential harness calls it
 `CRITICAL` and never suppresses one, and none of these can be caught by `catch` —
 the interpreter thread unwinds or the process aborts, so the script's own error
-handling never sees it. Each was found by auditing for panics on the class the
-boolean rule exposed (`&body[..2]` in the number parser), each is measured, and
-each is still open. `format`'s are the ones a generated program is likeliest to
-reach, since the generator draws widths and precisions from a pool.
+handling never sees it. The first three were found by auditing for panics on the
+class the boolean rule exposed (`&body[..2]` in the number parser), the rest by
+the cargo-fuzz targets. Each is measured.
 
-- **`format`'s floating-point precision above 65535 panics.** Rust's formatter
+All of them are now closed, each pinned by a test in
+`tests/parity_fuzz_findings.rs` that measures tclsh's own answer rather than
+quoting one, and each with its reproducer in the seed corpus of the target that
+reaches it.
+
+- **`format`'s floating-point precision above 65535 panicked.** Rust's formatter
   holds precision in a `u16`, and the four sites that call it take the number
   straight from the script: `format %.65536f 1.0`, `format %.65536e 1.0`,
-  `format %.65535g 0.0001` and `format %.70000g 1e-5` are
-  `Formatting argument out of range` (`src/cmd_string.rs:1651`, `:1671`, `:1693`,
-  `:1711`). tclsh produces the digits — `string length [format %.65536f 1.0]` is
-  65538 there — so matching it means generating them rather than bounding the
-  precision, which Rust's formatter will not do.
-- **`format`'s field width is unbounded.** `format %9223372036854775807d 1`
-  is `memory allocation of 9223372036854775806 bytes failed`, an abort rather than
-  a panic (`src/cmd_string.rs:1500`, `push_padded`). tclsh reports
-  `max size for a Tcl value exceeded`. `string repeat` already has a 2 GiB guard
-  (`src/cmd_string.rs:511`); `format` has none, and the two should share one.
-- **`expr`'s parser recursion is unbounded.** `expr {((((…1…))))}` overflows the
-  stack between 5_000 and 10_000 parentheses on the stack the binary gives it, and
-  a unary chain does the same at around 150_000. `src/parser.rs` bounds its own
-  recursion at `MAX_NESTING_DEPTH` for exactly this reason and `src/expr.rs` does
-  not, so the fix is the same mechanism in `ExprParser::parse_binary` /
-  `parse_unary`. It fires while *compiling*, so `fuzz/fuzz_targets/compiler.rs`
-  reaches it with a 10 KB input.
+  `format %.65535g 0.0001` and `format %.70000g 1e-5` were
+  `Formatting argument out of range`. **Fixed** by producing the digits Rust will
+  not: a double's decimal expansion is finite — at most 1_074 fraction digits, for
+  the smallest subnormal — so every digit past it is a zero, and formatting at the
+  highest precision Rust accepts and appending zeroes is exact
+  (`cmd_string::extend_exact`). tclrs now agrees with tclsh digit for digit:
+  `string length [format %.65536f 1.0]` is 65538 on both, and `%#.70000g` keeps
+  the trailing zeroes the plain form strips, at 70005 on both.
+- **`format`'s field width was unbounded.** `format %9223372036854775807d 1`
+  was `memory allocation of 9223372036854775806 bytes failed`, an abort rather
+  than a panic. **Fixed**: `push_padded` and `extend_exact` check the running
+  total against `cmd_string::MAX_VALUE_BYTES` and report
+  `max size for a Tcl value exceeded`, which is tclsh's own message for the same
+  input. The *size* is not tclsh's: tclsh 9.0's `Tcl_Size` is 64-bit and
+  `format %4294967296d 1` really does build a 4 GiB string there, where tclrs
+  refuses above 2 GiB — the size `string repeat` already refuses above. Below
+  that the two agree, and no width a script writes is near it.
+- **`format`'s integer precision was unbounded too**, which the entry above did
+  not name. An integer conversion pads on the left, so
+  `format %.9223372036854775807d 1` aborted in the same way and from a different
+  line (`cmd_string::integer`). Found by probing the whole conversion table
+  against tclsh rather than by the fuzzer. **Fixed** by the same check, and the
+  precision now saturates instead of reading as zero when its spelling is too
+  long for an `i64`: `format %.99999999999999999999d 1` was `1` and is now
+  tclsh's `max size for a Tcl value exceeded`.
+- **`expr`'s parser recursion was unbounded.** In an unoptimized build,
+  `expr {((((…1…))))}` overflowed the stack between 7_500 and 8_000 parentheses
+  on the stack the binary gives it, and a unary chain did the same between
+  100_000 and 150_000. **Fixed** by the mechanism `src/parser.rs` already used:
+  `expr::MAX_EXPR_DEPTH` (5_000, measured) bounds every descent that opens a
+  subexpression — a parenthesized operand, a function argument, both arms of a
+  ternary, the right operand of `**`, and a unary operand — and past it the
+  answer is `too many nested subexpressions (infinite loop?)`.
+
+  The limit is calibrated against the unoptimized build on purpose: that is the
+  weakest one this crate is built as, and it is what `cargo test` runs. An
+  optimized build has frames small enough to survive 32_000 parentheses on the
+  same stack, so setting the limit from *its* floor would leave a debug build
+  aborting where a release build only reported an error.
+
+  Unlike the command parser's `MAX_NESTING_DEPTH`, this limit is **below** what
+  the reference interpreter survives, so it is a divergence and a deliberate one:
+  tclsh parses expressions with an explicit stack (`tclCompExpr.c`) rather than by
+  recursion, and answers 1_000_000 nested parentheses without complaint. Matching
+  that would mean an iterative parser *and* an iterative lowering pass *and* an
+  iterative drop for the tree, since each recurses on the same nesting. A Tcl
+  error for an input no script writes is the trade.
+
+A fourth was not in the list above, because nothing had found it yet:
+
+- **The "followed by junk" diagnostic panicked on a split character.** The
+  reference implementation quotes twenty *bytes* of whatever followed a
+  close-brace or close-quote where a separator belonged (`TclFindElement`'s
+  `while ((p2 < limit) && !TclIsSpaceProc(*p2) && (p2 < p+20))`), and a
+  continuation byte is not a space — so the walk runs through a multi-byte
+  character and the cap can land inside one. Slicing there is
+  `byte index N is not a char boundary`, a panic on the interpreter thread that
+  no `catch` sees, and `llength {"a"xxxxxxxxxxxxxxxxxxxé}` was enough to reach
+  it. Both copies of the walk had it (`src/list.rs`, `src/assoc.rs`), so
+  `llength`, `dict` and `array set` all died on their own version.
+
+  Found by the `vm` cargo-fuzz target, which was not looking for it: a generated
+  `dict merge` whose argument the fuzzer had filled with high bytes.
+  **Fixed** with one implementation for both callers (`list::junk_prefix`),
+  which backs the cap up to the character boundary — dropping the partial
+  character, which is what tclsh prints for the same script, measured byte for
+  byte.
 
 ## Defects in the reference implementation
 

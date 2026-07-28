@@ -993,3 +993,333 @@ fn deep_nesting_is_refused_rather_than_exhausting_the_stack() {
     let indices = format!("puts $a({}", "$b(".repeat(100_000));
     assert_eq!(run(&subject, &indices, "sub-index"), refusal);
 }
+
+// ── crashes found by the cargo-fuzz targets ─────────────────────────────────
+//
+// A crash is worse than any divergence: none of these can be caught by `catch`,
+// because the interpreter thread unwinds or the process aborts before the
+// script's own error handling is reached. Each was open in BUGS.md and each is
+// fixed below; the tests are here rather than in a unit module because the
+// answer that decided each policy is tclsh's, and it is measured rather than
+// remembered.
+
+/// **Fixed for tclrs.** A floating-point precision above 65_535 produces the
+/// digits, where before it panicked.
+///
+/// Rust's formatter holds a precision in a `u16` and answers anything larger
+/// with `Formatting argument out of range` — a panic, not an error — and
+/// `format`'s precision comes straight from the script. tclsh produces every
+/// digit asked for, so matching it means generating the digits rather than
+/// bounding the precision.
+///
+/// The policy is to match tclsh exactly, which is possible because a double's
+/// decimal expansion is finite: at most 1_074 fraction digits, for the smallest
+/// subnormal. Every digit past the expansion is a zero, so formatting at the
+/// highest precision Rust accepts and appending zeroes is exact, not an
+/// approximation — and this test compares against a live tclsh rather than
+/// against that reasoning.
+#[test]
+fn format_precision_past_the_formatters_ceiling_matches_tclsh() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    // The lengths, because the answers run to tens of thousands of digits: the
+    // four sites BUGS.md named, then the boundary from both sides, then the two
+    // the `%g` path turns on — `#` keeps the trailing zeroes the plain form
+    // strips, so it is the one that must still produce them.
+    for (program, length) in [
+        ("format %.65535f 1.0", 65537),
+        ("format %.65536f 1.0", 65538),
+        ("format %.65536e 1.0", 65542),
+        ("format %.65535g 0.0001", 68),
+        ("format %.70000g 1e-5", 70),
+        ("format %#.70000g 1e-5", 70005),
+        ("format %#.65540g 0.5", 65542),
+        ("format %.1000000e 1e-5", 1000006),
+        ("format %.65536f -0.0", 65539),
+    ] {
+        agrees(
+            &tclsh,
+            &format!("puts [string length [{program}]]"),
+            out(&format!("{length}\n")),
+        );
+    }
+
+    // The digits themselves where the answer is short enough to read. The first
+    // is the whole exact decimal expansion of the double nearest 1e-5, which is
+    // the claim the zero-extension rests on: 65_540 significant digits were
+    // asked for and the expansion ran out after 65, so nothing was invented.
+    agrees(
+        &tclsh,
+        "puts [format %.65540g 1e-5]",
+        out("1.0000000000000000818030539140313095458623138256371021270751953125e-05\n"),
+    );
+    agrees(
+        &tclsh,
+        "puts [string range [format %#.65540g 0.5] 0 8]",
+        out("0.5000000\n"),
+    );
+    agrees(
+        &tclsh,
+        "puts [string range [format %.65536f -0.0] 0 4]",
+        out("-0.00\n"),
+    );
+    // Nothing here may disturb the ordinary precisions.
+    agrees(
+        &tclsh,
+        "puts [format %.5f|%.3e|%g|%#.0f 1.0 12345.678 0.0001 2.0]",
+        out("1.00000|1.235e+04|0.0001|2.\n"),
+    );
+}
+
+/// **Fixed for tclrs.** A field width or a precision too large to allocate is a
+/// Tcl error, where before it aborted the process.
+///
+/// `format %9223372036854775807d 1` asked the allocator for 9 exabytes, and its
+/// refusal is an abort: `memory allocation of 9223372036854775806 bytes failed`,
+/// which no `catch` can see. tclsh reports `max size for a Tcl value exceeded`
+/// and keeps running, so the policy is tclsh's message, checked here against a
+/// live tclsh rather than quoted from memory.
+///
+/// The size the limit sits at is *not* tclsh's. tclsh 9.0's `Tcl_Size` is
+/// 64-bit and `format %4294967296d 1` really does build a 4 GiB string there;
+/// tclrs refuses above 2 GiB, which is where `string repeat` already refuses
+/// (`src/cmd_string.rs`, the `REPEAT` arm). Below that the two agree, and the
+/// widths a script actually writes are far below it.
+///
+/// The subprocess run is the part that would have failed before the fix: an
+/// abort has no exit code, so `code()` is `None` for it.
+#[test]
+fn format_size_is_refused_rather_than_aborting() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    for program in [
+        // The field width, at every conversion that pads with it.
+        "puts [format %9223372036854775807d 1]",
+        "puts [format %9223372036854775807s x]",
+        "puts [format %9223372036854775807c 65]",
+        // The precision. BUGS.md named only the floating-point sites; an
+        // integer conversion pads on the left and aborted the same way, from a
+        // different line.
+        "puts [format %.9223372036854775807d 1]",
+        "puts [format %.9223372036854775807x 1]",
+        "puts [format %.9223372036854775807b 1]",
+        "puts [format %.9223372036854775807f 1e-5]",
+        "puts [format %.9223372036854775807e 1.0]",
+        "puts [format %#.9223372036854775807g 1e-5]",
+        // `%g` strips trailing zeroes, so its digits could be produced at a
+        // clamped precision and come out right — which is exactly how a
+        // precision past any possible result would slip through unrefused.
+        "puts [format %.9223372036854775807g 1e-5]",
+        // A precision whose spelling does not fit an `i64` at all. It used to
+        // read as zero and print `1`.
+        "puts [format %.99999999999999999999d 1]",
+        "puts [format %.99999999999999999999f 1]",
+    ] {
+        agrees(&tclsh, program, err("max size for a Tcl value exceeded"));
+
+        // Run the binary too: the failure this replaces was an abort, which a
+        // library call cannot report and a test cannot catch.
+        let path = case_path(program, "fmtsize");
+        std::fs::write(&path, program).expect("write case");
+        let status = std::process::Command::new(TCLRS)
+            .arg(&path)
+            .output()
+            .expect("run tclrs")
+            .status;
+        assert_eq!(
+            status.code(),
+            Some(1),
+            "{program:?} did not exit with a Tcl error — a process killed by a \
+             signal has no exit code, which is how the allocator's abort arrived"
+        );
+    }
+
+    // The width still applies below the limit, and still to every field: the
+    // check is against the running total, so a format string cannot walk past
+    // the limit one modest field at a time.
+    agrees(
+        &tclsh,
+        "puts [string length [format %100000d 1]]",
+        out("100000\n"),
+    );
+    agrees(
+        &tclsh,
+        "puts [string length [format %60000d%60000d 1 1]]",
+        out("120000\n"),
+    );
+}
+
+/// **Fixed for tclrs.** Nesting in an expression is bounded by
+/// [`tclrs::expr::MAX_EXPR_DEPTH`] rather than by the stack, so the deepest
+/// expression reports a Tcl error instead of aborting the process.
+///
+/// `src/parser.rs` has bounded the command language's recursion at
+/// `MAX_NESTING_DEPTH` for exactly this reason; `src/expr.rs` did not, and
+/// `expr {((…1…))}` overflowed the stack between 7_500 and 8_000 parentheses on
+/// the stack the binary gives it, a chain of unary operators between 100_000 and
+/// 150_000.
+///
+/// Unlike the command parser's limit, this one is below what the reference
+/// interpreter survives: tclsh 9.0.4 parses expressions with an explicit stack
+/// (`tclCompExpr.c`) rather than by recursion and answers 1_000_000 nested
+/// parentheses without complaint, which this test asserts rather than assumes.
+/// So the bound is a divergence, and a deliberate one — a clean Tcl error for an
+/// input no script writes, in place of a process that dies with nothing to
+/// report.
+///
+/// Run as subprocesses: a stack overflow aborts rather than panicking, so it
+/// cannot be caught in-process, and the depths involved need more stack than a
+/// test thread has.
+#[test]
+fn expr_nesting_is_refused_rather_than_exhausting_the_stack() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    let run = |binary: &PathBuf, program: &str, label: &str| -> (Option<i32>, String) {
+        let path = case_path(label, "exprnest");
+        std::fs::write(&path, program).expect("write case");
+        let out = std::process::Command::new(binary)
+            .arg(&path)
+            .output()
+            .expect("run");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .chain(String::from_utf8_lossy(&out.stderr).lines())
+                .next()
+                .unwrap_or("")
+                .to_string(),
+        )
+    };
+    let parens = |depth: usize| {
+        format!(
+            "puts [expr {{{}1{}}}]",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        )
+    };
+    let unary = |depth: usize| format!("puts [expr {{{}1}}]", "-".repeat(depth));
+    let subject = PathBuf::from(TCLRS);
+    let limit = tclrs::expr::MAX_EXPR_DEPTH;
+    let refusal = (
+        Some(1),
+        "too many nested subexpressions (infinite loop?)".to_string(),
+    );
+
+    // At the limit both engines still answer, and that parity is what keeps the
+    // limit from being set somewhere ordinary code would reach.
+    assert_eq!(run(&tclsh, &parens(limit), "ref-at"), (Some(0), "1".into()));
+    assert_eq!(
+        run(&subject, &parens(limit), "sub-at"),
+        (Some(0), "1".into())
+    );
+    // The unary chain too, against tclsh rather than against a written-down
+    // sign: whether `limit` negations leave the operand negative depends on
+    // whether `limit` is even, which is not what this test is about.
+    assert_eq!(
+        run(&subject, &unary(limit), "sub-unary-at"),
+        run(&tclsh, &unary(limit), "ref-unary-at")
+    );
+
+    // One past it is the refusal, and so are the two depths that used to abort.
+    assert_eq!(run(&subject, &parens(limit + 1), "sub-over"), refusal);
+    assert_eq!(run(&subject, &parens(8_000), "sub-8k"), refusal);
+    assert_eq!(run(&subject, &unary(150_000), "sub-unary-150k"), refusal);
+
+    // tclsh has no such bound, which is why this is recorded as a divergence
+    // rather than as parity. If tclsh ever grows one, this stops being true and
+    // the reasoning above needs re-measuring.
+    assert_eq!(
+        run(&tclsh, &parens(1_000_000), "ref-1m"),
+        (Some(0), "1".into()),
+        "tclsh no longer parses 1_000_000 nested parentheses"
+    );
+
+    // The function-argument and ternary descents are bounded by the same
+    // counter, so neither is a way around it.
+    let calls = format!(
+        "puts [expr {{{}1{}}}]",
+        "abs(".repeat(8_000),
+        ")".repeat(8_000)
+    );
+    assert_eq!(run(&subject, &calls, "sub-calls"), refusal);
+    let ternaries = format!(
+        "puts [expr {{{}1{}}}]",
+        "1?".repeat(8_000),
+        ":0".repeat(8_000)
+    );
+    assert_eq!(run(&subject, &ternaries, "sub-ternary"), refusal);
+}
+
+/// **Fixed for tclrs.** The "followed by junk" diagnostic no longer panics when
+/// its twenty-byte cap lands inside a multi-byte character.
+///
+/// The reference implementation quotes twenty *bytes* of whatever followed a
+/// close-brace or close-quote where a separator belonged — `TclFindElement`'s
+/// loop is `while ((p2 < limit) && !TclIsSpaceProc(*p2) && (p2 < p+20))`. A
+/// continuation byte is not a space, so the walk runs through a multi-byte
+/// character, and slicing a Rust `str` at the resulting offset is
+/// `byte index N is not a char boundary` — a panic on the interpreter thread,
+/// which no `catch` can see.
+///
+/// Found by the `vm` cargo-fuzz target, from a generated `dict merge` whose
+/// argument the fuzzer had filled with high bytes; minimised to the one line
+/// below. Both copies of the walk had it — `src/list.rs` and `src/assoc.rs` —
+/// and there is one copy now (`list::junk_prefix`), which is why all four
+/// callers are checked here.
+///
+/// The policy is to drop the partial character rather than to reach past it,
+/// because that is what tclsh prints: nineteen `x` and nothing after them, for
+/// a cap that falls between the two bytes of `é`. Measured, not reasoned —
+/// `agrees` runs tclsh on each of these.
+#[test]
+fn a_split_character_in_the_junk_diagnostic_does_not_panic() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    // Nineteen bytes of filler puts the twenty-byte cap between the two bytes
+    // of the `é` that follows.
+    let junk = format!("{}é", "x".repeat(19));
+    for (program, quoted_in) in [
+        (format!("puts [llength {{\"a\"{junk}}}]"), "quotes"),
+        (format!("puts [llength {{{{a}}{junk}}}]"), "braces"),
+        (format!("array set A {{\"a\"{junk}}}"), "quotes"),
+    ] {
+        agrees(
+            &tclsh,
+            &program,
+            err(&format!(
+                "list element in {quoted_in} followed by \"{}\" instead of space",
+                "x".repeat(19)
+            )),
+        );
+    }
+    for (program, quoted_in) in [
+        (format!("puts [dict size {{\"a\"{junk}}}]"), "quotes"),
+        (format!("puts [dict get {{{{a}}{junk}}} k]"), "braces"),
+    ] {
+        agrees(
+            &tclsh,
+            &program,
+            err(&format!(
+                "dict element in {quoted_in} followed by \"{}\" instead of space",
+                "x".repeat(19)
+            )),
+        );
+    }
+
+    // A character that fits inside the cap is still quoted whole, so the fix is
+    // a boundary rule and not a blanket truncation to ASCII.
+    agrees(
+        &tclsh,
+        "puts [llength {\"a\"éxx}]",
+        err("list element in quotes followed by \"éxx\" instead of space"),
+    );
+}

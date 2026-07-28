@@ -1417,9 +1417,23 @@ fn format_string(fmt: &str, args: &[String]) -> Result<String, String> {
                 want_int(take(argument - 1)?)?
             } else {
                 let stop = digit_run(&f, i);
-                let v = f[i..stop].iter().collect::<String>().parse().unwrap_or(0);
+                // A spelling too long for an `i64` saturates rather than
+                // reading as zero: it is a precision larger than any result,
+                // so it belongs on the far side of the size check below, not
+                // on the "no precision at all" side. tclsh reports
+                // `max size for a Tcl value exceeded` for
+                // `format %.99999999999999999999d 1`, which is what saturating
+                // produces here.
+                //
+                // `%.f` — a point with no digits after it — is a precision of
+                // zero, so an *empty* run is still zero.
+                let text = f[i..stop].iter().collect::<String>();
                 i = stop;
-                v
+                if text.is_empty() {
+                    0
+                } else {
+                    text.parse().unwrap_or(i64::MAX)
+                }
             };
             precision = Some(value.max(0));
         }
@@ -1478,9 +1492,55 @@ fn format_string(fmt: &str, args: &[String]) -> Result<String, String> {
             }
             other => return Err(format!("bad field specifier \"{other}\"")),
         };
-        push_padded(&mut out, converted, flags, width);
+        push_padded(&mut out, converted, flags, width)?;
     }
     Ok(out)
+}
+
+/// The largest string `format` will build.
+///
+/// A field width and a precision both come straight from the script, and both
+/// scale the result: `format %9223372036854775807d 1` asked for a string of
+/// 9 exabytes, and the allocator's refusal is an abort — the process dies with
+/// nothing for the script to catch. tclsh 9.0.4 reports
+/// [`TOO_BIG`] for the same input, so refusing before the allocation is asked
+/// for both matches it and keeps the failure catchable.
+///
+/// The limit is 2 GiB rather than tclsh's own: tclsh 9.0's `Tcl_Size` is 64-bit
+/// and `format %4294967296d 1` really does build a 4 GiB string there, which is
+/// a memory bomb rather than a useful answer. `string repeat` already refuses
+/// above 2 GiB (see [`ext::REPEAT`]'s arm), and the two now agree.
+const MAX_VALUE_BYTES: usize = i32::MAX as usize;
+
+/// What tclsh 9.0.4 reports when a `format` result cannot be had. Measured:
+/// `format %9223372036854775807d 1` and `format %.9223372036854775807f 1e-5`
+/// both print it.
+const TOO_BIG: &str = "max size for a Tcl value exceeded";
+
+/// The largest precision Rust's formatter accepts: it holds one in a `u16`, and
+/// anything above is `Formatting argument out of range` — a panic, not an error.
+///
+/// `format`'s precision is whatever the script wrote, and tclsh prints every
+/// digit asked for (`string length [format %.65536f 1.0]` is 65538 there), so
+/// the digits past this are produced by [`extend_exact`] instead.
+const RUST_MAX_PRECISION: usize = u16::MAX as usize;
+
+/// Append the fraction digits Rust's formatter would not produce.
+///
+/// A double's exact decimal expansion is finite — at most 1_074 fraction digits,
+/// for the smallest subnormal — so a precision above the expansion asks only for
+/// zeroes, and every digit past [`RUST_MAX_PRECISION`] is one of them. Appending
+/// them is therefore exact, not an approximation.
+fn extend_exact(digits: &mut String, precision: usize) -> Result<(), String> {
+    if precision <= RUST_MAX_PRECISION {
+        return Ok(());
+    }
+    let extra = precision - RUST_MAX_PRECISION;
+    if digits.len().saturating_add(extra) > MAX_VALUE_BYTES {
+        return Err(TOO_BIG.to_string());
+    }
+    digits.extend(std::iter::repeat_n('0', extra));
+    Ok(())
 }
 
 /// A converted number split so that padding can go between its sign and its
@@ -1503,13 +1563,25 @@ impl Signed {
     }
 }
 
-fn push_padded(out: &mut String, value: Signed, flags: Flags, width: i64) {
+fn push_padded(out: &mut String, value: Signed, flags: Flags, width: i64) -> Result<(), String> {
     let len = value.prefix.chars().count() + value.digits.chars().count();
     let fill = (width as usize).saturating_sub(len);
+    // The width is the script's, so the padding is too. Refuse before asking the
+    // allocator for something it will die on — see [`MAX_VALUE_BYTES`]. The
+    // running total is checked, not just this field, so a format string of many
+    // wide specifiers cannot walk past the limit one field at a time.
+    if out
+        .len()
+        .saturating_add(fill)
+        .saturating_add(value.digits.len())
+        > MAX_VALUE_BYTES
+    {
+        return Err(TOO_BIG.to_string());
+    }
     if fill == 0 {
         out.push_str(&value.prefix);
         out.push_str(&value.digits);
-        return;
+        return Ok(());
     }
     if flags.zero && value.zero_pad {
         // Tcl pads with zeroes even when the field is left-justified.
@@ -1525,6 +1597,7 @@ fn push_padded(out: &mut String, value: Signed, flags: Flags, width: i64) {
         out.push_str(&value.prefix);
         out.push_str(&value.digits);
     }
+    Ok(())
 }
 
 fn digit_run(f: &[char], from: usize) -> usize {
@@ -1589,6 +1662,13 @@ fn integer(
         // Unlike C, Tcl still prints one digit when the precision is zero.
         let p = (p as usize).max(1);
         if digits.len() < p {
+            // An integer conversion pads on the *left*, so the precision scales
+            // the result here the way it does for a double — and the number is
+            // the script's. `format %.9223372036854775807d 1` asked for 9
+            // exabytes of leading zeroes; see [`MAX_VALUE_BYTES`].
+            if p > MAX_VALUE_BYTES {
+                return Err(TOO_BIG.to_string());
+            }
             digits.insert_str(0, &"0".repeat(p - digits.len()));
         }
     }
@@ -1652,36 +1732,58 @@ fn floating(
 
     let magnitude = x.abs();
     let precision = precision.unwrap_or(6).max(0) as usize;
+    // Checked once, up front, rather than only where the digits are built: `%g`
+    // strips trailing zeroes, so its digits can be produced at a clamped
+    // precision and come out identical — which would let a precision far past
+    // any possible result quietly succeed. tclsh refuses on the precision
+    // asked for, whatever the conversion does with it.
+    if precision > MAX_VALUE_BYTES {
+        return Err(TOO_BIG.to_string());
+    }
     let digits = match conv.to_ascii_lowercase() {
         'f' => {
-            let mut s = format!("{magnitude:.precision$}");
+            let mut s = fixed(magnitude, precision)?;
             if precision == 0 && flags.hash {
                 s.push('.');
             }
             s
         }
-        'e' => exponential(magnitude, precision, flags.hash, upper_case),
+        'e' => exponential(magnitude, precision, flags.hash, upper_case)?,
         _ => {
             let significant = precision.max(1);
             let exponent = decimal_exponent(magnitude, significant - 1);
-            if exponent < -4 || exponent >= significant as i32 {
-                let s = exponential(magnitude, significant - 1, flags.hash, upper_case);
+            // Compared as `i64`: `significant` is the script's precision, and
+            // an `i32` cast of one past 2^31 wraps to a negative and sends the
+            // conversion down the wrong branch.
+            if exponent < -4 || exponent as i64 >= significant as i64 {
                 if flags.hash {
-                    s
+                    exponential(magnitude, significant - 1, true, upper_case)?
                 } else {
+                    // The trailing zeroes are about to be stripped, so the
+                    // digits past the double's exact expansion need never be
+                    // produced: clamping to what Rust's formatter takes gives
+                    // the same answer for a fraction of the work.
+                    let s = exponential(
+                        magnitude,
+                        (significant - 1).min(RUST_MAX_PRECISION),
+                        false,
+                        upper_case,
+                    )?;
                     let (mantissa, tail) = s.split_at(s.find(['e', 'E']).unwrap_or(s.len()));
                     format!("{}{tail}", strip_zeroes(mantissa))
                 }
             } else {
-                let places = (significant as i32 - 1 - exponent).max(0) as usize;
-                let s = format!("{magnitude:.places$}");
+                let places = (significant as i64 - 1 - exponent as i64).max(0) as usize;
                 if flags.hash {
+                    let s = fixed(magnitude, places)?;
                     if places == 0 {
                         format!("{s}.")
                     } else {
                         s
                     }
                 } else {
+                    // Stripped as above, so the clamp is again exact.
+                    let s = fixed(magnitude, places.min(RUST_MAX_PRECISION))?;
                     strip_zeroes(&s).to_string()
                 }
             }
@@ -1694,27 +1796,47 @@ fn floating(
     })
 }
 
+/// `magnitude` with `precision` fraction digits, for a precision Rust's
+/// formatter will not take. See [`RUST_MAX_PRECISION`].
+fn fixed(magnitude: f64, precision: usize) -> Result<String, String> {
+    let mut s = format!("{magnitude:.p$}", p = precision.min(RUST_MAX_PRECISION));
+    extend_exact(&mut s, precision)?;
+    Ok(s)
+}
+
 /// `x.yyye±zz`, with the two-digit exponent C guarantees.
-fn exponential(magnitude: f64, precision: usize, hash: bool, upper_case: bool) -> String {
-    let raw = format!("{magnitude:.precision$e}");
+fn exponential(
+    magnitude: f64,
+    precision: usize,
+    hash: bool,
+    upper_case: bool,
+) -> Result<String, String> {
+    let raw = format!("{magnitude:.p$e}", p = precision.min(RUST_MAX_PRECISION));
     let (mantissa, exponent) = raw.split_once('e').expect("exponential form");
     let exponent: i32 = exponent.parse().expect("exponent digits");
     let mut mantissa = mantissa.to_string();
+    // The mantissa carries the fraction digits, so it is what grows past
+    // Rust's ceiling.
+    extend_exact(&mut mantissa, precision)?;
     if precision == 0 && hash {
         mantissa.push('.');
     }
-    format!(
+    Ok(format!(
         "{mantissa}{}{}{:02}",
         if upper_case { 'E' } else { 'e' },
         if exponent < 0 { '-' } else { '+' },
         exponent.abs()
-    )
+    ))
 }
 
 /// The exponent `%e` would print after rounding to `precision` fraction digits,
 /// which is what decides whether `%g` uses fixed or exponential form.
+///
+/// The precision is clamped rather than extended: rounding a double past its
+/// exact decimal expansion cannot move the decimal point, so every precision
+/// above [`RUST_MAX_PRECISION`] gives the exponent that one gives.
 fn decimal_exponent(magnitude: f64, precision: usize) -> i32 {
-    let raw = format!("{magnitude:.precision$e}");
+    let raw = format!("{magnitude:.p$e}", p = precision.min(RUST_MAX_PRECISION));
     raw.split_once('e')
         .and_then(|(_, e)| e.parse().ok())
         .unwrap_or(0)

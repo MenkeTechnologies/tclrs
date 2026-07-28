@@ -201,17 +201,39 @@ fn find_element(src: &str, from: usize) -> Result<(String, usize), String> {
     Ok((value, pos))
 }
 
+/// The text the interpreter quotes when a separator was expected: whatever
+/// followed a close-brace or close-quote, up to twenty bytes.
+///
+/// Twenty *bytes*, as in the reference implementation — its own loop is
+/// `while ((p2 < limit) && !TclIsSpaceProc(*p2) && (p2 < p+20))` in
+/// `TclFindElement` — but never a partial character. A continuation byte is not
+/// a space, so the walk runs straight through a multi-byte character and the
+/// twenty-byte cap can land inside one; slicing there is a panic, and it took
+/// the process down from a script as ordinary as
+/// `llength {"a"xxxxxxxxxxxxxxxxxxxé}`. Backing up to the boundary drops the
+/// partial character, which is what tclsh 9.0.4 prints for that script too
+/// (nineteen `x` and nothing after them, measured).
+///
+/// One implementation for both callers: `assoc.rs` parses dictionary and array
+/// elements with the same rule and reported the same panic from its own copy.
+pub(crate) fn junk_prefix(src: &str, at: usize) -> &str {
+    let bytes = src.as_bytes();
+    let mut end = at;
+    while end < bytes.len() && !is_space(bytes[end]) && end < at + 20 {
+        end += 1;
+    }
+    while end > at && !src.is_char_boundary(end) {
+        end -= 1;
+    }
+    &src[at..end]
+}
+
 /// The interpreter reports up to twenty characters of whatever followed a
 /// close-brace or close-quote where a separator belonged.
 fn junk_after(src: &str, pos: usize, what: &str) -> String {
-    let bytes = src.as_bytes();
-    let mut end = pos;
-    while end < bytes.len() && !is_space(bytes[end]) && end < pos + 20 {
-        end += 1;
-    }
     format!(
         "list element in {what} followed by \"{}\" instead of space",
-        &src[pos..end]
+        junk_prefix(src, pos)
     )
 }
 
