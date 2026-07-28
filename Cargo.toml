@@ -19,6 +19,12 @@ categories = ["command-line-utilities", "compilers"]
 name = "tclrs"
 path = "src/lib.rs"
 
+# The `tclsh`-compatible driver: a script file, `-c script`, or stdin — a REPL
+# when stdin is a terminal.
+[[bin]]
+name = "tclrs"
+path = "src/main.rs"
+
 [dependencies]
 # Execution and codegen live in fusevm; this crate only lowers to its ops.
 # The JIT features arrive in phase 6, with the benchmarks that justify them.

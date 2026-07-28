@@ -1,6 +1,6 @@
 //! Running a compiled chunk: the numeric hook and extension ops that give
-//! fusevm Tcl's arithmetic, the driver that owns error unwinding and coroutine
-//! switching, and Tcl's number formatting.
+//! fusevm Tcl's arithmetic, the driver that owns interpreter state, error
+//! unwinding and coroutine switching, and Tcl's number formatting.
 //!
 //! Two hooks carry all of the language-specific behavior:
 //!
@@ -15,19 +15,37 @@
 //! Everything else runs as native ops, so the arithmetic the JIT cares about
 //! stays visible to it.
 //!
-//! The [`Machine`] below is the driver. A script that uses no coroutine is one
-//! VM run in a loop that only ever restarts it at a `catch` handler; a script
-//! that creates coroutines has one VM per context, and the same loop also
-//! services the requests their ops raise. Both paths share one mechanism: an
-//! op stashes something in a cell and halts, and the driver reads the cell
-//! after `run()` returns — the pattern fusevm's scheduler is built on.
+//! Three layers sit on top of that, and they are one mechanism rather than
+//! three:
+//!
+//! * an [`Interp`] owns the variables and holds them between evaluations, which
+//!   is what makes a REPL a REPL and what lets the `eval` command run a script
+//!   built at run time and see the same state the script that built it sees;
+//! * a [`Machine`] drives one evaluation. A script that uses no coroutine is
+//!   one VM run in a loop that only ever restarts it at a `catch` handler; a
+//!   script that creates coroutines has one VM per context, and the same loop
+//!   also services the requests their ops raise. Both paths share one
+//!   mechanism: an op stashes something in a cell and halts, and the driver
+//!   reads the cell after `run()` returns — the pattern fusevm's scheduler is
+//!   built on;
+//! * [`Cells::install`] is the only place a hook is put on a VM, so the main
+//!   VM, every coroutine's VM and every nested `eval`'s VM behave alike.
+//!
+//! The two ways of holding variables meet at [`seed`] and [`flush`]. Within one
+//! evaluation every VM runs the same chunk, so the global table is a `Vec` the
+//! driver moves into whichever VM is about to run. Across evaluations the chunk
+//! differs — a chunk interns its own name table — so the interpreter keeps the
+//! variables keyed by name and the vector is projected out of that map on entry
+//! and read back into it on exit.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use fusevm::{Chunk, Frame, NumOp, VMResult, Value, VM};
 
-use crate::compiler::{self, ext, ext_wide};
+use crate::cache::ChunkCache;
+use crate::compiler::{ext, ext_wide};
 use crate::coro::{self, Request};
 use crate::list;
 
@@ -39,6 +57,242 @@ pub struct Outcome {
     /// Everything the script wrote to stdout.
     pub output: String,
 }
+
+/// A script that would not compile, or that failed while running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TclError {
+    /// The message, in the reference interpreter's wording.
+    pub msg: String,
+    /// The 1-based script line, when the failure was located while compiling.
+    /// A failure raised by a running chunk carries no line, as the reference
+    /// interpreter's does not either.
+    pub line: Option<usize>,
+}
+
+impl TclError {
+    pub(crate) fn plain(msg: impl Into<String>) -> Self {
+        TclError {
+            msg: msg.into(),
+            line: None,
+        }
+    }
+}
+
+impl fmt::Display for TclError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.line {
+            Some(line) => write!(f, "{} (line {line})", self.msg),
+            None => f.write_str(&self.msg),
+        }
+    }
+}
+
+impl std::error::Error for TclError {}
+
+/// Compile and run a script in a fresh interpreter, capturing its output.
+///
+/// A one-shot convenience over [`Interp`]: the state it builds is discarded
+/// when it returns.
+pub fn eval(src: &str) -> Result<Outcome, String> {
+    let mut interp = Interp::capturing();
+    let result = interp.eval(src).map_err(|e| e.to_string())?;
+    Ok(Outcome {
+        result,
+        output: interp.take_output(),
+    })
+}
+
+// ── the interpreter ──────────────────────────────────────────────────────
+
+/// How deep `eval` may nest before the interpreter refuses to go further —
+/// `interp recursionlimit`'s default in the reference interpreter, and the same
+/// message when it is reached.
+///
+/// A nested script runs on a VM of its own, so nesting costs native stack.
+/// Refusing at a fixed depth turns what would be a stack overflow — a signal,
+/// not an error — into a script error the script can be blamed for. A host
+/// running on a small stack should lower it with
+/// [`Interp::set_recursion_limit`]; [`RECOMMENDED_STACK`] is what this default
+/// needs.
+pub const DEFAULT_RECURSION_LIMIT: usize = 1000;
+
+/// The thread stack [`DEFAULT_RECURSION_LIMIT`] levels of nesting need, with
+/// room to spare for an unoptimized build. The `tclrs` binary runs on a thread
+/// this size; a host embedding the library and keeping the default limit needs
+/// as much.
+pub const RECOMMENDED_STACK: usize = 256 * 1024 * 1024;
+
+/// Where a capturing interpreter collects what its scripts write.
+type Capture = Arc<Mutex<String>>;
+
+/// Everything an interpreter carries between evaluations.
+///
+/// It lives behind an `Arc<Mutex<…>>` because a running chunk reaches back into
+/// it: the `eval` command compiles and runs a nested script from inside the
+/// extension handler of the chunk that invoked it. No lock is ever held across
+/// a `VM::run`, so that nesting can go as deep as `limit` allows.
+struct State {
+    /// The variables, keyed by name. This is the authority, not the VM's slot
+    /// vector — see [`seed`].
+    globals: HashMap<String, Value>,
+    cache: ChunkCache,
+    /// `Some` when output is captured rather than written to stdout.
+    capture: Option<Capture>,
+    /// How many scripts are running, counting the outermost.
+    depth: usize,
+    limit: usize,
+}
+
+type Shared = Arc<Mutex<State>>;
+
+/// A Tcl interpreter: the variables of a session, and the chunks compiled for
+/// it.
+///
+/// Every evaluation runs against the same state, so a variable set by one
+/// survives into the next. That is what a REPL needs, and what the `eval`
+/// command needs, and the two are the same mechanism.
+pub struct Interp {
+    shared: Shared,
+}
+
+impl Interp {
+    /// An interpreter whose scripts write to the process's stdout.
+    pub fn new() -> Self {
+        Interp::with_capture(None)
+    }
+
+    /// An interpreter that collects what its scripts write, for
+    /// [`Interp::take_output`].
+    pub fn capturing() -> Self {
+        Interp::with_capture(Some(Arc::new(Mutex::new(String::new()))))
+    }
+
+    fn with_capture(capture: Option<Capture>) -> Self {
+        Interp {
+            shared: Arc::new(Mutex::new(State {
+                globals: HashMap::new(),
+                cache: ChunkCache::new(),
+                capture,
+                depth: 0,
+                limit: DEFAULT_RECURSION_LIMIT,
+            })),
+        }
+    }
+
+    /// How deep `eval` may nest. Lower it when the interpreter runs on a stack
+    /// smaller than [`RECOMMENDED_STACK`], because the depth is the only thing
+    /// standing between a runaway script and a stack overflow.
+    pub fn set_recursion_limit(&mut self, limit: usize) {
+        self.lock().limit = limit.max(1);
+    }
+
+    /// Compile and run a script, returning the value of its last command.
+    pub fn eval(&mut self, src: &str) -> Result<String, TclError> {
+        run_source(&self.shared, src).map(|v| to_tcl_string(&v))
+    }
+
+    /// Set a variable from the host — how the binary supplies `argv0`, `argc`
+    /// and `argv`.
+    pub fn set_global(&mut self, name: &str, value: impl Into<String>) {
+        let value = Value::Str(Arc::new(value.into()));
+        self.lock().globals.insert(name.to_string(), value);
+    }
+
+    /// Read a variable's string form, or `None` when it is not set.
+    pub fn global(&self, name: &str) -> Option<String> {
+        self.lock().globals.get(name).map(to_tcl_string)
+    }
+
+    /// Take everything captured so far, leaving the buffer empty. Always empty
+    /// for an interpreter built by [`Interp::new`], which does not capture.
+    pub fn take_output(&mut self) -> String {
+        match &self.lock().capture {
+            Some(buf) => std::mem::take(&mut buf.lock().expect("output lock")),
+            None => String::new(),
+        }
+    }
+
+    /// `(hits, misses)` from the chunk cache — one miss per compilation.
+    pub fn cache_stats(&self) -> (u64, u64) {
+        self.lock().cache.stats()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        self.shared.lock().expect("interpreter lock")
+    }
+}
+
+impl Default for Interp {
+    fn default() -> Self {
+        Interp::new()
+    }
+}
+
+/// Compile `src` — reusing the cached chunk when the same text has been
+/// evaluated before — and run it against `shared`.
+fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> {
+    let compiled = {
+        let mut state = shared.lock().expect("interpreter lock");
+        // The limit counts nested evaluations, so the outermost script — the
+        // one that is not nested in anything — does not spend a level, as it
+        // does not in the reference interpreter.
+        if state.depth > state.limit {
+            return Err(TclError::plain(
+                "too many nested evaluations (infinite loop?)",
+            ));
+        }
+        state.depth += 1;
+        state.cache.compile(src)
+    };
+    // The depth is given back however this returns, including the compile
+    // failure above, which is why it is not a `?` in the block.
+    let result = compiled.and_then(|chunk| {
+        // `VM::new` takes the chunk by value, so the cached one is cloned
+        // rather than moved out; the parse and the lowering are what the cache
+        // saves.
+        Machine::run(shared, (*chunk).clone())
+    });
+    shared.lock().expect("interpreter lock").depth -= 1;
+    result
+}
+
+/// A chunk interns its own name table, so the slot holding a given variable
+/// differs from chunk to chunk and a slot vector cannot be carried from one run
+/// to the next. The interpreter's map is the authority; a chunk's slots are a
+/// projection of it, built here on entry and read back by [`flush`] on exit.
+fn seed(chunk: &Chunk, shared: &Shared) -> Vec<Value> {
+    let state = shared.lock().expect("interpreter lock");
+    chunk
+        .names
+        .iter()
+        .map(|name| state.globals.get(name).cloned().unwrap_or(Value::Undef))
+        .collect()
+}
+
+/// Write a finished chunk's slots back into the interpreter's variables. A slot
+/// left `Undef` — never assigned, or unset — removes the variable rather than
+/// storing an empty value, so `unset` survives into the next evaluation.
+fn flush(chunk: &Chunk, shared: &Shared, globals: &[Value]) {
+    let mut state = shared.lock().expect("interpreter lock");
+    for (slot, name) in chunk.names.iter().enumerate() {
+        // The compiler's own loop state is named with a leading NUL so that no
+        // Tcl variable can collide with it. It is rebuilt on every entry to the
+        // loop that owns it, so it is not interpreter state.
+        if name.starts_with('\u{0}') {
+            continue;
+        }
+        match globals.get(slot) {
+            Some(Value::Undef) | None => {
+                state.globals.remove(name);
+            }
+            Some(value) => {
+                state.globals.insert(name.clone(), value.clone());
+            }
+        }
+    }
+}
+
+// ── the hooks ────────────────────────────────────────────────────────────
 
 /// A `catch` region the VM has entered and not yet left.
 ///
@@ -60,41 +314,55 @@ struct CatchFrame {
 /// `current`) around each `run()`, so a hook never has to know which VM it is
 /// running inside.
 struct Cells {
-    output: Arc<Mutex<String>>,
-    error: Arc<Mutex<Option<String>>>,
+    /// Where a capturing interpreter's output goes; `None` writes to stdout.
+    capture: Option<Capture>,
+    error: Arc<Mutex<Option<TclError>>>,
     /// `catch` regions the *running* VM has entered and not yet left.
     catches: Arc<Mutex<Vec<CatchFrame>>>,
     /// The coroutine request an op raised, for the driver to service.
     pending: Arc<Mutex<Option<Request>>>,
     /// The name of the coroutine whose VM is running, for `info coroutine`.
     current: Arc<Mutex<Option<String>>>,
+    /// The interpreter a nested `eval` runs against.
+    interp: Shared,
 }
 
 impl Cells {
-    fn new() -> Cells {
+    fn new(interp: Shared) -> Cells {
+        let capture = interp
+            .lock()
+            .expect("interpreter lock")
+            .capture
+            .as_ref()
+            .map(Arc::clone);
         Cells {
-            output: Arc::new(Mutex::new(String::new())),
+            capture,
             error: Arc::new(Mutex::new(None)),
             catches: Arc::new(Mutex::new(Vec::new())),
             pending: Arc::new(Mutex::new(None)),
             current: Arc::new(Mutex::new(None)),
+            interp,
         }
     }
 
-    /// Give `vm` the frontend's hooks. Every VM gets the same ones: a coroutine
-    /// prints to the same stdout and raises errors through the same cell as the
-    /// script that created it.
+    /// Give `vm` the frontend's hooks. This is the only place a hook is
+    /// installed, so a coroutine prints to the same stdout, raises errors
+    /// through the same cell and evaluates nested scripts against the same
+    /// variables as the script that created it.
     fn install(&self, vm: &mut VM) {
-        let sink = Arc::clone(&self.output);
-        vm.set_output_sink(Box::new(move |s: &str| {
-            sink.lock().expect("output lock").push_str(s);
-        }));
+        if let Some(buffer) = &self.capture {
+            let sink = Arc::clone(buffer);
+            vm.set_output_sink(Box::new(move |s: &str| {
+                sink.lock().expect("output lock").push_str(s);
+            }));
+        }
         vm.set_numeric_hook(Arc::new(numeric));
 
         let err_cell = Arc::clone(&self.error);
         let open = Arc::clone(&self.catches);
         let pending = Arc::clone(&self.pending);
         let current = Arc::clone(&self.current);
+        let interp = Arc::clone(&self.interp);
         vm.set_extension_handler(Box::new(move |vm: &mut VM, id: u16, arg: u8| {
             if id == ext::CATCH_END {
                 open.lock().expect("catch lock").pop();
@@ -108,8 +376,12 @@ impl Cells {
                 }
                 return;
             }
-            if let Err(msg) = extension(vm, id, arg) {
-                *err_cell.lock().expect("error lock") = Some(msg);
+            let outcome = match id {
+                ext::EVAL => eval_op(&interp, vm, arg),
+                _ => extension(vm, id, arg).map_err(TclError::plain),
+            };
+            if let Err(e) = outcome {
+                *err_cell.lock().expect("error lock") = Some(e);
                 // `VM::run` pops one value when it stops, so leave it one to
                 // pop: the stack then still holds what the failing op left, and
                 // the catch driver's depth arithmetic stays exact.
@@ -130,6 +402,37 @@ impl Cells {
         }));
     }
 }
+
+/// The `eval` command: concatenate the arguments and run the result as a
+/// script, against the state of the interpreter that reached this op.
+///
+/// The running chunk's slots are written back before the nested script runs and
+/// re-read after it, so the two see one set of variables in both directions —
+/// including when the nested script fails, since what it did set before failing
+/// is set.
+fn eval_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
+    let mut args = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        args.push(to_tcl_string(&vm.pop()));
+    }
+    args.reverse();
+    // One argument is the script; several are concatenated as `concat` does,
+    // which is where `eval $cmd $args` gets its meaning.
+    let src = if args.len() == 1 {
+        args.remove(0)
+    } else {
+        crate::cmd_list::concat(&args)
+    };
+
+    flush(&vm.chunk, interp, &vm.globals);
+    let result = run_source(interp, &src);
+    let globals = seed(&vm.chunk, interp);
+    vm.globals = globals;
+    vm.push(result?);
+    Ok(())
+}
+
+// ── the driver ───────────────────────────────────────────────────────────
 
 /// How a context is suspended, which decides what resuming it may pass in.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -156,8 +459,8 @@ struct Context {
     park: Park,
 }
 
-/// The driver: every execution context of one script, and the loop that runs
-/// them.
+/// The driver of one evaluation: every execution context of one script, and
+/// the loop that runs them.
 struct Machine {
     cells: Cells,
     /// The compiled program, from which each coroutine's VM is built.
@@ -176,50 +479,44 @@ struct Machine {
     current: usize,
 }
 
-/// Compile and run a script, capturing its output.
-pub fn eval(src: &str) -> Result<Outcome, String> {
-    let script = crate::parser::parse(src).map_err(|e| e.to_string())?;
-    let chunk = compiler::compile(&script).map_err(|e| e.to_string())?;
-
-    let cells = Cells::new();
-    let mut main = VM::new(chunk.clone());
-    cells.install(&mut main);
-    let globals = std::mem::take(&mut main.globals);
-
-    let mut machine = Machine {
-        cells,
-        chunk,
-        contexts: vec![Context {
-            vm: Some(main),
-            catches: Vec::new(),
-            name: None,
-            resumer: None,
-            park: Park::Running,
-        }],
-        live: HashMap::new(),
-        created: HashSet::new(),
-        globals,
-        current: 0,
-    };
-    let outcome = machine.drive();
-    let output = machine.cells.output.lock().expect("output lock").clone();
-
-    match outcome {
-        Ok(VMResult::Ok(v)) => Ok(Outcome {
-            result: to_tcl_string(&v),
-            output,
-        }),
-        Ok(_) => Ok(Outcome {
-            result: String::new(),
-            output,
-        }),
-        Err(msg) => Err(msg),
-    }
-}
-
 impl Machine {
+    /// Run one chunk against the interpreter's variables, from the first op to
+    /// the end of the main context.
+    fn run(shared: &Shared, chunk: Chunk) -> Result<Value, TclError> {
+        let cells = Cells::new(Arc::clone(shared));
+        let mut main = VM::new(chunk.clone());
+        cells.install(&mut main);
+        let globals = seed(&chunk, shared);
+
+        let mut machine = Machine {
+            cells,
+            chunk,
+            contexts: vec![Context {
+                vm: Some(main),
+                catches: Vec::new(),
+                name: None,
+                resumer: None,
+                park: Park::Running,
+            }],
+            live: HashMap::new(),
+            created: HashSet::new(),
+            globals,
+            current: 0,
+        };
+        let outcome = machine.drive();
+        // The variables a failing script did set are still set, as they are in
+        // the reference interpreter, so the write-back happens either way.
+        flush(&machine.chunk, shared, &machine.globals);
+
+        match outcome? {
+            VMResult::Ok(v) => Ok(v),
+            VMResult::Halted => Ok(Value::Str(Arc::new(String::new()))),
+            VMResult::Error(e) => Err(TclError::plain(e)),
+        }
+    }
+
     /// Run contexts until the main script finishes or an error escapes it.
-    fn drive(&mut self) -> Result<VMResult, String> {
+    fn drive(&mut self) -> Result<VMResult, TclError> {
         loop {
             let outcome = self.run_current();
 
@@ -230,11 +527,11 @@ impl Machine {
                 .expect("error lock")
                 .take()
                 .or_else(|| match &outcome {
-                    VMResult::Error(e) => Some(e.clone()),
+                    VMResult::Error(e) => Some(TclError::plain(e.clone())),
                     _ => None,
                 });
-            if let Some(msg) = raised {
-                self.raise(msg)?;
+            if let Some(e) = raised {
+                self.raise(e)?;
                 continue;
             }
 
@@ -246,8 +543,8 @@ impl Machine {
                 if let VMResult::Ok(v) = outcome {
                     self.vm(self.current).stack.push(v);
                 }
-                if let Err(msg) = self.service(request) {
-                    self.raise(msg)?;
+                if let Err(e) = self.service(request) {
+                    self.raise(e)?;
                 }
                 continue;
             }
@@ -291,7 +588,7 @@ impl Machine {
     /// `catch` handler, or — for a coroutine with none — end the coroutine and
     /// report the error to whoever resumed it, as the reference implementation
     /// does. `Err` means nothing was left to catch it.
-    fn raise(&mut self, msg: String) -> Result<(), String> {
+    fn raise(&mut self, e: TclError) -> Result<(), TclError> {
         loop {
             if let Some(frame) = self.contexts[self.current].catches.pop() {
                 let vm = self.vm(self.current);
@@ -300,16 +597,16 @@ impl Machine {
                 vm.frames.truncate(frame.frames);
                 vm.stack.truncate(frame.stack);
                 vm.stack.resize(frame.stack, Value::Undef);
-                vm.push(Value::Str(Arc::new(msg)));
+                vm.push(Value::Str(Arc::new(e.msg)));
                 vm.ip = frame.handler;
                 return Ok(());
             }
             if self.current == 0 {
-                return Err(msg);
+                return Err(e);
             }
             match self.discard(self.current) {
                 Some(resumer) => self.current = resumer,
-                None => return Err(msg),
+                None => return Err(e),
             }
         }
     }
@@ -340,7 +637,11 @@ impl Machine {
 
     /// Service one coroutine request. `Err` is a Tcl error raised in the
     /// context that made the request.
-    fn service(&mut self, request: Request) -> Result<(), String> {
+    fn service(&mut self, request: Request) -> Result<(), TclError> {
+        self.service_inner(request).map_err(TclError::plain)
+    }
+
+    fn service_inner(&mut self, request: Request) -> Result<(), String> {
         match request {
             Request::Create {
                 name,

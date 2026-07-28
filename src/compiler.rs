@@ -32,6 +32,11 @@ pub mod ext {
     /// Convert a VM-native result into its Tcl value: booleans become 1 or 0,
     /// doubles take Tcl's formatting.
     pub const NORM: u16 = 5;
+    /// `eval`: `[arg, …]` with the count in the inline operand → the value of
+    /// the script they concatenate to. The only op whose operand is a script
+    /// that is not known until it runs; the handler lives in
+    /// [`crate::runtime`], which owns the state the script runs against.
+    pub const EVAL: u16 = 6;
 
     // Procedures and control flow (`procs`, `control`).
 
@@ -488,6 +493,7 @@ impl Compiler {
     /// dispatched after `procs`, so a procedure does replace one.
     pub(crate) const BUILTINS: &'static [&'static str] = &[
         "set",
+        "eval",
         "puts",
         "expr",
         "incr",
@@ -526,6 +532,7 @@ impl Compiler {
 
         match name.as_str() {
             "set" => self.cmd_set(args),
+            "eval" => self.cmd_eval(args),
             "puts" => self.cmd_puts(args),
             "expr" => self.cmd_expr(args),
             "incr" => self.cmd_incr(args),
@@ -583,6 +590,39 @@ impl Compiler {
             },
             _ => self.error("wrong # args: should be \"set varName ?newValue?\""),
         }
+    }
+
+    /// `eval arg ?arg ...?`.
+    ///
+    /// Every other command's script is braced text this compiler can lower in
+    /// place. `eval`'s is a value, so its arguments are compiled as ordinary
+    /// words and the script they produce is compiled when the op runs — once
+    /// per distinct text, since [`crate::cache`] keeps what it lowered.
+    ///
+    /// The nested script is a chunk of its own, and a chunk addresses variables
+    /// through the interpreter's global table. A procedure's parameters and
+    /// locals are frame slots instead, so a script compiled inside one could
+    /// not see them: `eval` in a procedure body is refused rather than run
+    /// against the wrong variables.
+    fn cmd_eval(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        if args.is_empty() {
+            return self.error("wrong # args: should be \"eval arg ?arg ...?\"");
+        }
+        if self.scope.is_some() {
+            return self.error(
+                "\"eval\" inside a procedure is not supported: the script it builds cannot \
+                 reach the procedure's local variables",
+            );
+        }
+        let count = u8::try_from(args.len()).map_err(|_| CompileError {
+            msg: "too many arguments for \"eval\"".to_string(),
+            line: self.line,
+        })?;
+        for arg in args {
+            self.word(arg)?;
+        }
+        self.emit(Op::Extended(ext::EVAL, count), 1 - args.len() as i32);
+        Ok(())
     }
 
     fn cmd_puts(&mut self, args: &[Word]) -> Result<(), CompileError> {
