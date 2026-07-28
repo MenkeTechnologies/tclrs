@@ -41,6 +41,7 @@ use reedline::{
     ValidationResult, Validator, Vi,
 };
 
+use tclrs::cursor::{self, Context};
 use tclrs::{names, Interp, Script};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -140,61 +141,6 @@ fn definitions(script: &Script) -> Vec<(String, String)> {
 
 // ── completion ───────────────────────────────────────────────────────────
 
-/// What a word in a given position can be.
-#[derive(Debug, PartialEq, Eq)]
-enum Context<'a> {
-    /// The head of a command: a command name, or a procedure this session
-    /// defined.
-    Command,
-    /// The word after an ensemble's name: one of its subcommands.
-    Subcommand(&'a str),
-    /// A `$` substitution: one of the interpreter's variables.
-    Variable,
-    /// An argument, which could be anything — nothing is offered.
-    Argument,
-}
-
-/// Where the word under the cursor starts, and what has been typed of it.
-///
-/// Word separators are the characters that end a word for the parser:
-/// whitespace, the command separators `;` and newline, and the brackets and
-/// braces that open a nested script. A `$` is kept inside the word so that the
-/// suggestion replaces the sigil too and the line does not end up as `$$name`.
-fn word_at(line: &str, pos: usize) -> (usize, &str) {
-    let pos = pos.min(line.len());
-    let before = line.get(..pos).unwrap_or("");
-    let start = before
-        .char_indices()
-        .rev()
-        .find(|(_, c)| c.is_whitespace() || matches!(*c, ';' | '[' | ']' | '{' | '}' | '"'))
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(0);
-    (start, line.get(start..pos).unwrap_or(""))
-}
-
-/// What the word starting at `start` is allowed to be.
-///
-/// The command it belongs to begins after the last separator that starts one —
-/// a newline, a `;`, or a `[` opening a command substitution. If the word is
-/// the first since then it names a command; if it is the second and the first
-/// names an ensemble, it names a subcommand.
-fn context_at<'a>(line: &'a str, start: usize, word: &str) -> Context<'a> {
-    if word.starts_with('$') {
-        return Context::Variable;
-    }
-    let before = line.get(..start).unwrap_or("");
-    let command = match before.rfind(['\n', ';', '[']) {
-        Some(at) => &before[at + 1..],
-        None => before,
-    };
-    let mut words = command.split_whitespace();
-    match (words.next(), words.next()) {
-        (None, _) => Context::Command,
-        (Some(head), None) if !names::subcommands(head).is_empty() => Context::Subcommand(head),
-        _ => Context::Argument,
-    }
-}
-
 /// Offers what the compiler would accept where the cursor is.
 struct TclCompleter {
     commands: Vec<String>,
@@ -231,9 +177,9 @@ impl TclCompleter {
 
 impl Completer for TclCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
-        let (start, word) = word_at(line, pos);
+        let (start, word) = cursor::word_at(line, pos);
         let span = Span::new(start, pos);
-        match context_at(line, start, word) {
+        match cursor::context_in_tcl(line, start, word) {
             Context::Command => {
                 let procs = self.procs.lock().map(|g| g.clone()).unwrap_or_default();
                 let all = self.commands.iter().cloned().chain(procs);
@@ -627,50 +573,6 @@ fn history() -> Box<dyn reedline::History> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_word_keeps_its_sigil_and_stops_at_a_bracket() {
-        assert_eq!(word_at("puts $ab", 8), (5, "$ab"));
-        assert_eq!(word_at("puts [ll", 8), (6, "ll"));
-        assert_eq!(word_at("set x {a", 8), (7, "a"));
-        assert_eq!(word_at("", 0), (0, ""));
-    }
-
-    #[test]
-    fn the_head_of_a_command_names_a_command() {
-        let (start, word) = word_at("ls", 2);
-        assert_eq!(context_at("ls", start, word), Context::Command);
-        // After a command separator a new command starts, so does a `[`.
-        let (start, word) = word_at("puts hi; ls", 11);
-        assert_eq!(context_at("puts hi; ls", start, word), Context::Command);
-        let (start, word) = word_at("puts [ll", 8);
-        assert_eq!(context_at("puts [ll", start, word), Context::Command);
-    }
-
-    #[test]
-    fn the_word_after_an_ensemble_names_a_subcommand() {
-        let line = "string tou";
-        let (start, word) = word_at(line, line.len());
-        assert_eq!(context_at(line, start, word), Context::Subcommand("string"));
-        // Only the word right after it: the third word is an argument.
-        let line = "string toupper ab";
-        let (start, word) = word_at(line, line.len());
-        assert_eq!(context_at(line, start, word), Context::Argument);
-        // And only for a command that has subcommands.
-        let line = "puts to";
-        let (start, word) = word_at(line, line.len());
-        assert_eq!(context_at(line, start, word), Context::Argument);
-    }
-
-    #[test]
-    fn a_dollar_names_a_variable_wherever_it_is() {
-        let line = "puts $x";
-        let (start, word) = word_at(line, line.len());
-        assert_eq!(context_at(line, start, word), Context::Variable);
-        let line = "$x";
-        let (start, word) = word_at(line, line.len());
-        assert_eq!(context_at(line, start, word), Context::Variable);
-    }
 
     /// The point of the session: what a definition line records is a definition
     /// that parses back to the same procedure, whatever the body contained.

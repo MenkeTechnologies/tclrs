@@ -47,6 +47,7 @@ options:
   -c SCRIPT       run SCRIPT instead of a file
   --aot OUT       compile the script to a standalone native executable at OUT
   --aot-object O  emit the relocatable AOT object only (link it yourself)
+  --lsp           speak the Language Server Protocol on stdin/stdout
   --tiers         run the script, then report which fusevm tiers took its chunk
   --dump-tokens   print the parser's lexical output instead of running it
   --dump-ast      print the parse tree instead of running it
@@ -108,6 +109,7 @@ fn drive() -> ExitCode {
                 println!("{USAGE}");
                 return ExitCode::SUCCESS;
             }
+            "--lsp" => return ExitCode::from(!tclrs::lsp::run_stdio() as u8),
             "--tiers" => action = Action::Tiers,
             "--dump-tokens" => action = Action::DumpTokens,
             "--dump-ast" => action = Action::DumpAst,

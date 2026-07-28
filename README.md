@@ -177,6 +177,7 @@ tclrs --tiers script.tcl            # run it, then report which fusevm tiers too
 tclrs --dump-tokens script.tcl      # print the parser's lexical output
 tclrs --dump-ast script.tcl         # print the parse tree
 tclrs --disasm script.tcl           # print the compiled bytecode instead of running it
+tclrs --lsp                         # speak the Language Server Protocol on stdio
 ```
 
 The two dumps are the parse made visible. Tcl has no lexer to print — a word's
@@ -196,6 +197,23 @@ line word  kind     value
 
 `--dump-ast` prints the same parse as the tree it is, with a command
 substitution nested inside the word that contains it.
+
+### The language server
+
+`tclrs --lsp` speaks the Language Server Protocol on stdio. Point an editor's
+Tcl client at it — the binary needs no configuration and no workspace.
+
+| Capability | Where the answer comes from |
+| --- | --- |
+| Diagnostics | The parser's failure, then the compiler's, republished on every edit. A construct this frontend refuses is a diagnostic, so the editor reports what running the file would report rather than what full Tcl allows. |
+| Completion | Command names at the head of a command, an ensemble's subcommands after `string` / `array` / `dict` / `info`, and the document's own procedures. The list is the compiler's tables (`src/names.rs`). |
+| Hover, signature help | The synopsis — the wording of the command's own `wrong # args` message — and a one-line summary. An ensemble answers with its subcommand's synopsis. |
+| Document symbols | The `proc` commands the parser found. |
+
+What is under the cursor is decided by [`src/cursor.rs`](src/cursor.rs), the
+module the REPL's completer uses, so the editor and the prompt agree.
+[`tests/lsp_session.rs`](tests/lsp_session.rs) drives the real binary over the
+wire: handshake, unsolicited diagnostics, edits, and a shutdown that exits.
 
 Each of those wants a whole script, so it reads a file, a `-c` argument, or all
 of stdin, and never opens a REPL.
