@@ -14,6 +14,8 @@ _tclrs() {
     '--aot[compile the script to a standalone native executable]:output file:_files' \
     '--aot-object[emit the relocatable AOT object only]:output object:_files' \
     '--tiers[run the script, then report which fusevm tiers took its chunk]' \
+    '(- *)--lsp[run the language server over stdio]' \
+    '(- *)--dap[run the debug adapter over stdio]' \
     '--dump-tokens[print the parser'\''s lexical output instead of running it]' \
     '--dump-ast[print the parse tree instead of running it]' \
     '--disasm[print the compiled bytecode instead of running it]' \

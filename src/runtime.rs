@@ -253,6 +253,17 @@ impl Interp {
         run_source(&self.shared, src).map(|v| to_tcl_string(&v))
     }
 
+    /// Run a chunk this interpreter did not compile, against its variables.
+    ///
+    /// [`Interp::eval`] is the ordinary way in, and it compiles through the
+    /// cache. This is for a caller holding a chunk that was lowered
+    /// differently — the debug adapter runs
+    /// [`crate::compiler::compile_debug`]'s output, which is the same script
+    /// with a line marker before every command.
+    pub fn run_chunk(&mut self, chunk: fusevm::Chunk) -> Result<String, TclError> {
+        Machine::run(&self.shared, chunk).map(|v| to_tcl_string(&v))
+    }
+
     /// Set a variable from the host — how the binary supplies `argv0`, `argc`
     /// and `argv`.
     pub fn set_global(&mut self, name: &str, value: impl Into<String>) {
@@ -476,6 +487,13 @@ impl Hooks {
 
         let entered = Arc::clone(&self.catches);
         vm.set_extension_wide_handler(Box::new(move |vm: &mut VM, id: u16, payload: usize| {
+            if id == ext_wide::DBG_LINE {
+                // Only a chunk compiled by `compile_debug` carries these, and
+                // only `--dap` answers them; without a session attached this is
+                // one `Option` check.
+                crate::dap::at_line(vm, payload);
+                return;
+            }
             if id == ext_wide::CATCH {
                 entered.lock().expect("catch lock").push(CatchFrame {
                     handler: payload,

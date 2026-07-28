@@ -27,6 +27,7 @@ pub mod compiler;
 pub mod control;
 pub mod coro;
 pub mod cursor;
+pub mod dap;
 pub mod dump;
 pub mod expr;
 pub mod list;

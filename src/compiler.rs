@@ -167,6 +167,12 @@ pub mod ext_wide {
     /// Enter a `catch` region. The payload is the op index of the region's
     /// error handler, which the driver in [`crate::runtime`] resumes at.
     pub const CATCH: u16 = 0;
+
+    /// A command is about to run, and the payload is its line. Emitted only
+    /// when [`super::Compiler::debug`] is set — a chunk compiled the ordinary
+    /// way carries none of these, so nothing is paid for a debugger that is not
+    /// attached.
+    pub const DBG_LINE: u16 = 1;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,11 +198,22 @@ impl std::error::Error for CompileError {}
 /// names. Nothing else differs between the passes, so a script with no arrays
 /// compiles exactly as it did before and pays nothing.
 pub fn compile(script: &Script) -> Result<fusevm::Chunk, CompileError> {
-    let first = Compiler::run(script, ArrayNames::new())?;
+    lower(script, false)
+}
+
+/// Lower a script with a line marker before every command, for the debug
+/// adapter. The markers are the only difference: a debugger single-steps the
+/// same bytecode a run executes, rather than a second lowering written for it.
+pub fn compile_debug(script: &Script) -> Result<fusevm::Chunk, CompileError> {
+    lower(script, true)
+}
+
+fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
+    let first = Compiler::run(script, ArrayNames::new(), debug)?;
     let mut chunk = if first.seen_arrays.is_empty() {
         first.b.build()
     } else {
-        Compiler::run(script, first.seen_arrays)?.b.build()
+        Compiler::run(script, first.seen_arrays, debug)?.b.build()
     };
     // Tcl's integers are arbitrary-precision, and this frontend has no bignum:
     // an `i64` that overflows is an error, raised by the numeric hook. Native
@@ -272,12 +289,18 @@ pub(crate) struct Compiler {
     /// command substitutions inside them. A `coroutine` command may only appear
     /// there, since its name has to be known to every call site.
     pub(crate) static_ctx: bool,
+    /// Emit a [`ext_wide::DBG_LINE`] marker before every command, which is what
+    /// lets a debugger stop at one. Off for every ordinary compilation.
+    pub(crate) debug: bool,
+    /// How many command substitutions enclose the command being compiled. A
+    /// debugger stops before a statement, and a substitution is part of one.
+    pub(crate) subst_depth: usize,
 }
 
 impl Compiler {
     /// One compilation pass over the script, with the array names the previous
     /// pass discovered.
-    fn run(script: &Script, arrays: ArrayNames) -> Result<Compiler, CompileError> {
+    fn run(script: &Script, arrays: ArrayNames, debug: bool) -> Result<Compiler, CompileError> {
         let mut c = Compiler {
             b: ChunkBuilder::new(),
             depth: 0,
@@ -294,6 +317,8 @@ impl Compiler {
             body_depth: 0,
             top_level: true,
             static_ctx: true,
+            debug,
+            subst_depth: 0,
         };
         // Signatures are collected before anything is emitted so a procedure
         // may call one that the script defines further down, which is legal in
@@ -445,7 +470,12 @@ impl Compiler {
     /// so a command the prescan needs to see may appear in one.
     fn subst_value(&mut self, script: &Script) -> Result<(), CompileError> {
         let outer = std::mem::replace(&mut self.top_level, false);
+        // A command substitution is part of the command containing it, not a
+        // command a debugger stops before: `set out [double 21]` is one step,
+        // and its nested command carries the same line anyway.
+        self.subst_depth += 1;
         let result = self.script_value(script);
+        self.subst_depth -= 1;
         self.top_level = outer;
         result
     }
@@ -584,6 +614,12 @@ impl Compiler {
         // both, which is why the two are told apart by `body_depth`.
         if self.body_depth == 0 {
             self.command_line = cmd.line;
+        }
+        // Before the command, so a stop reports the line about to run rather
+        // than the one that just did. Emitted inside procedure bodies too,
+        // which is what makes stepping work below the top level.
+        if self.debug && self.subst_depth == 0 {
+            self.emit(Op::ExtendedWide(ext_wide::DBG_LINE, cmd.line), 0);
         }
         let Some(first) = cmd.words.first() else {
             self.push_empty();

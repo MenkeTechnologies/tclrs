@@ -178,6 +178,7 @@ tclrs --dump-tokens script.tcl      # print the parser's lexical output
 tclrs --dump-ast script.tcl         # print the parse tree
 tclrs --disasm script.tcl           # print the compiled bytecode instead of running it
 tclrs --lsp                         # speak the Language Server Protocol on stdio
+tclrs --dap                         # speak the Debug Adapter Protocol on stdio
 ```
 
 The two dumps are the parse made visible. Tcl has no lexer to print — a word's
@@ -214,6 +215,31 @@ What is under the cursor is decided by [`src/cursor.rs`](src/cursor.rs), the
 module the REPL's completer uses, so the editor and the prompt agree.
 [`tests/lsp_session.rs`](tests/lsp_session.rs) drives the real binary over the
 wire: handshake, unsolicited diagnostics, edits, and a shutdown that exits.
+
+### The debugger
+
+`tclrs --dap` speaks the Debug Adapter Protocol on stdio: breakpoints, stepping,
+stack frame, variables, and the program's output as `output` events.
+
+Stopping is compiled in, not interpreted around. `compiler::compile_debug`
+emits an `ext_wide::DBG_LINE` marker before every command, and the marker's
+handler stops when a breakpoint matches, when the client is stepping, or when a
+pause was asked for. Three consequences worth knowing:
+
+- **A debugged script runs the same bytecode a plain run does**, plus the
+  markers. There is no second lowering, and no interpreter written for the
+  debugger.
+- **An ordinary compilation carries no markers at all**, so nothing is paid for
+  a debugger that is not attached.
+- **Markers go into procedure bodies too**, which is what makes a breakpoint
+  inside a procedure reachable and lets a step walk into one. A command
+  substitution gets none — `set out [double 21]` is one step, not two.
+
+The run happens on the adapter's own thread, and requests are served from inside
+the stop, so `variables` reads the paused VM rather than a snapshot of it. The
+cost is that an asynchronous `pause` lands at the next command rather than
+mid-command; `stepIn` and `next` both stop at the next command, and `stepOut`
+resumes to the next breakpoint.
 
 Each of those wants a whole script, so it reads a file, a `-c` argument, or all
 of stdin, and never opens a REPL.

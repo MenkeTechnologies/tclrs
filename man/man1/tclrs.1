@@ -54,6 +54,17 @@ or a coroutine, which need a driver outside \fBVM::run\fR.
 .BR \-\-aot\-object " " \fIOUT\fR
 Emit the relocatable object only, to be linked against \fBlibtclrs.a\fR by hand.
 .TP
+.B \-\-lsp
+Speak the Language Server Protocol on standard input and output: diagnostics,
+completion, hover, signature help and document symbols, every answer drawn from
+the compiler's own tables.
+.TP
+.B \-\-dap
+Speak the Debug Adapter Protocol on standard input and output: breakpoints,
+stepping, stack frame, variables, and the program's output as events. The
+script is compiled with a line marker before every command; an ordinary run
+carries none.
+.TP
 .B \-\-tiers
 Run the script, then report which fusevm tiers took its chunk.
 .TP
