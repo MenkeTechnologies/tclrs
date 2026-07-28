@@ -28,7 +28,7 @@
 //!   mechanism: an op stashes something in a cell and halts, and the driver
 //!   reads the cell after `run()` returns — the pattern fusevm's scheduler is
 //!   built on;
-//! * [`Cells::install`] is the only place a hook is put on a VM, so the main
+//! * [`Hooks::install`] is the only place a hook is put on a VM, so the main
 //!   VM, every coroutine's VM and every nested `eval`'s VM behave alike.
 //!
 //! The two ways of holding variables meet at [`seed`] and [`flush`]. Within one
@@ -37,9 +37,17 @@
 //! differs — a chunk interns its own name table — so the interpreter keeps the
 //! variables keyed by name and the vector is projected out of that map on entry
 //! and read back into it on exit.
+//!
+//! The VM is asked for its highest tier: [`Hooks::install`] also calls
+//! `enable_tracing_jit`, which makes `VM::run` consult fusevm's block JIT for a
+//! wholly-eligible chunk and arm the trace recorder at every backward branch
+//! otherwise. [`crate::tiers`] reports which of those tiers a given script
+//! actually reaches — see the JIT section of the README for what that measures
+//! on Tcl today.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use fusevm::{Chunk, Frame, NumOp, VMResult, Value, VM};
@@ -89,6 +97,16 @@ impl fmt::Display for TclError {
 
 impl std::error::Error for TclError {}
 
+/// Parse and lower a script, with both failures reported the same way.
+///
+/// The interpreter reaches the same lowering through [`crate::cache`], which
+/// keeps what it compiled; this is the entry for the callers that want the
+/// chunk itself — the ahead-of-time compiler, the tier report, and `--disasm`.
+pub fn compile(src: &str) -> Result<Chunk, String> {
+    let script = crate::parser::parse(src).map_err(|e| e.to_string())?;
+    crate::compiler::compile(&script).map_err(|e| e.to_string())
+}
+
 /// Compile and run a script in a fresh interpreter, capturing its output.
 ///
 /// A one-shot convenience over [`Interp`]: the state it builds is discarded
@@ -122,8 +140,43 @@ pub const DEFAULT_RECURSION_LIMIT: usize = 1000;
 /// as much.
 pub const RECOMMENDED_STACK: usize = 256 * 1024 * 1024;
 
-/// Where a capturing interpreter collects what its scripts write.
-type Capture = Arc<Mutex<String>>;
+/// Where an interpreter's scripts write.
+///
+/// One of these per interpreter, cloned into every VM's sink, so a coroutine's
+/// output and a nested `eval`'s output land in the same place and in the order
+/// they were produced. The stdout form buffers: a script that prints in a loop
+/// should not be measuring one syscall per line.
+#[derive(Clone)]
+enum Output {
+    Capture(Arc<Mutex<String>>),
+    Stdout(Arc<Mutex<std::io::BufWriter<std::io::Stdout>>>),
+}
+
+impl Output {
+    fn stdout() -> Output {
+        Output::Stdout(Arc::new(Mutex::new(std::io::BufWriter::new(
+            std::io::stdout(),
+        ))))
+    }
+
+    fn write(&self, s: &str) {
+        match self {
+            Output::Capture(buf) => buf.lock().expect("output lock").push_str(s),
+            Output::Stdout(out) => {
+                let _ = out.lock().expect("output lock").write_all(s.as_bytes());
+            }
+        }
+    }
+
+    /// Push what is buffered out to the operating system. Called at the end of
+    /// every evaluation, so an error the caller prints afterwards cannot
+    /// overtake the output of the script that raised it.
+    fn flush(&self) {
+        if let Output::Stdout(out) = self {
+            let _ = out.lock().expect("output lock").flush();
+        }
+    }
+}
 
 /// Everything an interpreter carries between evaluations.
 ///
@@ -136,8 +189,8 @@ struct State {
     /// vector — see [`seed`].
     globals: HashMap<String, Value>,
     cache: ChunkCache,
-    /// `Some` when output is captured rather than written to stdout.
-    capture: Option<Capture>,
+    /// Where the scripts of this interpreter write.
+    output: Output,
     /// How many scripts are running, counting the outermost.
     depth: usize,
     limit: usize,
@@ -158,21 +211,21 @@ pub struct Interp {
 impl Interp {
     /// An interpreter whose scripts write to the process's stdout.
     pub fn new() -> Self {
-        Interp::with_capture(None)
+        Interp::with_output(Output::stdout())
     }
 
     /// An interpreter that collects what its scripts write, for
     /// [`Interp::take_output`].
     pub fn capturing() -> Self {
-        Interp::with_capture(Some(Arc::new(Mutex::new(String::new()))))
+        Interp::with_output(Output::Capture(Arc::new(Mutex::new(String::new()))))
     }
 
-    fn with_capture(capture: Option<Capture>) -> Self {
+    fn with_output(output: Output) -> Self {
         Interp {
             shared: Arc::new(Mutex::new(State {
                 globals: HashMap::new(),
                 cache: ChunkCache::new(),
-                capture,
+                output,
                 depth: 0,
                 limit: DEFAULT_RECURSION_LIMIT,
             })),
@@ -206,9 +259,9 @@ impl Interp {
     /// Take everything captured so far, leaving the buffer empty. Always empty
     /// for an interpreter built by [`Interp::new`], which does not capture.
     pub fn take_output(&mut self) -> String {
-        match &self.lock().capture {
-            Some(buf) => std::mem::take(&mut buf.lock().expect("output lock")),
-            None => String::new(),
+        match &self.lock().output {
+            Output::Capture(buf) => std::mem::take(&mut buf.lock().expect("output lock")),
+            Output::Stdout(_) => String::new(),
         }
     }
 
@@ -309,13 +362,27 @@ struct CatchFrame {
     frames: usize,
 }
 
+/// Install everything a Tcl chunk needs on a VM — the output sink, the numeric
+/// hook, the extension dispatch and fusevm's tracing JIT — for a caller that
+/// drives the VM itself rather than through an [`Interp`].
+///
+/// That caller is fusevm's ahead-of-time entry ([`crate::aot_runtime`]), which
+/// owns the run and never hands control back mid-way. `catch` and coroutines
+/// need a driver that does, so [`crate::aot`] refuses a script using either
+/// before it compiles one.
+pub fn install_hooks(vm: &mut VM) -> Hooks {
+    let hooks = Hooks::new(Interp::new().shared);
+    hooks.install(vm);
+    hooks
+}
+
 /// The cells every VM's hooks write into. One set is shared by the main VM and
 /// every coroutine's; the driver swaps the per-context ones (`catches`,
 /// `current`) around each `run()`, so a hook never has to know which VM it is
 /// running inside.
-struct Cells {
-    /// Where a capturing interpreter's output goes; `None` writes to stdout.
-    capture: Option<Capture>,
+pub struct Hooks {
+    /// Where the script's writes go.
+    output: Output,
     error: Arc<Mutex<Option<TclError>>>,
     /// `catch` regions the *running* VM has entered and not yet left.
     catches: Arc<Mutex<Vec<CatchFrame>>>,
@@ -327,16 +394,11 @@ struct Cells {
     interp: Shared,
 }
 
-impl Cells {
-    fn new(interp: Shared) -> Cells {
-        let capture = interp
-            .lock()
-            .expect("interpreter lock")
-            .capture
-            .as_ref()
-            .map(Arc::clone);
-        Cells {
-            capture,
+impl Hooks {
+    fn new(interp: Shared) -> Hooks {
+        let output = interp.lock().expect("interpreter lock").output.clone();
+        Hooks {
+            output,
             error: Arc::new(Mutex::new(None)),
             catches: Arc::new(Mutex::new(Vec::new())),
             pending: Arc::new(Mutex::new(None)),
@@ -345,17 +407,20 @@ impl Cells {
         }
     }
 
+    /// The message an extension op parked, if one did. What an ahead-of-time
+    /// run reports: fusevm's AOT entry maps the VM's result to an exit code and
+    /// cannot see an error the frontend raised.
+    pub fn take_error(&self) -> Option<String> {
+        self.error.lock().expect("error lock").take().map(|e| e.msg)
+    }
+
     /// Give `vm` the frontend's hooks. This is the only place a hook is
     /// installed, so a coroutine prints to the same stdout, raises errors
-    /// through the same cell and evaluates nested scripts against the same
-    /// variables as the script that created it.
+    /// through the same cell, evaluates nested scripts against the same
+    /// variables and reaches the same JIT tiers as the script that created it.
     fn install(&self, vm: &mut VM) {
-        if let Some(buffer) = &self.capture {
-            let sink = Arc::clone(buffer);
-            vm.set_output_sink(Box::new(move |s: &str| {
-                sink.lock().expect("output lock").push_str(s);
-            }));
-        }
+        let sink = self.output.clone();
+        vm.set_output_sink(Box::new(move |s: &str| sink.write(s)));
         vm.set_numeric_hook(Arc::new(numeric));
 
         let err_cell = Arc::clone(&self.error);
@@ -400,7 +465,28 @@ impl Cells {
                 });
             }
         }));
+
+        // Hot loops trace-compile through fusevm's Cranelift JIT, and a chunk
+        // the block tier can take whole runs in native code with no dispatch
+        // loop at all. With `jit-disk-cache` the compiled code outlives the
+        // process.
+        if jit_enabled() {
+            vm.enable_tracing_jit();
+        }
     }
+}
+
+/// Whether to arm the JIT — off when `TCLRS_JIT` is `off`, `0` or `no`.
+///
+/// The switch exists so the benchmark can measure the interpreter and the
+/// JIT-armed VM as separate rows on the same binary. Arming the tracing JIT is
+/// not free even when no trace ever compiles: the dispatch loop checks the
+/// recorder at every op and consults the block tier once per run.
+fn jit_enabled() -> bool {
+    !matches!(
+        std::env::var("TCLRS_JIT").as_deref(),
+        Ok("off") | Ok("0") | Ok("no")
+    )
 }
 
 /// The `eval` command: concatenate the arguments and run the result as a
@@ -462,7 +548,7 @@ struct Context {
 /// The driver of one evaluation: every execution context of one script, and
 /// the loop that runs them.
 struct Machine {
-    cells: Cells,
+    hooks: Hooks,
     /// The compiled program, from which each coroutine's VM is built.
     chunk: Chunk,
     contexts: Vec<Context>,
@@ -483,13 +569,13 @@ impl Machine {
     /// Run one chunk against the interpreter's variables, from the first op to
     /// the end of the main context.
     fn run(shared: &Shared, chunk: Chunk) -> Result<Value, TclError> {
-        let cells = Cells::new(Arc::clone(shared));
+        let hooks = Hooks::new(Arc::clone(shared));
         let mut main = VM::new(chunk.clone());
-        cells.install(&mut main);
+        hooks.install(&mut main);
         let globals = seed(&chunk, shared);
 
         let mut machine = Machine {
-            cells,
+            hooks,
             chunk,
             contexts: vec![Context {
                 vm: Some(main),
@@ -507,6 +593,9 @@ impl Machine {
         // The variables a failing script did set are still set, as they are in
         // the reference interpreter, so the write-back happens either way.
         flush(&machine.chunk, shared, &machine.globals);
+        // Likewise the output: an error the caller prints must not overtake
+        // what the failing script had already written.
+        machine.hooks.output.flush();
 
         match outcome? {
             VMResult::Ok(v) => Ok(v),
@@ -521,7 +610,7 @@ impl Machine {
             let outcome = self.run_current();
 
             let raised = self
-                .cells
+                .hooks
                 .error
                 .lock()
                 .expect("error lock")
@@ -535,7 +624,7 @@ impl Machine {
                 continue;
             }
 
-            let request = self.cells.pending.lock().expect("request lock").take();
+            let request = self.hooks.pending.lock().expect("request lock").take();
             if let Some(request) = request {
                 // The op halted mid-expression, so `run` popped a live value
                 // from underneath it. Put it back before anything else touches
@@ -563,8 +652,8 @@ impl Machine {
     /// `catch` regions move rather than being copied.
     fn run_current(&mut self) -> VMResult {
         let current = self.current;
-        *self.cells.current.lock().expect("coroutine lock") = self.contexts[current].name.clone();
-        *self.cells.catches.lock().expect("catch lock") =
+        *self.hooks.current.lock().expect("coroutine lock") = self.contexts[current].name.clone();
+        *self.hooks.catches.lock().expect("catch lock") =
             std::mem::take(&mut self.contexts[current].catches);
         let globals = std::mem::take(&mut self.globals);
 
@@ -576,7 +665,7 @@ impl Machine {
 
         self.globals = globals;
         self.contexts[current].catches =
-            std::mem::take(&mut self.cells.catches.lock().expect("catch lock"));
+            std::mem::take(&mut self.hooks.catches.lock().expect("catch lock"));
         outcome
     }
 
@@ -710,7 +799,7 @@ impl Machine {
             .ok_or_else(|| format!("invalid command name \"{command}\""))?;
 
         let mut vm = VM::new(self.chunk.clone());
-        self.cells.install(&mut vm);
+        self.hooks.install(&mut vm);
         let base = vm.stack.len();
         for a in args {
             vm.stack.push(a);

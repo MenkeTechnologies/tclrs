@@ -16,14 +16,36 @@
 //! produces that the script did not ask for.
 //!
 //! `-c` and `--version` have no `tclsh` equivalent. `tclsh` reads stdin for any
-//! argument starting with `-`; tclrs recognizes those two and rejects any other
-//! option rather than silently doing something else with it.
+//! argument starting with `-`; tclrs recognizes its own options and rejects any
+//! other rather than silently doing something else with it.
+//!
+//! The remaining options do not run the script the ordinary way at all:
+//! `--aot` and `--aot-object` send it through fusevm's closed-world compiler,
+//! `--tiers` runs it and then reports which JIT tiers took its bytecode, and
+//! `--disasm` prints the bytecode instead of running it. Each of them wants a
+//! whole script, so they read a file, a `-c` argument, or all of stdin, and
+//! never open a REPL.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use tclrs::Interp;
 
 mod repl;
+
+const USAGE: &str = "\
+usage: tclrs [options] FILE ?arg ...?
+       tclrs [options] -c SCRIPT ?arg ...?
+       tclrs [options]                     read the script from stdin
+
+options:
+  -c SCRIPT       run SCRIPT instead of a file
+  --aot OUT       compile the script to a standalone native executable at OUT
+  --aot-object O  emit the relocatable AOT object only (link it yourself)
+  --tiers         run the script, then report which fusevm tiers took its chunk
+  --disasm        print the compiled bytecode instead of running it
+  -h, --help      this message
+  --version, -V   version";
 
 fn main() -> ExitCode {
     // Nested `eval` costs native stack: each level runs a VM of its own. The
@@ -38,23 +60,120 @@ fn main() -> ExitCode {
         .unwrap_or(ExitCode::FAILURE)
 }
 
+/// What the command line asked for, once the options are read.
+enum Action {
+    Run,
+    Aot(PathBuf),
+    AotObject(PathBuf),
+    Tiers,
+    Disasm,
+}
+
+/// Where the script comes from, which also decides how failures are reported.
+enum Source {
+    /// A script file.
+    File(String),
+    /// A `-c` argument.
+    Command(String),
+    /// Standard input.
+    Stdin,
+}
+
 fn drive() -> ExitCode {
     let mut argv = std::env::args();
     let program = argv.next().unwrap_or_else(|| "tclrs".to_string());
     let args: Vec<String> = argv.collect();
 
-    match args.first().map(String::as_str) {
-        Some("--version") => {
-            println!("tclrs {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
+    let mut action = Action::Run;
+    let mut source = Source::Stdin;
+    let mut script_args: &[String] = &[];
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--version" | "-V" => {
+                println!("tclrs {}", env!("CARGO_PKG_VERSION"));
+                return ExitCode::SUCCESS;
+            }
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            "--tiers" => action = Action::Tiers,
+            "--disasm" => action = Action::Disasm,
+            flag @ ("--aot" | "--aot-object") => {
+                let Some(out) = args.get(i + 1) else {
+                    return fail(&format!("{flag} requires a path"));
+                };
+                action = match flag {
+                    "--aot" => Action::Aot(PathBuf::from(out)),
+                    _ => Action::AotObject(PathBuf::from(out)),
+                };
+                i += 1;
+            }
+            "-c" => {
+                let Some(script) = args.get(i + 1) else {
+                    return fail("-c requires a script");
+                };
+                source = Source::Command(script.clone());
+                script_args = &args[(i + 2).min(args.len())..];
+                break;
+            }
+            option if option.starts_with('-') => {
+                return fail(&format!("unknown option \"{option}\""))
+            }
+            file => {
+                source = Source::File(file.to_string());
+                script_args = &args[i + 1..];
+                break;
+            }
         }
-        Some("-c") => match args.get(1) {
-            Some(script) => run_command(script, &program, &args[2..]),
-            None => fail("-c requires a script"),
+        i += 1;
+    }
+
+    // Only the ordinary run reads stdin a command at a time; every other action
+    // wants the whole script before it does anything.
+    if let (Action::Run, Source::Stdin) = (&action, &source) {
+        let mut interp = interp_for(&program, script_args);
+        return repl::run(&mut interp, repl::stdin_is_terminal());
+    }
+
+    let (src, file) = match &source {
+        Source::File(path) => match std::fs::read_to_string(path) {
+            Ok(src) => (src, Some(path.as_str())),
+            Err(e) => {
+                eprintln!("couldn't read file \"{path}\": {}", read_failure(&e));
+                return ExitCode::FAILURE;
+            }
         },
-        Some(option) if option.starts_with('-') => fail(&format!("unknown option \"{option}\"")),
-        Some(file) => run_file(file, &args[1..]),
-        None => run_stdin(&program, &[]),
+        Source::Command(script) => (script.clone(), None),
+        Source::Stdin => match std::io::read_to_string(std::io::stdin()) {
+            Ok(src) => (src, None),
+            Err(e) => return fail(&format!("stdin: {e}")),
+        },
+    };
+
+    match action {
+        Action::Run => {
+            let mut interp = interp_for(file.unwrap_or(&program), script_args);
+            run_source(&mut interp, &src, file)
+        }
+        Action::Aot(out) => report(tclrs::aot::compile_executable(&src, &out)),
+        Action::AotObject(out) => report(tclrs::aot::compile_object(&src, &out)),
+        Action::Tiers => match tclrs::tiers::report(&src) {
+            Ok(r) => {
+                println!("{r}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&e),
+        },
+        Action::Disasm => match tclrs::runtime::compile(&src) {
+            Ok(chunk) => {
+                print!("{}", chunk.disassemble());
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&e),
+        },
     }
 }
 
@@ -63,6 +182,14 @@ fn drive() -> ExitCode {
 fn fail(reason: &str) -> ExitCode {
     eprintln!("tclrs: {reason}");
     ExitCode::FAILURE
+}
+
+/// The exit status of an action that either worked or explained itself.
+fn report(outcome: Result<(), String>) -> ExitCode {
+    match outcome {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail(&e),
+    }
 }
 
 /// An interpreter with `argv0`, `argc` and `argv` set, as `tclsh` sets them.
@@ -91,30 +218,6 @@ fn run_source(interp: &mut Interp, src: &str, file: Option<&str>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-fn run_file(file: &str, args: &[String]) -> ExitCode {
-    let src = match std::fs::read_to_string(file) {
-        Ok(src) => src,
-        Err(e) => {
-            eprintln!("couldn't read file \"{file}\": {}", read_failure(&e));
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut interp = interp_for(file, args);
-    run_source(&mut interp, &src, Some(file))
-}
-
-fn run_command(script: &str, program: &str, args: &[String]) -> ExitCode {
-    let mut interp = interp_for(program, args);
-    run_source(&mut interp, script, None)
-}
-
-/// Stdin: the REPL when it is a terminal, the same loop without prompts or
-/// result echo when it is not.
-fn run_stdin(program: &str, args: &[String]) -> ExitCode {
-    let mut interp = interp_for(program, args);
-    repl::run(&mut interp, repl::stdin_is_terminal())
 }
 
 /// Why a script could not be read, in the reference interpreter's wording:

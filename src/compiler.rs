@@ -180,10 +180,20 @@ impl std::error::Error for CompileError {}
 /// compiles exactly as it did before and pays nothing.
 pub fn compile(script: &Script) -> Result<fusevm::Chunk, CompileError> {
     let first = Compiler::run(script, ArrayNames::new())?;
-    if first.seen_arrays.is_empty() {
-        return Ok(first.b.build());
-    }
-    Ok(Compiler::run(script, first.seen_arrays)?.b.build())
+    let mut chunk = if first.seen_arrays.is_empty() {
+        first.b.build()
+    } else {
+        Compiler::run(script, first.seen_arrays)?.b.build()
+    };
+    // Tcl's integers are arbitrary-precision, and this frontend has no bignum:
+    // an `i64` that overflows is an error, raised by the numeric hook. Native
+    // codegen would wrap instead, so ask fusevm for the overflow-checked
+    // lowering — `Add`/`Sub`/`Mul` stay native registers on the common path and
+    // deopt into the hook when a result does not fit. Without this, the JIT and
+    // the AOT compiler print -9223372036854775808 where the interpreter reports
+    // "integer value too large to represent".
+    chunk.int_overflow_deopt = true;
+    Ok(chunk)
 }
 
 pub(crate) struct LoopCtx {
