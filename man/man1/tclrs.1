@@ -149,7 +149,14 @@ four arguments), f64 (up to three), and \fB*const c_char\fR returning i64 or
 \fBvi\fR selects modal editing in the REPL; \fBemacs\fR is the default. Also
 settable as \fBmode\fR under \fB[repl]\fR in \fB~/.tclrs/config.toml\fR.
 .TP
-.BR FUSEVM_JIT_BLOCK_THRESHOLD ", " FUSEVM_JIT_TRACE_THRESHOLD ", " FUSEVM_JIT_CACHE_DIR
+.B TCLRS_STATICLIB
+Where
+.B \-\-aot
+looks for
+.BR libtclrs.a ,
+instead of beside the running binary.
+.TP
+.BR FUSEVM_JIT_BLOCK_THRESHOLD ", " FUSEVM_JIT_TRACE_THRESHOLD ", " FUSEVM_JIT_CACHE_DIR ", " FUSEVM_FFI_DIR
 fusevm's own knobs, unchanged.
 .SH FILES
 .TP
@@ -158,6 +165,14 @@ REPL history, 5,000 commands.
 .TP
 .B ~/.tclrs/config.toml
 REPL configuration.
+.TP
+.B ~/.cache/fusevm/ffi
+Shared libraries compiled from
+.B rust { ... }
+blocks, keyed by the SHA\-256 of the block's body.
+.TP
+.B ~/.cache/fusevm-jit
+Compiled native code, so JIT codegen is not repaid on the next process.
 .SH EXIT STATUS
 0 when the script ran to its end, 1 when a script failed, could not be read, or
 an option was not understood.
