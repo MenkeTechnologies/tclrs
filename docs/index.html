@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="tclrs — Tcl in Rust. A Tcl frontend that parses Tcl source and lowers it to fusevm bytecode, run on the shared language-agnostic bytecode VM. No bespoke VM, no interpreter loop, no code generator. Differentially tested against tclsh 9.0.4. MIT licensed.">
+  <title>tclrs — Documentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Share+Tech+Mono&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 68rem; }
+    .docs-build-line {
+      margin: 0.35rem 0 0;
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--text-dim);
+      letter-spacing: 0.03em;
+      max-width: 42rem;
+      opacity: 0.75;
+    }
+    .hub-scheme-strip {
+      border-bottom: 1px dashed var(--border);
+      background: color-mix(in srgb, var(--bg-secondary) 85%, transparent);
+      padding: 0.55rem 1.5rem 0.65rem;
+      position: relative;
+    }
+    .hub-scheme-strip-inner {
+      max-width: 68rem;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+    .hub-scheme-strip .hud-scheme-label {
+      flex: 0 0 auto;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--accent);
+      text-align: left;
+    }
+    .hub-scheme-strip .scheme-grid {
+      flex: 1 1 auto;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 6px;
+    }
+    @media (max-width: 720px) {
+      .hub-scheme-strip-inner { flex-direction: column; align-items: stretch; }
+      .hub-scheme-strip .scheme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    .cat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+      gap: 0.6rem;
+      margin: 0.7rem 0;
+    }
+    .cat-card {
+      border: 1px solid var(--border);
+      border-left: 2px solid var(--cyan);
+      padding: 0.6rem 0.8rem;
+      background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+      border-radius: 2px;
+    }
+    .cat-card h4 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin: 0 0 0.35rem;
+    }
+    .cat-card p { margin: 0; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
+    .cat-card code { font-size: 11px; color: var(--accent-light); }
+    .reflection-table { width: 100%; border-collapse: collapse; margin: 0.6rem 0 0.2rem; font-size: 12px; }
+    .reflection-table th {
+      background: var(--bg-secondary); color: var(--cyan);
+      font-family: 'Orbitron', sans-serif; font-size: 10px; font-weight: 700;
+      letter-spacing: 1px; text-transform: uppercase; text-align: left;
+      padding: 6px 10px; border: 1px solid var(--border);
+    }
+    .reflection-table td { padding: 6px 10px; border: 1px solid var(--border); color: var(--text-dim); vertical-align: top; }
+    .reflection-table td code { color: var(--accent-light); background: var(--bg); }
+    .status-pill {
+      display: inline-block; font-family: 'Orbitron', sans-serif; font-size: 9px;
+      font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+      padding: 2px 7px; border-radius: 2px; border: 1px solid var(--border);
+    }
+    .status-implemented { color: var(--green); border-color: var(--green); }
+    .status-progress { color: var(--accent-light); }
+    .status-planned { color: var(--text-muted); }
+  </style>
+</head>
+<body>
+  <div class="app tutorial-app" id="docsApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <div>
+          <h1 class="tutorial-brand">// TCLRS — TCL IN RUST</h1>
+          <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+            <span class="current">Docs</span>
+            <span class="sep">/</span>
+            <a href="report.html">Engineering Report</a>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/tclrs" target="_blank" rel="noopener noreferrer">GitHub</a>
+          </nav>
+          <p class="docs-build-line">tclrs v0.1.0 · Tcl on fusevm · parse → bytecode → fusevm VM · no bespoke VM · no interpreter loop · the seventeenth fusevm frontend · MIT · phase 2 of 7</p>
+        </div>
+        <div class="tutorial-toolbar">
+          <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+          <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+          <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+          <a class="btn btn-secondary" href="report.html">Report</a>
+          <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/tclrs" target="_blank" rel="noopener noreferrer">GitHub</a>
+        </div>
+      </div>
+    </header>
+
+    <div class="hub-scheme-strip">
+      <div class="hub-scheme-strip-inner">
+        <span class="hud-scheme-label">// Color scheme</span>
+        <div class="scheme-grid" id="hudSchemeGrid"></div>
+      </div>
+    </div>
+
+    <main class="tutorial-main">
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>TCLRS REFERENCE</h2>
+      <p class="tutorial-subtitle">A Tcl frontend written in Rust. A script is parsed once — every substitution the grammar permits resolved at parse time — and each command is lowered to <code>fusevm</code> bytecode, the same bytecode sixteen other language frontends emit. No bespoke VM, no interpreter loop, no code generator in this crate. The reference implementation is <strong>tclsh 9.0.4</strong>, and the test suite compares against it directly. <strong>Phase 2 of 7 — in active development.</strong></p>
+
+      <section class="tutorial-section">
+        <h2>What it is</h2>
+        <p><code>tclrs</code> is the seventeenth frontend on <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a>, the shared bytecode VM behind <code>zshrs</code> (the shell), <code>stryke</code> (the language), <code>awkrs</code> (AWK), <code>vimlrs</code> (VimL), <code>elisprs</code> (Emacs Lisp), <code>rubylang</code> (Ruby), <code>pythonrs</code> (Python), <code>phplang</code> (PHP), <code>node-js</code> (JavaScript), <code>rlang</code> (R), <code>go-rs</code> (Go), <code>arb</code>, and the four JVM frontends. It carries no VM and no JIT of its own: tclsh runs Tcl on its own bytecode engine, tclrs runs Tcl on fusevm's.</p>
+        <p>Two properties of Tcl's grammar make ahead-of-time lowering worthwhile. <strong>Braces suppress substitution</strong>, so a braced body is fully known at parse time and compiles once into bytecode instead of being re-parsed on every evaluation — words carry a <code>braced</code> flag for exactly that decision. And <strong>rule 11 rules out rescanning</strong> substituted values, so each character is processed once and the compiler can resolve variable and command references statically wherever the word shape allows.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Architecture</h2>
+        <p>The pipeline mirrors how <code>zshrs</code> hosts zsh and <code>groovyrs</code> hosts Groovy:</p>
+        <pre>Tcl script  →  parser (Script/Command/Word)  →  lower to fusevm bytecode  →  fusevm VM
+                                                       │
+                                    numeric hook (string operands, integer overflow)
+                                    extension ops (floored / and %, integral **, normalize)</pre>
+        <div class="cat-grid">
+          <div class="cat-card"><h4>fusevm-hosted</h4><p>No local <code>vm.rs</code> / <code>jit.rs</code>. Each command lowers into a <code>fusevm::Chunk</code> and runs on the shared VM (<code>src/compiler.rs</code>).</p></div>
+          <div class="cat-card"><h4>No object heap</h4><p>Tcl's value model needs none on top of fusevm's: strings, integers and floats map onto <code>Value</code> directly, and a value keeps its numeric representation until something demands its string form.</p></div>
+          <div class="cat-card"><h4>Native arithmetic</h4><p><code>+ - *</code>, the comparisons, the bitwise and shift operators, and short-circuiting <code>&amp;&amp;</code> / <code>||</code> lower to native fusevm ops, so the arithmetic a future JIT tier cares about stays visible to it.</p></div>
+          <div class="cat-card"><h4>Static stack tracking</h4><p>Each command leaves its result on the stack and the compiler tracks that depth as it goes, so <code>break</code> and <code>continue</code> unwind with a known number of pops rather than a runtime unwinder.</p></div>
+        </div>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Example</h2>
+<pre>set x 5
+set y [expr {$x * 2}]
+puts "x=$x y=$y"          ;# =&gt; x=5 y=10
+
+puts [expr {-57 / 10}]     ;# =&gt; -6   (Tcl floors toward -inf)
+puts [expr {-57 % 10}]     ;# =&gt; 3
+puts [expr {2**10}]        ;# =&gt; 1024 (integral ** stays integral)
+puts [expr {3.0/2}]        ;# =&gt; 1.5  (Tcl double formatting)
+puts [expr {"10" &lt; "9"}]   ;# =&gt; 0    (numeric-preferring comparison)
+puts [expr {"abc" lt "abd"}] ;# =&gt; 1  (always-string comparison)
+
+set i 0
+while {$i &lt; 3} {
+    incr i
+    if {$i == 2} { continue }
+    puts $i                ;# =&gt; 1, then 3
+}</pre>
+        <p>Every program in the test suite — this one included — is run through both <code>tclsh</code> and tclrs and the output compared byte for byte. No expected output in the repository is written by hand.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Status &amp; roadmap</h2>
+        <p>The table below reflects the current state of the tree. See <a href="https://github.com/MenkeTechnologies/tclrs/blob/main/BUGS.md">BUGS.md</a> for the honest ledger of what is not yet carried.</p>
+        <table class="reflection-table">
+          <thead><tr><th>Component</th><th>State</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>Parser — the twelve rules of <code>Tcl(n)</code></td><td><span class="status-pill status-implemented">Implemented</span></td><td>Command/word splitting, quotes, braces, command and variable substitution, the full backslash table, first-word comments, single-pass order (<code>src/parser.rs</code>).</td></tr>
+            <tr><td>Script → fusevm bytecode lowering</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Native ops plus frontend extension ops; statically tracked stack depth, backpatched control flow (<code>src/compiler.rs</code>).</td></tr>
+            <tr><td>Commands <code>set</code> / <code>puts</code> / <code>expr</code> / <code>incr</code></td><td><span class="status-pill status-implemented">Implemented</span></td><td><code>puts -nonewline</code> supported; command substitution of any implemented command.</td></tr>
+            <tr><td>Control flow <code>if</code> / <code>while</code> / <code>break</code> / <code>continue</code></td><td><span class="status-pill status-implemented">Implemented</span></td><td><code>elseif</code> / <code>else</code> chains; loop exits unwind by a compile-time-known pop count.</td></tr>
+            <tr><td><code>expr</code> — the full <code>expr(n)</code> operator set</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Compiled straight from a braced word with no runtime parse, at <code>expr(n)</code> precedence (<code>src/expr.rs</code>).</td></tr>
+            <tr><td>Tcl arithmetic &amp; number formatting</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Floored <code>/</code> and <code>%</code>, integral <code>**</code>, numeric-preferring comparison with string fallback, Tcl double format (<code>src/runtime.rs</code>).</td></tr>
+            <tr><td>Differential suites vs <code>tclsh</code></td><td><span class="status-pill status-implemented">Implemented</span></td><td>Parse rules, word splitting, and whole-program execution compared against tclsh 9.0.4; skipped when no tclsh is installed.</td></tr>
+            <tr><td>Lists, <code>{*}</code> expansion, <code>in</code> / <code>ni</code></td><td><span class="status-pill status-progress">Phase 3</span></td><td><code>{*}</code> is recorded on the word by the parser and refused by the compiler; <code>in</code> / <code>ni</code> lower to extension ops that report the gap.</td></tr>
+            <tr><td><code>proc</code>, arrays, the <code>tclsh</code> binary</td><td><span class="status-pill status-planned">Phase 4</span></td><td>No call frames yet; <code>$name(index)</code> parses into a <code>Part::Elem</code> the compiler refuses. The crate is a library today.</td></tr>
+            <tr><td>The command library, math functions</td><td><span class="status-pill status-planned">Phase 5</span></td><td><code>string</code>, <code>regexp</code>, <code>switch</code>, <code>for</code>, <code>catch</code> / <code>error</code>, channel IO. An unknown command is a compile-time error, never a silent miss.</td></tr>
+            <tr><td>JIT / AOT, arbitrary-precision integers</td><td><span class="status-pill status-planned">Phase 6</span></td><td><code>fusevm</code> is pulled with default features today, so the interpreter tier runs the chunk and no <code>cranelift-*</code> crate is linked. An <code>i64</code> overflow is an error, not a wrap.</td></tr>
+            <tr><td>Toolchain parity (LSP, DAP, completion, man pages, FFI)</td><td><span class="status-pill status-planned">Phase 7</span></td><td>The parity bar the sixteen sibling frontends already meet.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Why tclrs</h2>
+        <div class="cat-grid">
+          <div class="cat-card"><h4>Lowered once</h4><p>Braced bodies and braced <code>expr</code> expressions are known at parse time, so they compile once into bytecode instead of being re-parsed per evaluation.</p></div>
+          <div class="cat-card"><h4>No string round-trips</h4><p>A value produced as a number stays a number in a VM slot and only acquires a string representation when something asks for one.</p></div>
+          <div class="cat-card"><h4>One shared engine</h4><p>VM and JIT work in fusevm benefits zshrs, stryke, awkrs, vimlrs, elisprs, rubylang, pythonrs, phplang, node-js, rlang, go-rs, arb, the JVM frontends, and tclrs at once.</p></div>
+          <div class="cat-card"><h4>Ported, not reinvented</h4><p>tclsh 9.0.4 is the specification. Expectations are never hand-written: the suites diff tclrs against the reference interpreter directly.</p></div>
+        </div>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Building from source</h2>
+        <p>tclrs builds as a standalone Rust crate (it is not a workspace member of the meta repo):</p>
+<pre># clone
+git clone https://github.com/MenkeTechnologies/tclrs
+cd tclrs
+
+# build
+cargo build
+
+# run the suites
+cargo test --test dodekalogue             # the twelve parse rules
+cargo test --test differential_tclsh      # word splitting vs tclsh
+cargo test --test execution_differential  # whole programs vs tclsh</pre>
+        <p>The differential suites invoke <code>tclsh</code> (or <code>tclsh9.0</code> / <code>tclsh8.6</code>) from <code>PATH</code> and report a skip when none is installed, so the suite still runs on a machine without Tcl.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Using the library</h2>
+<pre>let out = tclrs::eval("set x 5\nputs [expr {$x * 2}]").unwrap();
+assert_eq!(out.output, "10\n");</pre>
+        <p><code>tclrs::parse</code> returns the parsed <code>Script</code> without running it, for tooling that wants the word structure.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>License</h2>
+        <p>tclrs is <strong>MIT licensed</strong> — free and open source. See <a href="https://github.com/MenkeTechnologies/tclrs/blob/main/LICENSE">LICENSE</a>.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Repository &amp; links</h2>
+        <ul>
+          <li><strong>Engineering report</strong> — <a href="report.html">report.html</a> (architecture, value model, component status, dependency posture)</li>
+          <li><strong>Known gaps</strong> — <a href="https://github.com/MenkeTechnologies/tclrs/blob/main/BUGS.md">BUGS.md</a></li>
+          <li><strong>Source</strong> — <a href="https://github.com/MenkeTechnologies/tclrs">github.com/MenkeTechnologies/tclrs</a></li>
+          <li><strong>Issues</strong> — <a href="https://github.com/MenkeTechnologies/tclrs/issues">github.com/MenkeTechnologies/tclrs/issues</a></li>
+          <li><strong>The shared VM</strong> — <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a> (also behind <code>zshrs</code>, <code>stryke</code>, <code>awkrs</code>, <code>vimlrs</code>, <code>elisprs</code>, <code>rubylang</code>, <code>pythonrs</code>, <code>phplang</code>, <code>node-js</code>, <code>rlang</code>, <code>go-rs</code>)</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script src="hud-theme.js"></script>
+</body>
+</html>

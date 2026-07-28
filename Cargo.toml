@@ -3,13 +3,17 @@ name = "tclrs"
 version = "0.1.0"
 edition = "2021"
 description = "Tcl as a fusevm frontend: a parser and compiler to fusevm::Chunk, with no bespoke VM or JIT"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/MenkeTechnologies/tclrs"
 homepage = "https://menketechnologies.github.io/tclrs/"
 documentation = "https://docs.rs/tclrs"
 readme = "README.md"
 keywords = ["tcl", "tclsh", "interpreter", "compiler", "fusevm"]
 categories = ["command-line-utilities", "compilers"]
+
+# tclrs is a standalone crate, not a workspace member. An explicit empty
+# `[workspace]` stops cargo walking up to the MenkeTechnologiesMeta parent.
+[workspace]
 
 [lib]
 name = "tclrs"
