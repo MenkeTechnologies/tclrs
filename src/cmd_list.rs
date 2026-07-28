@@ -237,7 +237,7 @@ fn split(value: &str, chars: &str) -> String {
 /// `concat`: join the arguments with single spaces after trimming white space
 /// from each end, dropping any that trim away to nothing. Trimming stops short
 /// of exposing a final backslash, which would escape the separator.
-fn concat(args: &[String]) -> String {
+pub(crate) fn concat(args: &[String]) -> String {
     let space = |c: char| c.is_ascii() && list::is_space(c as u8);
     let mut out = String::new();
     let mut emitted = false;

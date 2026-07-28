@@ -30,6 +30,11 @@ pub mod ext {
     /// Convert a VM-native result into its Tcl value: booleans become 1 or 0,
     /// doubles take Tcl's formatting.
     pub const NORM: u16 = 5;
+    /// `eval`: `[arg, …]` with the count in the inline operand → the value of
+    /// the script they concatenate to. The only op whose operand is a script
+    /// that is not known until it runs; the handler lives in
+    /// [`crate::runtime`], which owns the state the script runs against.
+    pub const EVAL: u16 = 6;
 
     /// Where the list commands' ops begin. Everything at or above this id is
     /// dispatched to [`crate::cmd_list`]; the inline operand is the number of
@@ -302,6 +307,7 @@ impl Compiler {
 
         match name.as_str() {
             "set" => self.cmd_set(args),
+            "eval" => self.cmd_eval(args),
             "puts" => self.cmd_puts(args),
             "expr" => self.cmd_expr(args),
             "incr" => self.cmd_incr(args),
@@ -342,6 +348,27 @@ impl Compiler {
             },
             _ => self.error("wrong # args: should be \"set varName ?newValue?\""),
         }
+    }
+
+    /// `eval arg ?arg ...?`.
+    ///
+    /// Every other command's script is braced text this compiler can lower in
+    /// place. `eval`'s is a value, so its arguments are compiled as ordinary
+    /// words and the script they produce is compiled when the op runs — once
+    /// per distinct text, since [`crate::cache`] keeps what it lowered.
+    fn cmd_eval(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        if args.is_empty() {
+            return self.error("wrong # args: should be \"eval arg ?arg ...?\"");
+        }
+        let count = u8::try_from(args.len()).map_err(|_| CompileError {
+            msg: "too many arguments for \"eval\"".to_string(),
+            line: self.line,
+        })?;
+        for arg in args {
+            self.word(arg)?;
+        }
+        self.emit(Op::Extended(ext::EVAL, count), 1 - args.len() as i32);
+        Ok(())
     }
 
     fn cmd_puts(&mut self, args: &[Word]) -> Result<(), CompileError> {
