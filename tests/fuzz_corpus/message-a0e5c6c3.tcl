@@ -1,0 +1,2 @@
+set s1 -1
+if {8 % 1 ** $s1} {foreach e9 x {puts [concat "x" c1 0.1]; if {!255} {break}}} else {if {255 / 16} {set w10 0; while {$w10 < 1} {incr w10; puts [string index a -1]}; puts -nonewline [string length b]} elseif {(1) ? [llength x] : [llength {cost$}]} {for {set f11 0} {$f11 < 2} {incr f11} {puts [lrange x 1 0]}}; for {set f12 0} {$f12 < 4} {incr f12} {foreach e13 {} {array set a14 {}}; continue}}

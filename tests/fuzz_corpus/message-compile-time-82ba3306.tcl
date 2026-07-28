@@ -1,0 +1,2 @@
+proc p8 {r1 {o1 1000} args} {set __o {}; catch {puts [lsearch -inline 1.5 x]; for {set f10 0} {$f10 < 3} {incr f10} {set v11 {}; puts [list 0.1 end]}} m9; return $__o}
+switch -glob -- {cost$} {a* {puts -nonewline $s4; while {$w12 < 5} {incr w12; puts $}} {[ab]*} {unset s4} default {catch {foreach e15 "x" {puts [p8 ]; unset s1}; foreach e16 0.1 {puts "pre-$s3-post"; set v17 1}} m14; puts [format %b {1 2 3}]}}

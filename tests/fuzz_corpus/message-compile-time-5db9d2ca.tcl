@@ -1,0 +1,2 @@
+foreach e7 "x" {set w8 0; while {$w8 < 2} {incr w8; if {[string length -1] || $s4} {incr s4 3} else {puts [format %s {hello world}]; puts "pre-$s3-post"}; catch {} m9; puts m:$m9}}
+catch {switch -exact -- "x" {* {set} default {puts [string index 255 3]; incr s4 4}}; puts [linsert $s3 0 1000]} m10; switch -exact -- -0.0 {{} {set w11 0; while {$w11 < 1} {incr w11; puts -nonewline $s1} m12; puts m:$m12} default {if {-2 * 123456789} {puts "pre-$e7-post"; puts [format %#x héllo]} else {eval {}}}}

@@ -1,0 +1,1 @@
+switch -exact -0.0 {a*b*c {switch -glob {he said "hi"} {a* {puts [concat $s2 0d9 $s2]; puts "pre-$m7-post"}}} * {catch {set v14 a} m13; puts m:$m13} default {if {[string length {q"r}] ? -7 : (0.5)} {puts [expr {-65536 && -2}]} else {puts [format %e [format %s -0]]; eval {}}}}

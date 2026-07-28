@@ -1,0 +1,1 @@
+if {1 > 65535 * "b"} {set v11 "pre-$w8-post"; puts 1} elseif {42 <= "b"} {set d12 [dict create A-B 5 {} 1000]} else {if {3 ** 16} {for {set f13 0} {$f13 < 1} {incr f13} {puts [lsearch -not $s2 *b]; set v14 a}; while {$w15 < 1} {incr w15; puts [string index "x" end]}} else {switch -glob [expr {-2 != $w8}] {*b {puts [lreplace $s2 3 1 {}]}}}}

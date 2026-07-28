@@ -1,0 +1,2 @@
+proc p8 {{o1 +5}} {set __o {}; while {$w9 < 5} {incr w9; switch -glob $__o {a*b*c {puts [lsearch -not {[a]} x]; puts [lsearch -decreasing 1.5 a*b*c]}}; if {16 <= -1} {puts -nonewline A-B; append s1 a*b { }}; if {1 * 1} {}}; return $__o}
+if {"b" | 0} {catch {unset s1; dict set d3 255 -0} m20; puts m:$m20} else {switch -exact -- {#} {a* {array set a21 {k v}; puts [p8 1.5 [list x hello]]} a* {append d3 A-B {}} {[ab]*} {puts [list "x" 1.5]; puts [string last end-1 hello]}}; puts -nonewline {}}

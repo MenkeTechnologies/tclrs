@@ -1,0 +1,1 @@
+set w16 0; while {$w16 < 1} {incr w16; for {set f17 0} {$f17 < 3} {incr f17} {set v18 {a b c}; if {"a" * 7} {incr w16 0; set v19 2} else {puts [llength x]}; continue}; if {1.5 << 0} {puts -nonewline [expr {($w16) / 10}]}}

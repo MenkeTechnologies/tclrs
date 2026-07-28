@@ -1,0 +1,1 @@
+set w6 0; while {$w6 < 5} {incr w6; switch -exact -- {[} {a* {if {"1.0" ni a*b} {append w6 abc b} else {array set a7 {x 1 y 2}}; puts [string map {ab X} "x"]} x {foreach e8 {} {puts end-1}} {} {set w9 0; while {$w9 < 1} {incr w9; puts -nonewline [string length x]; unset s3}; puts A-B} default {set v10 {a b c}}}; foreach {e11 e12} 1.5 {puts -nonewline [list 1000 {}]}}

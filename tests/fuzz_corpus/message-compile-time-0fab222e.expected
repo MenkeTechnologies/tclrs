@@ -1,0 +1,14 @@
+# tclrs parity fuzz finding
+# seed: 1   case: 00118   depth: 3   generator: scripts/fuzz/gen.tcl
+# verdict: DIVERGENCE	message-compile-time	msg tclsh=42 tclrs=premature end of expression
+# tclsh: 9.0.4
+# tclrs: tclrs 0.1.0
+# tclsh-status: 1
+# tclsh-stdout: 
+# tclsh-stderr: 42\n
+# tclrs-status: 1
+# tclrs-stdout: 
+# tclrs-stderr: premature end of expression\n    (file "target/fuzz/work/record/driven.tcl" line 1)\n
+#
+# The case itself is the sibling .tcl file. It is run spliced into
+# scripts/fuzz/drive.tcl, which is what the captured output above is of.

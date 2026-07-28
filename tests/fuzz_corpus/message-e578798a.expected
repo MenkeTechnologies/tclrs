@@ -1,0 +1,14 @@
+# tclrs parity fuzz finding
+# seed: 1   case: 00123   depth: 3   generator: scripts/fuzz/gen.tcl
+# verdict: DIVERGENCE	message	msg tclsh=expected boolean value but got "abc" tclrs=can't read "a3(x)": no such element in array
+# tclsh: 9.0.4
+# tclrs: tclrs 0.1.0
+# tclsh-status: 1
+# tclsh-stdout: 
+# tclsh-stderr: expected boolean value but got "abc"\n
+# tclrs-status: 1
+# tclrs-stdout: m:expected integer but got "0.1"\nm:\n
+# tclrs-stderr: can't read "a3(x)": no such element in array\n
+#
+# The case itself is the sibling .tcl file. It is run spliced into
+# scripts/fuzz/drive.tcl, which is what the captured output above is of.

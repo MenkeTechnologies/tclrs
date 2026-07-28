@@ -1,0 +1,5 @@
+set s1 {}
+set d3 [dict create x a#b {} 1000]
+proc p4 {r1 {o1 b} args} {set __o {}; append __o $r1; append __o $o1; append __o [llength $args]; global d3; append __o $d3; switch -glob -- {x]y} {a?c {for {set f5 0} {$f5 < 4} {incr f5} {puts -0}} {} {puts "pre-$__o-post"; if {7 le 10} {puts [string trimright {} {}]; set v6 $r1} elseif {1 in +5} {puts [string reverse 42]; puts [join {1 2 3} "x"]} else {set v7 {1 2 3}; set v8 {}}}}; return $__o}
+for {set f11 0} {$f11 < 2} {incr f11} {for {set f12 0} {$f12 < 5} {incr f12} {if {65535 && 1} {puts [expr {-1 < (1)}]; puts [p4 7 $s1]} elseif {-65536 ni a*b} {incr s2 4; set v13 -2}; if {65535 / 100} {set v14 [string length 1]; append d3 {} -7}}; break}
+incr w15; set w16 0; while {$w16 < 2} {incr w16; switch -exact "pre-$w15-post" {x {set v17 3} * {array set a18 "x"; puts [dict size $d3]} default {set v20 "pre-$u21-post"}}; switch -glob x {x {puts hello; puts a}} a* {puts [string index A-B end-1]; puts "x"} {[ab]*} {puts [dict exists $d3 255]} default {}}
