@@ -22,8 +22,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "compile"
-path = "fuzz_targets/compile.rs"
+name = "compiler"
+path = "fuzz_targets/compiler.rs"
 test = false
 doc = false
 bench = false

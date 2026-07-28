@@ -69,8 +69,8 @@ fn parse_corpus_does_not_panic() {
 }
 
 #[test]
-fn compile_corpus_does_not_panic() {
-    no_panics("compile", |src| {
+fn compiler_corpus_does_not_panic() {
+    no_panics("compiler", |src| {
         let _ = tclrs::runtime::compile(src);
     });
     // The parse seeds go through the compiler too: an input the parser accepts

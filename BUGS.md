@@ -342,7 +342,7 @@ reach, since the generator draws widths and precisions from a pool.
   a unary chain does the same at around 150_000. `src/parser.rs` bounds its own
   recursion at `MAX_NESTING_DEPTH` for exactly this reason and `src/expr.rs` does
   not, so the fix is the same mechanism in `ExprParser::parse_binary` /
-  `parse_unary`. It fires while *compiling*, so `fuzz/fuzz_targets/compile.rs`
+  `parse_unary`. It fires while *compiling*, so `fuzz/fuzz_targets/compiler.rs`
   reaches it with a 10 KB input.
 
 ## Defects in the reference implementation
