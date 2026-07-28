@@ -181,9 +181,7 @@ fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
     };
 
     let value = match (op, x, y) {
-        (NumOp::Neg, Num::Int(i), _) => {
-            i.checked_neg().map(Value::Int).ok_or_else(too_large)?
-        }
+        (NumOp::Neg, Num::Int(i), _) => i.checked_neg().map(Value::Int).ok_or_else(too_large)?,
         (NumOp::Neg, Num::Float(f), _) => Value::Float(-f),
         (_, Num::Int(i), Num::Int(j)) => {
             let folded = match op {
@@ -231,10 +229,16 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             vm.push(arith(id, x, y)?);
             Ok(())
         }
+        // Membership is a string test against the list's elements: `1 in {01}`
+        // is false even though the two are numerically equal.
         ext::IN | ext::NI => {
-            let _ = vm.pop();
-            let _ = vm.pop();
-            Err("\"in\" and \"ni\" need list support, which is not built yet".to_string())
+            let haystack = vm.pop();
+            let needle = vm.pop();
+            let elements = crate::list::split(&haystack.as_str_cow())?;
+            let needle = to_tcl_string(&needle);
+            let found = elements.contains(&needle);
+            vm.push(Value::Int(i64::from(found == (id == ext::IN))));
+            Ok(())
         }
         ext::NORM => {
             let v = vm.pop();
@@ -251,6 +255,7 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             vm.push(normalized);
             Ok(())
         }
+        id if id >= ext::LIST_BASE => crate::cmd_list::run(vm, id, arg),
         other => Err(format!("unknown extension op {other}")),
     }
 }

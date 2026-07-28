@@ -173,7 +173,6 @@ fn unsupported_constructs_are_refused() {
             "puts [expr {sin(1)}]",
             "math function \"sin\" is not supported yet",
         ),
-        ("puts [expr {1 in {1 2}}]", "need list support"),
         ("break", "invoked \"break\" outside of a loop"),
     ] {
         let err = tclrs::eval(src).expect_err(&format!("{src:?} should fail"));

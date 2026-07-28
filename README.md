@@ -103,8 +103,10 @@ wants the word structure.
 ## [0x03] LANGUAGE SURFACE
 
 Working commands: `set`, `puts` (with `-nonewline`), `expr`, `incr`, `if` /
-`elseif` / `else`, `while`, `break`, `continue`, and command substitution of any
-of them.
+`elseif` / `else`, `while`, `foreach`, `break`, `continue`, the list commands —
+`list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`,
+`lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` — and command
+substitution of any of them.
 
 `expr` covers the whole operator set of `expr(n)`:
 
@@ -115,17 +117,40 @@ of them.
 | String comparison | `lt gt le ge eq ne` — always string |
 | Bitwise / shift | `& ^ \| ~ << >>` |
 | Logical | `&& \|\| !`, short-circuiting; the ternary `?:` |
+| Membership | `in` `ni` — string equality against a list's elements, so `1 in {01}` is false |
 
 Operands are literals, variables, nested commands (`[…]`), quoted and braced
 strings, and parenthesised subexpressions. Doubles print in Tcl's format: the
 shortest representation that reads back exactly, never looking like an integer,
 exponential outside the positional range.
 
-Not built yet, and **refused at compile time rather than approximated**: `proc`
-and every other command, arrays, `{*}` expansion, math functions, `in` / `ni`
-(they need list support), variable and body words that are not literal, and
-arbitrary-precision integers — an operation that overflows `i64` is an error
-instead of silently wrapping. See [`BUGS.md`](BUGS.md) for the ledger.
+Not built yet, and **refused rather than approximated**: `proc` and every
+command outside the list above, arrays, `{*}` expansion, math functions,
+variable and body words that are not literal, and arbitrary-precision integers —
+an operation that overflows `i64` is an error instead of silently wrapping.
+Refusal is at compile time where the script's shape decides it and at run time
+where a value does. See [`BUGS.md`](BUGS.md) for the ledger.
+
+### Lists
+
+A Tcl list is a string, so every list command re-derives its elements from one.
+Both directions are ports of the reference implementation rather than
+reconstructions from the manual, because neither is what a reading of the manual
+would suggest.
+
+| Piece | How |
+| --- | --- |
+| **Parsing** | `TclFindElement`: whitespace separates elements, a leading brace or quote delimits one, and backslash sequences resolve everywhere except inside braces — the same escape table as rule 9, reached through the same code. |
+| **Formatting** | `TclScanElement` / `TclConvertElement`, including the historical mode where an element needing protection only because of a `]` or an internal `"` has those escaped while its braces are left bare: `list {a]b}` is `a\]b`, not `{a]b}`. An empty element is `{}`, and a leading `#` is quoted in the first element only. |
+| **Indices** | `end`, `end±n`, `m±n` and the integer grammar (`0x` / `0o` / `0b` / `0d` prefixes, `_` separators), resolved as `Tcl_GetIntForIndex` resolves them. |
+| **`lsort`** | The reference merge sort, element for element — with `-unique` the algorithm rather than the ordering decides which of two equal elements survives, so a library sort would give a different answer. |
+| **`lsearch`** | The reference option parsing, including unique-prefix abbreviation and the rule that `-integer` / `-real` only apply in `-exact` mode. |
+| **`foreach`** | Any number of variable lists and value lists; the longest list fixes the iteration count and shorter ones supply empty values. The loop state rides the VM stack rather than a variable a script could reach, and is read in place, so no copy happens per iteration. |
+
+Options that exist in tclsh but are not built here — `lsearch -regexp`,
+`-sorted`, `-dictionary`, `-nocase`, `-index`, `-stride`, `-subindices`,
+`-bisect`, and `lsort -command`, `-dictionary`, `-index`, `-nocase`, `-stride` —
+are errors, never silent no-ops.
 
 ---
 
@@ -190,7 +215,7 @@ with the benchmarks that justify them.
 | --- | --- | --- |
 | 1 | Parser — the twelve rules of `Tcl(n)` | done |
 | 2 | Compiler + runtime — `set` / `puts` / `expr` / `incr` / `if` / `while` / `break` / `continue` | done |
-| 3 | Lists — list parsing, `{*}` expansion, `lindex` / `llength` / `lappend` / `foreach`, `in` / `ni` | next |
+| 3 | Lists — list parsing and quoting, the thirteen list commands, `foreach`, `in` / `ni` | done, except `{*}` expansion |
 | 4 | `proc`, `return`, `upvar` / `global`, arrays, the `tclsh` binary | planned |
 | 5 | The command library — `string`, `regexp`, `switch`, `for`, `catch` / `error`, file and channel IO | planned |
 | 6 | `fusevm` `jit` / `jit-disk-cache` / `aot` features, bignum, benchmarks | planned |
@@ -198,14 +223,21 @@ with the benchmarks that justify them.
 
 ### Differential test harness
 
-Three suites, all comparing against the reference interpreter rather than
+Four suites, all comparing against the reference interpreter rather than
 against hand-written expectations:
 
 ```sh
 cargo test --test dodekalogue            # the twelve parse rules
 cargo test --test differential_tclsh     # word splitting vs tclsh, character for character
 cargo test --test execution_differential # whole programs vs tclsh, byte for byte
+cargo test --test list_differential      # the list commands, plus generated matrices
 ```
+
+`list_differential` also generates its cases: every awkward element value is
+driven through every list command, `foreach` through every shape its grammar
+allows, the glob matcher over a pattern × subject grid, and every index form
+against lists of every length — each matrix run as one script and compared line
+for line.
 
 The differential suites invoke `tclsh` (or `tclsh9.0` / `tclsh8.6`) from `PATH`
 and skip when none is installed.

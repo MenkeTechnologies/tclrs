@@ -29,6 +29,32 @@ pub mod ext {
     /// Convert a VM-native result into its Tcl value: booleans become 1 or 0,
     /// doubles take Tcl's formatting.
     pub const NORM: u16 = 5;
+
+    /// Where the list commands' ops begin. Everything at or above this id is
+    /// dispatched to [`crate::cmd_list`]; the inline operand is the number of
+    /// stack values the op consumes.
+    pub const LIST_BASE: u16 = 16;
+    pub const LIST: u16 = 16;
+    pub const LLENGTH: u16 = 17;
+    pub const LINDEX: u16 = 18;
+    pub const LAPPEND: u16 = 19;
+    pub const LRANGE: u16 = 20;
+    pub const LREVERSE: u16 = 21;
+    pub const LINSERT: u16 = 22;
+    pub const LREPLACE: u16 = 23;
+    pub const LSEARCH: u16 = 24;
+    pub const LSORT: u16 = 25;
+    pub const JOIN: u16 = 26;
+    pub const SPLIT: u16 = 27;
+    pub const CONCAT: u16 = 28;
+
+    /// `foreach`'s four steps. `INIT` builds the loop state from the value
+    /// lists, `MORE` asks whether an iteration remains, `TAKE` pushes one
+    /// iteration's values, and `ADVANCE` moves to the next.
+    pub const FOREACH_INIT: u16 = 29;
+    pub const FOREACH_MORE: u16 = 30;
+    pub const FOREACH_TAKE: u16 = 31;
+    pub const FOREACH_ADVANCE: u16 = 32;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,21 +90,21 @@ struct LoopCtx {
     continues: Vec<usize>,
 }
 
-struct Compiler {
-    b: ChunkBuilder,
+pub(crate) struct Compiler {
+    pub(crate) b: ChunkBuilder,
     depth: usize,
     loops: Vec<LoopCtx>,
-    line: usize,
+    pub(crate) line: usize,
 }
 
 impl Compiler {
-    fn emit(&mut self, op: Op, delta: i32) -> usize {
+    pub(crate) fn emit(&mut self, op: Op, delta: i32) -> usize {
         let idx = self.b.emit(op, self.line as u32);
         self.depth = (self.depth as i32 + delta) as usize;
         idx
     }
 
-    fn error<T>(&self, msg: impl Into<String>) -> Result<T, CompileError> {
+    pub(crate) fn error<T>(&self, msg: impl Into<String>) -> Result<T, CompileError> {
         Err(CompileError {
             msg: msg.into(),
             line: self.line,
@@ -123,7 +149,7 @@ impl Compiler {
     // ── words ────────────────────────────────────────────────────────────
 
     /// Emit a word, leaving its value on the stack.
-    fn word(&mut self, word: &Word) -> Result<(), CompileError> {
+    pub(crate) fn word(&mut self, word: &Word) -> Result<(), CompileError> {
         if word.expand {
             return self.error("{*} argument expansion is not supported yet");
         }
@@ -169,7 +195,7 @@ impl Compiler {
     /// A variable name for a command that writes one. `a(i)` names an array
     /// element even though the parser hands it over as ordinary text — the
     /// parentheses are only syntax inside a `$` substitution.
-    fn var_name_of(&self, word: &Word) -> Result<String, CompileError> {
+    pub(crate) fn var_name_of(&self, word: &Word) -> Result<String, CompileError> {
         let name = self.literal_of(word, "variable name")?;
         if name.ends_with(')') && name.contains('(') {
             return self.error("array variables are not supported yet");
@@ -195,9 +221,10 @@ impl Compiler {
             "incr" => self.cmd_incr(args),
             "if" => self.cmd_if(args),
             "while" => self.cmd_while(args),
+            "foreach" => self.cmd_foreach(args),
             "break" => self.cmd_loop_exit(args, true),
             "continue" => self.cmd_loop_exit(args, false),
-            other => self.error(format!("invalid command name \"{other}\"")),
+            other => crate::cmd_list::compile(self, other, args),
         }
     }
 
@@ -375,6 +402,98 @@ impl Compiler {
             self.b.patch_jump(j, end);
         }
         // A loop's own value is empty.
+        self.push_empty();
+        Ok(())
+    }
+
+    /// `foreach varList list ?varList list ...? body`.
+    ///
+    /// The loop's state — how far it has run and every variable's value for
+    /// every iteration — is a single value carried on the stack beneath the
+    /// body, so nothing is stashed in a variable the script could see. The
+    /// iteration count is fixed before the first pass, as it is in the
+    /// reference implementation: the longest list decides it, and shorter ones
+    /// supply empty values once they run out.
+    fn cmd_foreach(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        let Some((body, pairs)) = args.split_last() else {
+            return self.error(
+                "wrong # args: should be \"foreach varList list ?varList list ...? command\"",
+            );
+        };
+        if pairs.is_empty() || pairs.len() % 2 != 0 {
+            return self.error(
+                "wrong # args: should be \"foreach varList list ?varList list ...? command\"",
+            );
+        }
+
+        let mut names = Vec::new();
+        for pair in pairs.chunks(2) {
+            let text = self
+                .literal_of(&pair[0], "foreach variable list")?
+                .to_string();
+            let vars = crate::list::split(&text).map_err(|msg| CompileError {
+                msg,
+                line: self.line,
+            })?;
+            if vars.is_empty() {
+                return self.error("foreach varlist is empty");
+            }
+            let count = vars.len();
+            for name in vars {
+                if name.ends_with(')') && name.contains('(') {
+                    return self.error("array variables are not supported yet");
+                }
+                names.push(self.b.add_name(&name));
+            }
+            self.push_value(Value::Int(count as i64));
+            self.word(&pair[1])?;
+        }
+        let lists = u8::try_from(pairs.len() / 2).map_err(|_| CompileError {
+            msg: "too many lists for \"foreach\"".to_string(),
+            line: self.line,
+        })?;
+        let width = u8::try_from(names.len()).map_err(|_| CompileError {
+            msg: "too many variables for \"foreach\"".to_string(),
+            line: self.line,
+        })?;
+        self.emit(
+            Op::Extended(ext::FOREACH_INIT, lists),
+            1 - pairs.len() as i32,
+        );
+
+        // `MORE` and `TAKE` read the state where it lies instead of consuming
+        // it, so there is no `Dup` here and no copy of the state per iteration.
+        let top = self.b.current_pos();
+        self.emit(Op::Extended(ext::FOREACH_MORE, 0), 1);
+        let exit = self.emit(Op::JumpIfFalse(usize::MAX), -1);
+
+        self.loops.push(LoopCtx {
+            depth: self.depth,
+            breaks: Vec::new(),
+            continues: Vec::new(),
+        });
+        self.emit(Op::Extended(ext::FOREACH_TAKE, width), i32::from(width));
+        for &idx in names.iter().rev() {
+            self.emit(Op::SetVar(idx), -1);
+        }
+        let script = self.body_script(body)?;
+        self.script_effect(&script)?;
+        let ctx = self.loops.pop().expect("loop context");
+
+        let advance = self.b.current_pos();
+        self.emit(Op::Extended(ext::FOREACH_ADVANCE, 0), 0);
+        let backedge = self.emit(Op::Jump(usize::MAX), 0);
+        self.b.patch_jump(backedge, top);
+        for j in ctx.continues {
+            self.b.patch_jump(j, advance);
+        }
+
+        let end = self.b.current_pos();
+        self.b.patch_jump(exit, end);
+        for j in ctx.breaks {
+            self.b.patch_jump(j, end);
+        }
+        self.emit(Op::Pop, -1);
         self.push_empty();
         Ok(())
     }
