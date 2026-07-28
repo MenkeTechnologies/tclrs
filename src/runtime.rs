@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex};
 
 use fusevm::{NumOp, VMResult, Value, VM};
 
-use crate::compiler::{self, ext};
+use crate::compiler::{self, ext, ext_wide};
+use crate::list;
 
 /// The outcome of running a script.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,21 @@ pub struct Outcome {
     pub output: String,
 }
 
+/// A `catch` region the VM has entered and not yet left.
+///
+/// The two depths are what makes resuming possible: an error can be raised
+/// anywhere below, including inside a procedure the guarded script called, and
+/// restoring them puts the VM back exactly where the handler was compiled to
+/// expect it.
+struct CatchFrame {
+    /// Op index of the handler block the compiler emitted for this region.
+    handler: usize,
+    /// Value-stack length when the region was entered.
+    stack: usize,
+    /// Call-frame count when the region was entered.
+    frames: usize,
+}
+
 /// Compile and run a script, capturing its output.
 pub fn eval(src: &str) -> Result<Outcome, String> {
     let script = crate::parser::parse(src).map_err(|e| e.to_string())?;
@@ -36,6 +52,7 @@ pub fn eval(src: &str) -> Result<Outcome, String> {
 
     let output = Arc::new(Mutex::new(String::new()));
     let error = Arc::new(Mutex::new(None::<String>));
+    let catches: Arc<Mutex<Vec<CatchFrame>>> = Arc::new(Mutex::new(Vec::new()));
 
     let mut vm = VM::new(chunk);
     let sink = Arc::clone(&output);
@@ -44,28 +61,70 @@ pub fn eval(src: &str) -> Result<Outcome, String> {
     }));
     vm.set_numeric_hook(Arc::new(numeric));
     let err_cell = Arc::clone(&error);
+    let open = Arc::clone(&catches);
     vm.set_extension_handler(Box::new(move |vm: &mut VM, id: u16, arg: u8| {
+        if id == ext::CATCH_END {
+            open.lock().expect("catch lock").pop();
+            return;
+        }
         if let Err(msg) = extension(vm, id, arg) {
             *err_cell.lock().expect("error lock") = Some(msg);
+            // `VM::run` pops one value when it stops, so leave it one to pop:
+            // the stack then still holds what the failing op left, and the
+            // catch driver's depth arithmetic stays exact.
+            vm.push(Value::Undef);
             vm.request_halt();
         }
     }));
+    let entered = Arc::clone(&catches);
+    vm.set_extension_wide_handler(Box::new(move |vm: &mut VM, id: u16, payload: usize| {
+        if id == ext_wide::CATCH {
+            entered.lock().expect("catch lock").push(CatchFrame {
+                handler: payload,
+                stack: vm.stack.len(),
+                frames: vm.frames.len(),
+            });
+        }
+    }));
 
-    let outcome = vm.run();
-    if let Some(msg) = error.lock().expect("error lock").take() {
-        return Err(msg);
-    }
-    let output = output.lock().expect("output lock").clone();
-    match outcome {
-        VMResult::Ok(v) => Ok(Outcome {
-            result: to_tcl_string(&v),
-            output,
-        }),
-        VMResult::Halted => Ok(Outcome {
-            result: String::new(),
-            output,
-        }),
-        VMResult::Error(e) => Err(e),
+    loop {
+        let outcome = vm.run();
+        let raised = error
+            .lock()
+            .expect("error lock")
+            .take()
+            .or_else(|| match &outcome {
+                VMResult::Error(e) => Some(e.clone()),
+                _ => None,
+            });
+
+        if let Some(msg) = raised {
+            let Some(frame) = catches.lock().expect("catch lock").pop() else {
+                return Err(msg);
+            };
+            // Unwind to the guarded script's entry state and hand the handler
+            // the message.
+            vm.frames.truncate(frame.frames);
+            vm.stack.truncate(frame.stack);
+            vm.stack.resize(frame.stack, Value::Undef);
+            vm.push(Value::Str(Arc::new(msg)));
+            vm.ip = frame.handler;
+            vm.clear_halt();
+            continue;
+        }
+
+        let output = output.lock().expect("output lock").clone();
+        return match outcome {
+            VMResult::Ok(v) => Ok(Outcome {
+                result: to_tcl_string(&v),
+                output,
+            }),
+            VMResult::Halted => Ok(Outcome {
+                result: String::new(),
+                output,
+            }),
+            VMResult::Error(e) => Err(e),
+        };
     }
 }
 
@@ -255,6 +314,22 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             vm.push(normalized);
             Ok(())
         }
+        ext::MATCH => {
+            let pattern = to_tcl_string(&vm.pop());
+            let subject = to_tcl_string(&vm.pop());
+            let hit = if arg == 1 {
+                list::glob_match(&pattern, &subject)
+            } else {
+                subject == pattern
+            };
+            vm.push(Value::Int(hit as i64));
+            Ok(())
+        }
+        // `error` and `return -code error` raise the message as the error, so
+        // the enclosing `catch` — or the caller of `eval` — receives it.
+        ext::ERROR => Err(to_tcl_string(&vm.pop())),
+        // The ranges are tested from the highest base down, so that a lower
+        // one's `id >= BASE` does not swallow a higher module's ops.
         id if id >= ext::ASSOC_BASE => crate::assoc::extension(vm, id, arg),
         id if id >= ext::LIST_BASE => crate::cmd_list::run(vm, id, arg),
         other => Err(format!("unknown extension op {other}")),

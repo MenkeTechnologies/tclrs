@@ -598,22 +598,42 @@ impl Compiler {
         self.arrays.contains(name)
     }
 
+    /// The name index a variable is reached by in the VM's global table, for
+    /// the operations that address one that way.
+    ///
+    /// An array lives in that table, keyed by the name index the compiler
+    /// hands the op; a procedure's locals live in the call frame's slots, which
+    /// no name index reaches. So an array inside a procedure body is refused
+    /// rather than silently made global — unless `global` already said that is
+    /// what it is.
+    fn global_var(&mut self, name: &str, what: &str) -> Result<u16, CompileError> {
+        if self.is_local(name) {
+            return self.error(format!(
+                "{what} of the procedure-local variable \"{name}\" is not supported yet"
+            ));
+        }
+        self.note_array(name);
+        Ok(self.b.add_name(name))
+    }
+
     /// Read a scalar variable. The guard is emitted only for names the script
     /// also uses as arrays, so an ordinary `$x` still lowers to a bare `GetVar`.
+    /// A procedure local can never hold an array — [`Compiler::global_var`]
+    /// refuses the commands that would make one — so it needs no guard.
     pub(crate) fn scalar_get(&mut self, name: &str) {
-        let idx = self.b.add_name(name);
-        if self.is_array(name) {
-            self.push_str(name);
-            self.emit(Op::GetVar(idx), 1);
-            self.emit(Op::Extended(ext::SCALAR, 0), -1);
-        } else {
-            self.emit(Op::GetVar(idx), 1);
+        if !self.is_array(name) || self.is_local(name) {
+            self.emit_get_var(name);
+            return;
         }
+        let idx = self.b.add_name(name);
+        self.push_str(name);
+        self.emit(Op::GetVar(idx), 1);
+        self.emit(Op::Extended(ext::SCALAR, 0), -1);
     }
 
     /// Refuse a scalar assignment to a variable that holds an array.
     pub(crate) fn scalar_set_guard(&mut self, name: &str) {
-        if !self.is_array(name) {
+        if !self.is_array(name) || self.is_local(name) {
             return;
         }
         let idx = self.b.add_name(name);
@@ -624,8 +644,7 @@ impl Compiler {
 
     /// `$a(i)`.
     pub(crate) fn elem_get(&mut self, name: &str, index: &[Part]) -> Result<(), CompileError> {
-        self.note_array(name);
-        let slot = self.b.add_name(name);
+        let slot = self.global_var(name, "an array element")?;
         self.push_str(name);
         self.index_value(index)?;
         self.emit(Op::LoadInt(slot as i64), 1);
@@ -640,8 +659,7 @@ impl Compiler {
         index: &[Part],
         value: &Word,
     ) -> Result<(), CompileError> {
-        self.note_array(name);
-        let slot = self.b.add_name(name);
+        let slot = self.global_var(name, "an array element")?;
         self.push_str(name);
         self.index_value(index)?;
         self.word(value)?;
@@ -657,8 +675,7 @@ impl Compiler {
         index: &[Part],
         by: Option<&Word>,
     ) -> Result<(), CompileError> {
-        self.note_array(name);
-        let slot = self.b.add_name(name);
+        let slot = self.global_var(name, "an array element")?;
         self.push_str(name);
         self.index_value(index)?;
         match by {
@@ -694,6 +711,14 @@ impl Compiler {
             };
             match target {
                 Target::Scalar(name) => {
+                    if self.is_local(&name) {
+                        // A local lives in a frame slot, which the VM has no
+                        // op to remove; only the global table can be unset.
+                        return self.error(format!(
+                            "\"unset\" of the procedure-local variable \"{name}\" is not \
+                             supported yet"
+                        ));
+                    }
                     let slot = self.b.add_name(&name);
                     self.push_str(&name);
                     self.emit(Op::LoadInt(slot as i64), 1);
@@ -701,8 +726,7 @@ impl Compiler {
                     self.emit(Op::Extended(ext::UNSET_VAR, 0), -3);
                 }
                 Target::Elem { name, index } => {
-                    self.note_array(&name);
-                    let slot = self.b.add_name(&name);
+                    let slot = self.global_var(&name, "an array element")?;
                     self.push_str(&name);
                     self.index_value(&index)?;
                     self.emit(Op::LoadInt(slot as i64), 1);
@@ -737,8 +761,7 @@ impl Compiler {
             ));
         };
         let name = self.literal_of(array, "array name")?.to_string();
-        self.note_array(&name);
-        let slot = self.b.add_name(&name) as i64;
+        let slot = self.global_var(&name, format!("\"array {sub}\"").as_str())? as i64;
         let rest = &args[2..];
 
         match (sub, rest.len()) {
@@ -898,9 +921,8 @@ impl Compiler {
                 let Some(Target::Scalar(name)) = target_of(name) else {
                     return self.error("dict set into an array element is not supported yet");
                 };
-                let slot = self.b.add_name(&name);
                 self.push_str(&name);
-                self.emit(Op::GetVar(slot), 1);
+                self.emit_get_var(&name);
                 for key in keys {
                     self.word(key)?;
                 }
@@ -910,7 +932,7 @@ impl Compiler {
                 self.emit(Op::LoadInt(keys.len() as i64 + 1), 1);
                 self.emit(Op::Extended(ext::DICT_SET, 0), -(keys.len() as i32 + 3));
                 self.emit(Op::Dup, 1);
-                self.emit(Op::SetVar(slot), -1);
+                self.emit_set_var(&name);
                 Ok(())
             }
             "for" => {
@@ -966,26 +988,25 @@ impl Compiler {
         let exit = self.emit(Op::JumpIfFalse(usize::MAX), -1);
 
         self.scalar_set_guard(&key_name);
-        let key_slot = self.b.add_name(&key_name);
         self.emit(Op::GetVar(cursor), 1);
         self.emit(Op::ArrayGet(pairs), 0);
-        self.emit(Op::SetVar(key_slot), -1);
+        self.emit_set_var(&key_name);
 
         self.scalar_set_guard(&value_name);
-        let value_slot = self.b.add_name(&value_name);
         self.emit(Op::GetVar(cursor), 1);
         self.emit(Op::LoadInt(1), 1);
         self.emit(Op::Add, -1);
         self.emit(Op::ArrayGet(pairs), 0);
-        self.emit(Op::SetVar(value_slot), -1);
+        self.emit_set_var(&value_name);
 
         self.loops.push(LoopCtx {
             depth: self.depth,
+            catch_depth: self.catch_depth,
             breaks: Vec::new(),
             continues: Vec::new(),
         });
         let script = self.body_script(body)?;
-        self.script_effect(&script)?;
+        self.nested_effect(&script)?;
         let ctx = self.loops.pop().expect("loop context");
 
         let step = self.b.current_pos();

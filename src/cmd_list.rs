@@ -80,14 +80,13 @@ fn lappend(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     };
     let name = c.var_name_of(name)?;
     let count = arg_count(c, values.len() + 1)?;
-    let idx = c.b.add_name(&name);
-    c.emit(Op::GetVar(idx), 1);
+    c.emit_get_var(&name);
     for value in values {
         c.word(value)?;
     }
     c.emit(Op::Extended(ext::LAPPEND, count), -(values.len() as i32));
     c.emit(Op::Dup, 1);
-    c.emit(Op::SetVar(idx), -1);
+    c.emit_set_var(&name);
     Ok(())
 }
 

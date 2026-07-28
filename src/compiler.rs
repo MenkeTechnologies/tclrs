@@ -14,11 +14,13 @@
 //! it.
 
 use fusevm::{ChunkBuilder, Op, Value};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::assoc::{self, ArrayNames, Target};
 use crate::expr::{self, BinOp, Expr, UnOp};
 use crate::parser::{Command, Part, Script, Word};
+use crate::procs::Signature;
 
 /// Extension opcode ids owned by this frontend.
 pub mod ext {
@@ -30,6 +32,17 @@ pub mod ext {
     /// Convert a VM-native result into its Tcl value: booleans become 1 or 0,
     /// doubles take Tcl's formatting.
     pub const NORM: u16 = 5;
+
+    // Procedures and control flow (`procs`, `control`).
+
+    /// Pop a pattern and a subject and push 1 or 0. `arg` is 0 for `switch
+    /// -exact` and 1 for `switch -glob`.
+    pub const MATCH: u16 = 7;
+    /// Raise the Tcl error whose message is on top of the stack.
+    pub const ERROR: u16 = 8;
+    /// Leave the `catch` region entered by [`ext_wide::CATCH`], having reached
+    /// its end without an error.
+    pub const CATCH_END: u16 = 9;
 
     /// Where the list commands' ops begin. Everything at or above this id is
     /// dispatched to [`crate::cmd_list`]; the inline operand is the number of
@@ -110,6 +123,13 @@ pub mod ext {
     pub const DICT_PAIRS: u16 = ASSOC_BASE + 21;
 }
 
+/// Wide extension opcode ids, whose payload is a `usize` rather than a byte.
+pub mod ext_wide {
+    /// Enter a `catch` region. The payload is the op index of the region's
+    /// error handler, which the driver in [`crate::runtime`] resumes at.
+    pub const CATCH: u16 = 0;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompileError {
     pub msg: String,
@@ -143,8 +163,24 @@ pub fn compile(script: &Script) -> Result<fusevm::Chunk, CompileError> {
 pub(crate) struct LoopCtx {
     /// Stack depth on entry, so an early exit knows how much to discard.
     pub(crate) depth: usize,
+    /// `catch` regions open at the loop header. An exit from a deeper one
+    /// would leave the driver's catch record behind, so it is refused.
+    pub(crate) catch_depth: usize,
     pub(crate) breaks: Vec<usize>,
     pub(crate) continues: Vec<usize>,
+}
+
+/// The local variables of one procedure body.
+///
+/// A procedure's variables live in the call frame's slots, which fusevm
+/// allocates per `Op::Call` — that is what keeps them off the globals and out
+/// of a recursive call's way. Names listed by `global` are excluded and reach
+/// the VM's global table through `Op::GetVar`/`Op::SetVar` instead.
+#[derive(Default)]
+pub(crate) struct Scope {
+    pub locals: HashMap<String, u16>,
+    pub globals: HashSet<String>,
+    pub next_slot: u16,
 }
 
 pub(crate) struct Compiler {
@@ -156,9 +192,23 @@ pub(crate) struct Compiler {
     pub(crate) arrays: ArrayNames,
     /// Names found to be used as arrays during this pass.
     pub(crate) seen_arrays: ArrayNames,
+    /// `Some` while compiling a procedure body.
+    pub(crate) scope: Option<Scope>,
+    /// Signatures of every procedure the script defines, keyed by name. The
+    /// call site needs one to apply defaults and collect `args`.
+    pub(crate) procs: HashMap<String, Signature>,
+    /// Procedures whose body has been compiled, so a redefinition is caught.
+    pub(crate) defined: HashSet<String>,
+    /// How many `catch` regions enclose the code being compiled.
+    pub(crate) catch_depth: usize,
+    /// Whether the command being compiled is one of the script's own, rather
+    /// than one inside a body or a command substitution.
+    pub(crate) top_level: bool,
 }
 
 impl Compiler {
+    /// One compilation pass over the script, with the array names the previous
+    /// pass discovered.
     fn run(script: &Script, arrays: ArrayNames) -> Result<Compiler, CompileError> {
         let mut c = Compiler {
             b: ChunkBuilder::new(),
@@ -167,7 +217,16 @@ impl Compiler {
             line: 1,
             arrays,
             seen_arrays: ArrayNames::new(),
+            scope: None,
+            procs: HashMap::new(),
+            defined: HashSet::new(),
+            catch_depth: 0,
+            top_level: true,
         };
+        // Signatures are collected before anything is emitted so a procedure
+        // may call one that the script defines further down, which is legal in
+        // Tcl as long as the call is not reached first.
+        crate::procs::prescan(&mut c.procs, script);
         c.script_value(script)?;
         Ok(c)
     }
@@ -194,10 +253,86 @@ impl Compiler {
         self.push_value(Value::Str(std::sync::Arc::new(String::new())));
     }
 
+    /// Push a literal string as a value, canonicalising it the way a literal
+    /// word is canonicalised.
+    pub(crate) fn push_text(&mut self, text: &str) {
+        let v = literal_value(text);
+        self.push_value(v);
+    }
+
+    // ── variables ────────────────────────────────────────────────────────
+
+    /// The frame slot holding `name`, allocating one if this is its first
+    /// mention. `None` outside a procedure body, and for a name that `global`
+    /// has bound to the global of the same name.
+    fn slot_of(&mut self, name: &str) -> Option<u16> {
+        let scope = self.scope.as_mut()?;
+        if scope.globals.contains(name) {
+            return None;
+        }
+        if let Some(slot) = scope.locals.get(name) {
+            return Some(*slot);
+        }
+        let slot = scope.next_slot;
+        scope.next_slot += 1;
+        scope.locals.insert(name.to_string(), slot);
+        Some(slot)
+    }
+
+    /// Whether `name` would resolve to a frame slot rather than to the VM's
+    /// global table — true inside a procedure body for every name `global` has
+    /// not bound. Unlike [`Compiler::slot_of`] this allocates nothing, so it is
+    /// safe to ask about a name the emitted code may never touch.
+    pub(crate) fn is_local(&self, name: &str) -> bool {
+        self.scope
+            .as_ref()
+            .is_some_and(|s| !s.globals.contains(name))
+    }
+
+    /// Read a variable onto the stack.
+    pub(crate) fn emit_get_var(&mut self, name: &str) {
+        match self.slot_of(name) {
+            Some(slot) => self.emit(Op::GetSlot(slot), 1),
+            None => {
+                let idx = self.b.add_name(name);
+                self.emit(Op::GetVar(idx), 1)
+            }
+        };
+    }
+
+    /// Pop the top of the stack into a variable.
+    pub(crate) fn emit_set_var(&mut self, name: &str) {
+        match self.slot_of(name) {
+            Some(slot) => self.emit(Op::SetSlot(slot), -1),
+            None => {
+                let idx = self.b.add_name(name);
+                self.emit(Op::SetVar(idx), -1)
+            }
+        };
+    }
+
     // ── scripts ──────────────────────────────────────────────────────────
 
+    /// Emit a nested script — a body, or a command substitution — for its
+    /// value. Commands that may only appear at the script's own top level are
+    /// refused inside one.
+    pub(crate) fn nested_value(&mut self, script: &Script) -> Result<(), CompileError> {
+        let outer = std::mem::replace(&mut self.top_level, false);
+        let result = self.script_value(script);
+        self.top_level = outer;
+        result
+    }
+
+    /// Emit a nested script for its effect, leaving the stack as it was found.
+    pub(crate) fn nested_effect(&mut self, script: &Script) -> Result<(), CompileError> {
+        let outer = std::mem::replace(&mut self.top_level, false);
+        let result = self.script_effect(script);
+        self.top_level = outer;
+        result
+    }
+
     /// Emit a script that leaves its value on the stack.
-    fn script_value(&mut self, script: &Script) -> Result<(), CompileError> {
+    pub(crate) fn script_value(&mut self, script: &Script) -> Result<(), CompileError> {
         if script.commands.is_empty() {
             self.push_empty();
             return Ok(());
@@ -252,7 +387,7 @@ impl Compiler {
                 Ok(())
             }
             Part::Elem { name, index } => self.elem_get(name, index),
-            Part::Script(script) => self.script_value(script),
+            Part::Script(script) => self.nested_value(script),
         }
     }
 
@@ -291,6 +426,16 @@ impl Compiler {
 
     // ── commands ─────────────────────────────────────────────────────────
 
+    /// The command names [`Compiler::command`] matches before it consults
+    /// `procs`. A procedure may not take one of these names: Tcl would let the
+    /// definition replace the command, and here the built-in lowering would
+    /// keep winning. The list commands are absent on purpose — they are
+    /// dispatched after `procs`, so a procedure does replace one.
+    pub(crate) const BUILTINS: &'static [&'static str] = &[
+        "set", "puts", "expr", "incr", "if", "while", "for", "foreach", "switch", "break",
+        "continue", "proc", "return", "global", "catch", "error", "array", "dict", "unset",
+    ];
+
     fn command(&mut self, cmd: &Command) -> Result<(), CompileError> {
         self.line = cmd.line;
         let Some(first) = cmd.words.first() else {
@@ -307,12 +452,22 @@ impl Compiler {
             "incr" => self.cmd_incr(args),
             "if" => self.cmd_if(args),
             "while" => self.cmd_while(args),
+            "for" => self.cmd_for(args),
             "foreach" => self.cmd_foreach(args),
+            "switch" => self.cmd_switch(args),
             "break" => self.cmd_loop_exit(args, true),
             "continue" => self.cmd_loop_exit(args, false),
+            "proc" => self.cmd_proc(args),
+            "return" => self.cmd_return(args),
+            "global" => self.cmd_global(args),
+            "catch" => self.cmd_catch(args),
+            "error" => self.cmd_error(args),
             "array" => self.cmd_array(args),
             "dict" => self.cmd_dict(args),
             "unset" => self.cmd_unset(args),
+            // A procedure the script defines shadows nothing built in: the
+            // names above are refused to `proc` at its definition.
+            other if self.procs.contains_key(other) => self.call_proc(other, args),
             // The list commands own the tail of the dispatch, and report the
             // unknown-command error for anything no module claims.
             other => crate::cmd_list::compile(self, other, args),
@@ -334,8 +489,7 @@ impl Compiler {
                     self.word(&args[1])?;
                     // `set` yields the value it assigned.
                     self.emit(Op::Dup, 1);
-                    let idx = self.b.add_name(&name);
-                    self.emit(Op::SetVar(idx), -1);
+                    self.emit_set_var(&name);
                     Ok(())
                 }
                 Target::Elem { name, index } => self.elem_set(&name, &index, &args[1]),
@@ -394,7 +548,6 @@ impl Compiler {
             Target::Scalar(name) => name,
             Target::Elem { name, index } => return self.elem_incr(&name, &index, by),
         };
-        let idx = self.b.add_name(&name);
         self.scalar_get(&name);
         match by {
             Some(w) => self.word(w)?,
@@ -404,7 +557,7 @@ impl Compiler {
         }
         self.emit(Op::Add, -1);
         self.emit(Op::Dup, 1);
-        self.emit(Op::SetVar(idx), -1);
+        self.emit_set_var(&name);
         Ok(())
     }
 
@@ -482,11 +635,12 @@ impl Compiler {
 
         self.loops.push(LoopCtx {
             depth: self.depth,
+            catch_depth: self.catch_depth,
             breaks: Vec::new(),
             continues: Vec::new(),
         });
         let script = self.body_script(body)?;
-        self.script_effect(&script)?;
+        self.nested_effect(&script)?;
         let ctx = self.loops.pop().expect("loop context");
 
         let backedge = self.emit(Op::Jump(usize::MAX), 0);
@@ -541,7 +695,7 @@ impl Compiler {
                 if name.ends_with(')') && name.contains('(') {
                     return self.error("array variables are not supported yet");
                 }
-                names.push(self.b.add_name(&name));
+                names.push(name);
             }
             self.push_value(Value::Int(count as i64));
             self.word(&pair[1])?;
@@ -567,15 +721,16 @@ impl Compiler {
 
         self.loops.push(LoopCtx {
             depth: self.depth,
+            catch_depth: self.catch_depth,
             breaks: Vec::new(),
             continues: Vec::new(),
         });
         self.emit(Op::Extended(ext::FOREACH_TAKE, width), i32::from(width));
-        for &idx in names.iter().rev() {
-            self.emit(Op::SetVar(idx), -1);
+        for name in names.iter().rev().cloned().collect::<Vec<_>>() {
+            self.emit_set_var(&name);
         }
         let script = self.body_script(body)?;
-        self.script_effect(&script)?;
+        self.nested_effect(&script)?;
         let ctx = self.loops.pop().expect("loop context");
 
         let advance = self.b.current_pos();
@@ -604,6 +759,14 @@ impl Compiler {
         let Some(ctx) = self.loops.last() else {
             return self.error(format!("invoked \"{word}\" outside of a loop"));
         };
+        if ctx.catch_depth != self.catch_depth {
+            // Tcl turns such an exit into the return code the enclosing
+            // `catch` reports rather than letting it reach the loop, which
+            // this frontend does not model.
+            return self.error(format!(
+                "\"{word}\" out of a \"catch\" script is not supported"
+            ));
+        }
         // Discard whatever this iteration pushed before jumping, so the exit
         // point sees the depth it was compiled for.
         let surplus = self.depth.saturating_sub(ctx.depth);
@@ -623,9 +786,9 @@ impl Compiler {
     }
 
     /// A control-flow body: braced text compiled in place.
-    fn body(&mut self, word: &Word) -> Result<(), CompileError> {
+    pub(crate) fn body(&mut self, word: &Word) -> Result<(), CompileError> {
         let script = self.body_script(word)?;
-        self.script_value(&script)
+        self.nested_value(&script)
     }
 
     pub(crate) fn body_script(&mut self, word: &Word) -> Result<Script, CompileError> {
@@ -637,7 +800,7 @@ impl Compiler {
     }
 
     /// A word used as a condition: its text is an expression.
-    fn expr_word(&mut self, word: &Word) -> Result<(), CompileError> {
+    pub(crate) fn expr_word(&mut self, word: &Word) -> Result<(), CompileError> {
         let text = self.literal_of(word, "condition")?.to_string();
         let parsed = expr::parse(&text).map_err(|e| CompileError {
             msg: e.msg,
@@ -767,7 +930,7 @@ impl Compiler {
 /// canonical spelling of an integer or double can be carried as a number
 /// without observable difference — and that keeps arithmetic on the VM's fast
 /// path. `05` and `1.10` are not canonical, so they stay strings.
-fn literal_value(text: &str) -> Value {
+pub(crate) fn literal_value(text: &str) -> Value {
     if let Ok(i) = text.parse::<i64>() {
         if i.to_string() == text {
             return Value::Int(i);

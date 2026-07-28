@@ -167,13 +167,19 @@ fn script_value_is_the_last_command() {
 #[test]
 fn unsupported_constructs_are_refused() {
     for (src, expected) in [
-        ("proc f {} {}", "invalid command name \"proc\""),
-        // `set a(1) x` was refused here until array variables were implemented;
-        // the constructs of that area still missing are the array searches and
-        // the dict subcommands that need commands this phase does not have.
+        // `proc`, `foreach` and `set a(1) x` all stood here until the phases
+        // that built them landed. `uplevel` is a command this frontend has no
+        // implementation of at all, so it stands in now.
+        ("uplevel 1 {set x 1}", "invalid command name \"uplevel\""),
         (
             "array startsearch a",
             "array startsearch is not supported yet",
+        ),
+        // A procedure's frame slots are what `return` returns from, so the
+        // command has no meaning outside one.
+        (
+            "return 1",
+            "\"return\" outside of a procedure is not supported",
         ),
         (
             "puts [expr {sin(1)}]",
