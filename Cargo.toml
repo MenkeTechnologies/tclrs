@@ -1,0 +1,25 @@
+[package]
+name = "tclrs"
+version = "0.1.0"
+edition = "2021"
+description = "Tcl as a fusevm frontend: a parser and compiler to fusevm::Chunk, with no bespoke VM or JIT"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/MenkeTechnologies/tclrs"
+homepage = "https://menketechnologies.github.io/tclrs/"
+documentation = "https://docs.rs/tclrs"
+readme = "README.md"
+keywords = ["tcl", "tclsh", "interpreter", "compiler", "fusevm"]
+categories = ["command-line-utilities", "compilers"]
+
+[lib]
+name = "tclrs"
+path = "src/lib.rs"
+
+# fusevm lands in phase 2, when the compiler starts emitting Chunks. Phase 1 is
+# the parser only, and pulling in Cranelift here would slow every test cycle for
+# a dependency nothing yet calls.
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
