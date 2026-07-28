@@ -82,7 +82,7 @@
 
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-val accent">17th</div><div class="stat-label">fusevm frontend</div></div>
-        <div class="stat-card"><div class="stat-val">47.7%</div><div class="stat-label">official suite, attempted cases</div></div>
+        <div class="stat-card"><div class="stat-val">42.6%</div><div class="stat-label">official suite, attempted cases</div></div>
         <div class="stat-card"><div class="stat-val">9.0.4</div><div class="stat-label">reference tclsh</div></div>
         <div class="stat-card"><div class="stat-val">MIT</div><div class="stat-label">license · free / OSS</div></div>
       </div>
@@ -138,7 +138,9 @@
             <tr><td>the binary, the REPL, <code>eval</code></td><td>Implemented</td><td>A file, <code>-c script</code>, or stdin — a REPL when stdin is a terminal. An <code>Interp</code> holds the variables between evaluations over a source-keyed chunk cache; <code>eval</code> compiles a script built at run time against that state.</td></tr>
             <tr><td>math functions, <code>regexp</code>, channel IO</td><td>Refused</td><td>A math call parses into an <code>Expr::Call</code> the compiler refuses; an unknown command is a compile-time error.</td></tr>
             <tr><td>JIT / AOT</td><td>Linked and measured</td><td>The <code>jit</code>, <code>jit-disk-cache</code> and <code>aot</code> features are on; <code>--aot</code> reaches native code, and <code>--tiers</code> reports that the tracing tier does too for a loop inside a <code>proc</code> but not for one at a script's top level. Arbitrary-precision integers are still refused, so an <code>i64</code> overflow is an error on every path.</td></tr>
-            <tr><td>LSP / DAP / completion / man / FFI</td><td>Planned</td><td>The toolchain-parity bar the sixteen sibling frontends already meet. <code>--disasm</code> exists.</td></tr>
+            <tr><td>LSP / DAP</td><td>Implemented</td><td><code>--lsp</code> answers diagnostics, completion, hover, signature help and document symbols over stdio, from the compiler's own tables and the cursor module the REPL completes with (<code>src/lsp.rs</code>). <code>--dap</code> gives breakpoints, stepping, stack frame and variables by stopping on markers <code>compiler::compile_debug</code> emits and an ordinary compilation does not (<code>src/dap.rs</code>). Both are tested by speaking the real protocol to the real process.</td></tr>
+            <tr><td>inline Rust — <code>rust { ... }</code></td><td>Implemented</td><td>Rewritten before parsing into <code>__rust_compile</code>, compiled and <code>dlopen</code>ed through <code>fusevm::ffi</code>, cached by the SHA-256 of the block's body, and registered as the block is <em>lowered</em>, so its exports are known command names on the next line (<code>src/rust_ffi.rs</code>).</td></tr>
+            <tr><td>dumps / completion / man pages</td><td>Implemented</td><td><code>--disasm</code>, <code>--dump-tokens</code> and <code>--dump-ast</code>; the zsh completion <code>completions/_tclrs</code>; <code>tclrs(1)</code> and the all-in-one <code>tclrsall(1)</code>; and <code>reference.html</code>, generated from the compiler's tables by <code>cargo run --bin gen-docs</code>.</td></tr>
           </tbody>
         </table>
       </section>
@@ -168,11 +170,15 @@
 
       <section class="tutorial-section">
         <h2>Dependency posture</h2>
-        <p>Dependencies are kept foundational and durable — the goal is a crate that still builds cleanly years from now. The direct dependency list is one entry:</p>
+        <p>Dependencies are kept foundational and durable — the goal is a crate that still builds cleanly years from now. The language itself has one: everything the parser, the compiler and the runtime need is fusevm. The rest arrived with the tooling, and a Cargo <code>[[bin]]</code> shares its package's dependency list, so the two that serve only the terminal are declared here too.</p>
         <table class="file-table">
-          <thead><tr><th>Crate</th><th>Role</th></tr></thead>
+          <thead><tr><th>Crate</th><th>Role</th><th>Reached by</th></tr></thead>
           <tbody>
-            <tr><td>fusevm</td><td>Language-agnostic bytecode VM, 0.14.20, with <code>jit</code>, <code>jit-disk-cache</code> and <code>aot</code></td></tr>
+            <tr><td>fusevm</td><td>Language-agnostic bytecode VM, 0.14.20, with <code>jit</code>, <code>jit-disk-cache</code>, <code>aot</code> and <code>ffi</code></td><td>the library</td></tr>
+            <tr><td>lsp-server, lsp-types</td><td>The framing and the schema of <code>--lsp</code>, so a capability this crate does not answer is a compile error rather than a message an editor silently drops</td><td>the library (<code>src/lsp.rs</code>)</td></tr>
+            <tr><td>serde, serde_json</td><td>The wire format under both editor servers</td><td>the library (<code>src/lsp.rs</code>, <code>src/dap.rs</code>)</td></tr>
+            <tr><td>libc</td><td>Capturing a debugged script's stdout, and <code>TIOCGWINSZ</code> plus local time for the prompt's status bar</td><td>the library and the binary</td></tr>
+            <tr><td>reedline, nu-ansi-term</td><td>The REPL's line editor — history, completion menu, emacs/vi keymaps, multi-line editing — and the colors of its status bar</td><td>the binary only</td></tr>
           </tbody>
         </table>
         <p>The test suites add nothing: they shell out to the system <code>tclsh</code> through <code>std::process::Command</code> rather than pulling a harness crate.</p>

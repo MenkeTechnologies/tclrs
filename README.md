@@ -975,8 +975,8 @@ The differential suites test what tclrs claims to do. `conformance/` measures th
 opposite: how much of *real Tcl* it does, by running the Tcl project's own test
 suite against it.
 
-**1404 of 2941 attempted cases pass — 47.7%.** Over every case the suite
-contains, including the ones that cannot be run here, that is 1404 of 69424.
+**2158 of 5066 attempted cases pass — 42.6%.** Over every case the suite
+contains, including the ones that cannot be run here, that is 2158 of 69424.
 [`conformance/REPORT.md`](conformance/REPORT.md) has the breakdown behind the
 number: attempted, passed, failed and skipped per suite file, why each skipped
 case could not be run, and the failure causes ranked.
@@ -997,10 +997,14 @@ byte for byte; the suite's own `-result` values are not consulted, because
 tclsh is the specification and comparing against what it actually does is
 stricter than comparing against what the suite says it should.
 
-The report checked in was produced before `proc`, the string ensemble,
-coroutines and `eval` landed, so it understates the current tree — its
-skip table still attributes thousands of cases to a missing `proc`. Rerun it
-before quoting the number as current.
+The share fell as the tree grew, and that is the rule working rather than a
+regression. The previous report — taken before `proc`, the `string` ensemble,
+coroutines and `eval` landed — passed 1404 of 2941. Those commands existing is
+what moved 2,125 cases out of the skip column and into the attempted one, and a
+case that was previously skipped for a missing `proc` is now attempted against
+everything *else* it uses. Passes went 1404 → 2158; the denominator went 2941 →
+5066 faster. A number that only ever rises is a number measuring the wrong
+thing.
 
 ---
 
