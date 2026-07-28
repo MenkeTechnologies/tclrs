@@ -30,6 +30,26 @@
 # procedure), so `scripts/fuzz_parity.sh --self-check` can run it under tclrs
 # too and compare the corpora — a generator that only ran under tclsh could not
 # be checked that way.
+#
+# What it reaches, and the three things it deliberately does not:
+#
+# * **Built, not listed.** `format`'s specifier matrix (`fmt_spec`: flags ×
+#   width × precision × conversion, `*` included), the `lsearch` and `lsort`
+#   option matrices (`lsearch_opts`, `lsort_opts`), and every `string`
+#   subcommand in every argument shape its synopsis allows. A hand-written list
+#   of two dozen spellings never reaches a combination.
+# * **Stateful, not only nested.** Coroutines are resumed from a counted loop,
+#   from inside a procedure and inside a `catch`, and suspend inside a loop and
+#   inside an open `catch` region; procedures call procedures along a call graph
+#   that cannot cycle; `eval` nests several levels; a `catch` wraps a counted
+#   loop that calls into all of it.
+# * **Refusals are generated, not avoided** — at `REFUSAL_RATE`. See the comment
+#   there.
+#
+# Out of reach, and correctly so: `{*}` expansion, `regexp`, `upvar`,
+# `namespace` and file I/O are outside tclrs's command set entirely, so
+# generating them would produce nothing but `invalid command name` and would say
+# nothing about parity. They belong here on the day the commands exist.
 
 # ── PRNG ────────────────────────────────────────────────────────────────────
 
@@ -68,6 +88,24 @@ proc rchance {pct} {
 # quoting, leading zeros and `1_0` test the integer grammar, the i64 bounds test
 # overflow reporting, and the non-ASCII text tests character-versus-byte
 # indexing.
+#
+# The last four rows are the classes that have already caught a bug and are kept
+# together so a value that stops appearing is visible as a deleted row:
+#
+# * the integer grammar's own corner cases — `1_0`, `0d9`, `0x_10`, `-0`, a `_`
+#   in every radix — which `expr::parse_number` and `runtime::parse_number` read
+#   with two different grammars (BUGS.md, "expr's *literal* number grammar");
+# * `nan` / `inf` and their spellings, which are a bareword to the integer parser
+#   and a value to the double parser;
+# * values that straddle the i64 ends from both sides, one below, one at, one
+#   above, so an off-by-one in the boundary test is reachable rather than only
+#   the far-outside case;
+# * multi-byte text with the non-ASCII character *at* a string boundary — first
+#   character, last character, alone — which is where a byte index passes for a
+#   character index everywhere except at the edge, plus astral-plane text that is
+#   two UTF-16 units and one character;
+# * list-shaped strings, so a scalar position receives something whose list
+#   reading has a different length than its string reading.
 
 set POOL_PLAIN [list \
     a b abc xyz hello A-B c1 "" 0 1 2 5 42 -1 -7 255 1000]
@@ -82,7 +120,15 @@ set POOL_AWKWARD [list \
     1e300 1.0e-7 0.1 1.5 -0.0 3.0 2.5e-3 \
     "héllo" "日本語" "αβγ" "ÜñîçøðÉ" "naïve café" \
     "line\nbreak" "tab\there" \
-    "a b c" "1 2 3" "\{a b\} c" "end" "end-1" "*" "a*b" "?" "\[ab\]"]
+    "a b c" "1 2 3" "\{a b\} c" "end" "end-1" "*" "a*b" "?" "\[ab\]" \
+    0x_10 0b_101 0o_17 1_0_0 0d_9 0d09 -0d9 +0 -0x10 08 09 0_1 \
+    nan inf -inf Inf NaN infinity -nan 1e999 -1e999 \
+    9223372036854775806 -9223372036854775807 -9223372036854775809 \
+    18446744073709551615 0x7fffffffffffffff 0x8000000000000000 \
+    4611686018427387904 -4611686018427387905 \
+    "é" "éa" "aé" "ée" "  é  " "日" "日a" "a日" "ñ" "Ω" "øx" "xø" \
+    "😀" "a😀" "😀a" "😀😀" "x😀y" "𝄞" "a𝄞" \
+    "a b" "\{a\} b" "a \{b c\}" "\{\}" "\{\} \{\}" " a" "a " "a  b"]
 
 # Integers that stay inside i64 under the arithmetic the generator emits.
 set POOL_INT [list 0 1 2 3 4 5 7 8 10 16 42 -1 -2 -7 100 255 1000 65535 -65536 \
@@ -94,24 +140,78 @@ set POOL_INT [list 0 1 2 3 4 5 7 8 10 16 42 -1 -2 -7 100 255 1000 65535 -65536 \
 set POOL_BIG [list 9223372036854775807 -9223372036854775808 \
     9223372036854775808 99999999999999999999]
 
-set POOL_FLOAT [list 0.0 -0.0 1.0 0.5 -1.5 3.14 0.1 1e300 1.0e-7 2.5e-3 1e10]
+# `nan` and `inf` are floating-point *literals* to `expr(n)` — `expr {inf > 1}`
+# is 1 — and a bareword to an integer parser, so they belong with the floats
+# rather than with the awkward strings, and they reach `format`'s conversions
+# through `fmt_arg` from here as well.
+set POOL_FLOAT [list 0.0 -0.0 1.0 0.5 -1.5 3.14 0.1 1e300 1.0e-7 2.5e-3 1e10 \
+    nan inf -inf Inf NaN]
 
 # Small counts: everything that could allocate or iterate is drawn from here.
 set POOL_SMALL [list 0 1 2 3 4]
 
-set POOL_INDEX [list 0 1 2 3 -1 end end-1 end+1 5 0x2 1_0]
+# Shift counts. `<<` and `>>` are the one place where the right operand's *sign*
+# and its size against the word width both decide the answer: `expr(n)` makes a
+# negative count an error, and a left shift past 63 bits is where tclsh promotes
+# to a bignum. A count from `POOL_SMALL`, which is what this used to be, reaches
+# neither. Bounded at 1000 because tclsh computes the bignum for real and the
+# digits are the output being compared.
+set POOL_SHIFT [list 0 1 2 3 4 7 8 15 16 31 32 62 63 64 65 127 1000 \
+    -1 -2 -8 -64]
 
-set POOL_GLOB [list * a* *b "a?c" "\[ab\]*" "" x "a*b*c"]
+# Index forms. `Tcl_GetIntForIndex` takes `end`, `end±n` and `m±n`, the integer
+# grammar underneath it takes every radix and `_`, and an index past the i64 ends
+# is where tclsh's arbitrary-precision arithmetic and tclrs's saturation part
+# company (BUGS.md, "Indices outside i64") — so all three are drawn here rather
+# than only the small in-range ones.
+set POOL_INDEX [list 0 1 2 3 -1 end end-1 end+1 5 0x2 1_0 \
+    end-0 end+0 end--1 end-end -0 +1 0x_2 0d3 007 1_0_0 \
+    9223372036854775807 -9223372036854775808 9223372036854775808 \
+    end-9223372036854775807 end+9223372036854775807 \
+    1.5 1e2 a end-a "" "end "]
 
-# Only the classes tclrs implements: the rest need Unicode category tables and
-# are refused (`cmd_string.rs:372`), which would classify the whole case as a
-# skip rather than compare it. Non-ASCII text still reaches these classes from
-# the value pool, and that refusal is a skip the report counts.
-set POOL_STRCLASS [list alnum alpha boolean control digit double false \
-    integer lower true upper wordchar]
+set POOL_GLOB [list * a* *b "a?c" "\[ab\]*" "" x "a*b*c" \
+    "\\*" "\[a-c\]" "\[!ab\]" "?" "**" "é*" "*😀*" "\[\]" "a\[b"]
 
+# `string is` classes. The first list is what tclrs answers; the second is what
+# it recognises and then refuses, because the class needs the Unicode category
+# tables that are not built (`src/cmd_string.rs`). The refused ones are drawn on
+# purpose and at a low rate: the case becomes a SKIP with the refusal's own
+# wording, which is the coverage that turns into a comparison on the day the
+# tables land. Non-ASCII subjects reach the answered classes from the value pool
+# and are refused there for the same reason, which is a skip the report counts.
+set POOL_STRCLASS [list alnum alpha ascii boolean control digit double entier \
+    false integer list lower space true upper wideinteger wordchar xdigit]
+
+set POOL_STRCLASS_REFUSED [list graph print punct dict]
+
+# `format`'s specifier matrix is built rather than listed — see `fmt_spec`. This
+# pool is the hand-written spellings that a random build does not reach: the
+# literal `%%`, the XPG positional form, and the length modifiers.
 set POOL_FMT [list %s %d %i %u %o %x %X %b %c %e %E %f %g %G \
-    %5d %-8s %+d %08.3f %.3s %5.2f %#x %#o %lld %hd]
+    %5d %-8s %+d %08.3f %.3s %5.2f %#x %#o %lld %hd \
+    %% %ld %lu %llx %hhd %j %q %a %A %p %n %S %v \
+    "%1\$s" "%2\$s%1\$s" "%s%%" "%*d" "%.*f" "%-*.*s" "% d" "%+.0f" \
+    "%#b" "%#.4o" "%08s" "%-0d" "%.0d" "%.20f" "%40s" "%-40s"]
+
+# `format`'s flag / width / precision / conversion axes, built into a specifier
+# by `fmt_spec` so the combinations are reached rather than the two dozen
+# spellings a hand-written list can hold.
+#
+# Width and precision are bounded at two digits on purpose, and the bound is
+# printed in the run's report. `format`'s unbounded field width and its
+# precision above 65535 are two *already recorded* crashes (BUGS.md, "Crashes
+# reachable from a script": `format %9223372036854775807d 1` aborts the process
+# on the allocation, `format %.65536f 1.0` panics), each pinned by its own test.
+# Drawing them here would spend most of a run re-finding the same two aborts —
+# an abort takes the process down rather than reporting — instead of reaching the
+# combinations that are not yet known. This bounds a value pool, exactly as the
+# loop trip count is bounded; it changes no classification, and a case that does
+# reach either crash from any other route is still CRITICAL.
+set POOL_FMT_FLAGS [list "" - + " " 0 # -+ 0# "-0" "+ " "#0-"]
+set POOL_FMT_WIDTH [list "" 0 1 2 5 8 12 40 *]
+set POOL_FMT_PREC [list "" .0 .1 .2 .3 .8 .17 .40 .*]
+set POOL_FMT_CONV [list d i u o x X b c s e E f g G]
 
 # ── emitting a literal ──────────────────────────────────────────────────────
 
@@ -177,6 +277,28 @@ proc value {} {
 # visible in the report rather than quietly covering nothing.
 
 set UNSET_RATE 4
+
+# How often a statement is drawn from a shape tclrs *recognises and refuses* —
+# `array` on a procedure local, `eval` inside a procedure body, `lsort -command`,
+# `string is punct`, `string wordstart`, `dict unset`, and the rest of the
+# "recognised and then refused" table in README [0x05].
+#
+# These are generated on purpose: a refusal is counted under its own wording as a
+# SKIP, and a shape that is generated now becomes a comparison the day the
+# refusal goes, where a shape the generator routes around is a hole nobody can
+# see. The rate is low because every one of these refusals is decided while
+# *compiling*, so one of them anywhere in a case takes the whole case out of
+# comparison. Measured on 200 cases at depth 4, seed 1: with these shapes drawn
+# at roughly one in two the run was 88 skips and 22 passes; at 8 it is 29 skips
+# and 48 passes, and every one of the wordings still reaches the report. It is
+# one number, so the trade between reach and comparison is in one place and shows
+# up as the size of the SKIP bucket in every run rather than as a hidden constant.
+set REFUSAL_RATE 8
+
+proc refused {} {
+    global REFUSAL_RATE
+    return [rchance $REFUSAL_RATE]
+}
 
 proc reset_case {} {
     global LINES VARS NVARS LVARS ARRS DICTS PROCS NEXT NESTED INPROC LOCALS
@@ -315,7 +437,7 @@ proc operand {depth} {
 # An `expr` body, without the surrounding braces.
 proc expr_body {depth} {
     global OPS_ARITH OPS_CMP OPS_STR OPS_BIT OPS_LOGIC OPS_MEMBER
-    global POOL_SMALL POOL_AWKWARD
+    global POOL_SMALL POOL_AWKWARD POOL_SHIFT
     if {$depth <= 0} {
         return [operand 0]
     }
@@ -331,7 +453,14 @@ proc expr_body {depth} {
         return "[operand $d] [rpick $OPS_STR] [operand $d]"
     }
     if {$r < 66} {
-        return "[operand $d] [rpick $OPS_BIT] [rpick $POOL_SMALL]"
+        # A shift's right operand comes from the shift pool — negative counts
+        # and counts past the word width — and the other bitwise operators keep
+        # the small one.
+        set op [rpick $OPS_BIT]
+        if {$op eq "<<" || $op eq ">>"} {
+            return "[operand $d] $op [rpick $POOL_SHIFT]"
+        }
+        return "[operand $d] $op [rpick $POOL_SMALL]"
     }
     if {$r < 74} {
         return "[operand $d] [rpick $OPS_LOGIC] [operand $d]"
@@ -507,7 +636,7 @@ proc inner_body {depth ctx} {
 
 # A statement with no nested body.
 proc leaf_stmt {ctx} {
-    global VARS NVARS LVARS ARRS DICTS PROCS INPROC COUNTERS
+    global VARS NVARS LVARS ARRS DICTS PROCS INPROC COUNTERS LOCALS
     global POOL_INT POOL_SMALL POOL_INDEX POOL_FMT
     set r [rint 100]
     if {$r < 12} {
@@ -548,22 +677,33 @@ proc leaf_stmt {ctx} {
         return [string_stmt]
     }
     if {$r < 64} {
-        # tclrs refuses `array` and `dict` on a procedure-local variable
-        # (README [0x05]), so inside a body those would classify the case as a
-        # skip rather than compare it.
+        # Inside a procedure body an `array` command names a frame slot, which
+        # tclrs refuses (`"array set" of the procedure-local variable "a" is not
+        # supported yet`). The statement is generated anyway, at a rate low
+        # enough not to turn most procedure-bearing cases into skips: the case
+        # lands in SKIP under that wording, which is the coverage that becomes a
+        # comparison the day the refusal goes. `global` first is the spelling
+        # that already works, and it is drawn alongside so the array path
+        # through a procedure is measured too.
         if {$INPROC} {
+            if {[refused]} {
+                return [local_array_stmt]
+            }
             return "puts [word 1]"
         }
         return [array_stmt]
     }
     if {$r < 70} {
+        # `dict` on a procedure local is *not* refused — a dict is an ordinary
+        # value in a slot — so this is a comparison rather than a skip, and it
+        # was being generated around for no reason.
         if {$INPROC} {
-            return "puts [word 1]"
+            return [local_dict_stmt]
         }
         return [dict_stmt]
     }
     if {$r < 74} {
-        return "puts \[format [Q [rpick $POOL_FMT]] [word 1]\]"
+        return [fmt_stmt]
     }
     if {$r < 78} {
         if {[llength $PROCS] == 0} {
@@ -572,27 +712,39 @@ proc leaf_stmt {ctx} {
         return [call_stmt]
     }
     if {$r < 82} {
-        if {[has $ctx proc] || [has $ctx catch]} {
+        # `eval` of a script that is a value, which is the path the compiler
+        # cannot see through. Inside a procedure it is refused outright
+        # (`"eval" inside a procedure is not supported: …`), and it is generated
+        # there anyway so the refusal is a counted skip rather than a hole; a
+        # `catch` around it is a comparison in both engines, so that context is
+        # no longer routed around either.
+        if {$INPROC && ![refused]} {
             return "puts [word 1]"
         }
-        # `eval` of a script that is a value, which is the path the compiler
-        # cannot see through.
-        return "eval [Q "puts [rpick [list a b 1]]"]"
+        return [eval_stmt]
     }
     if {$r < 86} {
-        # Inside a procedure the top-level names are not in scope, and tclrs
-        # refuses `unset` of a procedure-local one (README [0x05]), so the
-        # statement only appears where it can name something real. A loop
-        # counter is never a candidate: unsetting one makes the next `incr`
-        # start again from zero, and the loop it counts would never end — the
-        # one way a generated program could fail to terminate.
+        # A loop counter is never a candidate: unsetting one makes the next
+        # `incr` start again from zero, and the loop it counts would never end —
+        # the one way a generated program could fail to terminate.
+        #
+        # Inside a procedure the top-level names are not in scope and `unset` of
+        # a frame slot is refused (`"unset" of the procedure-local variable "x"
+        # is not supported yet`); that spelling is generated too, so the refusal
+        # is counted.
         set targets [list]
         foreach cand $VARS {
             if {[lsearch -exact $COUNTERS $cand] < 0} {
                 lappend targets $cand
             }
         }
-        if {$INPROC || [llength $targets] == 0} {
+        if {$INPROC} {
+            if {[refused] && [llength $LOCALS] > 0} {
+                return "unset [rpick $LOCALS]"
+            }
+            return "puts [word 1]"
+        }
+        if {[llength $targets] == 0} {
             return "puts [word 1]"
         }
         set v [rpick $targets]
@@ -619,7 +771,14 @@ proc leaf_stmt {ctx} {
     # two messages.
     return [rpick [list "puts \{a" "puts \"a" "puts \[list a" "set" \
         "puts \$" "list \{a \{b\}" "puts a\}" "expr \{1 +\}" "incr" \
-        "puts \[expr \{1/0\}\]" "puts \[expr \{1 % 0\}\]"]]
+        "puts \[expr \{1/0\}\]" "puts \[expr \{1 % 0\}\]" \
+        "puts \[expr \{1 %% 2\}\]" "puts \[expr \{\}\]" "puts \[expr\]" \
+        "puts \{\$\}" "puts \[\]" "puts \$\{" "puts \$\{a" \
+        "puts \[expr \{0x\}\]" "puts \[expr \{1_\}\]" "puts \[expr \{0d\}\]" \
+        "puts \[expr \{nan == nan\}\]" "puts \[expr \{inf - inf\}\]" \
+        "puts \[expr \{2 ** 64\}\]" "puts \[expr \{-9223372036854775808\}\]" \
+        "puts \[string is \]" "puts \[lsort -bogus \{a b\}\]" \
+        "puts \[format\]" "puts \[format %\]" "puts \[string\]"]]
 }
 
 proc list_stmt {} {
@@ -656,17 +815,10 @@ proc list_stmt {} {
         return "puts \[lreplace $l [rpick $POOL_INDEX] [rpick $POOL_INDEX] [value]\]"
     }
     if {$r < 74} {
-        set opt [rpick [list "" -exact -glob -all -inline -not -integer -real \
-            -increasing -decreasing -start]]
-        if {$opt eq "-start"} {
-            return "puts \[lsearch -start [rpick $POOL_SMALL] $l [Q [rpick $POOL_GLOB]]\]"
-        }
-        return "puts \[lsearch $opt $l [Q [rpick $POOL_GLOB]]\]"
+        return "puts \[lsearch [lsearch_opts] $l [Q [rpick $POOL_GLOB]]\]"
     }
     if {$r < 82} {
-        set opt [rpick [list "" -ascii -integer -real -increasing -decreasing \
-            -unique -indices]]
-        return "puts \[lsort $opt $l\]"
+        return "puts \[lsort [lsort_opts] $l\]"
     }
     if {$r < 88} {
         return "puts \[join $l [Q [rpick [list , " " "" "--" "\n"]]]\]"
@@ -677,60 +829,218 @@ proc list_stmt {} {
     return "puts \[concat $l [value] [rlistvar]\]"
 }
 
+# ── the lsearch and lsort option matrices ───────────────────────────────────
+#
+# `lsearch(n)` and `lsort(n)` are almost entirely option surface, and a single
+# option drawn from a flat list — which is what this used to be — never reaches a
+# combination. Both build a run of one to three options instead, from the whole
+# documented set: the ones tclrs answers, and the ones it recognises through the
+# reference option parser and then refuses (`lsearch -regexp is not supported
+# yet`, `lsort -command is not supported yet`, README [0x05]). A refused option
+# makes the case a SKIP under that wording, which is the coverage that turns into
+# a comparison when the option lands.
+#
+# `-start`'s index comes from the small pool and never from `POOL_INDEX`: a
+# negative start against an empty list is a SIGSEGV in tclsh 9.0.4 (BUGS.md,
+# "Defects in the reference implementation"), and a case the reference cannot
+# survive has no behavior to compare against.
+
+# The options are split by whether tclrs answers them, and the refused ones are
+# drawn at `REFUSAL_RATE` — see the comment there. Every option in the manual is
+# in one list or the other, so the split is a rate, not a filter: nothing is
+# unreachable.
+set OPTS_LSEARCH_MODE [list -exact -glob]
+set OPTS_LSEARCH_TYPE [list -ascii -integer -real]
+set OPTS_LSEARCH_MOD [list -all -inline -not -increasing -decreasing --]
+set OPTS_LSEARCH_REFUSED [list -regexp -sorted -dictionary -nocase -bisect \
+    -subindices "-index 0" "-index 1" "-stride 2" "-stride 3"]
+
+proc lsearch_opts {} {
+    global OPTS_LSEARCH_MODE OPTS_LSEARCH_TYPE OPTS_LSEARCH_MOD
+    global OPTS_LSEARCH_REFUSED POOL_SMALL
+    set opts [list]
+    if {[refused]} {
+        lappend opts [rpick $OPTS_LSEARCH_REFUSED]
+    }
+    if {[rchance 55]} {
+        lappend opts [rpick $OPTS_LSEARCH_MODE]
+    }
+    if {[rchance 30]} {
+        lappend opts [rpick $OPTS_LSEARCH_TYPE]
+    }
+    if {[rchance 40]} {
+        lappend opts [rpick $OPTS_LSEARCH_MOD]
+    }
+    if {[rchance 20]} {
+        lappend opts [rpick $OPTS_LSEARCH_MOD]
+    }
+    if {[rchance 15]} {
+        # `-start`'s index is never negative: see the note above.
+        lappend opts "-start [rpick $POOL_SMALL]"
+    }
+    return [join $opts { }]
+}
+
+set OPTS_LSORT_ORDER [list -ascii -integer -real]
+set OPTS_LSORT_MOD [list -increasing -decreasing -unique -indices --]
+set OPTS_LSORT_REFUSED [list -dictionary -nocase "-index 0" "-index end" \
+    "-stride 2" "-stride 3" "-command cmp0" "-command cmp1"]
+
+proc lsort_opts {} {
+    global OPTS_LSORT_ORDER OPTS_LSORT_MOD OPTS_LSORT_REFUSED
+    set opts [list]
+    if {[refused]} {
+        lappend opts [rpick $OPTS_LSORT_REFUSED]
+    }
+    if {[rchance 50]} {
+        lappend opts [rpick $OPTS_LSORT_ORDER]
+    }
+    if {[rchance 45]} {
+        lappend opts [rpick $OPTS_LSORT_MOD]
+    }
+    if {[rchance 20]} {
+        lappend opts [rpick $OPTS_LSORT_MOD]
+    }
+    return [join $opts { }]
+}
+
+# ── the `string` ensemble ───────────────────────────────────────────────────
+#
+# Every subcommand `string(n)` documents, in every argument shape its synopsis
+# allows, including the optional arguments that a fixed spelling never reaches:
+# `-nocase` and `-length` on the comparisons, the start index of `first` and the
+# last index of `last`, the first/last range of the case conversions, `-strict`
+# and `-failindex` on `is`, and the two subcommands tclrs recognises and refuses
+# (`wordstart`, `wordend`). A refused option or subcommand makes the case a SKIP
+# under the refusal's own wording, and that is the point: the shape is generated
+# now, so the day the option lands the corpus already exercises it.
+
+# `-nocase` is recognised and refused by tclrs (a case-folding table that matches
+# Tcl's is what it waits on, README [0x05]), so it is drawn at a low rate.
+proc nocase {} {
+    if {[refused]} {
+        return " -nocase"
+    }
+    return ""
+}
+
 proc string_stmt {} {
-    global POOL_INDEX POOL_GLOB POOL_STRCLASS POOL_SMALL
+    global POOL_INDEX POOL_GLOB POOL_STRCLASS POOL_STRCLASS_REFUSED POOL_SMALL
     set s [rint 100]
     set a [value]
     set b [value]
-    if {$s < 8} {
+    if {$s < 6} {
         return "puts \[string length $a\]"
     }
-    if {$s < 14} {
+    if {$s < 11} {
         return "puts \[string index $a [rpick $POOL_INDEX]\]"
     }
-    if {$s < 22} {
+    if {$s < 17} {
         return "puts \[string range $a [rpick $POOL_INDEX] [rpick $POOL_INDEX]\]"
     }
-    if {$s < 28} {
-        return "puts \[string compare $a $b\]"
+    if {$s < 24} {
+        set opt [nocase]
+        if {[rchance 25]} {
+            append opt " -length [rpick $POOL_SMALL]"
+        }
+        return "puts \[string [rpick [list compare equal]]$opt $a $b\]"
     }
-    if {$s < 34} {
-        return "puts \[string equal $a $b\]"
+    if {$s < 31} {
+        # `first` takes a start index and `last` takes a last index; both are the
+        # optional third argument the fixed two-argument spelling never reached.
+        set sub [rpick [list first last]]
+        if {[rchance 40]} {
+            return "puts \[string $sub $a $b [rpick $POOL_INDEX]\]"
+        }
+        return "puts \[string $sub $a $b\]"
     }
-    if {$s < 40} {
-        return "puts \[string first $a $b\]"
+    if {$s < 37} {
+        return "puts \[string match[nocase] [Q [rpick $POOL_GLOB]] $a\]"
     }
-    if {$s < 44} {
-        return "puts \[string last $a $b\]"
+    if {$s < 43} {
+        return "puts \[string map[nocase] [Q [rpick [list "a b" "a b c d" "" \
+            "ab X" "é E" "a \{b c\}" "a a" "aa b a c"]]] $a\]"
     }
-    if {$s < 50} {
-        return "puts \[string match [Q [rpick $POOL_GLOB]] $a\]"
-    }
-    if {$s < 56} {
-        return "puts \[string map [Q [rpick [list "a b" "a b c d" "" "ab X"]]] $a\]"
-    }
-    if {$s < 62} {
+    if {$s < 47} {
         return "puts \[string repeat $a [rpick $POOL_SMALL]\]"
     }
-    if {$s < 68} {
+    if {$s < 53} {
+        # `replace`'s replacement is optional: without it the range is deleted.
+        if {[rchance 30]} {
+            return "puts \[string replace $a [rpick $POOL_INDEX] [rpick $POOL_INDEX]\]"
+        }
         return "puts \[string replace $a [rpick $POOL_INDEX] [rpick $POOL_INDEX] $b\]"
     }
-    if {$s < 72} {
+    if {$s < 56} {
         return "puts \[string reverse $a\]"
     }
-    if {$s < 78} {
-        return "puts \[string [rpick [list tolower toupper totitle]] $a\]"
+    if {$s < 64} {
+        # The case conversions take an optional first and last index.
+        set sub [rpick [list tolower toupper totitle]]
+        set r [rint 100]
+        if {$r < 20} {
+            return "puts \[string $sub $a [rpick $POOL_INDEX] [rpick $POOL_INDEX]\]"
+        }
+        if {$r < 32} {
+            return "puts \[string $sub $a [rpick $POOL_INDEX]\]"
+        }
+        return "puts \[string $sub $a\]"
     }
-    if {$s < 84} {
-        return "puts \[string [rpick [list trim trimleft trimright]] $a [Q [rpick [list " " ab "" "\{"]]]\]"
+    if {$s < 71} {
+        set sub [rpick [list trim trimleft trimright]]
+        if {[rchance 25]} {
+            return "puts \[string $sub $a\]"
+        }
+        return "puts \[string $sub $a [Q [rpick [list " " ab "" "\{" "é" "abc" \
+            " \t\n" "0" "\\"]]]\]"
     }
-    if {$s < 88} {
+    if {$s < 75} {
         return "puts \[string insert $a [rpick $POOL_INDEX] $b\]"
     }
-    if {$s < 94} {
-        return "puts \[string is [rpick $POOL_STRCLASS] $a\]"
+    if {$s < 87} {
+        return [string_is_stmt $a]
     }
-    return "puts \[string cat $a $b [value]\]"
+    if {$s < 91} {
+        # Recognised and refused: `string wordstart` / `wordend`.
+        if {[refused]} {
+            return "puts \[string [rpick [list wordstart wordend]] $a [rpick $POOL_INDEX]\]"
+        }
+        return "puts \[string range $a [rpick $POOL_INDEX] [rpick $POOL_INDEX]\]"
+    }
+    if {$s < 95} {
+        # `cat` takes any number of arguments, none included.
+        set n [rint 5]
+        set args [list]
+        for {set i 0} {$i < $n} {incr i} {
+            lappend args [value]
+        }
+        return "puts \[string cat [join $args { }]\]"
+    }
+    # A subcommand that is not one, so the ensemble's own error is compared.
+    return "puts \[string [rpick [list bogus tolowerx is1 leng compar \
+        "" reverses]] $a\]"
+}
+
+# `string is CLASS ?-strict? ?-failindex VAR? STRING`.
+#
+# The class comes from the answered set most of the time and from the refused set
+# the rest — the four classes that need the Unicode category tables. Non-ASCII
+# subjects are refused by the *answered* classes too, which is the other half of
+# the same gap and reaches it from the value pool rather than the class pool.
+proc string_is_stmt {a} {
+    global POOL_STRCLASS POOL_STRCLASS_REFUSED
+    set class [rpick $POOL_STRCLASS]
+    if {[rchance 15]} {
+        set class [rpick $POOL_STRCLASS_REFUSED]
+    }
+    set opts ""
+    if {[rchance 25]} {
+        append opts " -strict"
+    }
+    if {[refused]} {
+        append opts " -failindex [fresh fi]"
+    }
+    return "puts \[string is $class$opts $a\]"
 }
 
 proc array_stmt {} {
@@ -807,6 +1117,191 @@ proc dict_stmt {} {
     return "puts \[dict get \[dict merge \$$d\] [value]\]"
 }
 
+# ── inside a procedure body ─────────────────────────────────────────────────
+#
+# These three are the shapes the generator used to route around, because each is
+# an unconditional refusal in tclrs and a refusal takes the whole case into SKIP
+# rather than into a comparison. They are generated now: a refusal counted under
+# its own wording is coverage that becomes a comparison the day the refusal goes,
+# where a statement that was never generated is a hole nobody can see.
+
+# An `array` command on a procedure-local variable. `"array set" of the
+# procedure-local variable "a" is not supported yet` — an array lives in the
+# global table keyed by a name index and a local lives in a frame slot
+# (BUGS.md). `global` first is the spelling that *does* work, and it is drawn
+# alongside so the array path through a procedure is measured rather than only
+# refused.
+proc local_array_stmt {} {
+    global POOL_GLOB
+    set a [fresh la]
+    set r [rint 100]
+    if {$r < 22} {
+        # The working spelling: the name is a global, said so by `global`.
+        return "global $a; array set $a [Q [rpick [list "x 1" "a 1 b 2" ""]]]; puts \[lsort \[array get $a\]\]"
+    }
+    if {$r < 40} {
+        return "array set $a [Q [rpick [list "x 1 y 2" "k v" ""]]]"
+    }
+    if {$r < 55} {
+        return "set ${a}([rpick [list x y 0 \{\}]]) [value]"
+    }
+    if {$r < 68} {
+        return "puts \[array exists $a\]"
+    }
+    if {$r < 80} {
+        return "puts \[array size $a\]"
+    }
+    if {$r < 90} {
+        return "puts \[lsort \[array names $a [Q [rpick $POOL_GLOB]]\]\]"
+    }
+    return "array unset $a [Q [rpick $POOL_GLOB]]"
+}
+
+# A `dict` command on a procedure-local variable. This one is *not* refused — a
+# dict is an ordinary value and a local is a slot that holds one — so it is a
+# comparison, and the generator was routing around it for no reason. The
+# subcommands outside the implemented set (`dict unset`, `dict for`, `dict
+# append`, …) are drawn too and are refused by name.
+proc local_dict_stmt {} {
+    set d [fresh ld]
+    set r [rint 100]
+    if {$r < 26} {
+        return "set $d \[dict create [value] [value] [value] [value]\]"
+    }
+    if {$r < 34} {
+        return "set $d \[dict create [value] [value]\]; dict set $d [value] [value]; puts \[dict size \$$d\]"
+    }
+    if {$r < 44} {
+        return "set $d \[dict create a 1 b 2\]; puts \[dict get \$$d [value]\]"
+    }
+    if {$r < 54} {
+        return "set $d \[dict create a 1 b 2\]; puts \[dict keys \$$d\]"
+    }
+    if {$r < 62} {
+        return "set $d \[dict create a 1 b 2\]; puts \[dict values \$$d\]"
+    }
+    if {$r < 70} {
+        return "set $d \[dict create a 1 b 2\]; puts \[dict exists \$$d [value]\]"
+    }
+    if {$r < 78} {
+        return "set $d \[dict create a 1 b 2\]; puts \[dict remove \$$d [value]\]"
+    }
+    if {$r < 86} {
+        return "set $d \[dict create a 1\]; puts \[dict merge \$$d \[dict create [value] [value]\]\]"
+    }
+    # Recognised and refused: a subcommand outside the implemented set.
+    if {[refused]} {
+        return "set $d \[dict create a 1 b 2\]; dict [rpick [list unset append \
+            incr lappend replace update filter for with getwithdefault]] $d [value]"
+    }
+    return "set $d \[dict create a 1 b 2\]; puts \[dict get \[dict merge \$$d\] [value]\]"
+}
+
+# `eval`, of a script that is a value — the path the compiler cannot see
+# through. Nested to several levels on purpose: each level is a separate chunk
+# compiled at run time, and the one that fails has to report through all of them.
+# Inside a procedure body it is refused outright (`"eval" inside a procedure is
+# not supported: the script it builds cannot reach the procedure's local
+# variables`), and it is generated there so that refusal is counted.
+proc eval_stmt {} {
+    set inner [rpick [list "puts a" "puts b" "puts 1" "set ev [value]" \
+        "puts \[string length [value]\]" "error [value]" \
+        "puts \[expr \{1 + 1\}\]" "puts \[llength [Q "a b c"]\]"]]
+    set levels [expr {1 + [rint 3]}]
+    set text $inner
+    for {set i 0} {$i < $levels} {incr i} {
+        set text "eval [Q $text]"
+    }
+    if {[rchance 25]} {
+        # Built rather than written: `eval` over a word the compiler cannot read
+        # at all.
+        set m [fresh m]
+        return "catch \{$text\} $m; puts m:\$$m"
+    }
+    return $text
+}
+
+# ── `format` ────────────────────────────────────────────────────────────────
+
+# One specifier built from the flag / width / precision / conversion axes, as a
+# two-element list: the specifier itself, and how many arguments it consumes —
+# a `*` width or a `.*` precision takes one of its own, ahead of the value.
+proc fmt_spec {} {
+    global POOL_FMT_FLAGS POOL_FMT_WIDTH POOL_FMT_PREC POOL_FMT_CONV
+    set flags [rpick $POOL_FMT_FLAGS]
+    set width [rpick $POOL_FMT_WIDTH]
+    set prec [rpick $POOL_FMT_PREC]
+    set conv [rpick $POOL_FMT_CONV]
+    set n 1
+    if {$width eq "*"} {
+        incr n
+    }
+    if {$prec eq ".*"} {
+        incr n
+    }
+    return [list "%$flags$width$prec$conv" $n]
+}
+
+# The value a specifier is given. Every conversion is tried against every kind of
+# value, not only against one that suits it: `%d` of a float, `%f` of a list,
+# `%c` of a huge integer and `%x` of a negative one are where the two engines'
+# conversions have to agree on an error as much as on a result.
+proc fmt_arg {} {
+    global POOL_INT POOL_FLOAT
+    set r [rint 100]
+    if {$r < 28} {
+        return [rpick $POOL_INT]
+    }
+    if {$r < 46} {
+        return [rpick $POOL_FLOAT]
+    }
+    if {$r < 54} {
+        return [rnumvar]
+    }
+    return [value]
+}
+
+# The `*` argument. Bounded with the width and precision pools — see the comment
+# there for why, and the run's report prints the bound.
+proc fmt_star {} {
+    return [rpick [list 0 1 2 5 8 12 40 -1 -8]]
+}
+
+proc fmt_stmt {} {
+    global POOL_FMT
+    if {[rchance 32]} {
+        # A hand-written spelling, given a count of arguments that is often not
+        # the count it wants, so "not enough arguments" and a trailing unused one
+        # are both reached.
+        set n [rint 4]
+        set args [list]
+        for {set i 0} {$i < $n} {incr i} {
+            lappend args [fmt_arg]
+        }
+        return "puts \[format [Q [rpick $POOL_FMT]] [join $args { }]\]"
+    }
+    set text ""
+    set args [list]
+    set fields [expr {1 + [rint 3]}]
+    for {set f 0} {$f < $fields} {incr f} {
+        set spec [fmt_spec]
+        if {$f > 0} {
+            append text [rpick [list " " "" - :]]
+        }
+        append text [lindex $spec 0]
+        set n [lindex $spec 1]
+        for {set i 1} {$i < $n} {incr i} {
+            lappend args [fmt_star]
+        }
+        lappend args [fmt_arg]
+    }
+    if {[rchance 12]} {
+        # One argument short of what the specifiers ask for.
+        set args [lrange $args 0 end-1]
+    }
+    return "puts \[format [Q $text] [join $args { }]\]"
+}
+
 # A call of a procedure the case defined, with an argument count drawn around
 # the signature so both under- and over-supply are exercised.
 proc call_stmt {} {
@@ -875,7 +1370,17 @@ proc gen_proc {depth} {
     # Inside the body only these names are in scope.
     set INPROC 1
     set LOCALS $locals
-    lappend stmts [stmt [expr {$depth - 1}] [list proc]]
+    # A procedure that calls one the case defined earlier. The call graph stays
+    # acyclic because this procedure is appended to `PROCS` only *after* its body
+    # is generated, so it can never call itself and no cycle can close — which is
+    # what bounds the depth of a generated call chain.
+    if {[llength $PROCS] > 0 && [rchance 45]} {
+        lappend stmts [call_stmt]
+    }
+    set nbody [expr {1 + [rint 3]}]
+    for {set i 0} {$i < $nbody} {incr i} {
+        lappend stmts [stmt [expr {$depth - 1}] [list proc]]
+    }
     if {[rchance 25]} {
         lappend stmts "if \{[expr_body 1]\} \{return -code error [value]\}"
     }
@@ -889,18 +1394,79 @@ proc gen_proc {depth} {
 # A coroutine: a procedure that yields a bounded number of times, entered once
 # and resumed exactly as many times as it yields, so no call ever reaches a
 # coroutine whose body has ended.
+#
+# Four resume shapes, all with that same exact count:
+#
+#   flat    one `puts [$co rN]` per yield, at the case's top level;
+#   loop    a `for` counting to the yield count, one resume per trip — the
+#           resume is the whole body, so a generated `break` cannot appear and
+#           leave the coroutine suspended with resumes still to come;
+#   proc    a procedure whose body is one resume, called once per yield;
+#   catch   the resumes wrapped in one `catch`, which is where a coroutine that
+#           raises has to unwind into the resumer's own guarded region.
+#
+# The body itself is nested rather than flat at some rate: a yield inside a
+# bounded loop, inside a `catch`, and after a nested `eval` are all suspension
+# points at a depth the flat body never reaches, and the transfer has to restore
+# the same state whichever it is.
 proc gen_coroutine {} {
     set p [fresh c]
     set yields [expr {1 + [rint 3]}]
     set stmts [list]
     for {set i 1} {$i <= $yields} {incr i} {
-        lappend stmts "set __y \[yield y$i\]"
+        set shape [rint 100]
+        if {$shape < 55} {
+            lappend stmts "set __y \[yield y$i\]"
+        } elseif {$shape < 73} {
+            # Suspended inside a bounded loop: one trip, so still one yield.
+            lappend stmts "set __y {}; for \{set __i$i 0\} \{\$__i$i < 1\} \{incr __i$i\} \{set __y \[yield y$i\]\}"
+        } elseif {$shape < 90 || ![refused]} {
+            # Suspended inside an open `catch` region.
+            lappend stmts "set __y {}; catch \{set __y \[yield y$i\]\} __e$i"
+        } else {
+            # Suspended after a nested `eval` has run in the coroutine's own
+            # context. tclrs refuses `eval` inside a procedure body and a
+            # coroutine's body is one, so this shape is a counted skip today;
+            # drawn rarely for that reason.
+            lappend stmts "eval \{puts pre$i\}; set __y \[yield y$i\]"
+        }
         lappend stmts "puts got:\$__y"
+        if {[rchance 20]} {
+            lappend stmts "puts co:\[info coroutine\]"
+        }
     }
     lappend stmts "return done"
     set out [list "proc $p \{\} \{[join $stmts {; }]\}"]
     set co [fresh k]
     lappend out "puts \[coroutine $co $p\]"
+
+    set how [rint 100]
+    if {$how < 30} {
+        # Resumed by a counted loop, exactly `yields` trips.
+        set c [fresh cw]
+        lappend out "for \{set $c 0\} \{\$$c < $yields\} \{incr $c\} \{puts \[$co r\$$c\]\}"
+        return $out
+    }
+    if {$how < 55} {
+        # Resumed from inside a procedure, called once per yield.
+        set r [fresh pr]
+        lappend out "proc $r \{n\} \{return \[$co r\$n\]\}"
+        for {set i 1} {$i <= $yields} {incr i} {
+            lappend out "puts \[$r $i\]"
+        }
+        return $out
+    }
+    if {$how < 75} {
+        # Every resume inside one `catch`, so an error out of the body lands in
+        # the resumer's guarded region rather than at the top level.
+        set m [fresh m]
+        set inner [list]
+        for {set i 1} {$i <= $yields} {incr i} {
+            lappend inner "puts \[$co r$i\]"
+        }
+        lappend out "catch \{[join $inner {; }]\} $m; puts m:\$$m"
+        return $out
+    }
     for {set i 1} {$i <= $yields} {incr i} {
         lappend out "puts \[$co r$i\]"
     }
@@ -912,7 +1478,7 @@ proc gen_coroutine {} {
 # certain to have set — which is how the final state, and not only what the
 # case printed as it ran, is compared.
 proc gen_case {depth} {
-    global VARS ARRS DICTS LINES POOL_INT POOL_AWKWARD
+    global VARS ARRS DICTS LINES POOL_INT POOL_AWKWARD PROCS COUNTERS
     reset_case
     set n [expr {2 + [rint 3]}]
     for {set i 0} {$i < $n} {incr i} {
@@ -937,7 +1503,9 @@ proc gen_case {depth} {
     if {[rchance 45]} {
         emit [dict_stmt]
     }
-    set nprocs [rint 3]
+    # Up to three procedures, so a call chain of three is reachable: each may
+    # call one defined before it and none can call itself.
+    set nprocs [rint 4]
     for {set i 0} {$i < $nprocs} {incr i} {
         emit [gen_proc $depth]
     }
@@ -945,7 +1513,28 @@ proc gen_case {depth} {
     for {set i 0} {$i < $nstmts} {incr i} {
         emit [stmt $depth [list]]
     }
-    if {[rchance 15]} {
+    # A stateful tail: a `catch` around a counted loop that calls the case's own
+    # procedures, so a failure raised several frames down unwinds through a loop
+    # and a guarded region rather than at the top level. The trip count is a
+    # literal and the counter's `incr` is the first statement of the body, the
+    # same bound every other generated loop has.
+    if {[llength $PROCS] > 0 && [rchance 25]} {
+        set c [fresh t]
+        set m [fresh m]
+        note num $c
+        lappend COUNTERS $c
+        set inner [list "incr $c"]
+        set n [expr {1 + [rint 3]}]
+        for {set i 0} {$i < $n} {incr i} {
+            lappend inner [call_stmt]
+        }
+        # One line, like every other loop the generator emits: the counter's
+        # initialisation and the loop that reads it cannot be separated by the
+        # shrinker deleting a line or by the mutator inserting one between them.
+        emit "set $c 0; catch \{while \{\$$c < [expr {1 + [rint 3]}]\} \{[join $inner {; }]\}\} $m; puts m:\$$m"
+        note var $m
+    }
+    if {[rchance 22]} {
         foreach line [gen_coroutine] {
             emit $line
         }

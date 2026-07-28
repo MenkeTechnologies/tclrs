@@ -11,13 +11,23 @@
 #   bash scripts/fuzz_parity.sh -n 2000 -s 42          # bigger corpus, new seed
 #   bash scripts/fuzz_parity.sh -n 500 -m              # minimise what it finds
 #   bash scripts/fuzz_parity.sh -c target/fuzz/corpus.tcl   # re-check a corpus
+#   bash scripts/fuzz_parity.sh -M -n 500 -m           # mutate the committed corpus
+#   bash scripts/fuzz_parity.sh -M -c other/corpus     # ... plus another source
 #   bash scripts/fuzz_parity.sh -R tests/fuzz_corpus   # replay committed findings
 #
 #   -n N       corpus size (default 200); long form --iterations N
 #   -s SEED    PRNG seed (default 1); same seed => same corpus, so a divergence
 #              reproduces exactly on any machine. Long form --seed SEED
-#   -d DEPTH   max statement nesting (default 3)
-#   -c FILE    use an existing corpus file instead of generating one
+#   -d DEPTH   max statement nesting (default 3); generation only
+#   -c FILE    use an existing corpus file instead of generating one. With -M it
+#              adds a source — a file or a directory — to mutate instead
+#   -M         mutation mode: build the corpus by mutating existing cases rather
+#              than generating fresh ones (scripts/fuzz/mutate.pl). The sources
+#              are tests/fuzz_corpus — every minimised finding — plus whatever
+#              -c names. Seeded and reproducible the same way generation is, and
+#              the corpus it writes goes through the same split, the same
+#              classifier and the same shrinker, so no case is classified two
+#              ways. Long form --mutate
 #   -t SECS    per-process timeout (default 10); a case that outlasts it is a
 #              classified hang, not a wedged run. Long form --timeout
 #   -T SECS    stop starting new cases after SECS of wall clock; the report says
@@ -53,6 +63,7 @@ cd "$(dirname "$0")/.."
 
 N=200 SEED=1 DEPTH=3 CORPUS= TMO=10 QUIET=0 SHRINK=0 BUDGET=400
 CORPUS_DIR=tests/fuzz_corpus REPLAY= RERECORD= TIME_BUDGET=0 SELFCHECK=0
+MUTATE=0
 TCLSH="${TCLSH:-}"
 TCLRS="${TCLRS:-}"
 
@@ -64,6 +75,7 @@ while [ $# -gt 0 ]; do
     -c)               CORPUS="$2"; shift 2 ;;
     -t|--timeout)     TMO="$2"; shift 2 ;;
     -T|--time-budget) TIME_BUDGET="$2"; shift 2 ;;
+    -M|--mutate)      MUTATE=1; shift ;;
     -m|--shrink)      SHRINK=1; shift ;;
     -b|--budget)      BUDGET="$2"; shift 2 ;;
     -C|--corpus)      CORPUS_DIR="$2"; shift 2 ;;
@@ -183,7 +195,27 @@ if [ -n "$REPLAY" ]; then
 fi
 
 # ── corpus ──────────────────────────────────────────────────────────────────
-if [ -n "$CORPUS" ]; then
+#
+# Three ways to get one, and all three end at the same file: the split below,
+# `check_case.sh`, `classify.pl` and `shrink.pl` never learn which it was.
+MUTATE_SOURCES=
+if [ "$MUTATE" -eq 1 ]; then
+  # The committed corpus, not `$CORPUS_DIR`: -C says where *findings are
+  # written*, and pointing that at a scratch directory must not silently change
+  # what is being mutated. Another source is added with -c.
+  MUTATE_SOURCES=tests/fuzz_corpus
+  [ -n "$CORPUS" ] && MUTATE_SOURCES="$MUTATE_SOURCES $CORPUS"
+  say "mutating $N cases (seed $SEED) from: $MUTATE_SOURCES"
+  # Written to a temporary and moved, because a source given with -c may *be*
+  # `$OUT/corpus.tcl` — re-mutating the corpus of the previous run is a
+  # reasonable thing to ask for, and a direct redirection would truncate it
+  # before the mutator ever opened it.
+  # shellcheck disable=SC2086
+  perl scripts/fuzz/mutate.pl "$SEED" "$N" $MUTATE_SOURCES >"$OUT/corpus.new" \
+    2>"$OUT/mutate.log" || { cat "$OUT/mutate.log" >&2; exit 2; }
+  mv "$OUT/corpus.new" "$OUT/corpus.tcl"
+  perl -pe 's/^/    /' "$OUT/mutate.log"
+elif [ -n "$CORPUS" ]; then
   cp "$CORPUS" "$OUT/corpus.tcl"
   say "using corpus $CORPUS"
 else
@@ -369,21 +401,33 @@ fi
 
 echo
 say "what was bounded in this run"
-if [ -n "$CORPUS" ]; then
+if [ "$MUTATE" -eq 1 ]; then
+  printf '  corpus built by            mutating %s (scripts/fuzz/mutate.pl)\n' "$MUTATE_SOURCES"
+  printf '  cases requested            %s\n' "$N"
+elif [ -n "$CORPUS" ]; then
   printf '  corpus read from           %s (the -n default of %s did not apply)\n' "$CORPUS" "$N"
 else
   printf '  cases requested            %s\n' "$N"
 fi
 printf '  cases checked              %s%s\n' "$CHECKED" \
   "$([ "$STOPPED_EARLY" -eq 1 ] && printf ' (stopped by the %ss time budget)' "$TIME_BUDGET")"
-if [ -z "$CORPUS" ]; then
+if [ -z "$CORPUS" ] || [ "$MUTATE" -eq 1 ]; then
   printf '  seed                       %s\n' "$SEED"
 fi
-printf '  max statement nesting      %s\n' "$DEPTH"
+if [ "$MUTATE" -eq 1 ]; then
+  printf '  max statement nesting      n/a (mutation does not nest; -d %s ignored)\n' "$DEPTH"
+else
+  printf '  max statement nesting      %s\n' "$DEPTH"
+fi
 printf '  per-process timeout        %ss (both engines)\n' "$TMO"
 printf '  shrinking                  %s\n' \
   "$([ "$SHRINK" -eq 1 ] && printf 'on, %s candidate checks per case' "$BUDGET" || printf 'off (-m to enable)')"
 printf '  loop trip counts           at most 5, structural (scripts/fuzz/gen.tcl)\n'
+printf '  format width / precision   at most 2 digits; the two unbounded ones are\n'
+printf '                             already-recorded aborts (BUGS.md)\n'
+if [ "$MUTATE" -eq 1 ]; then
+  printf '  loops in a mutant          verbatim from a source case, checked per mutant\n'
+fi
 printf '  corpus directory           %s\n' "$CORPUS_DIR"
 printf '  cases per verdict in it    at most %s%s\n' "$CORPUS_CAP" \
   "$([ "${CAPPED:-0}" -gt 0 ] && printf ' (%s further case(s) not written there; all of them are in %s/diverge.txt)' "$CAPPED" "$OUT")"

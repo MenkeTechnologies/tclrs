@@ -1027,8 +1027,41 @@ case index alone — and `scripts/fuzz_parity.sh` runs every one under both `tcl
 and `tclrs` through one driver, `scripts/fuzz/drive.tcl`. Loop bounds are
 structural, so a generated program always terminates, and values come from a pool
 of awkward literals: empty strings, braces, brackets, quotes, backslashes, `$`, a
-leading `#`, leading zeros, `1_0`, the `i64` boundaries, exponent-form floats and
-non-ASCII text.
+leading `#`, leading zeros, `1_0`, `0d9`, `0x_10`, `-0`, `nan` and `inf`, the
+`i64` boundaries from both sides, exponent-form floats, list-shaped strings where
+a scalar is expected, and multi-byte text with the non-ASCII character *at* a
+string boundary — including astral-plane characters.
+
+What the generator builds rather than lists: `format`'s specifier matrix (flags ×
+width × precision × conversion, `*` included), the `lsearch` and `lsort` option
+matrices, and every `string` subcommand in every argument shape its synopsis
+allows. Programs are stateful as well as nested — coroutines resumed from a
+counted loop, from inside a procedure and inside a `catch`, procedures that call
+procedures along an acyclic call graph, and `eval` nested several levels deep.
+
+Shapes that tclrs **recognises and refuses** — `array` on a procedure local,
+`eval` inside a procedure body, `lsort -command`, `string is punct`, `dict unset`
+— are generated on purpose at a low rate rather than avoided. Each lands in the
+skip bucket under the refusal's own wording, so the coverage is already in place
+on the day the refusal goes; the rate is one number in the generator
+(`REFUSAL_RATE`) because every one of those refusals is decided while compiling,
+so one anywhere in a case takes the whole case out of comparison.
+
+```sh
+bash scripts/fuzz_parity.sh -M -n 500 -m       # mutate instead of generate
+```
+
+`-M` builds the corpus from the committed findings in `tests/fuzz_corpus`
+(plus anything `-c` names) instead of generating fresh programs:
+`scripts/fuzz/mutate.pl` splices statements between cases, duplicates and deletes
+lines, swaps lines, perturbs literals and swaps operators. It is seeded and
+reproducible exactly as generation is, and it writes the same corpus format, so
+the split, the classifier and the shrinker are the same code — no case is
+classified two ways. Termination is preserved rather than re-derived: a
+loop-bearing line is only ever moved, duplicated or deleted whole, nothing is
+inserted into a body, and a mutant whose loops are not verbatim from a source
+case — or in which a loop's counter is assigned off the loop's own line — is
+redrawn.
 
 Every case lands in exactly one bucket, and every bucket is counted: **pass**,
 **skip** (tclrs refused something it documents as unimplemented, with the
