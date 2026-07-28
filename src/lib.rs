@@ -11,6 +11,7 @@
 //! point — the reference interpreter re-derives string representations inside
 //! hot loops.
 
+pub mod assoc;
 pub mod cmd_list;
 pub mod compiler;
 pub mod expr;

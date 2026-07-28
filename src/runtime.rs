@@ -71,7 +71,7 @@ pub fn eval(src: &str) -> Result<Outcome, String> {
 
 /// A Tcl number: integral until something forces a double.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Num {
+pub(crate) enum Num {
     Int(i64),
     Float(f64),
 }
@@ -97,7 +97,7 @@ fn tcl_num(v: &Value) -> Option<Num> {
     }
 }
 
-fn parse_num(text: &str) -> Option<Num> {
+pub(crate) fn parse_num(text: &str) -> Option<Num> {
     if text.is_empty() {
         return None;
     }
@@ -255,6 +255,7 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             vm.push(normalized);
             Ok(())
         }
+        id if id >= ext::ASSOC_BASE => crate::assoc::extension(vm, id, arg),
         id if id >= ext::LIST_BASE => crate::cmd_list::run(vm, id, arg),
         other => Err(format!("unknown extension op {other}")),
     }

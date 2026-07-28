@@ -168,7 +168,13 @@ fn script_value_is_the_last_command() {
 fn unsupported_constructs_are_refused() {
     for (src, expected) in [
         ("proc f {} {}", "invalid command name \"proc\""),
-        ("set a(1) x", "array variables are not supported yet"),
+        // `set a(1) x` was refused here until array variables were implemented;
+        // the constructs of that area still missing are the array searches and
+        // the dict subcommands that need commands this phase does not have.
+        (
+            "array startsearch a",
+            "array startsearch is not supported yet",
+        ),
         (
             "puts [expr {sin(1)}]",
             "math function \"sin\" is not supported yet",
