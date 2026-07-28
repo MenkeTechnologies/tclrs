@@ -13,6 +13,7 @@
 
 pub mod assoc;
 pub mod cmd_list;
+pub mod cmd_string;
 pub mod compiler;
 pub mod control;
 pub mod expr;

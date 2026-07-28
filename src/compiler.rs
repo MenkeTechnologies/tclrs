@@ -121,6 +121,11 @@ pub mod ext {
     /// `[dict]` → a `Value::Array` of alternating keys and values, which
     /// `dict for` walks with the VM's own `ArrayLen` and `ArrayGet`.
     pub const DICT_PAIRS: u16 = ASSOC_BASE + 21;
+
+    /// Where the string commands' ops begin — the `string` ensemble, `append`
+    /// and `format` — dispatched to [`crate::cmd_string`], which names them.
+    /// The inline operand is the number of stack values the op consumes.
+    pub const STRING_BASE: u16 = 128;
 }
 
 /// Wide extension opcode ids, whose payload is a `usize` rather than a byte.
@@ -251,6 +256,14 @@ impl Compiler {
 
     pub(crate) fn push_empty(&mut self) {
         self.push_value(Value::Str(std::sync::Arc::new(String::new())));
+    }
+
+    /// Push a string constant verbatim, without the numeric canonicalisation
+    /// [`Compiler::push_text`] applies. Operands the compiler synthesises — an
+    /// option name, a variable name an op resolves at run time — go through
+    /// here, since they are never numbers.
+    pub(crate) fn push_str(&mut self, text: &str) {
+        self.push_value(Value::Str(std::sync::Arc::new(text.to_string())));
     }
 
     /// Push a literal string as a value, canonicalising it the way a literal
@@ -432,8 +445,9 @@ impl Compiler {
     /// keep winning. The list commands are absent on purpose — they are
     /// dispatched after `procs`, so a procedure does replace one.
     pub(crate) const BUILTINS: &'static [&'static str] = &[
-        "set", "puts", "expr", "incr", "if", "while", "for", "foreach", "switch", "break",
-        "continue", "proc", "return", "global", "catch", "error", "array", "dict", "unset",
+        "set", "puts", "expr", "incr", "if", "while", "for", "foreach", "switch", "string",
+        "append", "format", "break", "continue", "proc", "return", "global", "catch", "error",
+        "array", "dict", "unset",
     ];
 
     fn command(&mut self, cmd: &Command) -> Result<(), CompileError> {
@@ -455,6 +469,7 @@ impl Compiler {
             "for" => self.cmd_for(args),
             "foreach" => self.cmd_foreach(args),
             "switch" => self.cmd_switch(args),
+            "string" | "append" | "format" => self.cmd_string_family(&name, args),
             "break" => self.cmd_loop_exit(args, true),
             "continue" => self.cmd_loop_exit(args, false),
             "proc" => self.cmd_proc(args),

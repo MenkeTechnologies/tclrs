@@ -576,10 +576,6 @@ pub(crate) fn target_of(word: &Word) -> Option<Target> {
 }
 
 impl Compiler {
-    fn push_str(&mut self, text: &str) {
-        self.push_value(Value::Str(Arc::new(text.to_string())));
-    }
-
     /// Emit the index of `a(i)`, whose parts concatenate like any other word.
     fn index_value(&mut self, index: &[Part]) -> Result<(), CompileError> {
         self.word(&Word {
