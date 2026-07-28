@@ -31,8 +31,25 @@ pub struct Outcome {
 
 /// Compile and run a script, capturing its output.
 pub fn eval(src: &str) -> Result<Outcome, String> {
-    let script = crate::parser::parse(src).map_err(|e| e.to_string())?;
-    let chunk = compiler::compile(&script).map_err(|e| e.to_string())?;
+    let (result, output) = eval_captured(src);
+    result.map(|result| Outcome { result, output })
+}
+
+/// Compile and run a script, reporting what it wrote even when it fails.
+///
+/// [`eval`] drops the output of a failing script, which is the convenient
+/// shape for a caller that only wants the value. A conformance harness needs
+/// both halves: a Tcl program that prints and then fails has an observable
+/// outcome on stdout as well as an error, and comparing only the error would
+/// let a divergence in the printed part go unnoticed.
+pub fn eval_captured(src: &str) -> (Result<String, String>, String) {
+    let compiled = crate::parser::parse(src)
+        .map_err(|e| e.to_string())
+        .and_then(|script| compiler::compile(&script).map_err(|e| e.to_string()));
+    let chunk = match compiled {
+        Ok(chunk) => chunk,
+        Err(msg) => return (Err(msg), String::new()),
+    };
 
     let output = Arc::new(Mutex::new(String::new()));
     let error = Arc::new(Mutex::new(None::<String>));
@@ -52,21 +69,16 @@ pub fn eval(src: &str) -> Result<Outcome, String> {
     }));
 
     let outcome = vm.run();
+    let printed = output.lock().expect("output lock").clone();
     if let Some(msg) = error.lock().expect("error lock").take() {
-        return Err(msg);
+        return (Err(msg), printed);
     }
-    let output = output.lock().expect("output lock").clone();
-    match outcome {
-        VMResult::Ok(v) => Ok(Outcome {
-            result: to_tcl_string(&v),
-            output,
-        }),
-        VMResult::Halted => Ok(Outcome {
-            result: String::new(),
-            output,
-        }),
+    let result = match outcome {
+        VMResult::Ok(v) => Ok(to_tcl_string(&v)),
+        VMResult::Halted => Ok(String::new()),
         VMResult::Error(e) => Err(e),
-    }
+    };
+    (result, printed)
 }
 
 /// A Tcl number: integral until something forces a double.

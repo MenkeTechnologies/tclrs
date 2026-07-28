@@ -96,16 +96,19 @@ assert_eq!(out.output, "10\n");
 ```
 
 `tclrs::parse` returns the parsed `Script` without running it, for tooling that
-wants the word structure.
+wants the word structure. `tclrs::eval_captured` is `eval` for a caller that
+needs both halves of a failing run — the error *and* whatever the script had
+already printed — which is what the conformance harness compares against tclsh.
 
 ---
 
 ## [0x03] LANGUAGE SURFACE
 
 Working commands: `set`, `puts` (with `-nonewline`), `expr`, `incr`, `if` /
-`elseif` / `else`, `while`, `foreach`, `break`, `continue`, the list commands —
-`list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`,
-`lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` — and command
+`elseif` / `else`, `while`, `foreach`, `break`, `continue`, `unset`, the list
+commands — `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`,
+`linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` — the
+associative ones — `array`, `dict`, and array variables — and command
 substitution of any of them.
 
 `expr` covers the whole operator set of `expr(n)`:
@@ -125,11 +128,13 @@ shortest representation that reads back exactly, never looking like an integer,
 exponential outside the positional range.
 
 Not built yet, and **refused rather than approximated**: `proc` and every
-command outside the list above, arrays, `{*}` expansion, math functions,
-variable and body words that are not literal, and arbitrary-precision integers —
-an operation that overflows `i64` is an error instead of silently wrapping.
-Refusal is at compile time where the script's shape decides it and at run time
-where a value does. See [`BUGS.md`](BUGS.md) for the ledger.
+command outside the list above, `{*}` expansion, math functions, variable and
+body words that are not literal, and arbitrary-precision integers — an operation
+that overflows `i64` is an error instead of silently wrapping. Refusal is at
+compile time where the script's shape decides it and at run time where a value
+does. See [`BUGS.md`](BUGS.md) for the ledger, and
+[`conformance/REPORT.md`](conformance/REPORT.md) for what that adds up to
+against the official suite.
 
 ### Lists
 
@@ -216,7 +221,8 @@ with the benchmarks that justify them.
 | 1 | Parser — the twelve rules of `Tcl(n)` | done |
 | 2 | Compiler + runtime — `set` / `puts` / `expr` / `incr` / `if` / `while` / `break` / `continue` | done |
 | 3 | Lists — list parsing and quoting, the thirteen list commands, `foreach`, `in` / `ni` | done, except `{*}` expansion |
-| 4 | `proc`, `return`, `upvar` / `global`, arrays, the `tclsh` binary | planned |
+| 4 | Associative data — array variables, `array`, `dict`, `unset` | done |
+| 4b | `proc`, `return`, `upvar` / `global`, the `tclsh` binary | planned |
 | 5 | The command library — `string`, `regexp`, `switch`, `for`, `catch` / `error`, file and channel IO | planned |
 | 6 | `fusevm` `jit` / `jit-disk-cache` / `aot` features, bignum, benchmarks | planned |
 | 7 | Toolchain parity with the sibling frontends — LSP, DAP, zsh completion, man pages, `reference.html`, inline `rust {}` FFI, `--dump-tokens` / `--dump-ast` / `--disasm` | planned |
@@ -241,6 +247,29 @@ for line.
 
 The differential suites invoke `tclsh` (or `tclsh9.0` / `tclsh8.6`) from `PATH`
 and skip when none is installed.
+
+### Conformance against the official suite
+
+The suites above test what tclrs claims to do. `conformance/` measures the
+opposite: how much of *real Tcl* it does, by running the Tcl project's own test
+suite against it.
+
+```sh
+conformance/run.sh
+```
+
+That fetches the Tcl source release — the suite ships there, not in a binary
+install — verifies it against a pinned SHA-256, lifts every case out of every
+`tests/*.test` file, runs each one under both `tclsh` and tclrs, and rewrites
+[`conformance/REPORT.md`](conformance/REPORT.md) with the comparison. No file
+and no case is chosen by hand, and the runner has no option to run a subset.
+
+The report is the number, with the breakdown behind it: attempted, passed,
+failed and skipped per suite file, why each skipped case could not be run, the
+failure causes ranked, and every file the extraction could not fully reach.
+Failing cases are dumped in full to `conformance/work/failures.txt` by the same
+run, so any figure in the report can be traced back to the case that produced
+it.
 
 ---
 

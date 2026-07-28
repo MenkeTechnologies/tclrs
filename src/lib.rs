@@ -20,4 +20,4 @@ pub mod parser;
 pub mod runtime;
 
 pub use parser::{parse, Command, ParseError, Part, Script, Word};
-pub use runtime::{eval, Outcome};
+pub use runtime::{eval, eval_captured, Outcome};

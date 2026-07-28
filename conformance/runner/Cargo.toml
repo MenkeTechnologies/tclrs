@@ -1,0 +1,14 @@
+[package]
+name = "tclrs-conformance"
+version = "0.1.0"
+edition = "2021"
+description = "Runs the official Tcl test suite against tclrs and reports what fraction of it passes"
+license = "MIT"
+publish = false
+
+# A workspace of its own, so `cargo build` in the crate root never drags the
+# measurement tool into the library's build.
+[workspace]
+
+[dependencies]
+tclrs = { path = "../.." }
