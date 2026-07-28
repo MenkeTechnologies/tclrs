@@ -291,7 +291,7 @@ for case in "$OUT/cases"/*.tcl; do
       # One writer for the format (scripts/fuzz/record.sh), so the fuzzer and the
       # re-record mode cannot drift apart.
       bash scripts/fuzz/record.sh "$name.tcl" "$OUT/work/record" \
-        "seed: $SEED   case: $idx   depth: $DEPTH   generator: scripts/fuzz/gen.tcl   shrink: $(tr -d '\n' <"$OUT/work/$idx.shrink.log")" \
+        "seed: $SEED   case: $idx   depth: $DEPTH   generator: scripts/fuzz/gen.tcl   $(tr -d '\n' <"$OUT/work/$idx.shrink.log")" \
         >"$name.expected"
       printf -- '--- minimised: %s ---\n' "$name.tcl" >>"$OUT/diverge.txt"
       cat "$name.tcl" >>"$OUT/diverge.txt"
