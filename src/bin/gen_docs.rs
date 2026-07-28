@@ -166,6 +166,7 @@ fn main() {
         </div>
 
         <table class="file-table">
+          <colgroup><col style="width:14%"><col style="width:29%"><col style="width:57%"></colgroup>
           <thead><tr><th>command</th><th>synopsis</th><th>what it does</th></tr></thead>
           <tbody>
 {command_rows}          </tbody>
@@ -192,6 +193,7 @@ fn main() {
         their numeric counterparts, as <code>expr(n)</code> specifies — so
         <code>"a" eq "a" == 1</code> is 1.</p>
         <table class="file-table">
+          <colgroup><col style="width:10%"><col style="width:60%"><col style="width:30%"></colgroup>
           <thead><tr><th>level</th><th>operators</th><th>associativity</th></tr></thead>
           <tbody>
 {operator_rows}          </tbody>
@@ -213,6 +215,7 @@ fn main() {
         through the runtime and reading the answer. A conversion missing from
         this table is <code>bad field specifier</code>.</p>
         <table class="file-table">
+          <colgroup><col style="width:20%"><col style="width:80%"></colgroup>
           <thead><tr><th>conversion</th><th>state</th></tr></thead>
           <tbody>
 {conversion_rows}          </tbody>
@@ -306,6 +309,7 @@ impl Ensemble {
         format!(
             "        <h3><code>{name}</code> &mdash; {ok} of {all} implemented</h3>\n        \
              <table class=\"file-table\">\n          \
+             <colgroup><col style=\"width:32%\"><col style=\"width:68%\"></colgroup>\n          \
              <thead><tr><th>subcommand</th><th>state</th></tr></thead>\n          <tbody>\n\
              {body}          </tbody>\n        </table>\n",
             name = escape(self.name),
