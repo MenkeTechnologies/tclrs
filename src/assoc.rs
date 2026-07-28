@@ -590,7 +590,7 @@ impl Compiler {
         self.seen_arrays.insert(name.to_string());
     }
 
-    fn is_array(&self, name: &str) -> bool {
+    pub(crate) fn is_array(&self, name: &str) -> bool {
         self.arrays.contains(name)
     }
 

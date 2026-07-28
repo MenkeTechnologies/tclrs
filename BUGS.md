@@ -31,7 +31,10 @@ approximated, and nothing is silently mis-run.
   `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`,
   `lsearch`, `lsort`, `join`, `split` and `concat` (`src/cmd_list.rs`). `in` and
   `ni` test string membership. Index expressions (`end`, `end±n`, `m±n`) follow
-  `Tcl_GetIntForIndex`.
+  `Tcl_GetIntForIndex`. `lappend` reaches its variable itself instead of taking
+  the value through `GetVar`, so the elements go onto the list's own string and
+  growing a list is linear rather than quadratic; a list another variable holds
+  is copied instead of extended, which is what keeps that invisible to a script.
 - **Associative data.** Array variables (`a(k)`), `array` — `exists`, `get`,
   `names`, `set`, `size`, `unset` — and `dict` — `create`, `exists`, `get`,
   `for`, `keys`, `merge`, `remove`, `set`, `size`, `values` (`src/assoc.rs`).

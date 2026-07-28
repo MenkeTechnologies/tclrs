@@ -430,6 +430,86 @@ fn quoting_round_trips_match_tclsh() {
 /// values. The iteration count is what the longest list demands, so the two
 /// lists disagreeing about how many iterations they can fill is the case worth
 /// generating rather than hand-picking.
+/// `lappend` extends the list in the variable's own string when nothing else
+/// holds it, which is what keeps building one linear rather than quadratic. The
+/// cases below are the ones that path can get wrong and the ordinary
+/// `lappend` programs cannot reach, because each needs a *sequence* of appends:
+///
+/// * quoting at a position other than the first, once the fast path is warm —
+///   only a list's first element quotes a leading `#`;
+/// * a value another variable is holding, which must not change under it;
+/// * a procedure's local list, which lives in a frame slot rather than in the
+///   global table, and a `global` one inside a procedure, which does not;
+/// * two lists grown in turn, so the fast path cannot assume the value it
+///   extended last is the one in front of it;
+/// * a coroutine growing its own list while the script grows another.
+#[test]
+fn lappend_in_place_matches_tclsh() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+
+    let program = concat!(
+        // Quoting stays right at every position, not just the first.
+        "set s {}\n",
+        "foreach e {plain #hash {} {a b} {a]b} {a\"b} {a$b} {a;b} {a[b} {a{b}c}} {\n",
+        "    lappend s $e\n",
+        "    puts \"[llength $s] <$s>\"\n",
+        "}\n",
+        "foreach e $s { puts \"e=<$e>\" }\n",
+        // A value someone else is holding must not change under them.
+        "set l {}\n",
+        "lappend l a b\n",
+        "set held $l\n",
+        "lappend l c\n",
+        "puts \"$l | $held\"\n",
+        "lappend held z\n",
+        "puts \"$l | $held\"\n",
+        // A frame slot, and a global reached from inside a procedure.
+        "proc local {n} {\n",
+        "    set out {}\n",
+        "    for {set i 0} {$i < $n} {incr i} { lappend out $i }\n",
+        "    return $out\n",
+        "}\n",
+        "puts [local 6]\n",
+        "puts [llength [local 40]]\n",
+        "set acc {}\n",
+        "proc add {x} {\n",
+        "    global acc\n",
+        "    lappend acc $x\n",
+        "    return $acc\n",
+        "}\n",
+        "add p\n",
+        "puts \"[add q] / $acc\"\n",
+        // Two lists grown in turn.
+        "set a {}\n",
+        "set b {}\n",
+        "foreach x {1 2 3} { lappend a $x ; lappend b [expr {$x * 10}] }\n",
+        "puts \"$a | $b\"\n",
+        // A coroutine's own list, grown between resumptions.
+        "proc gen {} {\n",
+        "    set inner {}\n",
+        "    foreach x {x y z} { lappend inner $x ; yield $inner }\n",
+        "    return $inner\n",
+        "}\n",
+        "set outer {}\n",
+        "lappend outer [coroutine g gen]\n",
+        "lappend outer [g]\n",
+        "lappend outer [g]\n",
+        "puts \"$outer\"\n",
+    );
+
+    let (expected, error) = reference(&tclsh, program);
+    assert!(
+        error.is_none(),
+        "tclsh rejected the program:\n{}",
+        error.unwrap_or_default()
+    );
+    let outcome = tclrs::eval(program).expect("tclrs runs the program");
+    assert_eq!(outcome.output, expected, "lappend diverges from tclsh");
+}
+
 #[test]
 fn foreach_shapes_match_tclsh() {
     let Some(tclsh) = tclsh() else {

@@ -16,11 +16,12 @@
 //! parsing, including that the data-type options only bite in `-exact` mode.
 //! Options that are not built yet are refused rather than ignored.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use fusevm::{Op, Value, VM};
 
-use crate::compiler::{ext, CompileError, Compiler};
+use crate::compiler::{ext, CompileError, Compiler, Place};
 use crate::list;
 use crate::parser::Word;
 use crate::runtime::to_tcl_string;
@@ -82,19 +83,40 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
 }
 
 /// `lappend varName ?value ...?`: read, extend, store, and yield the new value.
+///
+/// The op reaches the variable itself — the compiler pushes where it lives
+/// rather than its value — so that [`lappend_at`] can append to the list's own
+/// string instead of building a copy of it. A name the script also uses as an
+/// array is lowered the read-extend-store way instead, through [`ext::LAPPEND`]:
+/// its value is a `Value::Hash`, not a list, and the two paths must not disagree
+/// about what that means.
 fn lappend(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     let Some((name, values)) = args.split_first() else {
         return c.error("wrong # args: should be \"lappend varName ?value ...?\"");
     };
     let name = c.var_name_of(name)?;
     let count = arg_count(c, values.len() + 1)?;
-    c.emit_get_var(&name);
+
+    if c.is_array(&name) {
+        c.emit_get_var(&name);
+        for value in values {
+            c.word(value)?;
+        }
+        c.emit(Op::Extended(ext::LAPPEND, count), -(values.len() as i32));
+        c.emit(Op::Dup, 1);
+        c.emit_set_var(&name);
+        return Ok(());
+    }
+
+    let (id, place) = match c.var_place(&name) {
+        Place::Slot(slot) => (ext::LAPPEND_SLOT, slot),
+        Place::Global(idx) => (ext::LAPPEND_VAR, idx),
+    };
+    c.emit(Op::LoadInt(place as i64), 1);
     for value in values {
         c.word(value)?;
     }
-    c.emit(Op::Extended(ext::LAPPEND, count), -(values.len() as i32));
-    c.emit(Op::Dup, 1);
-    c.emit_set_var(&name);
+    c.emit(Op::Extended(id, count), -(values.len() as i32));
     Ok(())
 }
 
@@ -112,6 +134,9 @@ fn arg_count(c: &Compiler, len: usize) -> Result<u8, CompileError> {
 pub(crate) fn run(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     if (ext::FOREACH_INIT..=ext::FOREACH_ADVANCE).contains(&id) {
         return foreach_op(vm, id, arg);
+    }
+    if id == ext::LAPPEND_VAR || id == ext::LAPPEND_SLOT {
+        return lappend_at(vm, id, arg);
     }
     let mut args: Vec<String> = (0..arg).map(|_| to_tcl_string(&vm.pop())).collect();
     args.reverse();
@@ -187,6 +212,150 @@ fn lappend_value(current: &str, values: &[String]) -> Result<String, String> {
     }
     items.extend(values.iter().cloned());
     Ok(list::join(&items))
+}
+
+// ── lappend, in place ────────────────────────────────────────────────────
+
+thread_local! {
+    /// The list the last `lappend` produced, kept only so that the next one can
+    /// recognise it.
+    ///
+    /// A string [`list::join`] built is canonical — single spaces between
+    /// elements, each quoted exactly as that function quotes it — and appending
+    /// to a canonical list is a space plus the new element's own quoting, with
+    /// nothing already in it re-derived. Nothing in a string says it is
+    /// canonical, so this remembers the value that was, and identity is the
+    /// test: a pointer comparison rather than a scan of the whole list.
+    ///
+    /// Remembering it keeps its allocation alive, so its address cannot be
+    /// reused by a different string while it is remembered — the comparison
+    /// cannot mistake one list for another. [`forget`] lets go of it before the
+    /// append, which is what leaves the string unshared and able to grow in
+    /// place.
+    static CANONICAL: RefCell<Option<Arc<String>>> = const { RefCell::new(None) };
+}
+
+/// `lappend` where the variable is the op's own operand: `[place, value …]`,
+/// leaving the new value.
+///
+/// Reading the variable here rather than through `GetVar` is the whole point:
+/// the value is *taken* out of its place, so the list's string is unshared and
+/// the elements are appended to it. Read-extend-store cannot do that — the
+/// variable still holds the string while the op runs, so every append would
+/// copy the whole list, which is what made building one quadratic.
+fn lappend_at(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
+    let mut values: Vec<String> = (1..arg).map(|_| to_tcl_string(&vm.pop())).collect();
+    values.reverse();
+    let index = match vm.pop() {
+        Value::Int(index) => index as u16,
+        other => return Err(format!("lappend: not a variable place: {other:?}")),
+    };
+    let place = if id == ext::LAPPEND_SLOT {
+        Place::Slot(index)
+    } else {
+        Place::Global(index)
+    };
+
+    let current = match cell(vm, place) {
+        Some(value) => std::mem::replace(value, Value::Undef),
+        None => Value::Undef,
+    };
+    let extended = extend(current, &values)?;
+    if let Some(value) = cell(vm, place) {
+        *value = Value::Str(Arc::clone(&extended));
+    }
+    remember(&extended);
+    vm.push(Value::Str(extended));
+    Ok(())
+}
+
+/// The variable's storage, grown to reach it — the same growth `VM::set_var`
+/// and `VM::set_slot` do, which those cannot be used for here because both hand
+/// back a clone rather than the value itself.
+fn cell(vm: &mut VM, place: Place) -> Option<&mut Value> {
+    match place {
+        Place::Global(index) => {
+            let index = index as usize;
+            if index >= vm.globals.len() {
+                vm.globals.resize(index + 1, Value::Undef);
+            }
+            Some(&mut vm.globals[index])
+        }
+        Place::Slot(slot) => {
+            let frame = vm.frames.last_mut()?;
+            let slot = slot as usize;
+            if slot >= frame.slots.len() {
+                frame.slots.resize(slot + 1, Value::Undef);
+            }
+            Some(&mut frame.slots[slot])
+        }
+    }
+}
+
+/// The variable's new value. A list this module built and has not lost sight of
+/// is extended in place; anything else is re-derived through [`lappend_value`],
+/// which is also what refuses a value that is not a well-formed list.
+fn extend(current: Value, values: &[String]) -> Result<Arc<String>, String> {
+    if let Value::Str(list) = current {
+        if forget(&list) {
+            return Ok(append_canonical(list, values));
+        }
+        return Ok(Arc::new(lappend_value(&list, values)?));
+    }
+    Ok(Arc::new(lappend_value(&to_tcl_string(&current), values)?))
+}
+
+fn append_canonical(mut list: Arc<String>, values: &[String]) -> Arc<String> {
+    match Arc::get_mut(&mut list) {
+        // Unshared: the elements go onto the string the variable held.
+        Some(text) => {
+            for value in values {
+                push_element(text, value);
+            }
+            list
+        }
+        // Shared with a value the script kept, which must not change under it,
+        // so the append lands on a copy.
+        None => {
+            let extra: usize = values.iter().map(|value| value.len() + 3).sum();
+            let mut text = String::with_capacity(list.len() + extra);
+            text.push_str(&list);
+            for value in values {
+                push_element(&mut text, value);
+            }
+            Arc::new(text)
+        }
+    }
+}
+
+/// Append one element to a canonical list. Only a list's first element quotes a
+/// leading `#`, so the empty list is the case that differs.
+fn push_element(out: &mut String, value: &str) {
+    if out.is_empty() {
+        out.push_str(&list::quote(value, true));
+    } else {
+        out.push(' ');
+        out.push_str(&list::quote(value, false));
+    }
+}
+
+fn remember(list: &Arc<String>) {
+    CANONICAL.with(|canonical| *canonical.borrow_mut() = Some(Arc::clone(list)));
+}
+
+/// Whether this is the list the last `lappend` produced — and when it is, let go
+/// of it, so the append that follows finds the string unshared.
+fn forget(list: &Arc<String>) -> bool {
+    CANONICAL.with(|canonical| {
+        let mut remembered = canonical.borrow_mut();
+        match &*remembered {
+            Some(previous) if Arc::ptr_eq(previous, list) => {
+                *remembered = None;
+                true
+            }
+            _ => false,
+        }
+    })
 }
 
 fn lrange(value: &str, first: &str, last: &str) -> Result<String, String> {

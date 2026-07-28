@@ -1,7 +1,10 @@
-# Build a list with `lappend`, then walk it with `foreach`. Two different
-# costs in one script: tclsh keeps a list object and appends to it in
-# amortized constant time, while tclrs re-derives the list from its string
-# representation on every `lappend`.
+# Build a list with `lappend`, then walk it with `foreach`. Two different costs
+# in one script: growing a list one element at a time, and reading one back.
+#
+# Both implementations keep the growth linear, and neither re-derives the list
+# per append — tclsh holds a list object, tclrs appends to the list's own string
+# inside the variable (`src/cmd_list.rs`). Raise the bound to check that it stays
+# linear: a quadratic `lappend` shows up here first.
 set l {}
 set i 0
 while {$i < 5000} {

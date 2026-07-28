@@ -101,6 +101,16 @@ pub mod ext {
     pub const SPLIT: u16 = 27;
     pub const CONCAT: u16 = 28;
 
+    /// `[place, value …]` → the extended list, stored in the variable the op
+    /// reaches itself: `LAPPEND_VAR` at a name index in the VM's global table,
+    /// `LAPPEND_SLOT` at a frame slot. Reaching the variable here rather than
+    /// through `GetVar` / `SetVar` is what lets the elements be appended to the
+    /// list's own string instead of a copy of it — see [`crate::cmd_list`].
+    /// [`LAPPEND`] is still emitted for a name the script also uses as an
+    /// array, where the value is not a list to begin with.
+    pub const LAPPEND_VAR: u16 = 33;
+    pub const LAPPEND_SLOT: u16 = 34;
+
     /// `foreach`'s four steps. `INIT` builds the loop state from the value
     /// lists, `MORE` asks whether an iteration remains, `TAKE` pushes one
     /// iteration's values, and `ADVANCE` moves to the next.
@@ -252,6 +262,14 @@ pub(crate) struct Scope {
     pub locals: HashMap<String, u16>,
     pub globals: HashSet<String>,
     pub next_slot: u16,
+}
+
+/// Where a variable lives once the script is lowered: a frame slot inside a
+/// procedure body, a name index in the VM's global table anywhere else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Place {
+    Slot(u16),
+    Global(u16),
 }
 
 pub(crate) struct Compiler {
@@ -416,25 +434,29 @@ impl Compiler {
             .is_some_and(|s| !s.globals.contains(name))
     }
 
+    /// Where a variable lives, for an op that reaches it itself rather than
+    /// through `GetVar` / `SetVar` — [`crate::cmd_list`]'s `lappend` is the one
+    /// that does, so that it can extend the list in place.
+    pub(crate) fn var_place(&mut self, name: &str) -> Place {
+        match self.slot_of(name) {
+            Some(slot) => Place::Slot(slot),
+            None => Place::Global(self.b.add_name(name)),
+        }
+    }
+
     /// Read a variable onto the stack.
     pub(crate) fn emit_get_var(&mut self, name: &str) {
-        match self.slot_of(name) {
-            Some(slot) => self.emit(Op::GetSlot(slot), 1),
-            None => {
-                let idx = self.b.add_name(name);
-                self.emit(Op::GetVar(idx), 1)
-            }
+        match self.var_place(name) {
+            Place::Slot(slot) => self.emit(Op::GetSlot(slot), 1),
+            Place::Global(idx) => self.emit(Op::GetVar(idx), 1),
         };
     }
 
     /// Pop the top of the stack into a variable.
     pub(crate) fn emit_set_var(&mut self, name: &str) {
-        match self.slot_of(name) {
-            Some(slot) => self.emit(Op::SetSlot(slot), -1),
-            None => {
-                let idx = self.b.add_name(name);
-                self.emit(Op::SetVar(idx), -1)
-            }
+        match self.var_place(name) {
+            Place::Slot(slot) => self.emit(Op::SetSlot(slot), -1),
+            Place::Global(idx) => self.emit(Op::SetVar(idx), -1),
         };
     }
 
