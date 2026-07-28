@@ -1,0 +1,165 @@
+.\" Manpage for tclrs.
+.\" Contact https://github.com/MenkeTechnologies/tclrs to correct errors or omissions.
+.TH TCLRS 1 "2026-07-28" "tclrs 0.1.0" "User Commands"
+.SH NAME
+tclrs \- Tcl compiled to fusevm bytecode (a tclsh-compatible driver)
+.SH SYNOPSIS
+.B tclrs
+[\fIOPTIONS\fR] \fIFILE\fR [\fIarg\fR ...]
+.br
+.B tclrs
+[\fIOPTIONS\fR] \fB\-c\fR \fISCRIPT\fR [\fIarg\fR ...]
+.br
+.B tclrs
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B tclrs
+parses Tcl and lowers it to
+.B fusevm
+bytecode \(em the execution engine shared with
+.BR zshrs ,
+.BR stryke ,
+and the other fusevm frontends. There is no interpreter loop and no code
+generator in tclrs itself: a script is compiled once to a
+.B fusevm::Chunk
+and executed by the VM, rather than re-parsed on every evaluation.
+.PP
+The reference implementation is
+.BR tclsh (1)
+9.0.4. It is the specification: behavior is ported from it, and the test suite
+runs every program through both and compares the output byte for byte.
+.PP
+Every VM tclrs builds arms fusevm's three-tier Cranelift JIT. A hot loop inside
+a procedure reaches a compiled trace; a loop at a script's top level does not,
+because a top-level variable is a VM global.
+.B \-\-tiers
+reports which tiers a given script actually reached.
+.SH OPTIONS
+.TP
+.I FILE
+Run the script in \fIFILE\fR. One script: the first failure ends it, the message
+goes to standard error followed by \fB    (file "..." line N)\fR when the
+failure was located while compiling, and the process exits 1.
+.TP
+.BR \-c " " \fISCRIPT\fR
+Run \fISCRIPT\fR instead of a file. Arguments after it are the script's.
+.TP
+.BR \-\-aot " " \fIOUT\fR
+Compile the script through fusevm's closed-world compiler and link it into a
+standalone native executable at \fIOUT\fR \(em no parser and no bytecode
+dispatch loop inside it. Refused for a script that uses
+.B catch
+or a coroutine, which need a driver outside \fBVM::run\fR.
+.TP
+.BR \-\-aot\-object " " \fIOUT\fR
+Emit the relocatable object only, to be linked against \fBlibtclrs.a\fR by hand.
+.TP
+.B \-\-tiers
+Run the script, then report which fusevm tiers took its chunk.
+.TP
+.B \-\-dump\-tokens
+Print the parser's lexical output \(em one line per word and per part of a word,
+with the shape (bare, braced, quoted, expand) that decides whether the part will
+be substituted \(em and exit.
+.TP
+.B \-\-dump\-ast
+Print the parse tree \(em script, command, word, part, with a command
+substitution nested inside the word containing it \(em and exit.
+.TP
+.B \-\-disasm
+Print the compiled fusevm bytecode instead of running it.
+.TP
+.BR \-h ", " \-\-help
+Print the usage and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.PP
+An unknown option is refused rather than treated as a file name, which is the
+one place this binary deliberately differs from
+.BR tclsh (1).
+.SH STANDARD INPUT
+With no \fIFILE\fR and no \fB\-c\fR, the script is read from standard input.
+.PP
+Not a terminal: a sequence of commands, each evaluated as it completes. A
+failure is reported and the next command still runs, and end of input exits 0
+\(em which is why \fBtclrs < script\fR exits 0 where \fBtclrs script\fR exits 1.
+Nothing is printed that the script did not print.
+.PP
+A terminal: the same evaluation behind a line editor \(em prompt, history in
+\fB~/.tclrs/history\fR, completion of command names, ensemble subcommands and
+variables on Tab, and multi-line editing decided by the parser rather than by
+counting braces. Procedures defined at the prompt outlive the line that defined
+them. \fBexit\fR, \fBexit N\fR, \fBquit\fR or Ctrl\-D leaves.
+.SH LANGUAGE
+Commands:
+.BR set ", " unset ", " eval ", " puts ", " expr ", " incr ", " append ", "
+.BR format ", " if ", " while ", " for ", " foreach ", " switch ", " break ", "
+.BR continue ", " proc ", " return ", " global ", " catch ", " error ", "
+.BR array ", " dict ", " coroutine ", " yield ", " yieldto ", " info coroutine ,
+the
+.B string
+ensemble, and the list commands
+.RB ( list ", " llength ", " lindex ", " lappend ", " lrange ", " lreverse ", "
+.BR linsert ", " lreplace ", " lsearch ", " lsort ", " join ", " split ", "
+.BR concat ).
+.PP
+All twelve parsing rules: braces, quotes, backslash substitution, command
+substitution, variable and array-element substitution, comments, and \fB{*}\fR
+expansion.
+.PP
+What is not built yet is refused with a message naming the construct, never
+silently misread.
+.SH ENVIRONMENT
+.TP
+.B TCLRS_JIT
+\fBoff\fR, \fB0\fR or \fBno\fR skips arming the JIT.
+.TP
+.B TCLRS_REPL_MODE
+\fBvi\fR selects modal editing in the REPL; \fBemacs\fR is the default. Also
+settable as \fBmode\fR under \fB[repl]\fR in \fB~/.tclrs/config.toml\fR.
+.TP
+.BR FUSEVM_JIT_BLOCK_THRESHOLD ", " FUSEVM_JIT_TRACE_THRESHOLD ", " FUSEVM_JIT_CACHE_DIR
+fusevm's own knobs, unchanged.
+.SH FILES
+.TP
+.B ~/.tclrs/history
+REPL history, 5,000 commands.
+.TP
+.B ~/.tclrs/config.toml
+REPL configuration.
+.SH EXIT STATUS
+0 when the script ran to its end, 1 when a script failed, could not be read, or
+an option was not understood.
+.SH EXAMPLES
+Run a one-liner:
+.PP
+.RS
+.nf
+tclrs \-c 'puts [expr {1 + 2}]'      \(rh 3
+.fi
+.RE
+.PP
+See what the parser made of a word:
+.PP
+.RS
+.nf
+tclrs \-\-dump\-ast \-c 'puts "x is $x"'
+.fi
+.RE
+.PP
+Compile a script to a native executable:
+.PP
+.RS
+.nf
+tclrs \-\-aot ./demo demo.tcl && ./demo
+.fi
+.RE
+.SH SEE ALSO
+.BR tclsh (1).
+.PP
+Reference and engineering report: https://menketechnologies.github.io/tclrs/ .
+.br
+fusevm: https://github.com/MenkeTechnologies/fusevm .
+.SH LICENSE
+MIT.

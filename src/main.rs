@@ -48,6 +48,8 @@ options:
   --aot OUT       compile the script to a standalone native executable at OUT
   --aot-object O  emit the relocatable AOT object only (link it yourself)
   --tiers         run the script, then report which fusevm tiers took its chunk
+  --dump-tokens   print the parser's lexical output instead of running it
+  --dump-ast      print the parse tree instead of running it
   --disasm        print the compiled bytecode instead of running it
   -h, --help      this message
   --version, -V   version";
@@ -71,6 +73,8 @@ enum Action {
     Aot(PathBuf),
     AotObject(PathBuf),
     Tiers,
+    DumpTokens,
+    DumpAst,
     Disasm,
 }
 
@@ -105,6 +109,8 @@ fn drive() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             "--tiers" => action = Action::Tiers,
+            "--dump-tokens" => action = Action::DumpTokens,
+            "--dump-ast" => action = Action::DumpAst,
             "--disasm" => action = Action::Disasm,
             flag @ ("--aot" | "--aot-object") => {
                 let Some(out) = args.get(i + 1) else {
@@ -174,6 +180,20 @@ fn drive() -> ExitCode {
         Action::Tiers => match tclrs::tiers::report(&src) {
             Ok(r) => {
                 println!("{r}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&e),
+        },
+        Action::DumpTokens => match tclrs::dump::tokens(&src) {
+            Ok(listing) => {
+                print!("{listing}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&e),
+        },
+        Action::DumpAst => match tclrs::dump::ast(&src) {
+            Ok(tree) => {
+                print!("{tree}");
                 ExitCode::SUCCESS
             }
             Err(e) => fail(&e),

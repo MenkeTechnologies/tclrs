@@ -127,6 +127,10 @@ tclrs --version             print the version    (also -V)
 tclrs --help                print the usage      (also -h)
 ```
 
+Shell completion is [`completions/_tclrs`](completions/_tclrs) — put that
+directory on `fpath`. The manual page is
+[`man/man1/tclrs.1`](man/man1/tclrs.1): `man ./man/man1/tclrs.1`.
+
 `tclsh` is the specification for what the binary prints and what it exits with.
 
 | Behavior | What happens |
@@ -170,8 +174,28 @@ tclrs❯ double 21
 tclrs --aot out script.tcl          # compile to a standalone native executable
 tclrs --aot-object out.o script.tcl # emit the relocatable object only
 tclrs --tiers script.tcl            # run it, then report which fusevm tiers took it
+tclrs --dump-tokens script.tcl      # print the parser's lexical output
+tclrs --dump-ast script.tcl         # print the parse tree
 tclrs --disasm script.tcl           # print the compiled bytecode instead of running it
 ```
+
+The two dumps are the parse made visible. Tcl has no lexer to print — a word's
+substitutions are decided while it is read — so `--dump-tokens` prints the parts
+of each word in the order they were read, under the shape of the word that
+decides whether they are substituted at all:
+
+```text
+$ tclrs --dump-tokens -c 'puts "x is $x"'
+line word  kind     value
+   1    1  bare     puts
+   1    1  · lit    puts
+   1    2  quoted   x is $x
+   1    2  · lit    x is
+   1    2  · var    x
+```
+
+`--dump-ast` prints the same parse as the tree it is, with a command
+substitution nested inside the word that contains it.
 
 Each of those wants a whole script, so it reads a file, a `-c` argument, or all
 of stdin, and never opens a REPL.

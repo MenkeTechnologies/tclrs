@@ -26,6 +26,7 @@ pub mod cmd_string;
 pub mod compiler;
 pub mod control;
 pub mod coro;
+pub mod dump;
 pub mod expr;
 pub mod list;
 pub mod names;
