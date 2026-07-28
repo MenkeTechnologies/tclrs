@@ -89,6 +89,16 @@ to `fusevm` bytecode, the same bytecode sixteen other language frontends emit.
 
 ## [0x01] BUILD
 
+A release tag publishes a prebuilt `tclrs` for macOS (arm64, x86_64) and Linux
+(x86_64, aarch64) and bumps the tap formula, so a binary install is one command:
+
+```sh
+brew tap MenkeTechnologies/menketech
+brew install tclrs
+```
+
+From source:
+
 ```sh
 git clone https://github.com/MenkeTechnologies/tclrs
 cd tclrs
