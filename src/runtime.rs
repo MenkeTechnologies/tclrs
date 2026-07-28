@@ -961,16 +961,19 @@ pub(crate) fn parse_number(text: &str) -> Result<Num, NotNumeric> {
     };
     // Tcl 9's radix prefixes. A leading zero is *not* one of them: `010` is ten,
     // as `0d10` is, which is why there is a `0d` at all.
-    let radix = if body.len() > 2 {
-        match &body[..2] {
-            "0x" | "0X" => Some(16),
-            "0o" | "0O" => Some(8),
-            "0b" | "0B" => Some(2),
-            "0d" | "0D" => Some(10),
+    //
+    // Matched on bytes. Slicing `&body[..2]` panics when the second character is
+    // multi-byte — `héllo` has `é` across bytes 1..3 — and a condition reaches
+    // this with whatever text a variable holds.
+    let radix = match body.as_bytes() {
+        [b'0', k, _, ..] => match k.to_ascii_lowercase() {
+            b'x' => Some(16),
+            b'o' => Some(8),
+            b'b' => Some(2),
+            b'd' => Some(10),
             _ => None,
-        }
-    } else {
-        None
+        },
+        _ => None,
     };
 
     // `_` is numeric whitespace, not part of any value.
@@ -1065,7 +1068,11 @@ pub(crate) fn tcl_bool(v: &Value) -> Result<bool, String> {
     match parse_number(text.trim()) {
         Ok(Num::Int(i)) => Ok(i != 0),
         Ok(Num::Float(f)) => float_bool(f),
-        Err(NotNumeric::TooLarge) => Err(too_large()),
+        // A boolean needs no bignum: an integer spelling that does not fit an
+        // `i64` has a magnitude larger than `i64::MAX`, so it is nonzero, and
+        // that is the whole question here. Refusing it would make
+        // `if {99999999999999999999}` an error where tclsh takes the branch.
+        Err(NotNumeric::TooLarge) => Ok(true),
         Err(NotNumeric::Unparsable) => Err(format!(
             "expected boolean value but got {}",
             named(&text, 50)

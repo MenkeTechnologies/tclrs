@@ -554,7 +554,10 @@ fn end_offset(text: &str, end_value: i64) -> Result<i64, String> {
         offset = if sum < 0 { i64::MIN } else { sum };
     } else {
         let bytes = text.as_bytes();
-        if bytes.len() < 3 || bytes.len() == 4 || &text[..3] != "end" {
+        // `starts_with`, not `&text[..3]`: byte 3 may be inside a character —
+        // `lindex {a b c} e€a` — and slicing there aborts the process where the
+        // reference interpreter reports `bad index`.
+        if bytes.len() < 3 || bytes.len() == 4 || !text.starts_with("end") {
             return bad();
         }
         if bytes.len() == 3 {

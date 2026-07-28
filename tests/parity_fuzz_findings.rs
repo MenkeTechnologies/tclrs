@@ -340,6 +340,21 @@ fn conditions_are_tcl_booleans_not_the_vms_truthiness() {
         "0x_10",
         "099",
         "0.",
+        // The non-ASCII values matter most here: the radix-prefix test used to
+        // slice the first two *bytes* of the text, which is inside a character in
+        // `héllo`, and a condition is the first place a value of any shape at all
+        // reaches the number parser. That was a panic, not a divergence.
+        "héllo",
+        "日本語",
+        "αβγ",
+        "ÜñîçøðÉ",
+        "naïve café",
+        "é",
+        "0é",
+        "0éx",
+        "0xé",
+        "1é",
+        "tab\there",
     ] {
         // Braced, so an empty value is still an assignment rather than a read.
         let program = format!("set x {{{value}}}\nif {{$x}} {{puts t}} else {{puts f}}");
@@ -695,11 +710,20 @@ fn out_of_range_integers_are_refused_rather_than_becoming_doubles() {
         out("18446744073709551616\n"),
         refused(),
     );
-    // The `i64` ends themselves are not overflow, and still agree.
+    // The `i64` ends themselves are not overflow, and still agree. So does the
+    // decimal spelling *as a value*: it is exactly what tclsh prints for it, so
+    // the literal is carried through and only an operation on it is refused —
+    // a script that merely prints one, or never reaches it, still runs.
     for same in [
         "puts [expr {9223372036854775807 - 1}]",
         "puts [expr {-9223372036854775807 + 1}]",
         "puts [expr {0x7fffffffffffffff}]",
+        "puts [expr {99999999999999999999}]",
+        "puts 99999999999999999999",
+        "set x 99999999999999999999\nputs $x",
+        "if {99999999999999999999} {puts T}",
+        "set x 9223372036854775808\nif {$x} {puts T}",
+        "if {0} {puts [expr {99999999999999999999 + 1}]}\nputs reached",
     ] {
         assert_eq!(reference(&tclsh, same), subject(same), "{same}");
     }
@@ -837,6 +861,57 @@ fn compile_time_errors_are_located_at_the_scripts_own_command() {
             reference_location(program),
             "{program:?}"
         );
+    }
+}
+
+/// **Fixed.** An index whose text holds a non-ASCII character reports
+/// `bad index`, as tclsh does, instead of aborting the process.
+///
+/// Three sites sliced by byte offset into text a script supplies, and each
+/// panicked when the offset landed inside a character: the radix-prefix test in
+/// `runtime::parse_number` (`&body[..2]`, which a *condition* reaches with any
+/// value at all — the crash the boolean rule above exposed), `cmd_string`'s
+/// `end±n` split (`rest.split_at(1)`), and `list`'s (`&text[..3]`). A stack of
+/// non-ASCII text is in the fuzzer's value pool, so this was one generated index
+/// away from being a CRITICAL.
+///
+/// Run in-process: a panic in `subject` fails the test.
+#[test]
+fn a_non_ascii_index_reports_bad_index_rather_than_aborting() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(
+        &tclsh,
+        "puts [string index abc endé]",
+        err("bad index \"endé\": must be integer?[+-]integer? or end?[+-]integer?"),
+    );
+    agrees(
+        &tclsh,
+        "puts [lindex {a b c} e€a]",
+        err("bad index \"e€a\": must be integer?[+-]integer? or end?[+-]integer?"),
+    );
+    // Every index-taking command in both families, against a character at each
+    // byte offset a slice could have landed on, and the well-formed indices
+    // beside them so the fix cannot have been to reject everything.
+    for index in [
+        "endé", "end€", "end😀", "endé0", "end+é", "end-é", "e€a", "e€ab", "énd", "1é", "0xé",
+        "end", "end-1", "end+1", "end-", "endx", "0", "2", "-1",
+    ] {
+        for program in [
+            format!("puts [string index abcdef {index}]"),
+            format!("puts [string range abcdef 0 {index}]"),
+            format!("puts [string first a abcdef {index}]"),
+            format!("puts [string insert abcdef {index} X]"),
+            format!("puts [lindex {{a b c}} {index}]"),
+            format!("puts [lrange {{a b c}} 0 {index}]"),
+            format!("puts [linsert {{a b c}} {index} X]"),
+            format!("puts [lreplace {{a b c}} 0 {index}]"),
+            format!("puts [lsearch -start {index} {{a b c}} b]"),
+        ] {
+            assert_eq!(reference(&tclsh, &program), subject(&program), "{program}");
+        }
     }
 }
 

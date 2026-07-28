@@ -589,14 +589,18 @@ fn index_of(spec: &str, end_value: i64) -> Result<i64, String> {
         if rest.is_empty() {
             return Ok(end_value);
         }
-        let (op, digits) = rest.split_at(1);
-        if (op != "-" && op != "+") || digits.starts_with(is_ascii_space) {
+        // Split on the byte, not with `split_at(1)`: the character after `end`
+        // may be multi-byte — `string index abc endé` — and slicing into one
+        // aborts the process where tclsh reports `bad index`.
+        let op = rest.as_bytes()[0];
+        if (op != b'-' && op != b'+') || rest[1..].starts_with(is_ascii_space) {
             return bad();
         }
+        let digits = &rest[1..];
         let Some(mut offset) = parse_int(digits.trim_end_matches(is_ascii_space)) else {
             return bad();
         };
-        if op == "-" {
+        if op == b'-' {
             offset = offset.saturating_neg();
         }
         // The interpreter distinguishes "end+1" from "end+n" so that commands

@@ -44,8 +44,19 @@ approximated, and nothing is silently mis-run.
   unary `+ - ~ !`, `< > <= >= == !=`, the always-string `lt gt le ge eq ne`,
   `& ^ | << >>`, short-circuiting `&& ||`, and the ternary (`src/expr.rs`).
 - **Tcl arithmetic.** Floored integer division and remainder, integral `**` for
-  integral operands, numeric-preferring comparison with string-order fallback,
-  and Tcl's double formatting (`src/runtime.rs`).
+  integral operands — a negative exponent included, where the integral result
+  truncates to 0 or ±1 and a zero base is an error — numeric-preferring comparison
+  with string-order fallback, Tcl 9's integer grammar (the `0x` / `0o` / `0b` /
+  `0d` prefixes and `_` as numeric whitespace), and Tcl's double formatting
+  (`src/runtime.rs`).
+- **Boolean conditions.** `ParseBoolean` and `Tcl_GetBoolFromObj` ported from
+  `tclObj.c`: a condition is a number or one of `true` / `false` / `yes` / `no` /
+  `on` / `off`, abbreviated to any unambiguous prefix, in any case — everything
+  else is `expected boolean value but got …`, which the VM's own truthiness would
+  have accepted. Reached from `if`, `while`, `for`, the ternary, `&&`, `||` and `!`
+  through one extension op, emitted only where the value could be a string so that
+  a counted loop's test stays native and traceable (`src/runtime.rs`,
+  `src/compiler.rs`).
 - **Coroutines.** `coroutine`, `yield`, `yieldto`, `info coroutine` and the
   lifecycle of a context command (`src/coro.rs`). A coroutine is a second
   `fusevm::VM` over the same chunk, suspended by the halt-and-request mechanism
@@ -151,7 +162,9 @@ approximated, and nothing is silently mis-run.
 - **Arbitrary-precision integers.** Tcl promotes an overflowing integer to a
   bignum. tclrs has no bignum, so an operation that overflows `i64` is
   `integer value too large to represent` rather than a silent wrap. `i64::MIN`
-  divided by `-1` is the same case.
+  divided by `-1` is the same case, and so is an integer *literal* or operand that
+  does not fit at all — `expr {99999999999999999999 + 1}` is the overflow, not the
+  `1e+20` a fall-through to the double parser used to answer.
 - **Editor tooling.** No LSP, no DAP, no zsh completion, no man pages, no
   `reference.html`, no inline `rust {}` FFI, no `--dump-tokens` / `--dump-ast`.
   `--disasm` exists.
@@ -174,47 +187,36 @@ T=./target/debug/tclrs
 tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
 ```
 
-- **A literal whose value is an integral decimal loses its spelling.** `puts 3.0`
-  prints `3`; `set x -0.0; puts v=$x` prints `v=-0`. `expr {3.0}` prints `3.0`, so
-  it is the literal path: `--disasm` shows the word reaching `LoadConst`, and the
-  constant is not the Tcl double `format_double` would print. Tcl's first rule is
-  that a value's string representation is what the script wrote. A fractional part
-  that is not zero (`1.10`, `2.50`), an exponent form (`3.0e0`) and a leading zero
-  (`007.0`) all survive, which is why the existing suites — which test `set x 1.10`
-  — did not catch it. **The only finding that silently changes a value rather
-  than a message.**
-- **`expr` coerces a non-numeric string to zero instead of refusing it.**
-  `expr {"b" >> 1}` answers 0, `expr {~"b"}` answers -1, `expr {!"b"}` answers 0,
-  and `&`, `|`, `^`, `<<` likewise; tclsh raises `cannot use non-numeric string
-  "b" as left operand of ">>"`. In a boolean position the same coercion changes
-  control flow: `if {"b"} {puts taken}` prints `taken` where tclsh refuses to run
-  it at all, and so do `while {"b"} …` and `expr {"b" ? 1 : 2}`.
-- **Integral `**` with a negative exponent returns a double.** `expr {2 ** -1}`
-  answers `0.5`; tclsh answers `0`, keeping the result integral for integral
-  operands — which is the rule README [0x04] claims.
-- **An integer literal beyond `i64` becomes a double** rather than the documented
-  `integer value too large to represent`: `expr {99999999999999999999 + 1}`
-  answers `1e+20` where tclsh answers `100000000000000000000`, and
-  `expr {99999999999999999999 % 3}` reports `can't use floating-point value as
-  operand of "%"` instead of the overflow error.
+- **`expr` coerces a non-numeric string to zero outside a boolean position.**
+  `expr {"b" >> 1}` answers 0, `expr {~"b"}` answers -1, and `&`, `|`, `^`, `<<`
+  likewise; tclsh raises `cannot use non-numeric string "b" as left operand of
+  ">>"`. In a boolean position the coercion is gone — see the fixed list below —
+  and `!` now refuses the operand too, only in the older wording of the next
+  entry.
 - **`expr`'s operand errors use Tcl 8's wording.** tclsh 9.0.4 names the value and
   which side of the operator it was on — `cannot use non-numeric string "abc" as
   right operand of "+"` — where tclrs says `can't use non-numeric string as
   operand of "+": "abc"`. Same for `cannot use floating-point value "1.0" as left
   operand of "%"`. `format` differs the same way: `expected integer but got a
-  list` against `expected integer but got "{a b} c"`.
-- **`format` keeps the sign of the integer `-0`.** `format %.2f -0` prints
-  `-0.00` where tclsh prints `0.00`, and `%e` / `%g` likewise; tclsh converts the
-  integer first, which loses the sign. The double `-0.0` keeps its sign in both.
-- **`incr` on a non-integer reports an `expr` operand error.** `set x 5; incr x
-  abc` says `can't use non-numeric string as operand of "+": "abc"` where tclsh
-  says `expected integer but got "abc"`.
-- **A character `expr` cannot use is reported as the first byte of its UTF-8
-  encoding.** `expr {Ü}` reports `unexpected character 'Ã'` (0xC3, the lead byte)
-  where tclsh reports `invalid character "Ü"`. Parse errors inside `expr` also
-  differ in wording generally: `missing operand at _@_` against `premature end of
-  expression`, `invalid bareword "end"` against `invalid bare word "end" in
-  expression`.
+  list` against `expected integer but got "{a b} c"` — `format` is the one place
+  left that quotes a list-shaped value, since `incr` and the boolean rule both go
+  through `list::looks_like_a_list` now.
+- **`incr` on a non-integer *variable* reports an `expr` operand error.**
+  `set x abc; incr x` says `can't use non-numeric string as operand of "+": "abc"`
+  where tclsh says `expected integer but got "abc"`. An increment the script wrote
+  out (`incr x abc`) is checked while compiling and does report `incr`'s own
+  wording; the variable's value cannot be, because the check would have to be an
+  extension op in the `incr` lowering and `is_trace_op_allowed_at` rejects
+  `Op::Extended` — every loop that counts with `incr` would lose its compiled
+  trace, which is the one thing this frontend has that reaches native code.
+  Deliberately not taken.
+- **Parse errors inside `expr` are worded differently.** `missing operand at _@_`
+  against `premature end of expression`, and `invalid bareword "end"` against
+  `invalid bare word "end" in expression`. The *character* diagnostic agrees now.
+- **`expr` does not take Tcl 9's `0d` prefix in a literal.** `expr {0d9 + 1}` is
+  `extra characters after expression` where tclsh answers 10. The runtime number
+  parser does take it, so `set x 0d9; expr {$x + 1}` is right; it is the literal
+  path in `expr::parse_number` that is short.
 - **Unreachable code is still compiled**, so a script tclsh runs to completion can
   be refused outright: `if {0} {incr}` is `wrong # args`, `if {0} {puts [expr {1
   +}]}` is `premature end of expression`, and `if {0} {nosuchcommand}` is
@@ -222,20 +224,64 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   `switch -- x {*b {puts "a}}` is `missing "` where tclsh never looks inside the
   braced body. The mechanism is documented (README [0x05], errors "at compile time
   where the script's shape decides it"); this consequence is not.
-  It is the largest single class in a fuzz run, because any dead branch that a
-  generated program happens to contain takes the whole script down.
-- **A compile-time error inside a nested body is located at line 1.**
-  `proc f {a} {return $a}` + `puts one` + `if {1} {f}` reports the arity error at
-  line 1; tclsh reports line 3. At a script's own top level the line is right, so
-  the counter works and the body path loses it.
-- **Input nesting is bounded only by the stack.** 100_000 nested `[` aborts the
-  binary on a stack overflow (exit status from a signal, no message) rather than
-  reporting `missing close-bracket`, which it does at 10_000. The parser recurses
-  per level: measured on a 2 MiB thread the bracket case aborts between 400 and
-  800 levels and on an 8 MiB one between 1600 and 3200, so a host embedding the
-  library on a small thread is killable by input long before the driver is. Found
-  by the `parse` cargo-fuzz target (`fuzz/fuzz_targets/parse.rs`), not by the
-  differential fuzzer — no generated *program* has fifty thousand open brackets.
+
+  **This is the largest single class by a wide margin: 106 of the 170 divergences
+  in the 400-program run (seed 1, depth 3) are it**, because any dead branch a
+  generated program happens to contain takes the whole script down. The minimal
+  case is one line:
+
+  ```tcl
+  if {0} {nosuchcommand}
+  ```
+
+  tclsh runs that script to completion and prints nothing; tclrs refuses it with
+  `invalid command name "nosuchcommand"` before running anything. It is not a
+  patchable defect — resolving a command name while compiling is what makes a
+  call a `Op::Call` to a known sub instead of a runtime table lookup, and it is
+  the same mechanism behind the arity and `expr`-shape refusals above. Changing it
+  is an architectural decision about compile-time dispatch resolution, not a bug
+  fix, and it is left as it is.
+- **Arbitrary-precision integers, seen from the fuzzer.** An integer beyond `i64`
+  is refused with `integer value too large to represent` where tclsh promotes and
+  answers exactly, so `expr {99999999999999999999 + 1}` is an error against
+  `100000000000000000000`. The report counts those as skips, not divergences,
+  because the refusal is the documented behavior — what was a divergence, and is
+  fixed, was answering `1e+20` instead of refusing at all.
+- **`format`'s floating-point conversions lose precision on an integer past
+  `i64`.** `format %.2f 99999999999999999999` prints
+  `100000000000000016384.00` against tclsh's `100000000000000000000.00`:
+  `cmd_string::parse_double` accumulates the digits in an `f64`, and tclsh
+  converts the bignum. The same missing bignum as above, in the one place that
+  answers rather than refusing.
+
+### Fixed by the fuzzer's own findings
+
+Each of these was a divergence in the run above and is now parity, pinned in
+`tests/parity_fuzz_findings.rs` against a live tclsh:
+
+- A **float literal keeps its spelling**: `puts 3.0` prints `3.0`. It was interned
+  as a `Value::Float`, which `puts` stringifies through fusevm's `as_str_cow`
+  rather than Tcl's formatter.
+- **A condition is a Tcl boolean**: `if {"b"}` is `expected boolean value but got
+  "b"`, and so are `while`, `for`, the ternary, `&&` and `||`. `!` refuses the
+  operand rather than answering 0.
+- **Integral `**` stays integral for a negative exponent**: `expr {2 ** -1}` is 0,
+  and a zero base is `exponentiation of zero by negative power`.
+- **An out-of-`i64` integer is refused** rather than silently becoming a double.
+- **`format %.2f -0`** prints `0.00`; the double `-0.0` still keeps its sign.
+- **`incr x abc`** reports `expected integer but got "abc"`.
+- **A character `expr` cannot use** is `invalid character "Ü"`, not the lead byte
+  of its UTF-8 encoding.
+- **A failure inside a body** is located at the script's own command, which is the
+  line tclsh's `(file "…" line N)` names.
+- **Input nesting is bounded** by `parser::MAX_NESTING_DEPTH` (64_000, measured),
+  so the deepest input reports a Tcl error instead of aborting the process. The
+  limit sits above every depth tclsh survives — it segfaults on 30_000 nested `[`
+  — so nothing tclsh can parse became a refusal. Found by the `parse` cargo-fuzz
+  target (`fuzz/fuzz_targets/parse.rs`), not by the differential fuzzer: no
+  generated *program* has fifty thousand open brackets. A host embedding the
+  library on a stack smaller than `runtime::RECOMMENDED_STACK` still has to give
+  the parser the stack this crate documents; the limit is calibrated for that one.
 
 The five divergences the fuzzer's report allowlists rather than counting are the
 documented ones, and each is pinned in `tests/parity_fuzz_findings.rs` too, so an
@@ -246,6 +292,37 @@ refused before anything runs, and a message carrying ` (line N)` through the
 library. `scripts/fuzz/classify.pl` holds them with their reasons, and every run
 prints a hit count per entry.
 
+## Crashes reachable from a script
+
+A crash is worse than any divergence: the differential harness calls it
+`CRITICAL` and never suppresses one, and none of these can be caught by `catch` —
+the interpreter thread unwinds or the process aborts, so the script's own error
+handling never sees it. Each was found by auditing for panics on the class the
+boolean rule exposed (`&body[..2]` in the number parser), each is measured, and
+each is still open. `format`'s are the ones a generated program is likeliest to
+reach, since the generator draws widths and precisions from a pool.
+
+- **`format`'s floating-point precision above 65535 panics.** Rust's formatter
+  holds precision in a `u16`, and the four sites that call it take the number
+  straight from the script: `format %.65536f 1.0`, `format %.65536e 1.0`,
+  `format %.65535g 0.0001` and `format %.70000g 1e-5` are
+  `Formatting argument out of range` (`src/cmd_string.rs:1651`, `:1671`, `:1693`,
+  `:1711`). tclsh produces the digits — `string length [format %.65536f 1.0]` is
+  65538 there — so matching it means generating them rather than bounding the
+  precision, which Rust's formatter will not do.
+- **`format`'s field width is unbounded.** `format %9223372036854775807d 1`
+  is `memory allocation of 9223372036854775806 bytes failed`, an abort rather than
+  a panic (`src/cmd_string.rs:1500`, `push_padded`). tclsh reports
+  `max size for a Tcl value exceeded`. `string repeat` already has a 2 GiB guard
+  (`src/cmd_string.rs:511`); `format` has none, and the two should share one.
+- **`expr`'s parser recursion is unbounded.** `expr {((((…1…))))}` overflows the
+  stack between 5_000 and 10_000 parentheses on the stack the binary gives it, and
+  a unary chain does the same at around 150_000. `src/parser.rs` bounds its own
+  recursion at `MAX_NESTING_DEPTH` for exactly this reason and `src/expr.rs` does
+  not, so the fix is the same mechanism in `ExprParser::parse_binary` /
+  `parse_unary`. It fires while *compiling*, so `fuzz/fuzz_targets/compile.rs`
+  reaches it with a 10 KB input.
+
 ## Defects in the reference implementation
 
 - **`lsearch -start` on an empty list crashes tclsh 9.0.4.** A script whose only
@@ -255,11 +332,13 @@ prints a hit count per entry.
   is what tclsh does for the same index against a non-empty list. The
   combination is excluded from the generated index matrix, since there is no
   reference output to compare against.
-- **Deep nesting segfaults tclsh 9.0.4 earlier than it aborts tclrs.** A script of
-  50_000 `[` exits on a signal under tclsh while tclrs still reports `missing
-  close-bracket`; both die at 100_000. The differential fuzzer counts a case tclsh
-  cannot survive as `EXCLUDED` — there is no reference behavior to compare with —
-  and never charges it against tclrs.
+- **Deep nesting segfaults tclsh 9.0.4.** A script of 50_000 `[` exits on a signal
+  under tclsh while tclrs reports `missing close-bracket`, and tclsh is already
+  gone at 30_000. tclrs bounds its parser at `MAX_NESTING_DEPTH` and reports
+  `too many nested substitutions (infinite loop?)` past it, so it no longer dies at
+  100_000 either. The differential fuzzer counts a case tclsh cannot survive as
+  `EXCLUDED` — there is no reference behavior to compare with — and never charges
+  it against tclrs.
 - **`expr {2 ** 123456789}` does not finish in any useful time.** tclsh computes
   the bignum; the fuzzer's ten-second per-process timeout ends the run and
   classifies the case as `EXCLUDED`. tclrs reports the overflow immediately. This

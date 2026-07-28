@@ -338,13 +338,19 @@ impl<'a> ExprParser<'a> {
                 .map_err(|_| self.error(&format!("invalid floating-point number {text:?}")))
         } else {
             // Out of `i64` range: Tcl promotes to a bignum, which this frontend
-            // does not have. Refusing the literal here is the documented
-            // overflow; keeping the text as an operand let the runtime's number
-            // parser take it as a double, so `expr {99999999999999999999 + 1}`
-            // answered `1e+20` — a value the script never wrote.
+            // does not have. The literal stays its own text, and every *operation*
+            // on it is refused by the numeric hook — which is where the overflow
+            // is reported now that `runtime::parse_number` no longer hands the
+            // spelling to the double parser and answers `1e+20`.
+            //
+            // Deliberately not refused here. A decimal spelling this large is
+            // exactly what tclsh prints for it, so `expr {99999999999999999999}`
+            // and `puts 99999999999999999999` are both right as text; refusing at
+            // compile time would take down whole scripts that only ever print the
+            // value or never reach it at all.
             text.parse::<i64>()
                 .map(Expr::Int)
-                .map_err(|_| self.error("integer value too large to represent"))
+                .or_else(|_| Ok(Expr::Subst(vec![Part::Lit(text.to_string())])))
         }
     }
 
@@ -365,8 +371,11 @@ impl<'a> ExprParser<'a> {
         self.pos += prefix_len + digits.len();
         i64::from_str_radix(&digits, radix)
             .map(Expr::Int)
-            // The same bignum case as a decimal literal's, and the same wording:
-            // `expr {0x10000000000000000}` is the documented overflow.
+            // The same bignum case as a decimal literal's, and the same wording —
+            // but refused here rather than deferred, because a radix spelling is
+            // *not* what tclsh prints for the value: `expr {0x10000000000000000}`
+            // is `18446744073709551616` there, so carrying the text through would
+            // answer with something the script did not mean.
             .map_err(|_| self.error("integer value too large to represent"))
     }
 

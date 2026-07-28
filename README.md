@@ -179,6 +179,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | `Interp::capturing` | Scripts' writes are collected for `Interp::take_output`. |
 | `Interp::set_global` / `Interp::global` | Host access to the interpreter's variables. |
 | `Interp::set_recursion_limit` | How deep `eval` may nest. The default is `DEFAULT_RECURSION_LIMIT` (1000), which needs `RECOMMENDED_STACK` (256 MiB) of thread stack; the binary spawns a thread that size. Nesting deeper is a script error, never a stack overflow. |
+| `parser::MAX_NESTING_DEPTH` | How deeply command substitutions and array indices may nest in the *input*, which is the parser's own recursion — 64_000, measured against the stack above. Deeper is a script error, for the same reason: an exhausted stack is a signal with nothing to report. |
 | `Interp::cache_stats` | `(hits, misses)` from the source-keyed chunk cache — one miss per compilation, so the same `eval` text in a loop is lowered once. |
 | `tclrs::eval_captured` | `eval` for a caller that wants both halves of a failing run: the error *and* whatever the script had already printed. |
 | `tclrs::parse` | The parsed `Script` without running it, for tooling that wants the word structure. |
@@ -213,7 +214,7 @@ The whole operator set of `expr(n)`:
 
 | Group | Operators |
 | --- | --- |
-| Arithmetic | `+ - * / % **`, unary `+ -` — with Tcl's floored integer division and remainder, and integral `**` for integral operands |
+| Arithmetic | `+ - * / % **`, unary `+ -` — with Tcl's floored integer division and remainder, and integral `**` for integral operands, a negative exponent included (`2 ** -1` is `0`; a zero base there is an error) |
 | Comparison | `< > <= >= == !=` — numeric-preferring, falling back to string order |
 | String comparison | `lt gt le ge eq ne` — always string |
 | Bitwise / shift | `& ^ \| ~ << >>` |
@@ -223,7 +224,19 @@ The whole operator set of `expr(n)`:
 Operands are literals, variables, nested commands (`[…]`), quoted and braced
 strings, and parenthesised subexpressions. Doubles print in Tcl's format: the
 shortest representation that reads back exactly, never looking like an integer,
-exponential outside the positional range.
+exponential outside the positional range. A *literal*, though, prints as the
+script wrote it — Tcl's first rule — so `puts 3.0` is `3.0` and `puts 007.0` is
+`007.0`; the formatter is what an `expr` result goes through, not what a value
+carries.
+
+Where a value is used as a **condition** — `if`, `while`, `for`, the ternary,
+`&&`, `||` — it has to be a boolean, and Tcl's boolean is narrower than "not
+empty": a number in any radix, or one of `true` / `false` / `yes` / `no` / `on` /
+`off` in any case, abbreviated to any prefix that stays unambiguous. `t`, `fals`,
+`y`, `n` and `of` are booleans; `o` is not, because `on` and `off` both start with
+it. Anything else is `expected boolean value but got "…"`, which is why
+`if {"b"} {…}` is an error rather than a taken branch. `!` is the exception: it
+takes a number *or* a boolean word, and refuses the operand otherwise.
 
 ### Lists
 
@@ -302,7 +315,8 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `eval` inside a procedure body | `"eval" inside a procedure is not supported: the script it builds cannot reach the procedure's local variables` |
 | `coroutine` anywhere but a script's top level or a command substitution in one; a coroutine of a built-in or of anything but one of the script's procedures; `yieldto` at a command that is not a coroutine of the script | `"coroutine" is only supported at the top level of a script, or in a command substitution in one` |
 | `info`, apart from `info coroutine` | `unknown or unsupported subcommand "exists": only "info coroutine" is supported` |
-| Arbitrary-precision integers. An `i64` that overflows is an error, and so is the one integer division whose true quotient does not fit (`i64::MIN / -1`) | `integer value too large to represent` |
+| Arbitrary-precision integers. An `i64` that overflows is an error, and so is the one integer division whose true quotient does not fit (`i64::MIN / -1`) and an integer *literal* or operand that does not fit at all (`expr {99999999999999999999 + 1}`) | `integer value too large to represent` |
+| Input nesting past `parser::MAX_NESTING_DEPTH` — 64_000 command substitutions or array indices deep, well past anything the reference interpreter survives | `too many nested substitutions (infinite loop?)` |
 | Ahead-of-time compilation of a script using `catch` or a coroutine | `ahead-of-time compilation of a script using "catch" is not supported: it needs the driver that only the interpreter has` |
 
 `coroprobe`, `coroinject` and deleting a coroutine by renaming its command are
@@ -331,6 +345,17 @@ Rule 11 rules out rescanning substituted values, so each character is processed
 once and the compiler can resolve variable and command references statically
 wherever the word shape allows.
 
+Braces nest through a counter, so a script of a million `{` costs no stack, but
+command substitution and an array index are recursive — a `[` inside a `[` is a
+nested script. That recursion is bounded by `parser::MAX_NESTING_DEPTH`, because
+running out of native stack is a signal with nothing to report rather than an
+error a script can be blamed for. The limit is 64_000 and it is measured: on the
+stack the binary gives the parser (`runtime::RECOMMENDED_STACK`) a script of
+nothing but `[` still parses at 80_000 levels and aborts by 90_000, and tclsh
+segfaults on the same input between 20_000 and 30_000 — so the bound sits above
+every depth the reference interpreter itself survives, and refuses nothing tclsh
+can parse.
+
 ---
 
 ## [0x07] ARCHITECTURE
@@ -352,14 +377,15 @@ Tcl script → parser (Script/Command/Word) → fusevm bytecode → Interp → M
 | **`Interp`** | The variables of a session, keyed by name, plus the source-keyed chunk cache. A chunk interns its own name table, so a slot vector cannot cross evaluations; the map is the authority and the vector is projected out of it on entry and read back into it on exit. |
 | **`Machine`** | One evaluation. It switches coroutine contexts, unwinds `catch`, services the requests coroutine ops raise, and moves the global slot vector between the VMs of one chunk. Every one of those works the same way: an op stashes something in a cell and halts, and the driver reads the cell after `run()` returns. |
 | **One install point** | The output sink, the numeric hook, the extension dispatch and `enable_tracing_jit` are installed in exactly one function, so the main VM, a coroutine's VM, a nested `eval`'s VM and an ahead-of-time run all behave alike. |
-| **Numeric hook** | Catches operands the VM cannot compute on natively. An operand that parses as a number is one (including the `0x` / `0o` / `0b` radix prefixes); comparisons fall back to string order when it does not; arithmetic on a non-number is an error. |
-| **Extension ops** | `/` and `%` floor toward negative infinity (`-57 / 10` is `-6`, `-57 % 10` is `3`), `**` stays integral for integral operands, and a normalize op converts a VM-native result into its Tcl value — booleans to `1`/`0`, doubles to Tcl's double format. The list, associative and string commands are extension ops too. |
+| **Numeric hook** | Catches operands the VM cannot compute on natively. An operand that parses as a number is one (including the `0x` / `0o` / `0b` / `0d` radix prefixes and `_` as numeric whitespace); comparisons fall back to string order when it does not; arithmetic on a non-number is an error, and so is an integer past `i64` — a bignum is what Tcl would promote to and this frontend has none. |
+| **Extension ops** | `/` and `%` floor toward negative infinity (`-57 / 10` is `-6`, `-57 % 10` is `3`), `**` stays integral for integral operands *including a negative exponent* (`2 ** -1` is `0`), a normalize op converts a VM-native result into its Tcl value — booleans to `1`/`0`, doubles to Tcl's double format — and a boolean op applies Tcl's rule for a condition, which is not the VM's truthiness. The list, associative and string commands are extension ops too. |
 | **No object heap** | Tcl's value model needs none on top of fusevm's: strings, integers and floats map onto `Value` directly. |
 
 Extension op ids are laid out so `runtime`'s dispatch can test ranges from the
 highest base down: the arithmetic and normalizing ops at 0–5, `eval` at 6,
-control flow at 7–9, the coroutine ops at 10–14, the list commands from 16, the
-associative ones from 64, and the string ones from 128. `catch` is the one op
+control flow at 7–9, the coroutine ops at 10–14, the boolean conversion at 15,
+the list commands from 16, the associative ones from 64, and the string ones
+from 128. `catch` is the one op
 whose payload is an op index, so it is an extension-*wide* op.
 
 Static stack tracking is what keeps the lowering cheap: each command leaves its
@@ -559,6 +585,34 @@ extension ops (`FOREACH_INIT` / `MORE` / `TAKE` / `ADVANCE`), and
 is arbitrary Rust with no Cranelift lowering. `dict for` is refused the same way
 through `DICT_PAIRS`, plus the two hidden globals its cursor uses. Rotation
 cannot help either of them; lowering their state to native ops could.
+
+#### What Tcl's boolean rule costs, and where
+
+That rejection of `Op::Extended` is why the conversion a Tcl condition needs is
+emitted selectively. A condition has to be a boolean — `if {"b"}` is an error, not
+a taken branch — and the rule is a ported one (`ParseBoolean`, `tclObj.c`), so it
+lives in an extension op. Putting one before every branch would have taken the
+compiled trace away from every loop in the language.
+
+`Compiler::yields_number` decides it statically: an expression whose top-level
+operator answers with a number needs no conversion, because the VM's truthiness
+and Tcl's agree on every number. A relational or arithmetic test — which is what a
+counted loop's is — is therefore untouched, and only a condition whose value could
+be a *string* pays:
+
+```tcl
+proc h {n} {set i 0; set go 1; while {$go} {incr i; if {$i >= $n} {set go 0}}; return $i}
+proc h2 {n} {set i 0; while {$i < $n} {incr i}; return $i}
+```
+
+| loop | condition | ops | trace-eligible | traced |
+| --- | --- | --- | --- | --- |
+| `h2` | `$i < $n` | 29 | true | true |
+| `h` | `$go` | 42 | false | false |
+
+Both are proc-local, both are rotated, and the second is refused for the one
+`Extended` in its body. That is the whole cost of the rule, it is measured rather
+than assumed, and the alternative was answering the wrong thing.
 
 ### The disk cache
 
