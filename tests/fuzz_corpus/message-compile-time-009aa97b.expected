@@ -1,6 +1,6 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00299   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 26 -> 3 lines in 3 round(s), 50/400 candidates checked
-# verdict: DIVERGENCE	message-compile-time	msg tclsh=unmatched open brace in list tclrs=invalid bare word "a" in expression
+# verdict: DIVERGENCE	message-compile-time	msg tclsh=unmatched open brace in list tclrs=invalid bareword "a"
 # tclsh: 9.0.4
 # tclrs: tclrs 0.2.0
 # tclsh-status: 1
@@ -8,7 +8,7 @@
 # tclsh-stderr: unmatched open brace in list\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: invalid bare word "a" in expression\n    (file "target/fuzz/work/record/driven.tcl" line 1)\n
+# tclrs-stderr: invalid bareword "a"\n    (file "target/fuzz/work/record/driven.tcl" line 1)\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

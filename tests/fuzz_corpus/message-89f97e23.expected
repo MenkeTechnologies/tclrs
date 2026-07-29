@@ -1,6 +1,6 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00374   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 19 -> 3 lines in 2 round(s), 28/400 candidates checked
-# verdict: DIVERGENCE	message	msg tclsh=expected floating-point number but got a list tclrs=expected floating-point number but got "1 42 {back\slash}"
+# verdict: PASS	failed alike	
 # tclsh: 9.0.4
 # tclrs: tclrs 0.2.0
 # tclsh-status: 1
@@ -8,7 +8,7 @@
 # tclsh-stderr: expected floating-point number but got a list\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: expected floating-point number but got "1 42 {back\\slash}"\n
+# tclrs-stderr: expected floating-point number but got a list\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

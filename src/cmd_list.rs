@@ -445,6 +445,11 @@ fn lsearch(args: &[String]) -> Result<String, String> {
     let mut inline = false;
     let mut negated = false;
     let mut start_text: Option<&str> = None;
+    // Recorded for the diagnostic below; nothing else reads it while `-sorted`
+    // and `-bisect` are unimplemented, which is the whole point — the option is
+    // accepted because it changes no answer without them.
+    let mut increasing = true;
+    let mut ordered: Option<&str> = None;
 
     let mut i = 0;
     while i + 2 < args.len() {
@@ -458,6 +463,15 @@ fn lsearch(args: &[String]) -> Result<String, String> {
             "-integer" => data = DataType::Integer,
             "-not" => negated = true,
             "-real" => data = DataType::Real,
+            // The sort-order options describe the list `-sorted` and `-bisect`
+            // binary-search through, and lsearch(n) gives them no other effect:
+            // `lsearch -decreasing {a b c} b` is 1 in tclsh 9.0.4, exactly as
+            // the same search without the option is, because the search is
+            // linear either way. They are therefore accepted and recorded here,
+            // and only the two options that would *use* the order are still
+            // refused below.
+            "-increasing" => increasing = true,
+            "-decreasing" => increasing = false,
             "-start" => {
                 if i + 2 > args.len() - 2 {
                     return Err("missing starting index".to_string());
@@ -465,9 +479,21 @@ fn lsearch(args: &[String]) -> Result<String, String> {
                 i += 1;
                 start_text = Some(&args[i]);
             }
+            // The two options that would read the order. Refused after the loop,
+            // not here, so the order they name is the one the whole command
+            // settled on rather than whichever flag came first.
+            "-sorted" | "-bisect" => ordered = Some(name),
             other => return Err(format!("lsearch {other} is not supported yet")),
         }
         i += 1;
+    }
+    if let Some(name) = ordered {
+        let order = if increasing {
+            "-increasing"
+        } else {
+            "-decreasing"
+        };
+        return Err(format!("lsearch {name} {order} is not supported yet"));
     }
 
     let items = list::split(&args[args.len() - 2])?;

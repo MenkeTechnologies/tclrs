@@ -1,6 +1,6 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00223   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 19 -> 2 lines in 2 round(s), 30/400 candidates checked
-# verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=premature end of expression
+# verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=missing operand at _@_
 # tclsh: 9.0.4
 # tclrs: tclrs 0.2.0
 # tclsh-status: 0
@@ -8,7 +8,7 @@
 # tclsh-stderr: 
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: premature end of expression\n    (file "target/fuzz/work/record/driven.tcl" line 22)\n
+# tclrs-stderr: missing operand at _@_\n    (file "target/fuzz/work/record/driven.tcl" line 22)\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

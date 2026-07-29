@@ -1,6 +1,6 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00066   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 17 -> 4 lines in 3 round(s), 58/400 candidates checked
-# verdict: DIVERGENCE	message	msg tclsh=cannot use floating-point value "1.0" as left operand of "%" tclrs=can't use floating-point value as operand of "%"
+# verdict: PASS	failed alike	
 # tclsh: 9.0.4
 # tclrs: tclrs 0.2.0
 # tclsh-status: 1
@@ -8,7 +8,7 @@
 # tclsh-stderr: cannot use floating-point value "1.0" as left operand of "%"\n
 # tclrs-status: 1
 # tclrs-stdout: {hello world}\n1000\n{hello world}\n1000\n{hello world}\n1000\n{hello world}\n1000\n{hello world}\n1000\n2\n
-# tclrs-stderr: can't use floating-point value as operand of "%"\n
+# tclrs-stderr: cannot use floating-point value "1.0" as left operand of "%"\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

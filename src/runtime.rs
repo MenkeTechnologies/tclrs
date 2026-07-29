@@ -1268,11 +1268,32 @@ fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
         NumOp::Neg => "-",
         _ => "?",
     };
-    let x = tcl_num(a).map_err(|why| operand_error(why, a, sym))?;
-    let y = if matches!(op, NumOp::Neg) {
+    // `Neg` is the one unary op that reaches here, and its operand is `a`; every
+    // other op names the side its bad operand was on.
+    let unary = matches!(op, NumOp::Neg);
+    let left = if unary { Side::Only } else { Side::Left };
+    // `incr` on a variable that does not exist counts from zero — `proc p {}
+    // {incr n; return $n}` is 1 in tclsh — and `incr` lowers to a native
+    // `Op::Add` on the variable's value, deliberately, so that a counting loop
+    // stays trace-eligible (see `Compiler::cmd_incr`). An absent variable
+    // reaches this hook as `Value::Undef`, which no assignment can produce —
+    // `set x ""` stores `Value::Str("")` — so reading it as zero is exactly the
+    // `incr` case and not the empty string. The cost is that `expr {$unset +
+    // 1}` answers 1 rather than refusing the operand; tclrs already reads an
+    // absent variable as absent rather than raising (BUGS.md, allowlist A1),
+    // and this is that same deviation reaching arithmetic.
+    let zeroed = |v: &Value| matches!(op, NumOp::Add) && *v == Value::Undef;
+    let x = if zeroed(a) {
         Num::Int(0)
     } else {
-        tcl_num(b).map_err(|why| operand_error(why, b, sym))?
+        num_operand(a, left, sym)?
+    };
+    // A unary op has no right operand, and reads as zero for the same reason an
+    // absent one does: the arm below adds it to `x` and answers `x`.
+    let y = if unary || zeroed(b) {
+        Num::Int(0)
+    } else {
+        num_operand(b, Side::Right, sym)?
     };
 
     let value = match (op, x, y) {
@@ -1300,19 +1321,84 @@ fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
     Ok(value)
 }
 
-fn non_numeric(v: &Value, op: &str) -> String {
-    format!(
-        "can't use non-numeric string as operand of \"{op}\": \"{}\"",
-        v.as_str_cow()
-    )
+/// Which operand of an operator a diagnostic is about. `expr(n)` words a
+/// binary operator's two sides differently and a unary operator's only side
+/// differently again, so the side travels with the refusal rather than being
+/// guessed from the operator's spelling — `-` is both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Left,
+    Right,
+    /// A unary operator's only operand: `as operand of`, with no side named.
+    Only,
+}
+
+impl Side {
+    fn phrase(self) -> &'static str {
+        match self {
+            Side::Left => "as left operand of",
+            Side::Right => "as right operand of",
+            Side::Only => "as operand of",
+        }
+    }
+}
+
+/// How `expr(n)` names an operand it will not compute on.
+///
+/// Three shapes, measured against tclsh 9.0.4:
+///
+/// ```text
+/// expr {"a" + 1}   cannot use non-numeric string "a" as left operand of "+"
+/// expr {1.5 % 2}   cannot use floating-point value "1.5" as left operand of "%"
+/// expr {"a b" + 1} cannot use a list as left operand of "+"
+/// expr {~1.5}      cannot use floating-point value "1.5" as operand of "~"
+/// ```
+///
+/// A value that could hold several elements is named `a list` and never quoted,
+/// which is [`looks_like_a_list`](crate::list::looks_like_a_list) — the same
+/// screen `incr` and `format` use — and the text is *not* truncated here, unlike
+/// theirs: `expr {[string repeat q 80] + 1}` quotes all eighty.
+fn operand(v: &Value, kind: &str, side: Side, op: &str) -> String {
+    let text = to_tcl_string(v);
+    if list::looks_like_a_list(&text) {
+        return format!("cannot use a list {} \"{op}\"", side.phrase());
+    }
+    format!("cannot use {kind} \"{text}\" {} \"{op}\"", side.phrase())
+}
+
+/// An operand that is not a number at all.
+fn non_numeric(v: &Value, side: Side, op: &str) -> String {
+    operand(v, "non-numeric string", side, op)
+}
+
+/// An operand that is a perfectly good double where the operator wants an
+/// integer — `%` and the bitwise operators.
+fn non_integer(v: &Value, side: Side, op: &str) -> String {
+    operand(v, "floating-point value", side, op)
 }
 
 /// What an operator says about an operand it cannot use: the overflow this
 /// frontend documents in place of a bignum, or the non-numeric refusal.
-fn operand_error(why: NotNumeric, v: &Value, op: &str) -> String {
+fn operand_error(why: NotNumeric, v: &Value, side: Side, op: &str) -> String {
     match why {
         NotNumeric::TooLarge => too_large(),
-        NotNumeric::Unparsable => non_numeric(v, op),
+        NotNumeric::Unparsable => non_numeric(v, side, op),
+    }
+}
+
+/// An operand of an arithmetic operator, refused in `expr(n)`'s words.
+///
+/// A NaN is named as its own third kind — `expr {"nan" + 0}` is `cannot use
+/// non-numeric floating-point value "nan" as left operand of "+"` — because a
+/// NaN reaching an operator is a refusal, where a NaN *produced* by one is the
+/// domain error [`nan_checked`] reports.
+fn num_operand(v: &Value, side: Side, op: &str) -> Result<Num, String> {
+    match tcl_num(v) {
+        Ok(Num::Float(f)) if f.is_nan() => {
+            Err(operand(v, "non-numeric floating-point value", side, op))
+        }
+        Ok(n) => Ok(n),
+        Err(why) => Err(operand_error(why, v, side, op)),
     }
 }
 
@@ -1325,12 +1411,50 @@ fn too_large() -> String {
 /// The frontend's extension ops.
 fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     match id {
-        ext::DIV | ext::MOD | ext::POW => {
+        ext::DIV | ext::POW => {
             let b = vm.pop();
             let a = vm.pop();
-            let x = tcl_num(&a).map_err(|why| operand_error(why, &a, sym_of(id)))?;
-            let y = tcl_num(&b).map_err(|why| operand_error(why, &b, sym_of(id)))?;
+            let x = num_operand(&a, Side::Left, sym_of(id))?;
+            let y = num_operand(&b, Side::Right, sym_of(id))?;
             vm.push(arith(id, x, y)?);
+            Ok(())
+        }
+        // `%` wants two integers, and checks the left operand completely before
+        // looking at the right: `expr {1.5 % "a"}` reports the float, not the
+        // string (measured against tclsh 9.0.4).
+        ext::MOD => {
+            let b = vm.pop();
+            let a = vm.pop();
+            let x = int_operand(&a, Side::Left, "%")?;
+            let y = int_operand(&b, Side::Right, "%")?;
+            vm.push(arith(id, Num::Int(x), Num::Int(y))?);
+            Ok(())
+        }
+        ext::BIT_AND | ext::BIT_OR | ext::BIT_XOR => {
+            let b = vm.pop();
+            let a = vm.pop();
+            let sym = sym_of(id);
+            let x = int_operand(&a, Side::Left, sym)?;
+            let y = int_operand(&b, Side::Right, sym)?;
+            vm.push(Value::Int(match id {
+                ext::BIT_AND => x & y,
+                ext::BIT_OR => x | y,
+                _ => x ^ y,
+            }));
+            Ok(())
+        }
+        ext::SHL | ext::SHR => {
+            let b = vm.pop();
+            let a = vm.pop();
+            let sym = sym_of(id);
+            let x = int_operand(&a, Side::Left, sym)?;
+            let by = int_operand(&b, Side::Right, sym)?;
+            vm.push(Value::Int(shift(id, x, by)?));
+            Ok(())
+        }
+        ext::BIT_NOT => {
+            let a = vm.pop();
+            vm.push(Value::Int(!int_operand(&a, Side::Only, "~")?));
             Ok(())
         }
         // Tcl's boolean rule, which the VM's own truthiness is not: the value a
@@ -1343,11 +1467,21 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                 // a boolean word only as a second reading.
                 match tcl_num(&v) {
                     Ok(Num::Int(i)) => i == 0,
+                    // A NaN is `!`'s operand refusal, not the boolean rule's
+                    // "floating point value is Not a Number" — which is what a
+                    // *condition* answers for the same value (`if {"nan"} …`).
+                    Ok(Num::Float(f)) if f.is_nan() => {
+                        return Err(operand(
+                            &v,
+                            "non-numeric floating-point value",
+                            Side::Only,
+                            "!",
+                        ))
+                    }
                     Ok(Num::Float(f)) => !float_bool(f)?,
                     Err(NotNumeric::TooLarge) => return Err(too_large()),
-                    Err(NotNumeric::Unparsable) => {
-                        !boolean_word(&v.as_str_cow()).ok_or_else(|| non_numeric(&v, "!"))?
-                    }
+                    Err(NotNumeric::Unparsable) => !boolean_word(&v.as_str_cow())
+                        .ok_or_else(|| non_numeric(&v, Side::Only, "!"))?,
                 }
             } else {
                 tcl_bool(&v)?
@@ -1382,6 +1516,31 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             vm.push(Value::Int(hit as i64));
             Ok(())
         }
+        // The value `expr` answers with, where the VM's own is not it. Reached
+        // only when [`crate::compiler::Compiler::normalizes`] found the two can
+        // differ; a result the VM already holds as an `i64` or a boolean skips
+        // this op, and with it the deopt an `Op::Extended` costs.
+        ext::NORM => {
+            let v = vm.pop();
+            let normalized = match v {
+                Value::Bool(b) => Value::Int(b as i64),
+                Value::Float(f) => Value::Str(Arc::new(nan_checked(f)?)),
+                other => canonical_number(other)?,
+            };
+            vm.push(normalized);
+            Ok(())
+        }
+        // Unary `+`: the identity on a number, a refusal on anything else. The
+        // number it answers with is the canonical one, as `expr {+007}` is 7.
+        ext::UPLUS => {
+            let v = vm.pop();
+            // `num_operand` rather than `tcl_num`: a NaN operand is `+`'s own
+            // refusal, and reaching `canonical_number` with one would report the
+            // domain error a NaN *result* gets instead.
+            num_operand(&v, Side::Only, "+")?;
+            vm.push(canonical_number(v)?);
+            Ok(())
+        }
         ext::MATCH => {
             let pattern = to_tcl_string(&vm.pop());
             let subject = to_tcl_string(&vm.pop());
@@ -1409,8 +1568,65 @@ fn sym_of(id: u16) -> &'static str {
     match id {
         ext::DIV => "/",
         ext::MOD => "%",
+        ext::BIT_AND => "&",
+        ext::BIT_OR => "|",
+        ext::BIT_XOR => "^",
+        ext::SHL => "<<",
+        ext::SHR => ">>",
+        ext::BIT_NOT => "~",
         _ => "**",
     }
+}
+
+/// An operand of an integer-only operator — `%`, `&`, `|`, `^`, `<<`, `>>`, `~`
+/// — refused in `expr(n)`'s own words when it is anything else.
+///
+/// The two refusals are distinct and both are the operator's, not a command's:
+/// a string that is no number at all is `non-numeric string`, and a perfectly
+/// good double is `floating-point value`. fusevm's native `Op::BitAnd` and
+/// friends would take either, coercing through `Value::to_int` — `expr {1.5 |
+/// 2}` answered 3 — so these operators are lowered to extension ops whenever
+/// the compiler cannot prove both operands integral
+/// ([`crate::compiler::Compiler::yields_integer`]).
+fn int_operand(v: &Value, side: Side, op: &str) -> Result<i64, String> {
+    match num_operand(v, side, op)? {
+        Num::Int(i) => Ok(i),
+        Num::Float(_) => Err(non_integer(v, side, op)),
+    }
+}
+
+/// `<<` and `>>` on an `i64`, in tclsh 9.0.4's semantics.
+///
+/// A negative distance is refused outright. A left shift that would move a bit
+/// past the top of an `i64` is the bignum case — tclsh answers `1 << 64` with
+/// 18446744073709551616 — and is reported as the overflow this frontend
+/// documents in place of one. A right shift is arithmetic and *saturates*
+/// rather than wrapping the distance: `1 >> 200` is 0 and `-1 >> 200` is -1,
+/// where Rust's `>>` would mask the distance to 200 % 64 = 8.
+fn shift(id: u16, value: i64, by: i64) -> Result<i64, String> {
+    if by < 0 {
+        return Err("negative shift argument".to_string());
+    }
+    if id == ext::SHR {
+        // Every bit has left the word; only the sign remains.
+        if by >= 63 {
+            return Ok(if value < 0 { -1 } else { 0 });
+        }
+        return Ok(value >> by);
+    }
+    if value == 0 {
+        return Ok(0);
+    }
+    if by >= 64 {
+        return Err(too_large());
+    }
+    value
+        .checked_shl(by as u32)
+        // `checked_shl` only bounds the distance, not the value: it answers
+        // `Some` for a shift that pushed bits out of the word. The round trip
+        // is the overflow test.
+        .filter(|shifted| shifted >> by == value)
+        .ok_or_else(too_large)
 }
 
 /// Integer division and remainder floor toward negative infinity — `-57 / 10`
@@ -1442,8 +1658,11 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
                 r
             }))
         }
+        // An exponent past what `checked_pow` even takes is its own diagnostic
+        // in tclsh 9.0.4 — `expr {2 ** 9999999999}` is "exponent too large",
+        // not the overflow the product would report.
         (ext::POW, Num::Int(i), Num::Int(j)) if j >= 0 => {
-            let exp = u32::try_from(j).map_err(|_| too_large())?;
+            let exp = u32::try_from(j).map_err(|_| "exponent too large".to_string())?;
             i.checked_pow(exp).map(Value::Int).ok_or_else(too_large)
         }
         // Integral operands keep an integral result even when the exponent is
@@ -1460,7 +1679,9 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
             _ => Ok(Value::Int(0)),
         },
         (ext::DIV, p, q) => Ok(Value::Float(p.as_f64() / q.as_f64())),
-        (ext::MOD, _, _) => Err("can't use floating-point value as operand of \"%\"".to_string()),
+        // `%` never reaches here with a double: `int_operand` refused it, in the
+        // order tclsh checks the two sides.
+        (ext::MOD, _, _) => unreachable!("`%` operands are integers by now"),
         // A double operand anywhere makes the result a double, and a zero base
         // raised to a negative power still has no value.
         (_, p, q) => {
@@ -1468,6 +1689,42 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
                 return Err("exponentiation of zero by negative power".to_string());
             }
             Ok(Value::Float(p.as_f64().powf(q.as_f64())))
+        }
+    }
+}
+
+/// An `expr` result that is a double: its Tcl spelling, unless it is a NaN,
+/// which `expr(n)` reports rather than answers.
+///
+/// `expr {0.0/0.0}`, `expr {inf-inf}` and `expr {nan}` are all `domain error:
+/// argument not in valid range` in tclsh 9.0.4 — measured, not inferred from
+/// the C library's errno.
+fn nan_checked(f: f64) -> Result<String, String> {
+    if f.is_nan() {
+        return Err("domain error: argument not in valid range".to_string());
+    }
+    Ok(format_double(f))
+}
+
+/// The value an `expr` answers with when its result is a bare operand.
+///
+/// Tcl's `expr` yields the *number* an operand spells, not the text that spelt
+/// it: `expr {007}` is 7, `expr {0x10}` is 16, `expr {" 42 "}` is 42 and `expr
+/// {1e3}` is 1000.0. A string that spells no number at all is its own value —
+/// `expr {"abc"}` is `abc` — and so is an integer too large for an `i64`, which
+/// is the one case where the text is the only representation this frontend has
+/// (see the note in `expr.rs` on decimal literals).
+fn canonical_number(v: Value) -> Result<Value, String> {
+    if matches!(v, Value::Int(_)) {
+        return Ok(v);
+    }
+    let text = v.as_str_cow();
+    match parse_number(text.trim()) {
+        Ok(Num::Int(i)) => Ok(Value::Int(i)),
+        Ok(Num::Float(f)) => Ok(Value::Str(Arc::new(nan_checked(f)?))),
+        Err(_) => {
+            drop(text);
+            Ok(v)
         }
     }
 }

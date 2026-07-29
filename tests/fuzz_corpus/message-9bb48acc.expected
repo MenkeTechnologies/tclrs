@@ -1,6 +1,6 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00086   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 15 -> 2 lines in 3 round(s), 28/400 candidates checked
-# verdict: DIVERGENCE	message	msg tclsh=expected integer but got a list tclrs=expected integer but got "? q\"r"
+# verdict: PASS	failed alike	
 # tclsh: 9.0.4
 # tclrs: tclrs 0.2.0
 # tclsh-status: 1
@@ -8,7 +8,7 @@
 # tclsh-stderr: expected integer but got a list\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: expected integer but got "? q\\"r"\n
+# tclrs-stderr: expected integer but got a list\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

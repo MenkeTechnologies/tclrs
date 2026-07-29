@@ -84,8 +84,10 @@ pub fn run_native(src: &str) -> Result<Outcome, String> {
         // Captured through the hooks rather than through the VM's sink,
         // because `puts` is a frontend op: what it writes never reaches the
         // VM's sink at all.
-        *cell.lock().expect("hooks lock") =
-            Some(crate::runtime::install_hooks_capturing(vm, Arc::clone(&sink)));
+        *cell.lock().expect("hooks lock") = Some(crate::runtime::install_hooks_capturing(
+            vm,
+            Arc::clone(&sink),
+        ));
     })?;
 
     if let Some(msg) = hooks
