@@ -1939,6 +1939,55 @@ fn fixed_nan_is_reported_rather_than_answered() {
         "puts [expr {\"nan\"+0}]",
         err("cannot use non-numeric floating-point value \"nan\" as left operand of \"+\""),
     );
+    // A unary operator names no side, and `!` follows the operand rule here
+    // rather than the boolean rule a *condition* follows for the same value.
+    agrees(
+        &tclsh,
+        "puts [expr {!\"nan\"}]",
+        err("cannot use non-numeric floating-point value \"nan\" as operand of \"!\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {+\"nan\"}]",
+        err("cannot use non-numeric floating-point value \"nan\" as operand of \"+\""),
+    );
+    // A NaN in a *condition* is the boolean rule's diagnostic rather than an
+    // operand refusal — and tclsh gives two different ones for it depending on
+    // whether the condition was compiled, so what is pinned here is only that
+    // `!` does not take that path. See `bug_a_nan_condition_has_two_diagnostics`.
+    assert_eq!(
+        subject("if {\"nan\"} {puts a}").error,
+        "floating point value is Not a Number"
+    );
+}
+
+/// tclsh reports a NaN condition two different ways, and tclrs has one.
+///
+/// `if {"nan"} {puts a}` at the top level of a script is `domain error: argument
+/// not in valid range`; the same command inside a `catch` body or a procedure —
+/// which is where tclsh compiles it — is `floating point value is Not a Number`.
+/// tclrs compiles everything, so it gives the second everywhere, and only the
+/// uncompiled spelling diverges. Not a defect this branch introduced: it is the
+/// reference interpreter disagreeing with itself, recorded here because the
+/// difference decides which of the two a test may assert.
+#[test]
+fn bug_a_nan_condition_has_two_diagnostics() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    diverges(
+        &tclsh,
+        "if {\"nan\"} {puts a}",
+        err("domain error: argument not in valid range"),
+        err("floating point value is Not a Number"),
+    );
+    // Compiled by tclsh, and then the two agree.
+    agrees(
+        &tclsh,
+        "catch {if {\"nan\"} {puts a}} m\nputs $m",
+        out("floating point value is Not a Number\n"),
+    );
 }
 
 /// `expr`'s compile-time diagnostics are the reference interpreter's.

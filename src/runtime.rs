@@ -1298,7 +1298,7 @@ fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
 /// differently again, so the side travels with the refusal rather than being
 /// guessed from the operator's spelling — `-` is both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Side {
+enum Side {
     Left,
     Right,
     /// A unary operator's only operand: `as operand of`, with no side named.
@@ -1345,7 +1345,7 @@ fn non_numeric(v: &Value, side: Side, op: &str) -> String {
 
 /// An operand that is a perfectly good double where the operator wants an
 /// integer — `%` and the bitwise operators.
-pub(crate) fn non_integer(v: &Value, side: Side, op: &str) -> String {
+fn non_integer(v: &Value, side: Side, op: &str) -> String {
     operand(v, "floating-point value", side, op)
 }
 
@@ -1439,6 +1439,17 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                 // a boolean word only as a second reading.
                 match tcl_num(&v) {
                     Ok(Num::Int(i)) => i == 0,
+                    // A NaN is `!`'s operand refusal, not the boolean rule's
+                    // "floating point value is Not a Number" — which is what a
+                    // *condition* answers for the same value (`if {"nan"} …`).
+                    Ok(Num::Float(f)) if f.is_nan() => {
+                        return Err(operand(
+                            &v,
+                            "non-numeric floating-point value",
+                            Side::Only,
+                            "!",
+                        ))
+                    }
                     Ok(Num::Float(f)) => !float_bool(f)?,
                     Err(NotNumeric::TooLarge) => return Err(too_large()),
                     Err(NotNumeric::Unparsable) => !boolean_word(&v.as_str_cow())
@@ -1480,10 +1491,10 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         // number it answers with is the canonical one, as `expr {+007}` is 7.
         ext::UPLUS => {
             let v = vm.pop();
-            match tcl_num(&v) {
-                Ok(_) => {}
-                Err(why) => return Err(operand_error(why, &v, Side::Only, "+")),
-            }
+            // `num_operand` rather than `tcl_num`: a NaN operand is `+`'s own
+            // refusal, and reaching `canonical_number` with one would report the
+            // domain error a NaN *result* gets instead.
+            num_operand(&v, Side::Only, "+")?;
             vm.push(canonical_number(v)?);
             Ok(())
         }
@@ -1534,7 +1545,7 @@ fn sym_of(id: u16) -> &'static str {
 /// 2}` answered 3 — so these operators are lowered to extension ops whenever
 /// the compiler cannot prove both operands integral
 /// ([`crate::compiler::Compiler::yields_integer`]).
-pub(crate) fn int_operand(v: &Value, side: Side, op: &str) -> Result<i64, String> {
+fn int_operand(v: &Value, side: Side, op: &str) -> Result<i64, String> {
     match num_operand(v, side, op)? {
         Num::Int(i) => Ok(i),
         Num::Float(_) => Err(non_integer(v, side, op)),
