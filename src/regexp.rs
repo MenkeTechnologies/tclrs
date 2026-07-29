@@ -32,7 +32,7 @@
 //! Indices are the third correction, and it is not about syntax: Tcl counts in
 //! characters and Rust reports byte offsets, so `regexp -indices {b} "éb"` is
 //! `1 1` in tclsh and would be `2 2` read off a Rust `Match` directly.
-//! [`CharIndex`] does that conversion once per subject.
+//! `CharIndex` does that conversion once per subject.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

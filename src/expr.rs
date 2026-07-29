@@ -131,7 +131,7 @@ pub fn parse(src: &str) -> Result<Expr, ParseError> {
 }
 
 /// Binding powers, lowest first. Each entry is one precedence level; every
-/// level is left-associative except `**`, handled in [`ExprParser::parse_binary`].
+/// level is left-associative except `**`, handled in `ExprParser::parse_binary`.
 ///
 /// Public because the reference page prints the ladder, and printing it from
 /// anywhere but the table the parser binds with would let the two disagree.
@@ -231,7 +231,7 @@ impl<'a> ExprParser<'a> {
     /// Every recursive call that opens a subexpression goes through here: a
     /// parenthesized operand, a function argument, both arms of a ternary, the
     /// right operand of the right-associative `**`, and a unary operator's
-    /// operand. The level walk inside [`ExprParser::parse_binary`] does not,
+    /// operand. The level walk inside `ExprParser::parse_binary` does not,
     /// because it is bounded by [`LEVELS`] rather than by the input.
     ///
     /// The wording follows the shape the reference interpreter uses for its own

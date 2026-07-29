@@ -21,24 +21,24 @@
 //! * an [`Interp`] owns the variables and holds them between evaluations, which
 //!   is what makes a REPL a REPL and what lets the `eval` command run a script
 //!   built at run time and see the same state the script that built it sees;
-//! * a [`Machine`] drives one evaluation. A script that uses no coroutine is
+//! * a `Machine` drives one evaluation. A script that uses no coroutine is
 //!   one VM run in a loop that only ever restarts it at a `catch` handler; a
 //!   script that creates coroutines has one VM per context, and the same loop
 //!   also services the requests their ops raise. Both paths share one
 //!   mechanism: an op stashes something in a cell and halts, and the driver
 //!   reads the cell after `run()` returns — the pattern fusevm's scheduler is
 //!   built on;
-//! * [`Hooks::install`] is the only place a hook is put on a VM, so the main
+//! * `Hooks::install` is the only place a hook is put on a VM, so the main
 //!   VM, every coroutine's VM and every nested `eval`'s VM behave alike.
 //!
-//! The two ways of holding variables meet at [`seed`] and [`flush`]. Within one
+//! The two ways of holding variables meet at `seed` and `flush`. Within one
 //! evaluation every VM runs the same chunk, so the global table is a `Vec` the
 //! driver moves into whichever VM is about to run. Across evaluations the chunk
 //! differs — a chunk interns its own name table — so the interpreter keeps the
 //! variables keyed by name and the vector is projected out of that map on entry
 //! and read back into it on exit.
 //!
-//! The VM is asked for its highest tier: [`Hooks::install`] also calls
+//! The VM is asked for its highest tier: `Hooks::install` also calls
 //! `enable_tracing_jit`, which makes `VM::run` consult fusevm's block JIT for a
 //! wholly-eligible chunk and arm the trace recorder at every backward branch
 //! otherwise. [`crate::tiers`] reports which of those tiers a given script
@@ -199,7 +199,7 @@ impl Output {
 /// a `VM::run`, so that nesting can go as deep as `limit` allows.
 struct State {
     /// The variables, keyed by name. This is the authority, not the VM's slot
-    /// vector — see [`seed`].
+    /// vector — see `seed`.
     globals: HashMap<String, Value>,
     cache: ChunkCache,
     /// Where the scripts of this interpreter write.
@@ -346,7 +346,7 @@ fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> {
 /// A chunk interns its own name table, so the slot holding a given variable
 /// differs from chunk to chunk and a slot vector cannot be carried from one run
 /// to the next. The interpreter's map is the authority; a chunk's slots are a
-/// projection of it, built here on entry and read back by [`flush`] on exit.
+/// projection of it, built here on entry and read back by `flush` on exit.
 fn seed(chunk: &Chunk, shared: &Shared) -> Vec<Value> {
     let state = shared.lock().expect("interpreter lock");
     chunk

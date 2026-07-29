@@ -1,6 +1,6 @@
 //! tclrs — Tcl as a fusevm frontend.
 //!
-//! Pipeline: `parser` turns a script into [`parser::Script`] → the compiler
+//! Pipeline: `parser` turns a script into `parser::Script` → the compiler
 //! (phase 2) lowers each command to a `fusevm::Chunk` → fusevm executes it and
 //! calls back into the host for Tcl-specific operations. Execution and codegen
 //! live in fusevm; there is no bespoke VM or JIT here.

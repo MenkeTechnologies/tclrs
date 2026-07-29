@@ -1,7 +1,7 @@
 //! `tclrs --dap` — a Debug Adapter Protocol server (stdio) for Tcl.
 //!
 //! Stopping granularity is one command: the compiler emits a
-//! [`ext_wide::DBG_LINE`] marker before each one when a script is lowered by
+//! `ext_wide::DBG_LINE` marker before each one when a script is lowered by
 //! [`crate::compiler::compile_debug`], and the marker's handler calls
 //! [`at_line`], which stops when a breakpoint matches the line, when the client
 //! is stepping, or when a pause was asked for. Markers are emitted inside
@@ -10,7 +10,7 @@
 //!
 //! The debuggee is not a separate process, and there is no second thread: the
 //! run happens on this thread and, when a marker stops it, requests are served
-//! from inside the stop ([`Session::wait`]) until the client resumes. That is
+//! from inside the stop (`Session::wait`) until the client resumes. That is
 //! what makes `scopes` and `variables` read the live VM rather than a copy —
 //! the paused VM is the one being asked. The cost is that an asynchronous
 //! `pause` is honored at the next command rather than in the middle of one.

@@ -92,7 +92,7 @@ fn is_multi_element(src: &str) -> bool {
 /// Whether a value that is not the number or boolean a command wanted is named
 /// as “a list” rather than quoted verbatim.
 ///
-/// A looser screen than [`is_multi_element`], and deliberately so: the
+/// A looser screen than `is_multi_element`, and deliberately so: the
 /// reference implementation asks only whether the string *could* hold several
 /// elements and whether it parses at all (`tclObj.c`, `TclSetBooleanFromAny`
 /// and `TclNewIntObj`'s error path — `TclMaxListLength(...) > 1` and

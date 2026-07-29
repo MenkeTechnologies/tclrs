@@ -17,7 +17,7 @@
 //!   arguments below a frame whose `return_ip` is one past the last op — the
 //!   same positioning `Scheduler::position_goroutine` performs — so the body
 //!   returning ends that VM's `run()`.
-//! * **Suspending is halting.** [`ext::CORO_YIELD`] stashes a [`Request`] and
+//! * **Suspending is halting.** [`ext::CORO_YIELD`] stashes a `Request` and
 //!   calls `VM::request_halt`, exactly as `Op::ChanRecv` stashes a `SchedReq`.
 //!   The driver in [`crate::runtime`] reads the request after `run()` returns,
 //!   pushes the yielded value onto the *resumer's* stack, and runs the resumer.

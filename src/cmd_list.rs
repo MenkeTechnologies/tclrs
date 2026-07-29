@@ -1,7 +1,7 @@
 //! The list commands.
 //!
 //! Each one lowers to a single frontend extension op: the compiler pushes the
-//! command's arguments and emits `Extended(id, argc)`, and [`run`] pops that
+//! command's arguments and emits `Extended(id, argc)`, and `run` pops that
 //! many values, computes the result and pushes it. Nothing about a list is
 //! resolved at compile time, because the arguments are ordinary words and may
 //! be substitutions.
@@ -28,7 +28,7 @@ use crate::runtime::{place_at, place_of, take_var, to_tcl_string, var_cell};
 
 // ── compiling ────────────────────────────────────────────────────────────
 
-/// The names [`compile`] accepts. The match below is the authority; this list
+/// The names `compile` accepts. The match below is the authority; this list
 /// exists so the REPL can offer the names for completion, and
 /// `every_listed_command_compiles` fails if the two ever disagree.
 pub const COMMANDS: &[&str] = &[

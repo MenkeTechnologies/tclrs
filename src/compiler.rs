@@ -1,4 +1,4 @@
-//! Lowering: [`parser::Script`] → `fusevm::Chunk`.
+//! Lowering: `parser::Script` → `fusevm::Chunk`.
 //!
 //! Every command leaves exactly one value on the stack — its result — because
 //! a Tcl script's value is the value of its last command, and command
@@ -15,7 +15,7 @@
 //!
 //! Loops are emitted rotated — entered at the test, closed by a conditional
 //! backward branch — because that is the one shape fusevm's tracing JIT installs
-//! a trace for. [`Compiler::rotated_loop`] is the single emitter every loop in
+//! a trace for. `Compiler::rotated_loop` is the single emitter every loop in
 //! this crate goes through; `while`, `for`, `foreach` and `dict for` differ only
 //! in what they hand it.
 
@@ -60,7 +60,7 @@ pub mod ext {
     pub const MATCH: u16 = 7;
     /// Raise the Tcl error whose message is on top of the stack.
     pub const ERROR: u16 = 8;
-    /// Leave the `catch` region entered by [`ext_wide::CATCH`], having reached
+    /// Leave the `catch` region entered by `ext_wide::CATCH`, having reached
     /// its end without an error.
     pub const CATCH_END: u16 = 9;
 
@@ -89,7 +89,7 @@ pub mod ext {
     /// `arg` is 0 for a condition and 1 for `!`, which differ in how they word
     /// the refusal. Emitted only where the value could be a string, so the
     /// arithmetic a condition is usually made of stays native and traceable;
-    /// [`super::Compiler::yields_number`] is the test.
+    /// `super::Compiler::yields_number` is the test.
     pub const BOOL: u16 = 15;
 
     /// `[value]` → the number that value spells, or a refusal if it spells a
@@ -99,16 +99,16 @@ pub mod ext {
     ///
     /// The op an `expr` used to end in unconditionally. It is emitted in two
     /// places now, both of them cold: after an expression whose result could
-    /// still be a string ([`super::Compiler::yields_number`] says so — never
+    /// still be a string (`super::Compiler::yields_number` says so — never
     /// after arithmetic), and after arithmetic on an operand that is a literal
-    /// `inf` or `nan` ([`super::Compiler::may_be_non_finite`]), which is the
+    /// `inf` or `nan` (`super::Compiler::may_be_non_finite`), which is the
     /// only way a script can spell a NaN into an operation that would otherwise
     /// lower natively. A counted loop reaches neither, which is what keeps its
     /// body free of extension ops and inside the tracing JIT.
     pub const CANON: u16 = 47;
 
     /// `[a, b]` → 1 or 0: `expr`'s always-string comparisons — `eq ne lt gt le
-    /// ge` — with `arg` naming which, in [`super::Compiler::str_cmp`]'s order.
+    /// ge` — with `arg` naming which, in `super::Compiler::str_cmp`'s order.
     ///
     /// fusevm's `StrEq` and friends compare the VM's string form, which is not
     /// Tcl's for a double or a boolean. Same trade as [`PUTS`]: those ops are
@@ -197,10 +197,10 @@ pub mod ext {
     /// saturates a right shift and promotes an overflowing left shift.
     ///
     /// Emitted only where the compiler cannot prove both operands are integers
-    /// ([`super::Compiler::yields_integer`]), so an expression written in
+    /// (`super::Compiler::yields_integer`), so an expression written in
     /// literals keeps the native op — and with it the tracing JIT, which
     /// rejects `Op::Extended`. A shift by a literal distance is the other case
-    /// that stays native; see [`super::Compiler::native_shift`].
+    /// that stays native; see `super::Compiler::native_shift`.
     ///
     /// Numbered from 40 rather than 33: 33 and 34 are [`LAPPEND_VAR`] and
     /// [`LAPPEND_SLOT`], and an id collision here dispatches one command's op to
@@ -216,7 +216,7 @@ pub mod ext {
     /// else: `expr {+"a"}` is `cannot use non-numeric string "a" as operand of
     /// "+"` in tclsh 9.0.4, where lowering it to nothing at all answered `a`.
     /// Emitted only where the operand is not already known to be a number
-    /// ([`super::Compiler::yields_number`]), so `expr {+1}` still lowers to a
+    /// (`super::Compiler::yields_number`), so `expr {+1}` still lowers to a
     /// single `LoadInt`.
     pub const UPLUS: u16 = 46;
     // Associative data (`assoc`). The operand order in each comment is the
@@ -293,7 +293,7 @@ pub mod ext_wide {
     pub const CATCH: u16 = 0;
 
     /// A command is about to run, and the payload is its line. Emitted only
-    /// when [`super::Compiler::debug`] is set — a chunk compiled the ordinary
+    /// when `super::Compiler::debug` is set — a chunk compiled the ordinary
     /// way carries none of these, so nothing is paid for a debugger that is not
     /// attached.
     pub const DBG_LINE: u16 = 1;
@@ -306,7 +306,7 @@ pub mod ext_wide {
     /// error is not reporting a place in the source. A failure the compiler
     /// found and deferred is — it knows the command's line, and reporting it is
     /// what keeps `(file "…" line N)` on the diagnostics that used to be
-    /// refusals. See [`super::Compiler::defer`].
+    /// refusals. See `super::Compiler::defer`.
     pub const ERROR_AT: u16 = 2;
 }
 
@@ -475,7 +475,7 @@ pub(crate) struct Compiler {
     /// command substitutions inside them. A `coroutine` command may only appear
     /// there, since its name has to be known to every call site.
     pub(crate) static_ctx: bool,
-    /// Emit a [`ext_wide::DBG_LINE`] marker before every command, which is what
+    /// Emit a `ext_wide::DBG_LINE` marker before every command, which is what
     /// lets a debugger stop at one. Off for every ordinary compilation.
     pub(crate) debug: bool,
     /// How many command substitutions enclose the command being compiled. A
