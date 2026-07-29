@@ -2,7 +2,7 @@
 # seed: 1   case: 00390   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 27 -> 5 lines in 3 round(s), 74/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=cannot use non-numeric string "a" as left operand of "+" tclrs=invalid bare word "a" in expression
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: x\nx\n\n
 # tclsh-stderr: cannot use non-numeric string "a" as left operand of "+"\n

@@ -54,7 +54,12 @@ approximated, and nothing is silently mis-run.
   compiled straight from a braced word with no runtime parse: `+ - * / % **`,
   unary `+ - ~ !`, `< > <= >= == !=`, `lt gt le ge eq ne`, `& ^ | << >>`,
   short-circuiting `&& ||`, and the ternary (`src/expr.rs`). `lt` … `eq` are
-  meant to be always-string and are not yet: see the divergence recorded below.
+  always-string, on the operands as written: a numeric literal carries its
+  spelling as well as its value, so `expr {1.0 eq 1}` is 0 like tclsh's. Nothing
+  converts an `expr` *result* — it stays the integer, double or boolean the VM
+  computed, and Tcl's string form is applied where a string is asked for, which
+  is what leaves an arithmetic loop lowerable by the JIT and the ahead-of-time
+  compiler.
 - **Tcl arithmetic.** Floored integer division and remainder, integral `**` for
   integral operands — a negative exponent included, where the integral result
   truncates to 0 or ±1 and a zero base is an error — numeric-preferring comparison
@@ -222,11 +227,11 @@ approximated, and nothing is silently mis-run.
 
 Found by `scripts/fuzz_parity.sh`, the differential fuzzer: it generates seeded
 random Tcl programs, runs each under both `tclsh` 9.0.4 and tclrs, and minimises
-whatever diverges. One run of 400 programs (`-n 400 -s 1`) puts 103 in parity,
-227 in divergence, 50 in skip, 18 in the allowlist and 2 outside comparison
-because tclsh did not terminate. **213 of the 227 are the one class below that is
+whatever diverges. One run of 400 programs (`-n 400 -s 1`) puts 105 in parity,
+225 in divergence, 50 in skip, 18 in the allowlist and 2 outside comparison
+because tclsh did not terminate. **209 of the 225 are the one class below that is
 not a defect** — a script's shape refused while compiling, which lands as a
-message on a channel tclsh never reached — so 14 are behavior. The same command
+message on a channel tclsh never reached — so 16 are behavior. The same command
 against the generator as it was before the reach work put 182 in parity and 150
 in divergence: a wider generator writes programs with more places to disagree,
 not a worse implementation.
@@ -284,16 +289,6 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
 - **Parse errors inside `expr` are worded differently.** `missing operand at _@_`
   against `premature end of expression`, and `invalid bareword "end"` against
   `invalid bare word "end" in expression`. The *character* diagnostic agrees now.
-- **`expr`'s *literal* number grammar is behind the runtime's.** `expr {0d9}`,
-  `expr {1_0}`, `expr {0x1_0}` and `expr {0b1_0}` all report
-  `extra characters after expression` where tclsh answers 9, 10, 16 and 2. The
-  runtime parser takes the whole grammar — `set x 1_0; expr {$x + 1}` is 11, and
-  a condition reads `0d9` as true — so it is only `expr::parse_number` and
-  `expr::radix_literal` that are short: neither knows `0d`, neither accepts `_`
-  in a decimal literal, and `radix_literal` advances the cursor by the count of
-  digits it *kept* rather than of characters it consumed, so one `_` leaves the
-  cursor a character behind. The grammar exists in `runtime::parse_number`
-  already, so the fix is to scan the token's span here and hand it there.
 - **Unreachable code is still compiled**, so a script tclsh runs to completion can
   be refused outright: `if {0} {incr}` is `wrong # args`, `if {0} {puts [expr {1
   +}]}` is `premature end of expression`, and `if {0} {nosuchcommand}` is
@@ -358,14 +353,6 @@ Seven more, from the 2000-program run above. Each is pinned in
 because the generator now builds `format`'s specifier matrix, draws shift counts
 with a sign, and carries `nan` / `inf` in its value pools.
 
-- **`expr`'s always-string operators compare numeric *literals* as numbers.**
-  `expr {1.0 eq 1}` is 1 where tclsh says 0, and `expr {2.5e-3 gt 123456789}` is
-  0 where tclsh compares `"2"` against `"1"` and says 1. `expr(n)` defines `eq`,
-  `ne`, `lt`, `gt`, `le` and `ge` as string comparisons — that is the whole
-  reason they sit beside `==` and `<`. Quoting either operand restores the string
-  comparison in both engines, so what is wrong is that a bare numeric literal was
-  interned as a number and the operator then saw numbers. The "Implemented"
-  section above claims these are always-string; on this evidence they are not.
 - **A shift by a negative count answers 0.** `expr {10 << -1}` and
   `expr {10 >> -2}` are both 0; `expr(n)` makes a negative shift count illegal
   and tclsh reports `negative shift argument`. 29 of the 2000 cases reach it,
@@ -415,6 +402,16 @@ Each of these was a divergence in the run above and is now parity, pinned in
 - A **float literal keeps its spelling**: `puts 3.0` prints `3.0`. It was interned
   as a `Value::Float`, which `puts` stringifies through fusevm's `as_str_cow`
   rather than Tcl's formatter.
+- **The always-string operators compare as written**: `expr {1.0 eq 1}`,
+  `expr {010 eq 10}` and `expr {1e3 eq 1000.0}` are all 0. A numeric literal now
+  carries the text the script wrote next to its value (`expr::Expr::Int` /
+  `Float`), and the comparison is a frontend op over Tcl's string form of each
+  operand rather than fusevm's `StrEq`, whose string form is the VM's.
+- **`expr`'s literal number grammar is the whole integer grammar**: `expr {0d9}`,
+  `expr {1_0}`, `expr {0x1_0}`, `expr {0b1_0}` and `expr {1_0.5}` answer 9, 10,
+  16, 2 and 10.5. `_` is scanned as part of the literal and dropped before the
+  parse, and `radix_literal` advances by the characters it consumed rather than
+  the digits it kept.
 - **A condition is a Tcl boolean**: `if {"b"}` is `expected boolean value but got
   "b"`, and so are `while`, `for`, the ternary, `&&` and `||`. `!` refuses the
   operand rather than answering 0.

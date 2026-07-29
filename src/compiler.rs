@@ -35,9 +35,18 @@ pub mod ext {
     pub const POW: u16 = 2;
     pub const IN: u16 = 3;
     pub const NI: u16 = 4;
-    /// Convert a VM-native result into its Tcl value: booleans become 1 or 0,
-    /// doubles take Tcl's formatting.
-    pub const NORM: u16 = 5;
+    /// `[value]` → nothing, having written the value's **Tcl** string form, with
+    /// a newline when `arg` is 1.
+    ///
+    /// `puts` does not lower to fusevm's `Print` / `PrintLn`, because those
+    /// stringify with the VM's rules and the frontend owns Tcl's: a double
+    /// prints in the shortest form that reads back, and a boolean as `1` or `0`
+    /// rather than `1` and the empty string. Owning it here is what lets an
+    /// `expr` result stay the number the VM computed instead of being converted
+    /// to its string the moment it is produced — which is what kept every
+    /// arithmetic loop out of the JIT and the ahead-of-time compiler. Neither
+    /// `Print` nor `PrintLn` is JIT-eligible, so nothing is lost by the swap.
+    pub const PUTS: u16 = 5;
     /// `eval`: `[arg, …]` with the count in the inline operand → the value of
     /// the script they concatenate to. The only op whose operand is a script
     /// that is not known until it runs; the handler lives in
@@ -82,6 +91,15 @@ pub mod ext {
     /// arithmetic a condition is usually made of stays native and traceable;
     /// [`super::Compiler::yields_number`] is the test.
     pub const BOOL: u16 = 15;
+
+    /// `[a, b]` → 1 or 0: `expr`'s always-string comparisons — `eq ne lt gt le
+    /// ge` — with `arg` naming which, in [`super::Compiler::str_cmp`]'s order.
+    ///
+    /// fusevm's `StrEq` and friends compare the VM's string form, which is not
+    /// Tcl's for a double or a boolean. Same trade as [`PUTS`]: those ops are
+    /// not JIT-eligible either, so comparing here costs a frontend op only
+    /// where one was already going to stop a trace.
+    pub const STR_CMP: u16 = 62;
 
     /// Where the list commands' ops begin. Everything at or above this id is
     /// dispatched to [`crate::cmd_list`]; the inline operand is the number of
@@ -580,13 +598,38 @@ impl Compiler {
             0 => self.push_empty(),
             1 => self.part(&word.parts[0])?,
             _ => {
-                self.part(&word.parts[0])?;
-                for part in &word.parts[1..] {
+                // One op over every part rather than a `Concat` per pair,
+                // because the parts have to be joined in Tcl's string form and
+                // fusevm's `Concat` joins them in the VM's — see [`ext::PUTS`]
+                // for why the difference is now visible. A word with more parts
+                // than an operand count can hold is joined in groups, each
+                // group's result becoming the next group's first operand.
+                let mut pending = 0usize;
+                for part in &word.parts {
                     self.part(part)?;
-                    self.emit(Op::Concat, -1);
+                    pending += 1;
+                    if pending == u8::MAX as usize {
+                        self.concat_parts(pending)?;
+                        pending = 1;
+                    }
+                }
+                if pending > 1 {
+                    self.concat_parts(pending)?;
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Join the top `count` values into one, in Tcl's string form.
+    fn concat_parts(&mut self, count: usize) -> Result<(), CompileError> {
+        let Ok(argc) = u8::try_from(count) else {
+            return self.error("too many parts in one word");
+        };
+        self.emit(
+            Op::Extended(crate::cmd_string::ext::CAT, argc),
+            1 - count as i32,
+        );
         Ok(())
     }
 
@@ -803,12 +846,9 @@ impl Compiler {
             _ => return self.error("wrong # args: should be \"puts ?-nonewline? string\""),
         };
         self.word(value)?;
-        if newline {
-            self.emit(Op::PrintLn(1), -1);
-        } else {
-            self.emit(Op::Print(1), -1);
-        }
-        self.push_empty();
+        // The op writes and leaves `puts`'s own empty result, so the stack is
+        // one deep either side of it.
+        self.emit(Op::Extended(ext::PUTS, u8::from(newline)), 0);
         Ok(())
     }
 
@@ -828,8 +868,13 @@ impl Compiler {
             text.push_str(piece);
         }
         let parsed = expr::parse(&text).map_err(|e| self.err(e.msg))?;
+        // Nothing normalizes the result: it stays the value the VM computed —
+        // an integer, a double, a boolean — and Tcl's string form is applied
+        // wherever one is asked for (`ext::PUTS`, `ext::STR_CMP`, the word
+        // concatenation above, `crate::runtime::tcl_str`). That is what keeps
+        // an arithmetic loop free of extension ops, which is what fusevm's JIT
+        // and its ahead-of-time compiler need in order to lower one.
         self.expr(&parsed)?;
-        self.emit(Op::Extended(ext::NORM, 0), 0);
         Ok(())
     }
 
@@ -1185,9 +1230,37 @@ impl Compiler {
     /// `Bool`; the exceptions are an operand that is substituted text
     /// ([`Expr::Subst`]) and unary `+`, which is the identity and so passes its
     /// operand's value straight through.
+    /// An operand of an always-string operator, pushed as a string. A numeric
+    /// literal becomes the text the script wrote rather than the number it
+    /// parses to, which is the difference between `expr {1e3 eq 1000.0}` being
+    /// false — tclsh's answer — and true.
+    fn string_operand(&mut self, e: &Expr) -> Result<(), CompileError> {
+        match e {
+            Expr::Int(_, text) | Expr::Float(_, text) => {
+                self.push_str(text);
+                Ok(())
+            }
+            other => self.expr(other),
+        }
+    }
+
+    /// Which string comparison an operator is, as [`ext::STR_CMP`]'s operand.
+    /// The order is this function; the handler in [`crate::runtime`] reads it.
+    fn str_cmp(op: &BinOp) -> Option<u8> {
+        match op {
+            BinOp::StrLt => Some(0),
+            BinOp::StrGt => Some(1),
+            BinOp::StrLe => Some(2),
+            BinOp::StrGe => Some(3),
+            BinOp::StrEq => Some(4),
+            BinOp::StrNe => Some(5),
+            _ => None,
+        }
+    }
+
     fn yields_number(e: &Expr) -> bool {
         match e {
-            Expr::Int(_) | Expr::Float(_) => true,
+            Expr::Int(_, _) | Expr::Float(_, _) => true,
             Expr::Subst(_) => false,
             Expr::Unary(UnOp::Plus, operand) => Self::yields_number(operand),
             Expr::Unary(_, _) => true,
@@ -1205,11 +1278,11 @@ impl Compiler {
 
     fn expr(&mut self, e: &Expr) -> Result<(), CompileError> {
         match e {
-            Expr::Int(v) => {
+            Expr::Int(v, _) => {
                 self.emit(Op::LoadInt(*v), 1);
                 Ok(())
             }
-            Expr::Float(v) => {
+            Expr::Float(v, _) => {
                 self.emit(Op::LoadFloat(*v), 1);
                 Ok(())
             }
@@ -1240,6 +1313,18 @@ impl Compiler {
             }
             Expr::Binary(BinOp::And, a, b) => self.short_circuit(a, b, false),
             Expr::Binary(BinOp::Or, a, b) => self.short_circuit(a, b, true),
+            // `eq ne lt gt le ge` compare strings, always — that is why they sit
+            // beside `==` and `<`. Both operands are lowered as strings, which
+            // for a numeric literal means the text the script wrote: `010` and
+            // `10` are one number and two strings, and tclsh answers on the
+            // strings.
+            Expr::Binary(op, a, b) if Self::str_cmp(op).is_some() => {
+                let which = Self::str_cmp(op).expect("guarded above");
+                self.string_operand(a)?;
+                self.string_operand(b)?;
+                self.emit(Op::Extended(ext::STR_CMP, which), -1);
+                Ok(())
+            }
             Expr::Binary(op, a, b) => {
                 self.expr(a)?;
                 self.expr(b)?;
@@ -1255,12 +1340,6 @@ impl Compiler {
                     BinOp::Ge => Some(Op::NumGe),
                     BinOp::Eq => Some(Op::NumEq),
                     BinOp::Ne => Some(Op::NumNe),
-                    BinOp::StrLt => Some(Op::StrLt),
-                    BinOp::StrGt => Some(Op::StrGt),
-                    BinOp::StrLe => Some(Op::StrLe),
-                    BinOp::StrGe => Some(Op::StrGe),
-                    BinOp::StrEq => Some(Op::StrEq),
-                    BinOp::StrNe => Some(Op::StrNe),
                     BinOp::BitAnd => Some(Op::BitAnd),
                     BinOp::BitOr => Some(Op::BitOr),
                     BinOp::BitXor => Some(Op::BitXor),
@@ -1320,10 +1399,13 @@ impl Compiler {
         self.emit(Op::Pop, -1);
         self.condition(b)?;
         // Normalize both arms to a boolean, as Tcl's logical operators yield
-        // 1 or 0 rather than the operand that decided the result.
+        // 1 or 0 rather than the operand that decided the result. Two `LogNot`s
+        // rather than an extension op: both are native, so a short-circuit
+        // inside a loop does not cost that loop its trace.
         let end = self.b.current_pos();
         self.b.patch_jump(jump, end);
-        self.emit(Op::Extended(ext::NORM, 1), 0);
+        self.emit(Op::LogNot, 0);
+        self.emit(Op::LogNot, 0);
         Ok(())
     }
 }
@@ -1334,10 +1416,10 @@ impl Compiler {
 /// wrote, so a literal is a string unless carrying it as a number cannot be
 /// observed. That holds for an integer — `i64::to_string` is exactly the
 /// spelling Tcl prints, and `05` fails the round-trip and stays a string — and
-/// it does **not** hold for a double: a `Value::Float` reaching `puts` is
-/// stringified by fusevm's `as_str_cow`, and only an `expr` result passes
-/// through the `NORM` op that applies Tcl's formatting. `puts 3.0` printed `3`
-/// for exactly that reason, so no literal is interned as a `Float`.
+/// it does **not** hold for a double, whose spelling Tcl keeps: `puts 007.0`
+/// prints `007.0`, and a `Value::Float` would print the shortest form that reads
+/// back — `7.0` — because that is what Tcl's formatter answers for the number.
+/// So no literal is interned as a `Float`; the text is the value.
 ///
 /// A double literal inside an `expr` still becomes `Op::LoadFloat`
 /// ([`Compiler::expr`]), which is the arithmetic fast path this used to be

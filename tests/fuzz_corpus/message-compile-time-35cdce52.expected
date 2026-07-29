@@ -2,7 +2,7 @@
 # seed: 1   case: 00365   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 17 -> 2 lines in 4 round(s), 45/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=invalid bareword "end" tclrs=invalid bare word "end" in expression
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: invalid bareword "end"\n

@@ -2,7 +2,7 @@
 # seed: 1   case: 00271   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 18 -> 3 lines in 4 round(s), 55/400 candidates checked
 # verdict: DIVERGENCE	message	msg tclsh= tclrs=can't use non-numeric string as operand of "+": ""
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 0
 # tclsh-stdout: \n\x1e
 # tclsh-stderr: 

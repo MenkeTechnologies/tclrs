@@ -1463,29 +1463,37 @@ fn bug_expr_negative_shift_count_answers_zero() {
     );
 }
 
-/// `expr`'s always-string operators compare numerically when both operands are
-/// numeric *literals*.
+/// `expr`'s always-string operators compare the operands as they were written —
+/// **fixed**, and pinned here so it stays that way.
 ///
 /// `expr(n)` is explicit that `eq`, `ne`, `lt`, `gt`, `le` and `ge` "compare
 /// operands as strings", which is the whole reason the operators exist next to
-/// `==` and `<`. tclrs interns a bare numeric literal as a number and the
-/// comparison then runs on the numbers, so `1.0 eq 1` is true where tclsh says
-/// false and `2.5e-3 gt 123456789` is false where tclsh compares `"2"` against
-/// `"1"` and says true. Quoting either operand restores the string comparison in
-/// both engines, so the defect is in what the literal became, not in the
-/// operator.
+/// `==` and `<`. tclrs used to intern a bare numeric literal as a number and
+/// compare the numbers, so `1.0 eq 1` was true where tclsh says false and
+/// `2.5e-3 gt 123456789` was false where tclsh compares `"2"` against `"1"` and
+/// says true. A numeric literal now carries the text the script wrote
+/// (`expr::Expr::Int`/`Float`), the comparison is a frontend op over Tcl's
+/// string form of each side (`compiler::ext::STR_CMP`), and both engines agree.
 #[test]
-fn bug_expr_string_operators_compare_numeric_literals_as_numbers() {
+fn expr_string_operators_compare_operands_as_written() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(&tclsh, "puts [expr {1.0 eq 1}]", out("0\n"), out("1\n"));
-    diverges(
+    agrees(&tclsh, "puts [expr {1.0 eq 1}]", out("0\n"));
+    agrees(&tclsh, "puts [expr {2.5e-3 gt 123456789}]", out("1\n"));
+    agrees(&tclsh, "puts [expr {010 eq 10}]", out("0\n"));
+    agrees(&tclsh, "puts [expr {1e3 eq 1000.0}]", out("0\n"));
+    agrees(&tclsh, "puts [expr {0x10 eq 16}]", out("0\n"));
+    // A value, rather than a literal, was never the part that was wrong.
+    agrees(&tclsh, "set x 1.0\nputs [expr {$x eq 1}]", out("0\n"));
+    // And an `expr` result compares as the string Tcl prints for it, which is
+    // what says the result of one expression keeps Tcl's formatting when it
+    // reaches the next.
+    agrees(
         &tclsh,
-        "puts [expr {2.5e-3 gt 123456789}]",
+        "puts [expr {[expr {1.0 + 1}] eq \"2.0\"}]",
         out("1\n"),
-        out("0\n"),
     );
     // Quoted, both engines compare as strings — which is what the operator means.
     agrees(
@@ -1493,6 +1501,37 @@ fn bug_expr_string_operators_compare_numeric_literals_as_numbers() {
         "puts [expr {\"2.5e-3\" gt \"123456789\"}]",
         out("1\n"),
     );
+}
+
+/// `expr`'s literal number grammar takes the whole integer grammar — **fixed**.
+///
+/// The `0d` prefix and `_` as a digit separator were the runtime parser's and
+/// not `expr::parse_number`'s, so `expr {0d9}`, `expr {1_0}`, `expr {0x1_0}` and
+/// `expr {0b1_0}` all reported `extra characters after expression` where tclsh
+/// answers 9, 10, 16 and 2. The separator is scanned as part of the literal and
+/// dropped before the parse, so the value is the number and the text is still
+/// what the script wrote — which is what the string operators above compare.
+#[test]
+fn expr_literal_grammar_takes_the_integer_grammar() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    for program in [
+        "puts [expr {0d9}]",
+        "puts [expr {1_0}]",
+        "puts [expr {0x1_0}]",
+        "puts [expr {0b1_0}]",
+        "puts [expr {0o1_7}]",
+        "puts [expr {1_0 + 1}]",
+        "puts [expr {0d09 + 1}]",
+        "puts [expr {1_0.5}]",
+        "puts [expr {1_000_000}]",
+        // The separator is part of the text, so it is what `eq` sees.
+        "puts [expr {1_0 eq 10}]",
+    ] {
+        assert_eq!(reference(&tclsh, program), subject(program), "{program}");
+    }
 }
 
 /// Zero divided by a floating-point zero is `NaN` rather than a domain error.

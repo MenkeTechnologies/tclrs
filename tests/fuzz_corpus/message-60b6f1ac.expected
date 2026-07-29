@@ -2,7 +2,7 @@
 # seed: 1   case: 00013   depth: 3   generator: scripts/fuzz/gen.tcl
 # verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: m:\n
 # tclsh-stderr: expected boolean value but got "255[end"\n

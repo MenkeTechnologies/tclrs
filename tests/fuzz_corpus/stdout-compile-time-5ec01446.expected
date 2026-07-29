@@ -2,7 +2,7 @@
 # seed: 1   case: 00368   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 24 -> 3 lines in 4 round(s), 59/400 candidates checked
 # verdict: DIVERGENCE	stdout-compile-time	line tclsh= tclrs=<no more output>
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: \n1 2 3\n
 # tclsh-stderr: invalid character "α"\n

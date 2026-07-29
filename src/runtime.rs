@@ -410,6 +410,19 @@ pub fn install_hooks(vm: &mut VM) -> Hooks {
     hooks
 }
 
+/// The same, with the script's output collected into `buf` rather than written
+/// to stdout — what the in-process ahead-of-time run reads back.
+///
+/// It has to be installed here rather than by replacing the VM's output sink
+/// afterwards, because `puts` is a frontend op and writes through these hooks
+/// rather than through the VM (see [`ext::PUTS`]); a sink swapped in after the
+/// fact would catch only what fusevm's own ops print.
+pub fn install_hooks_capturing(vm: &mut VM, buf: Arc<Mutex<String>>) -> Hooks {
+    let hooks = Hooks::new(Interp::with_output(Output::Capture(buf)).shared);
+    hooks.install(vm);
+    hooks
+}
+
 /// The cells every VM's hooks write into. One set is shared by the main VM and
 /// every coroutine's; the driver swaps the per-context ones (`catches`,
 /// `current`) around each `run()`, so a hook never has to know which VM it is
@@ -462,9 +475,23 @@ impl Hooks {
         let pending = Arc::clone(&self.pending);
         let current = Arc::clone(&self.current);
         let interp = Arc::clone(&self.interp);
+        // `puts` writes here rather than through fusevm's `PrintLn`, so that
+        // what reaches the channel is Tcl's string form of the value; see
+        // [`ext::PUTS`]. It is the same sink the VM's own output goes to, so
+        // the two interleave in the order the script wrote them.
+        let out = self.output.clone();
         vm.set_extension_handler(Box::new(move |vm: &mut VM, id: u16, arg: u8| {
             if id == ext::CATCH_END {
                 open.lock().expect("catch lock").pop();
+                return;
+            }
+            if id == ext::PUTS {
+                let mut text = to_tcl_string(&vm.pop());
+                if arg == 1 {
+                    text.push('\n');
+                }
+                out.write(&text);
+                vm.push(Value::Str(Arc::new(String::new())));
                 return;
             }
             if coro::is_op(id) {
@@ -1339,19 +1366,20 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             vm.push(Value::Int(i64::from(found == (id == ext::IN))));
             Ok(())
         }
-        ext::NORM => {
-            let v = vm.pop();
-            let normalized = if arg == 1 {
-                // A logical operator's result is 1 or 0, never the operand.
-                Value::Int(v.is_truthy() as i64)
-            } else {
-                match v {
-                    Value::Bool(b) => Value::Int(b as i64),
-                    Value::Float(f) => Value::Str(Arc::new(format_double(f))),
-                    other => other,
-                }
+        // `expr`'s always-string comparisons, on Tcl's string form of each
+        // operand rather than the VM's.
+        ext::STR_CMP => {
+            let b = to_tcl_string(&vm.pop());
+            let a = to_tcl_string(&vm.pop());
+            let hit = match arg {
+                0 => a < b,
+                1 => a > b,
+                2 => a <= b,
+                3 => a >= b,
+                4 => a == b,
+                _ => a != b,
             };
-            vm.push(normalized);
+            vm.push(Value::Int(hit as i64));
             Ok(())
         }
         ext::MATCH => {

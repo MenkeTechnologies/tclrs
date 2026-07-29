@@ -81,12 +81,11 @@ pub fn run_native(src: &str) -> Result<Outcome, String> {
     let sink = Arc::clone(&output);
     let cell = Arc::clone(&hooks);
     let outcome = fusevm::aot::run_chunk_native(&chunk, move |vm: &mut VM| {
-        *cell.lock().expect("hooks lock") = Some(crate::runtime::install_hooks(vm));
-        // The hooks install the interpreter's own sink; replace it so this
-        // in-process run is comparable with `eval`'s captured output.
-        vm.set_output_sink(Box::new(move |s: &str| {
-            sink.lock().expect("output lock").push_str(s);
-        }));
+        // Captured through the hooks rather than through the VM's sink,
+        // because `puts` is a frontend op: what it writes never reaches the
+        // VM's sink at all.
+        *cell.lock().expect("hooks lock") =
+            Some(crate::runtime::install_hooks_capturing(vm, Arc::clone(&sink)));
     })?;
 
     if let Some(msg) = hooks

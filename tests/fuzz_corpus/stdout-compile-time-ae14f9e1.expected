@@ -2,7 +2,7 @@
 # seed: 1   case: 00388   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 17 -> 4 lines in 2 round(s), 26/400 candidates checked
 # verdict: DIVERGENCE	stdout-compile-time	line tclsh= tclrs=<no more output>
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: \na#b\n
 # tclsh-stderr: missing close-brace\n

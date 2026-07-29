@@ -2,7 +2,7 @@
 # seed: 1   case: 00263   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 16 -> 4 lines in 3 round(s), 65/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=cannot use floating-point value "1e10" as left operand of "%" tclrs=invalid bare word "end" in expression
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: c1
 # tclsh-stderr: cannot use floating-point value "1e10" as left operand of "%"\n

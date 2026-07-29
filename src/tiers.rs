@@ -338,15 +338,33 @@ mod tests {
         assert!(report.reaches_native(), "{report}");
     }
 
-    /// Tcl arithmetic lowers to ops the JIT accepts: everything in an `expr`
-    /// but the frontend's own result-normalizing extension op is eligible.
+    /// Tcl arithmetic lowers to ops the JIT accepts — all of them. An `expr`
+    /// used to end in an extension op that normalized its result, and that one
+    /// op was enough to keep every arithmetic loop out of both the JIT and the
+    /// ahead-of-time compiler; Tcl's string form is applied where a string is
+    /// asked for instead, so nothing ineligible is left in the expression.
     #[test]
     fn expr_arithmetic_lowers_to_eligible_ops() {
         let report = report("expr {2 + 3 * 4 << 1}").expect("runs");
-        assert_eq!(
-            report.ineligible.keys().collect::<Vec<_>>(),
-            vec!["Extended"],
-            "{report}"
+        assert!(
+            report.ineligible.is_empty(),
+            "an expression should lower to eligible ops only: {report}"
+        );
+        assert!(report.block_eligible, "{report}");
+    }
+
+    /// The same for an assignment whose value is an expression, which is the
+    /// shape a counted loop is written in: `set i [expr {$i + 1}]` reaches the
+    /// ahead-of-time compiler only if nothing in it is an extension op.
+    #[test]
+    fn an_expr_assignment_lowers_to_eligible_ops() {
+        let report = report("set i 0\nset i [expr {$i + 1}]").expect("runs");
+        assert!(
+            report
+                .ineligible
+                .keys()
+                .all(|op| op == "GetVar" || op == "SetVar"),
+            "only the global-variable ops should be left: {report}"
         );
     }
 }

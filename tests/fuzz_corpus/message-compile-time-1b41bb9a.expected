@@ -2,7 +2,7 @@
 # seed: 1   case: 00067   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 27 -> 3 lines in 3 round(s), 59/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=cannot use non-numeric string "b" as left operand of "|" tclrs=wrong # args: should be "p8 ?o1?"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: cannot use non-numeric string "b" as left operand of "|"\n

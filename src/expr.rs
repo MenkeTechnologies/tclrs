@@ -58,8 +58,13 @@ pub enum BinOp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    Int(i64),
-    Float(f64),
+    /// An integer literal: its value, and the text the script wrote — which is
+    /// what `eq` and the other always-string operators compare, since `010` and
+    /// `10` are the same number and different strings.
+    Int(i64, Box<str>),
+    /// A double literal, with its spelling for the same reason: `1e3` and
+    /// `1000.0` are one number and two strings.
+    Float(f64, Box<str>),
     /// An operand built from literal text and substitutions: a quoted or braced
     /// string, `$var`, `$arr(i)`, or `[script]`.
     Subst(Vec<Part>),
@@ -368,10 +373,16 @@ impl<'a> ExprParser<'a> {
         if let Some(radix_body) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
             return self.radix_literal(radix_body, 2, 2);
         }
+        if let Some(radix_body) = rest.strip_prefix("0d").or_else(|| rest.strip_prefix("0D")) {
+            return self.radix_literal(radix_body, 10, 2);
+        }
 
         let mut end = start;
         let b = self.bytes();
-        while end < b.len() && b[end].is_ascii_digit() {
+        // `_` separates digits in Tcl 9's integer grammar — `1_0` is ten — and
+        // is part of the literal's text, so it is scanned here and dropped
+        // before the parse below rather than ending the number.
+        while end < b.len() && (b[end].is_ascii_digit() || b[end] == b'_') {
             end += 1;
         }
         let mut is_float = false;
@@ -398,9 +409,12 @@ impl<'a> ExprParser<'a> {
 
         let text = &self.src[start..end];
         self.pos = end;
+        // Parsed without the separators, remembered with them: `1_0` is the
+        // number ten and the string "1_0".
+        let bare: String = text.chars().filter(|c| *c != '_').collect();
         if is_float {
-            text.parse::<f64>()
-                .map(Expr::Float)
+            bare.parse::<f64>()
+                .map(|v| Expr::Float(v, text.into()))
                 .map_err(|_| self.error(&format!("invalid floating-point number {text:?}")))
         } else {
             // Out of `i64` range: Tcl promotes to a bignum, which this frontend
@@ -414,8 +428,8 @@ impl<'a> ExprParser<'a> {
             // and `puts 99999999999999999999` are both right as text; refusing at
             // compile time would take down whole scripts that only ever print the
             // value or never reach it at all.
-            text.parse::<i64>()
-                .map(Expr::Int)
+            bare.parse::<i64>()
+                .map(|v| Expr::Int(v, text.into()))
                 .or_else(|_| Ok(Expr::Subst(vec![Part::Lit(text.to_string())])))
         }
     }
@@ -426,17 +440,23 @@ impl<'a> ExprParser<'a> {
         radix: u32,
         prefix_len: usize,
     ) -> Result<Expr, ParseError> {
-        let digits: String = body
+        let written: String = body
             .chars()
             .take_while(|c| c.is_digit(radix) || *c == '_')
-            .filter(|c| *c != '_')
             .collect();
+        let digits: String = written.chars().filter(|c| *c != '_').collect();
         if digits.is_empty() {
             return Err(self.error("missing digits after radix prefix"));
         }
-        self.pos += prefix_len + digits.len();
+        // The spelling, prefix included: `0x10` and `16` are the same number and
+        // different strings, and `eq` compares the strings.
+        let text: Box<str> = format!("{}{written}", &self.src[self.pos..self.pos + prefix_len]).into();
+        // The written length, not the parsed one: `0x1_0` is five characters and
+        // two digits, and advancing by the digits alone left the `_0` behind as
+        // "extra characters after expression".
+        self.pos += prefix_len + written.len();
         i64::from_str_radix(&digits, radix)
-            .map(Expr::Int)
+            .map(|v| Expr::Int(v, text))
             // The same bignum case as a decimal literal's, and the same wording —
             // but refused here rather than deferred, because a radix spelling is
             // *not* what tclsh prints for the value: `expr {0x10000000000000000}`

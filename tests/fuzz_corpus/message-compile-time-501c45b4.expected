@@ -2,7 +2,7 @@
 # seed: 1   case: 00191   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 22 -> 3 lines in 2 round(s), 37/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=# tclrs=invalid bare word "h" in expression
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: #\n

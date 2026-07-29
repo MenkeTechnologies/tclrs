@@ -2,7 +2,7 @@
 # seed: 1   case: 00084   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 14 -> 2 lines in 4 round(s), 51/400 candidates checked
 # verdict: DIVERGENCE	message	msg tclsh=cannot use non-numeric string "b" as right operand of "/" tclrs=can't use non-numeric string as operand of "/": "b"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: 0\n0\n0\n
 # tclsh-stderr: cannot use non-numeric string "b" as right operand of "/"\n

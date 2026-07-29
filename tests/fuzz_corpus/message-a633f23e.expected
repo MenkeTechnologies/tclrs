@@ -2,7 +2,7 @@
 # seed: 1   case: 00241   depth: 3   generator: scripts/fuzz/gen.tcl
 # verdict: DIVERGENCE	message	msg tclsh=cannot use floating-point value "0.0" as right operand of "%" tclrs=can't use floating-point value as operand of "%"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: cannot use floating-point value "0.0" as right operand of "%"\n

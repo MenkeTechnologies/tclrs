@@ -2,7 +2,7 @@
 # seed: 1   case: 00361   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 26 -> 2 lines in 3 round(s), 43/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=wrong # args: should be "set varName ?newValue?"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 0
 # tclsh-stdout: 2 1000\x1e
 # tclsh-stderr: 

@@ -381,8 +381,21 @@ strings, and parenthesised subexpressions. Doubles print in Tcl's format: the
 shortest representation that reads back exactly, never looking like an integer,
 exponential outside the positional range. A *literal*, though, prints as the
 script wrote it — Tcl's first rule — so `puts 3.0` is `3.0` and `puts 007.0` is
-`007.0`; the formatter is what an `expr` result goes through, not what a value
-carries.
+`007.0`.
+
+An `expr` result keeps the shape the VM computed — an integer, a double, a
+boolean — and Tcl's string form is applied at the point a string is asked for
+rather than to the result itself. That is invisible to a script (`puts [expr
+{1.0 + 1}]` is `2.0`, `puts [expr {1 < 2}]` is `1`) and it is what lets an
+arithmetic loop compile: an op that converted every result would be an extension
+op, and one of those in a loop is what fusevm's JIT and its ahead-of-time
+compiler both stop at.
+
+The always-string comparisons compare the operands **as written**: `expr {1.0 eq
+1}` is false, `expr {010 eq 10}` is false, and `expr {1e3 eq 1000.0}` is false,
+because a numeric literal carries the text the script gave it as well as its
+value. `==` on the same pairs is true — that is the difference the two families
+of operators exist for.
 
 Where a value is used as a **condition** — `if`, `while`, `for`, the ternary,
 `&&`, `||` — it has to be a boolean, and Tcl's boolean is narrower than "not
@@ -541,7 +554,7 @@ The execution path mirrors how `zshrs` hosts zsh and `groovyrs` hosts Groovy:
 Tcl script → parser (Script/Command/Word) → fusevm bytecode → Interp → Machine → fusevm VM
                                                                           │
                                                      numeric hook (string operands, overflow)
-                                                     extension ops (/ % ** floored, normalize, …)
+                                                     extension ops (/ % ** floored, puts, string compare, …)
                                                      enable_tracing_jit
 ```
 
@@ -552,11 +565,11 @@ Tcl script → parser (Script/Command/Word) → fusevm bytecode → Interp → M
 | **`Machine`** | One evaluation. It switches coroutine contexts, unwinds `catch`, services the requests coroutine ops raise, and moves the global slot vector between the VMs of one chunk. Every one of those works the same way: an op stashes something in a cell and halts, and the driver reads the cell after `run()` returns. |
 | **One install point** | The output sink, the numeric hook, the extension dispatch and `enable_tracing_jit` are installed in exactly one function, so the main VM, a coroutine's VM, a nested `eval`'s VM and an ahead-of-time run all behave alike. |
 | **Numeric hook** | Catches operands the VM cannot compute on natively. An operand that parses as a number is one (including the `0x` / `0o` / `0b` / `0d` radix prefixes and `_` as numeric whitespace); comparisons fall back to string order when it does not; arithmetic on a non-number is an error, and so is an integer past `i64` — a bignum is what Tcl would promote to and this frontend has none. |
-| **Extension ops** | `/` and `%` floor toward negative infinity (`-57 / 10` is `-6`, `-57 % 10` is `3`), `**` stays integral for integral operands *including a negative exponent* (`2 ** -1` is `0`), a normalize op converts a VM-native result into its Tcl value — booleans to `1`/`0`, doubles to Tcl's double format — and a boolean op applies Tcl's rule for a condition, which is not the VM's truthiness. The list, associative and string commands are extension ops too. |
+| **Extension ops** | `/` and `%` floor toward negative infinity (`-57 / 10` is `-6`, `-57 % 10` is `3`), `**` stays integral for integral operands *including a negative exponent* (`2 ** -1` is `0`), and a boolean op applies Tcl's rule for a condition, which is not the VM's truthiness. Tcl's *string* form is a frontend op wherever one is needed — `puts`, the always-string comparisons, word concatenation — because the VM's own stringification is not Tcl's for a double or a boolean, and none of those ops is JIT-eligible in fusevm anyway, so owning them costs no tier. An `expr` result is **not** converted: it stays the value the VM computed, which is what keeps an arithmetic loop free of extension ops. The list, associative and string commands are extension ops too. |
 | **No object heap** | Tcl's value model needs none on top of fusevm's: strings, integers and floats map onto `Value` directly. |
 
 Extension op ids are laid out so `runtime`'s dispatch can test ranges from the
-highest base down: the arithmetic and normalizing ops at 0–5, `eval` at 6,
+highest base down: the arithmetic ops and `puts` at 0–5, `eval` at 6,
 control flow at 7–9, the coroutine ops at 10–14, the boolean conversion at 15,
 the list commands from 16, the associative ones from 64, and the string ones
 from 128. `catch` is the one op
@@ -840,16 +853,23 @@ fusevm's ahead-of-time compiler lowers scalar arithmetic, comparisons, branches
 and globals to registers, runs string / list / hash ops through a boxed shim,
 and turns anything it has no lowering for into a **deopt point** that hands the
 rest of the run to the interpreter. Every operation this frontend implements as
-an extension op is such a point: `/`, `%`, `**`, `in` / `ni`, the `expr` result
-normalizer, `eval`, all thirteen list commands, `foreach`, every `array` and
-`dict` operation, and the whole `string` ensemble. A script that calls `expr`
-once therefore runs its prologue natively and the remainder interpreted.
+an extension op is such a point: `/`, `%`, `**`, `in` / `ni`, `puts`, the
+always-string comparisons, `eval`, all thirteen list commands, `foreach`, every
+`array` and `dict` operation, and the whole `string` ensemble.
 
-What AOT removes for such a script is the parse and the lowering, not the
-dispatch loop — a small number, and the [benchmarks](#0x0a-benchmarks) measure
-it as such. What it removes for a script with no extension op in its hot path is
-the dispatch loop as well, and that number is not small: 8.1 ms against tclsh's
-1117.7 for three million iterations.
+`expr` is deliberately not on that list. Every `expr` used to end in an op that
+converted its result to Tcl's string form, so a loop that computed anything
+deopted on its first iteration and ran interpreted from there; the conversion
+now happens where a string is actually asked for, and arithmetic lowers to
+native ops end to end. That is the difference between `counted_loop_expr` taking
+251.5 ms ahead-of-time compiled and taking 5.9.
+
+What AOT removes for a script that does reach a deopt point is the parse and
+the lowering, not the dispatch loop — a small number, and the
+[benchmarks](#0x0a-benchmarks) measure it as such. What it removes for a script
+with no extension op in its hot path is the dispatch loop as well, and that
+number is not small: 5.1 ms against tclsh's 399.3 for three million
+iterations.
 
 ### Semantics do not change, and that is tested
 
@@ -910,8 +930,8 @@ them pays for an exec the others do not:
 
 Apple M5 Max, macOS 26.5.2, rustc 1.97.0, `--release` (`lto = true`,
 `codegen-units = 1`), tclsh 9.0.4 from `/opt/homebrew/bin`, 20 runs after 5
-warmup runs. The machine is a shared workstation and its load average sat above
-20 for this run, so every row's *mean* carries whatever else was running;
+warmup runs. The machine is a shared workstation and its load average sat near
+14 for this run, so every row's *mean* carries whatever else was running;
 **the table is the minimum of the 20 runs**, the least contaminated figure
 hyperfine reports, and the means are below it so the spread is visible rather
 than hidden. Both come from the `target/bench/*.md` exports that run produced.
@@ -920,25 +940,25 @@ Minimum of 20 runs, in milliseconds:
 
 | Benchmark | tclsh 9.0.4 | tclrs interp | tclrs JIT | tclrs AOT |
 | --- | ---: | ---: | ---: | ---: |
-| `startup` — the empty script | 13.3 | 2.8 | **2.5** | 2.6 |
-| `counted_loop_proc` — 3M × `incr`, inside a `proc` | 52.9 | 189.1 | **4.7** | 5.4 |
-| `counted_loop` — 3M × `incr`, at the top level | 413.9 | 179.0 | 224.7 | **5.8** |
-| `counted_loop_expr` — 3M × `set i [expr {$i + 1}]` | 492.9 | **200.8** | 258.3 | 251.5 |
-| `integer_arith` — 1M × `$sum + $i * $i - ($i >> 3)` | 285.1 | **150.9** | 175.2 | 165.1 |
-| `string_build` — 100k × `set s "$s$i"` | 535.2 | 26.8 | 21.2 | **16.9** |
-| `list_iterate` — 5k × `lappend`, then `foreach` | 10.1 | **3.0** | 3.6 | **3.0** |
+| `startup` — the empty script | 11.2 | **3.9** | 4.7 | 4.8 |
+| `counted_loop_proc` — 3M × `incr`, inside a `proc` | 51.6 | 176.6 | 4.9 | **4.8** |
+| `counted_loop` — 3M × `incr`, at the top level | 386.0 | 169.6 | 221.1 | **4.2** |
+| `counted_loop_expr` — 3M × `set i [expr {$i + 1}]` | 465.6 | 168.7 | 234.3 | **5.0** |
+| `integer_arith` — 1M × `$sum + $i * $i - ($i >> 3)` | 280.7 | 138.4 | 166.1 | **5.1** |
+| `string_build` — 100k × `set s "$s$i"` | 640.7 | **15.2** | 17.1 | 17.5 |
+| `list_iterate` — 5k × `lappend`, then `foreach` | 12.9 | 5.4 | 6.2 | **5.4** |
 
 Mean ± σ over the same runs:
 
 | Benchmark | tclsh 9.0.4 | tclrs interp | tclrs JIT | tclrs AOT |
 | --- | ---: | ---: | ---: | ---: |
-| `startup` | 37.0 ± 22.5 | 6.9 ± 3.1 | 3.1 ± 0.6 | 3.0 ± 0.2 |
-| `counted_loop_proc` | 73.6 ± 30.9 | 251.0 ± 116.3 | 5.9 ± 0.6 | 6.7 ± 1.1 |
-| `counted_loop` | 534.9 ± 193.6 | 245.9 ± 145.6 | 318.2 ± 183.9 | 9.8 ± 3.5 |
-| `counted_loop_expr` | 642.1 ± 179.9 | 267.2 ± 137.7 | 331.3 ± 127.2 | 313.3 ± 121.9 |
-| `integer_arith` | 379.6 ± 150.8 | 207.3 ± 83.4 | 237.7 ± 115.5 | 224.8 ± 97.3 |
-| `string_build` | 832.2 ± 190.2 | 40.4 ± 6.2 | 23.4 ± 1.0 | 19.1 ± 1.3 |
-| `list_iterate` | 11.5 ± 0.9 | 3.4 ± 0.2 | 4.4 ± 0.7 | 3.3 ± 0.1 |
+| `startup` | 12.5 ± 0.7 | 4.7 ± 0.4 | 5.4 ± 0.6 | 5.6 ± 0.5 |
+| `counted_loop_proc` | 54.7 ± 2.2 | 183.3 ± 5.0 | 6.0 ± 1.1 | 5.8 ± 0.5 |
+| `counted_loop` | 399.3 ± 6.9 | 175.9 ± 2.9 | 225.7 ± 2.8 | 5.1 ± 0.4 |
+| `counted_loop_expr` | 487.9 ± 17.7 | 180.9 ± 5.9 | 303.9 ± 42.7 | 5.9 ± 0.5 |
+| `integer_arith` | 288.1 ± 6.2 | 141.2 ± 1.5 | 168.0 ± 1.3 | 5.6 ± 0.3 |
+| `string_build` | 977.0 ± 175.1 | 16.3 ± 0.7 | 17.7 ± 0.5 | 18.0 ± 0.4 |
+| `list_iterate` | 14.3 ± 0.9 | 6.8 ± 0.6 | 6.8 ± 0.4 | 6.1 ± 0.4 |
 
 Every ratio below is the first table's numbers divided; nothing else is
 inferred.
@@ -946,39 +966,40 @@ inferred.
 **What the JIT is worth when it fires.** `counted_loop_proc` is `counted_loop`
 with the loop moved inside a `proc`, which is the whole difference: the counter
 becomes a frame slot and the tracing tier takes it (`--tiers` says
-`traced=true`; see [JIT Compilation](#0x08-jit-compilation)). 4.7 ms against
-189.1 ms interpreted — **40× tclrs interpreted and 11× tclsh** — with `startup`
-measured at 2.5 ms on the same run, so the 3,000,000 iterations themselves are
+`traced=true`; see [JIT Compilation](#0x08-jit-compilation)). 4.9 ms against
+176.6 ms interpreted — **36× tclrs interpreted and 11× tclsh** — with `startup`
+measured at 3.9 ms on the same run, so the 3,000,000 iterations themselves are
 inside the noise of process startup. Scaling the script to 30,000,000 iterations
-does not move it out: 5.8 ± 1.2 ms, minimum 4.5 (12 runs, 3 warmup). Ten times
-the iterations for the same wall clock is not a per-iteration cost at all —
-Cranelift can close a counted loop whose result is its own bound — so read that
-row as the loop disappearing, not as nanoseconds per iteration.
+does not move it out. Ten times the iterations for the same wall clock is not a
+per-iteration cost at all — Cranelift can close a counted loop whose result is
+its own bound — so read that row as the loop disappearing, not as nanoseconds
+per iteration.
 
 That row also inverts tclsh's own ranking. tclsh compiles a procedure's locals
-too, so it runs the proc-local loop in 52.9 ms against 413.9 ms for the
-top-level one — a 7.8× spread on the same arithmetic. tclrs interpreted is nearly
-indifferent, and slightly the other way (189.1 vs 179.0 ms); it is the JIT that
-turns the procedure boundary into 40×.
+too, so it runs the proc-local loop in 51.6 ms against 386.0 ms for the
+top-level one — a 7.5× spread on the same arithmetic. tclrs interpreted is
+indifferent to the boundary (176.6 vs 169.6 ms); it is the JIT that makes it 36×.
 
-**Where tclrs wins without the JIT.** Interpreted, tclrs is **20× tclsh on
-`string_build`**, 3.4× on `list_iterate`, 2.5× on the counted loop written with
-`expr`, 2.3× on the top-level counted loop, 1.9× on integer arithmetic, and
-starts in 2.8 ms against tclsh's 13.3. Ahead-of-time compiled, the top-level
-counted loop is **71× tclsh and 31× tclrs interpreted**: 5.8 ms for the whole
-process, of which 2.6 is the ahead-of-time binary's own startup. That script
-contains no extension op in its loop, so fusevm's ahead-of-time compiler lowers
-all of it, counter included, to native registers — AOT is a closed-world compile
-and is not bound by the slot/global split the tracing tier is.
+**Every arithmetic loop is ahead-of-time compiled now.** The three loop
+benchmarks all reach native code through `--aot`: 4.2 ms for the top-level
+counted loop, 5.0 for the same loop written with `expr`, 5.1 for the arithmetic
+one — against tclsh's 386.0, 465.6 and 280.7. That is **92×, 93× and 55×
+tclsh**, and 40×, 34× and 27× tclrs interpreted, with the ahead-of-time binary's
+own startup (4.8 ms) inside every one of those figures.
 
-**Where the AOT win disappears.** `counted_loop_expr` is the same loop with the
-increment written as `expr` instead of `incr`. That adds one op — the extension
-op `expr` emits to normalize its result — and AOT goes from 5.8 ms to 251.5 ms,
-1.25× *slower* than interpreting, because the native path deopts there and hands
-the rest of the run over. `integer_arith` is the same shape and closer to level
-(1.09×). `string_build` now runs the other way — 16.9 ms compiled and 21.2 ms
-JIT-armed against 26.8 interpreted — because with the copying gone what is left
-in that loop is the loop itself, which is the part those tiers do reach.
+Two of those three used to run interpreted end to end. Every `expr` ended in an
+extension op that converted its result to Tcl's string form, and fusevm's
+ahead-of-time compiler has no lowering for an extension op, so one deopt on the
+first iteration handed the whole loop back to the interpreter:
+`counted_loop_expr` took 251.5 ms compiled and `integer_arith` 165.1. Tcl's
+string form is now applied where a string is asked for — `puts`, the
+always-string comparisons, word concatenation — rather than to every `expr`
+result, so an arithmetic loop lowers to native ops end to end.
+
+**Where tclrs wins without the JIT.** Interpreted, tclrs is **42× tclsh on
+`string_build`**, 2.8× on the counted loop written with `expr`, 2.4× on
+`list_iterate`, 2.3× on the top-level counted loop, 2.0× on integer arithmetic,
+and starts in 3.9 ms against tclsh's 11.2.
 
 **`lappend` builds a list in place.** `list_iterate` was the one row tclrs lost,
 by 14×: the list lived in the variable as its string representation and every
@@ -1019,19 +1040,20 @@ the wrong number rather than a fast time.
 
 **What the JIT costs where it does not fire.** The `tclrs JIT` column is the same
 binary as `tclrs interp` with the tracing JIT armed. On a script whose loops it
-cannot take it is not free: 26% slower on `counted_loop`, 29% on
-`counted_loop_expr`, 16% on `integer_arith`, and 20% on `list_iterate`. That is
+cannot take it is not free: 30% slower on `counted_loop`, 39% on
+`counted_loop_expr`, 20% on `integer_arith`, and 15% on `list_iterate`. That is
 the recorder check in the dispatch loop plus the once-per-run block-tier lookup,
 and on `counted_loop` it is paid for a tier that never fires — the loop's
-`GetVar`/`SetVar` disqualify it. The same overhead on `counted_loop_proc` buys a
-40× win, and on `string_build` it now pays for itself (21.2 against 26.8). It
-stays on unconditionally because which of those a script gets is not knowable
-before the script runs, and hiding the cost would make the table dishonest.
+`GetVar`/`SetVar` disqualify it, which is the one thing standing between these
+loops and the JIT column now that nothing else in them is an extension op. The
+same overhead on `counted_loop_proc` buys a 36× win. It stays on unconditionally
+because which of those a script gets is not knowable before the script runs, and
+hiding the cost would make the table dishonest.
 
 Caveats worth knowing before quoting any of this: the machine was not idle — a
-shared workstation at a load average above 20 — which is why the minima are the
-table and the means are the second table, and why the two disagree by as much as
-3× on the rows that run longest; `startup`, the two counted-loop JIT and AOT
+shared workstation at a load average near 14 — which is why the minima are the
+table and the means are the second table, and why `string_build`'s tclsh row
+spreads over 500 ms between its best and worst run; `startup`, the two counted-loop JIT and AOT
 rows and the whole `list_iterate` row are a few milliseconds, close enough to
 hyperfine's calibration floor that it warns, so treat those ratios as lower
 bounds on the work and not as precise process-level figures; and the AOT
