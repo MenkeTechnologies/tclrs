@@ -100,6 +100,13 @@ serde_json = "1"
 # alternative was porting Spencer's matcher, which is the kind of code that is
 # wrong in ways a test suite does not reach.
 regex = "1.13.1"
+# Tcl defines its character classes over Unicode general categories (the
+# ALPHA_BITS / PUNCT_BITS / GRAPH_BITS unions in tclUtf.c), not over the derived
+# properties Rust's std exposes, so `string is alpha` cannot be answered from
+# `char::is_alphabetic`. This is the category table itself: data only, no
+# dependencies of its own, and its answers were compared against tclsh across
+# every code point before it was taken (see `src/cmd_string.rs`).
+unicode-general-category = "1.1"
 
 [profile.release]
 lto = true

@@ -91,6 +91,13 @@ pub mod ext {
     /// matcher and comparator `string match -nocase` and `string equal -nocase`
     /// run, so the two cannot drift into two rules for one question.
     pub const SWITCH_MATCH: u16 = BASE + 34;
+
+    /// `[class, strict, name, place, string]` → 1 or 0, and on 0 the index of
+    /// the first character that failed, written into the variable `place`
+    /// names. `string is` only touches that variable when the answer is 0 —
+    /// measured — so the write cannot be lifted out of the op.
+    pub const IS_FAILINDEX: u16 = BASE + 35;
+    pub const IS_FAILINDEX_SLOT: u16 = BASE + 36;
 }
 
 /// Every subcommand the ensemble knows, in the order the interpreter lists them
@@ -390,34 +397,56 @@ impl Compiler {
         };
 
         let mut strict = false;
-        for w in &args[1..args.len() - 1] {
-            let opt = self.literal_of(w, "option")?;
-            if opt.len() > 1 && "-strict".starts_with(opt) {
+        let mut failindex: Option<String> = None;
+        let mut rest = &args[1..args.len() - 1];
+        while let Some((w, tail)) = rest.split_first() {
+            let opt = self.literal_of(w, "option")?.to_string();
+            if opt.len() > 1 && "-strict".starts_with(opt.as_str()) {
                 strict = true;
-            } else if opt.len() > 1 && "-failindex".starts_with(opt) {
-                return self.error("the -failindex option of \"string is\" is not supported yet");
+                rest = tail;
+            } else if opt.len() > 1 && "-failindex".starts_with(opt.as_str()) {
+                let Some((name, after)) = tail.split_first() else {
+                    return self.error(USAGE);
+                };
+                failindex = Some(self.var_name_of(name)?);
+                rest = after;
             } else {
                 return self.error(format!(
                     "bad option \"{opt}\": must be -strict or -failindex"
                 ));
             }
         }
-        // `dict` is structural and answered in `is_class`; these three rest on
-        // Unicode general categories Tcl builds its own tables for — `punct`
-        // spans the seven punctuation categories *and* the four symbol ones,
-        // and `graph` / `print` are defined in terms of that set — so they are
-        // refused rather than answered from Rust's tables, which track a
-        // different Unicode revision.
-        if matches!(class, "graph" | "print" | "punct") {
-            return self.error(format!(
-                "the \"{class}\" character class needs Unicode category tables, which are not built yet"
-            ));
-        }
+        // `graph`, `print` and `punct` were refused here on the grounds that they
+        // needed category tables this crate did not carry. It carries them now
+        // (`is_graph` and friends), and the earlier note had the shape of the
+        // classes wrong besides: `punct` is the seven punctuation categories and
+        // the symbols belong to `graph`, not the other way round.
 
+        let Some(name) = failindex else {
+            self.push_str(class);
+            self.push_flag(strict);
+            self.word(&args[args.len() - 1])?;
+            return self.string_op(ext::IS, 3);
+        };
+
+        // The variable is written by the op, so it travels as a place the way
+        // `append`'s does; a name the script also uses as an array keeps the
+        // guarded read rather than being reached past.
         self.push_str(class);
         self.push_flag(strict);
+        self.push_str(&name);
+        let id = match self.var_place(&name) {
+            Place::Slot(slot) => {
+                self.emit(Op::LoadInt(slot as i64), 1);
+                ext::IS_FAILINDEX_SLOT
+            }
+            Place::Global(idx) => {
+                self.emit(Op::LoadInt(idx as i64), 1);
+                ext::IS_FAILINDEX
+            }
+        };
         self.word(&args[args.len() - 1])?;
-        self.string_op(ext::IS, 3)
+        self.string_op(id, 5)
     }
 
     /// `append varName ?value ...?` — append to the variable's own string and
@@ -486,6 +515,9 @@ impl Compiler {
 pub(crate) fn extension(vm: &mut VM, id: u16, argc: u8) -> Result<(), String> {
     if id == ext::APPEND_VAR || id == ext::APPEND_SLOT {
         return append_at(vm, id, argc);
+    }
+    if id == ext::IS_FAILINDEX || id == ext::IS_FAILINDEX_SLOT {
+        return is_failindex(vm, id);
     }
     let mut operands = Vec::with_capacity(argc as usize);
     for _ in 0..argc {
@@ -564,6 +596,50 @@ fn extend(text: &mut String, values: &[Value]) {
     for value in values {
         text.push_str(&tcl_str(value));
     }
+}
+
+/// `string is class ?-strict? -failindex var string`.
+///
+/// The stack is `[class, strict, name, place, string]`. Answering 1 leaves the
+/// variable exactly as it was — `set v PRE; string is alpha -failindex v abc`
+/// leaves `PRE` — so the write happens only on the failing branch.
+fn is_failindex(vm: &mut VM, id: u16) -> Result<(), String> {
+    let text = to_tcl_string(&vm.pop());
+    let place = place_at(&vm.pop(), id == ext::IS_FAILINDEX_SLOT)?;
+    let _name = vm.pop();
+    let strict = truth(&to_tcl_string(&vm.pop()));
+    let class = to_tcl_string(&vm.pop());
+
+    let ok = is_class(&class, strict, &text)?;
+    if !ok {
+        let at = fail_index(&class, strict, &text);
+        if let Some(cell) = var_cell(vm, place) {
+            *cell = Value::Int(at as i64);
+        }
+    }
+    vm.push(Value::Str(Arc::new((ok as i32).to_string())));
+    Ok(())
+}
+
+/// Where a string stopped belonging to its class: the length, in characters, of
+/// the longest prefix that still does.
+///
+/// One rule covers every class, which is what the reference interpreter's
+/// answers say it is rather than what its source suggests: `string is integer
+/// -failindex v "  12x"` is 4 because `"  12"` is still an integer, `string is
+/// double -failindex v 1.2e+` is 3 where the same string as an *integer* is 1,
+/// and `string is list -failindex v "{a} {b"` is 4 — the offset of the element
+/// that would not parse. A character class falls out of the same rule as the
+/// index of its first offending character.
+fn fail_index(class: &str, strict: bool, text: &str) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    for n in (0..=chars.len()).rev() {
+        let prefix: String = chars[..n].iter().collect();
+        if is_class(class, strict, &prefix).unwrap_or(false) {
+            return n;
+        }
+    }
+    0
 }
 
 fn dispatch(id: u16, operands: &[Value]) -> Result<String, String> {
@@ -1444,29 +1520,196 @@ fn is_class(class: &str, strict: bool, text: &str) -> Result<bool, String> {
         if class == "space" {
             return Ok(is_space(c));
         }
-        if (c as u32) >= 0x80 {
+        if beyond_our_tables(c) {
             return Err(format!(
-                "string is {class}: characters beyond ASCII need Unicode category tables, which are not built yet"
+                "string is {class}: U+{:04X} is categorised by tclsh 9.0.4 and not by \
+                 Unicode 16.0, which is the table this build carries",
+                c as u32
             ));
         }
         Ok(match class {
-            "alnum" => c.is_ascii_alphanumeric(),
-            "alpha" => c.is_ascii_alphabetic(),
-            "control" => c.is_ascii_control(),
-            "digit" => c.is_ascii_digit(),
-            "lower" => c.is_ascii_lowercase(),
-            "upper" => c.is_ascii_uppercase(),
-            "wordchar" => c.is_ascii_alphanumeric() || c == '_',
+            "alnum" => is_alpha(c) || is_digit(c),
+            "alpha" => is_alpha(c),
+            "control" => matches!(category(c), G::Control | G::Format),
+            "digit" => is_digit(c),
+            "graph" => is_graph(c),
+            "lower" => category(c) == G::LowercaseLetter,
+            "print" => is_graph(c) || is_unicode_space(c),
+            "punct" => is_punct(c),
+            "upper" => category(c) == G::UppercaseLetter,
+            "wordchar" => is_wordchar(c),
             _ => return Err(format!("unknown character class \"{class}\"")),
         })
     };
 
+    // Left to right, and a decision reached before an unreadable character is
+    // still a decision: `string is alpha 1<newer>` is 0 in tclsh because the `1`
+    // settles it, so it must not become a refusal here either.
     for c in text.chars() {
         if !ok(c)? {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// Tcl's character classes are unions of Unicode **general categories** — the
+/// `ALPHA_BITS` / `PUNCT_BITS` / `GRAPH_BITS` masks in `tclUtf.c` — and not the
+/// derived properties Rust's std exposes. `char::is_alphabetic` is the
+/// Alphabetic property, which folds in `Nl` and `Other_Alphabetic`, so it
+/// answers differently from `string is alpha`; every function below is the
+/// category union, checked against tclsh over the whole code point space.
+use unicode_general_category::GeneralCategory as G;
+
+fn category(c: char) -> G {
+    unicode_general_category::get_general_category(c)
+}
+
+fn is_alpha(c: char) -> bool {
+    matches!(
+        category(c),
+        G::UppercaseLetter
+            | G::LowercaseLetter
+            | G::TitlecaseLetter
+            | G::ModifierLetter
+            | G::OtherLetter
+    )
+}
+
+fn is_digit(c: char) -> bool {
+    category(c) == G::DecimalNumber
+}
+
+/// The seven punctuation categories — and *not* the symbol ones. The symbols
+/// belong to `graph`, which is why `string is punct €` is 0 and
+/// `string is graph €` is 1.
+fn is_punct(c: char) -> bool {
+    matches!(
+        category(c),
+        G::ConnectorPunctuation
+            | G::DashPunctuation
+            | G::OpenPunctuation
+            | G::ClosePunctuation
+            | G::InitialPunctuation
+            | G::FinalPunctuation
+            | G::OtherPunctuation
+    )
+}
+
+fn is_wordchar(c: char) -> bool {
+    is_alpha(c) || is_digit(c) || category(c) == G::ConnectorPunctuation
+}
+
+fn is_graph(c: char) -> bool {
+    is_wordchar(c)
+        || is_punct(c)
+        || matches!(
+            category(c),
+            G::NonspacingMark
+                | G::EnclosingMark
+                | G::SpacingMark
+                | G::LetterNumber
+                | G::OtherNumber
+                | G::MathSymbol
+                | G::CurrencySymbol
+                | G::ModifierSymbol
+                | G::OtherSymbol
+        )
+}
+
+/// The three separator categories. `print` is `graph` plus these — and not plus
+/// [`is_space`], which also takes the ASCII control whitespace: `string is print
+/// \t` is 0 in tclsh while `string is space \t` is 1.
+fn is_unicode_space(c: char) -> bool {
+    matches!(
+        category(c),
+        G::SpaceSeparator | G::LineSeparator | G::ParagraphSeparator
+    )
+}
+
+/// Code points tclsh 9.0.4 categorises and Unicode 16.0 does not.
+///
+/// The reference interpreter's tables are ahead of this build's. Sweeping every
+/// code point through both engines puts the difference at 4804 of them: 4803
+/// that tclsh assigns a category and Unicode 16.0 calls unassigned — verified
+/// against Python's `unicodedata` at 16.0.0 as a third opinion — and U+0295,
+/// which Unicode 16.0 calls `Ll` while tclsh answers 0 for `string is lower`,
+/// so its table must call it `Lo`.
+///
+/// Everywhere else the two agree exactly, class for class, across the whole
+/// space. Rather than answer these from a table that does not know them, the
+/// class asks and is refused: a wrong answer for a character a script did use is
+/// worse than a refusal naming it. Regenerate this list when the crate's
+/// Unicode version catches up with the reference interpreter's, at which point
+/// it should be empty.
+/// The ranges [`beyond_our_tables`] tests, sorted so it can bisect them.
+/// Generated by sweeping `string is` over every code point in both engines;
+/// 48 ranges, 4804 code points.
+const BEYOND_UNICODE_16: [(u32, u32); 48] = [
+    (0x295, 0x295),
+    (0x88f, 0x88f),
+    (0xc5c, 0xc5c),
+    (0xcdc, 0xcdc),
+    (0x1acf, 0x1add),
+    (0x1ae0, 0x1aeb),
+    (0x20c1, 0x20c1),
+    (0x2b96, 0x2b96),
+    (0xa7ce, 0xa7cf),
+    (0xa7d2, 0xa7d2),
+    (0xa7d4, 0xa7d4),
+    (0xa7f1, 0xa7f1),
+    (0xfbc3, 0xfbd2),
+    (0xfd90, 0xfd91),
+    (0xfdc8, 0xfdce),
+    (0x10940, 0x10959),
+    (0x10ec5, 0x10ec7),
+    (0x10ed0, 0x10ed8),
+    (0x10efa, 0x10efb),
+    (0x11b60, 0x11b67),
+    (0x11db0, 0x11ddb),
+    (0x11de0, 0x11de9),
+    (0x16ea0, 0x16eb8),
+    (0x16ebb, 0x16ed3),
+    (0x16ff2, 0x16ff6),
+    (0x187f8, 0x187ff),
+    (0x18d09, 0x18d1e),
+    (0x18d80, 0x18df2),
+    (0x1ccfa, 0x1ccfc),
+    (0x1ceba, 0x1ced0),
+    (0x1cee0, 0x1cef0),
+    (0x1e6c0, 0x1e6de),
+    (0x1e6e0, 0x1e6f5),
+    (0x1e6fe, 0x1e6ff),
+    (0x1f6d8, 0x1f6d8),
+    (0x1f777, 0x1f77a),
+    (0x1f8d0, 0x1f8d8),
+    (0x1fa54, 0x1fa57),
+    (0x1fa8a, 0x1fa8a),
+    (0x1fa8e, 0x1fa8e),
+    (0x1fac8, 0x1fac8),
+    (0x1facd, 0x1facd),
+    (0x1faea, 0x1faea),
+    (0x1faef, 0x1faef),
+    (0x1fbfa, 0x1fbfa),
+    (0x2b73a, 0x2b73f),
+    (0x2cea2, 0x2cead),
+    (0x323b0, 0x33479),
+];
+
+fn beyond_our_tables(c: char) -> bool {
+    const RANGES: &[(u32, u32)] = &BEYOND_UNICODE_16;
+    let cp = c as u32;
+    RANGES
+        .binary_search_by(|&(lo, hi)| {
+            if cp < lo {
+                std::cmp::Ordering::Greater
+            } else if cp > hi {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
 /// `Tcl_GetBoolean`: literally `0` or `1`, or a unique case-insensitive prefix

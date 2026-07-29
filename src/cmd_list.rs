@@ -817,6 +817,7 @@ fn lsearch(args: &[String]) -> Result<String, String> {
     // accepted because it changes no answer without them.
     let mut increasing = true;
     let mut ordered: Option<&str> = None;
+    let mut stride = 1usize;
 
     let mut i = 0;
     while i + 2 < args.len() {
@@ -851,6 +852,22 @@ fn lsearch(args: &[String]) -> Result<String, String> {
             // not here, so the order they name is the one the whole command
             // settled on rather than whichever flag came first.
             "-sorted" | "-bisect" => ordered = Some(name),
+            // `-stride N` makes the list groups of N and searches each group's
+            // first element, answering where the *group* starts. The floor is 1
+            // here and 2 in `lsort`, with a different wording each — measured:
+            // `lsearch -stride 1 {a b} b` is 1, while `lsort -stride 1 {a b}`
+            // is "stride length must be at least 2".
+            "-stride" => {
+                if i + 2 > args.len() - 2 {
+                    return Err("\"-stride\" option must be followed by a stride length".to_string());
+                }
+                i += 1;
+                let n = list::wide(&args[i])?;
+                if n < 1 {
+                    return Err("stride length must be at least 1".to_string());
+                }
+                stride = n as usize;
+            }
             other => return Err(format!("lsearch {other} is not supported yet")),
         }
         i += 1;
@@ -866,6 +883,9 @@ fn lsearch(args: &[String]) -> Result<String, String> {
 
     let items = list::split(&args[args.len() - 2])?;
     let pattern = &args[args.len() - 1];
+    if stride > 1 && !items.len().is_multiple_of(stride) {
+        return Err("list size must be a multiple of the stride length".to_string());
+    }
 
     let mut start = 0usize;
     if let Some(text) = start_text {
@@ -889,7 +909,12 @@ fn lsearch(args: &[String]) -> Result<String, String> {
     };
 
     let mut hits: Vec<usize> = Vec::new();
-    for (i, item) in items.iter().enumerate().skip(start) {
+    for (i, item) in items
+        .iter()
+        .enumerate()
+        .skip(start)
+        .filter(|(i, _)| i.is_multiple_of(stride))
+    {
         let mut hit = match (&target, mode) {
             (Some(Compare::Integer(want)), _) => list::wide(item)? == *want,
             (Some(Compare::Real(want)), _) => list::double(item)? == *want,
@@ -912,16 +937,22 @@ fn lsearch(args: &[String]) -> Result<String, String> {
         }
     }
 
+    // With a stride, `-inline` answers the whole group rather than the element
+    // that matched: `lsearch -stride 2 -inline {a 1 b 2} b` is `b 2`.
+    let group_of = |i: usize| -> Vec<String> { items[i..i + stride].to_vec() };
+
     Ok(match (all, inline) {
         (true, true) => {
-            let values: Vec<&String> = hits.iter().map(|&i| &items[i]).collect();
+            let values: Vec<String> = hits.iter().flat_map(|&i| group_of(i)).collect();
             list::join(&values)
         }
         (true, false) => {
             let values: Vec<String> = hits.iter().map(|i| i.to_string()).collect();
             list::join(&values)
         }
-        (false, true) => hits.first().map_or(String::new(), |&i| items[i].clone()),
+        (false, true) => hits
+            .first()
+            .map_or(String::new(), |&i| list::join(&group_of(i))),
         (false, false) => hits.first().map_or(-1, |&i| i as i64).to_string(),
     })
 }
@@ -963,11 +994,71 @@ struct Element {
     next: Option<usize>,
 }
 
+/// `lsort -stride N`: the list is groups of `N`, each group moves as a unit, and
+/// the key is the group's first element. `-indices` answers the index of each
+/// group's first element, which is what the reference interpreter answers.
+fn lsort_stride(
+    items: &[String],
+    stride: usize,
+    data: DataType,
+    order: Order,
+    indices: bool,
+) -> Result<String, String> {
+    let groups = items.len() / stride;
+    let mut keyed: Vec<(Key, usize)> = Vec::with_capacity(groups);
+    for g in 0..groups {
+        let first = &items[g * stride];
+        keyed.push((
+            match data {
+                DataType::Ascii => Key::Text(first.clone()),
+                DataType::Integer => Key::Integer(list::wide(first)?),
+                DataType::Real => Key::Real(list::double(first)?),
+            },
+            g,
+        ));
+    }
+    // A stable sort keeps equal groups in the order they were written, which is
+    // what the reference merge sort does with them.
+    keyed.sort_by(|a, b| {
+        let ord = compare_keys(&a.0, &b.0);
+        if order.increasing {
+            ord
+        } else {
+            ord.reverse()
+        }
+    });
+
+    let mut out = Vec::with_capacity(items.len());
+    for (i, (key, g)) in keyed.iter().enumerate() {
+        // `-unique` keeps the *last* of a run of equal groups, not the first:
+        // `lsort -stride 2 -unique {a 1 a 2 b 3}` is `a 2 b 3`. That is the
+        // reference merge's doing — it takes the right operand when two compare
+        // equal — and the same rule the element-wise sort in this file follows.
+        if order.unique {
+            if let Some((next, _)) = keyed.get(i + 1) {
+                if compare_keys(key, next).is_eq() {
+                    continue;
+                }
+            }
+        }
+        // `-indices` answers every index of the group, not the group's first:
+        // a stride-2 sort of three groups answers six numbers.
+        if indices {
+            out.extend((g * stride..(g + 1) * stride).map(|k| k.to_string()));
+        } else {
+            out.extend_from_slice(&items[g * stride..(g + 1) * stride]);
+        }
+    }
+    Ok(list::join(&out))
+}
+
 fn lsort(args: &[String]) -> Result<String, String> {
     let mut data = DataType::Ascii;
     let mut increasing = true;
     let mut unique = false;
     let mut indices = false;
+
+    let mut stride = 1usize;
 
     let mut i = 0;
     while i + 1 < args.len() {
@@ -980,12 +1071,31 @@ fn lsort(args: &[String]) -> Result<String, String> {
             "-integer" => data = DataType::Integer,
             "-real" => data = DataType::Real,
             "-unique" => unique = true,
+            // `-stride N` sorts groups of N as units, keyed on the group's first
+            // element, and both refusals are the interpreter's own wording.
+            "-stride" => {
+                let Some(value) = args.get(i + 1) else {
+                    return Err("\"-stride\" option must be followed by a stride length".to_string());
+                };
+                let n = list::wide(value)?;
+                if n < 2 {
+                    return Err("stride length must be at least 2".to_string());
+                }
+                stride = n as usize;
+                i += 1;
+            }
             other => return Err(format!("lsort {other} is not supported yet")),
         }
         i += 1;
     }
 
     let items = list::split(&args[args.len() - 1])?;
+    if stride > 1 {
+        if !items.len().is_multiple_of(stride) {
+            return Err("list size must be a multiple of the stride length".to_string());
+        }
+        return lsort_stride(&items, stride, data, Order { increasing, unique }, indices);
+    }
     let mut elements = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
         elements.push(Element {
@@ -1041,6 +1151,26 @@ fn lsort(args: &[String]) -> Result<String, String> {
 struct Order {
     increasing: bool,
     unique: bool,
+}
+
+/// Two keys in the reference implementation's order, before `-decreasing` is
+/// applied. Shared with the strided sort, which orders whole groups by their
+/// first element rather than elements by themselves.
+fn compare_keys(a: &Key, b: &Key) -> std::cmp::Ordering {
+    match (a, b) {
+        (Key::Text(x), Key::Text(y)) => x.cmp(y),
+        (Key::Integer(x), Key::Integer(y)) => x.cmp(y),
+        (Key::Real(x), Key::Real(y)) => {
+            // The reference compares with `(a >= b) - (a <= b)`, which calls
+            // any pair involving a NaN equal.
+            match (x >= y, x <= y) {
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                _ => std::cmp::Ordering::Equal,
+            }
+        }
+        _ => std::cmp::Ordering::Equal,
+    }
 }
 
 fn compare(elements: &[Element], a: usize, b: usize, order: Order) -> std::cmp::Ordering {

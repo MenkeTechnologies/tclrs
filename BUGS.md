@@ -48,7 +48,13 @@ approximated, and nothing is silently mis-run.
 - **Strings.** `format` and the `string` ensemble — `cat`, `compare`, `equal`,
   `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`,
   `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`,
-  `trimleft`, `trimright` (`src/cmd_string.rs`). `append` reaches its variable
+  `trimleft`, `trimright` (`src/cmd_string.rs`). `string is`'s character classes
+  read Unicode general categories — Tcl's own `ALPHA_BITS` / `PUNCT_BITS` /
+  `GRAPH_BITS` unions from `tclUtf.c`, not the derived properties Rust's std
+  exposes — so `graph`, `print` and `punct` are answered rather than refused, and
+  every class answers beyond ASCII. `-failindex` writes the index of the first
+  character that failed, which is one rule for every class: the length of the
+  longest prefix that still belongs to it. `append` reaches its variable
   itself instead of taking the value through `GetVar`, so the values go onto the
   string the variable already holds and growing a string is linear rather than
   quadratic; `set x "$x…"` is lowered as the same op when the word only grows
@@ -227,15 +233,26 @@ approximated, and nothing is silently mis-run.
   are all `this command does not take an array element yet`, from the one
   `Compiler::var_name_of` that resolves the name for each of them. `foreach`
   refuses one the same way. tclsh takes them.
+- **Code points tclsh 9.0.4 categorises and Unicode 16.0 does not.** The
+  reference interpreter's character tables are ahead of the ones this build
+  carries. Sweeping `string is` over every code point in both engines puts the
+  difference at 4804: 4803 that tclsh assigns a category and Unicode 16.0 calls
+  unassigned — corroborated against Python's `unicodedata` at 16.0.0 — and
+  U+0295, which Unicode 16.0 calls `Ll` while tclsh answers 0 for `string is
+  lower`, so its table must call it `Lo`. Everywhere else the two agree exactly:
+  12,184,664 answers checked, none wrong. A class asked about one of the 4804
+  refuses and names it rather than answering from a table that does not know it.
+  The list is `BEYOND_UNICODE_16` in `src/cmd_string.rs`; regenerate it when the
+  crate's Unicode version catches up, at which point it should be empty.
 - **`{*}` expansion.** The parser records `{*}` on the word and the list splitter
   it needs exists, but the compiler still refuses it.
 - **Subcommands and options recognised and then refused.** `array startsearch`
   and the other search subcommands; `dict` subcommands outside the implemented
   set, and `dict set` into an array element; `string` subcommands outside the
-  implemented set, and `string is -failindex`; `format` conversions outside the
+  implemented set; `format` conversions outside the
   implemented set; `lsearch -sorted`, `-bisect`, `-dictionary`, `-nocase`,
-  `-index`, `-stride`, `-subindices`; `lsort -command`,
-  `-dictionary`, `-nocase`, `-index`, `-stride`; `catch`'s options variable;
+  `-index`, `-subindices`; `lsort -command`,
+  `-dictionary`, `-nocase`, `-index`; `catch`'s options variable;
   `error`'s `info` and `code` arguments; `return`'s options other than
   `-code ok` / `-code error`. They go through the reference option parser first,
   so abbreviation and ambiguity behave as tclsh does, and are then refused.
@@ -728,10 +745,8 @@ than an unexamined one. Measured against the 2000-program run above.
   generated yet, so the run above says nothing about them either; what does is
   `tests/list_commands_differential.rs`.
 - **`array` on a procedure local, `unset` of one, and `eval` inside a procedure
-  body** *are* generated now, at `REFUSAL_RATE` — so are `lsort -command`,
-  `string is -failindex`, the `string is`
-  classes that need the Unicode tables, and the `dict` subcommands outside the
-  implemented set. Each lands in the skip bucket under the refusal's own wording,
+  body** *are* generated now, at `REFUSAL_RATE` — so are `lsort -command` and
+  the `dict` subcommands outside the implemented set. Each lands in the skip bucket under the refusal's own wording,
   which is coverage waiting for the refusal to go rather than a hole. The rate is
   low because these refusals are decided while compiling, so one of them anywhere
   takes the whole case out of comparison: at 8 percent the run is 215 skips of

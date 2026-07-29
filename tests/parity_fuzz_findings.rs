@@ -1376,8 +1376,8 @@ fn a_split_character_in_the_junk_diagnostic_does_not_panic() {
 /// parser and refused when the command runs, so `catch` captures the refusal and
 /// the script carries on with it as a value — the harness calls the case a
 /// divergence rather than a skip, because tclrs exited 0. The refusals decided
-/// while *compiling* — `string is punct`, `string wordstart` — are not catchable
-/// and do make the case a skip. Both halves are pinned here so the distinction
+/// while *compiling* — `string wordstart` beyond ASCII — are not catchable and
+/// do make the case a skip. Both halves are pinned here so the distinction
 /// cannot drift without a test failing.
 #[test]
 fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
@@ -1397,12 +1397,20 @@ fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
         out("m:a\n"),
         out("m:lsort -nocase is not supported yet\n"),
     );
-    // Decided while compiling, so `catch` never runs at all.
+    // `string is punct` used to sit here as the compile-time half of the
+    // distinction — refused before `catch` could run. It is answered now, from
+    // the category tables the class needs, so it belongs on the other side.
+    agrees(&tclsh, "catch {string is punct a} m; puts m:$m", out("m:0\n"));
+    // The refusal that remains is narrower and still catchable, because it is
+    // decided when the character is read rather than when the script is: U+20C1
+    // is one of the 4804 code points tclsh 9.0.4 categorises and Unicode 16.0
+    // does not.
     diverges(
         &tclsh,
-        "catch {string is punct a} m; puts m:$m",
+        "catch {string is punct [format %c 0x20C1]} m; puts m:$m",
         out("m:0\n"),
-        err("the \"punct\" character class needs Unicode category tables, which are not built yet"),
+        out("m:string is punct: U+20C1 is categorised by tclsh 9.0.4 and not by \
+             Unicode 16.0, which is the table this build carries\n"),
     );
 }
 

@@ -718,24 +718,20 @@ fn append_in_place_matches_tclsh() {
 #[test]
 fn unsupported_string_features_are_refused() {
     for (src, expected) in [
-        // `wordend`, `wordstart` and `is dict` are implemented; what a word is
-        // made of still rests on Unicode categories, so the two word
-        // subcommands refuse beyond ASCII exactly as `string is alpha` does.
+        // `wordend` and `wordstart` still decide what a word is made of from
+        // ASCII alone, so they refuse beyond it. The character *classes* no
+        // longer do — they read the category tables now — so `string is graph`,
+        // `string is alpha héllo` and `-failindex` are answered and are pinned
+        // against tclsh in `tests/string_classes_differential.rs` instead.
         (
             "puts [string wordend héllo 1]",
             "beyond ASCII need Unicode category tables",
         ),
+        // What a class still refuses is a code point tclsh 9.0.4 categorises
+        // and Unicode 16.0 does not — 4804 of them, named one at a time.
         (
-            "puts [string is graph abc]",
-            "needs Unicode category tables",
-        ),
-        (
-            "puts [string is integer -failindex v 12a]",
-            "-failindex option",
-        ),
-        (
-            "puts [string is alpha héllo]",
-            "beyond ASCII need Unicode category tables",
+            "puts [string is graph [format %c 0x20C1]]",
+            "categorised by tclsh 9.0.4 and not by Unicode 16.0",
         ),
         ("puts [format %a 1.5]", "is not supported yet"),
         ("puts [string nosuch a]", "unknown or ambiguous subcommand"),
