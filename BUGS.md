@@ -519,6 +519,15 @@ All of them are now closed, each pinned by a test in
 quoting one, and each with its reproducer in the seed corpus of the target that
 reaches it.
 
+- **`string replace` on an empty subject aborted the process.**
+  `string replace {} -5 3` was `attempt to add with overflow`. The subject's
+  `end` is -1 when it is empty, `last` clamps to that, and the cast to `usize`
+  before the `+ 1` made the tail index wrap. **Fixed** by computing the tail
+  signed and clamping it, which also brings the whole first/last matrix into
+  agreement with tclsh — including `string replace {} -5 3 X`, which is `X`.
+  Found by the four-run campaign (seed 3003 case 02453) and still reachable at
+  v0.2.0.
+
 - **`format`'s floating-point precision above 65535 panicked.** Rust's formatter
   holds precision in a `u16`, and the four sites that call it take the number
   straight from the script: `format %.65536f 1.0`, `format %.65536e 1.0`,

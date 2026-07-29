@@ -2043,3 +2043,56 @@ fn bug_float_literal_is_named_by_value_not_by_spelling() {
         err("cannot use floating-point value \"1e300\" as left operand of \"%\""),
     );
 }
+
+/// `string replace` on an empty subject aborted the process.
+///
+/// `string replace {} -5 3` reached the tail computation with `last` clamped to
+/// the empty subject's `end` of -1, cast that to `usize`, and `last + 1`
+/// overflowed: `attempt to add with overflow`, a panic no `catch` can see. It is
+/// the `panic` case of the four-run campaign (seed 3003 case 02453), and it was
+/// still reachable at the tag the campaign ran against.
+///
+/// The whole first/last matrix is checked, not just the crashing input, because
+/// the fix moves where the clamp happens and every row of it goes through that
+/// line.
+#[test]
+fn fixed_string_replace_on_an_empty_subject_does_not_abort() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    // The crash itself, both with and without a replacement.
+    agrees(&tclsh, "puts [string replace {} -5 3]", out("\n"));
+    agrees(&tclsh, "puts [string replace {} -5 3 X]", out("X\n"));
+    // The matrix around it. tclsh compiles a braced `catch` body, and `string
+    // replace` has a bytecode form whose edge cases differ from the interpreted
+    // command's, so the comparison is made where tclrs's own path is: compiled.
+    agrees(
+        &tclsh,
+        "foreach spec {{{} -5 3} {{} 0 0} {{} -1 -1} {{} 1 2} {abc -5 3} \
+         {abc -5 -1} {abc -5 0} {abc 1 10} {abc 2 1} {abc 0 2} {{} end end} \
+         {{} end 0} {{} -2 -1} {abc -1 1} {abc end end}} {\n\
+         set s [lindex $spec 0]\n\
+         set f [lindex $spec 1]\n\
+         set l [lindex $spec 2]\n\
+         catch {string replace $s $f $l} r1\n\
+         catch {string replace $s $f $l X} r2\n\
+         puts \"[list $spec] -> [list $r1] [list $r2]\"\n\
+         }",
+        out("{{} -5 3} -> {} X\n\
+             {{} 0 0} -> {} {}\n\
+             {{} -1 -1} -> {} {}\n\
+             {{} 1 2} -> {} {}\n\
+             {abc -5 3} -> {} X\n\
+             {abc -5 -1} -> abc abc\n\
+             {abc -5 0} -> bc Xbc\n\
+             {abc 1 10} -> a aX\n\
+             {abc 2 1} -> abc abc\n\
+             {abc 0 2} -> {} X\n\
+             {{} end end} -> {} {}\n\
+             {{} end 0} -> {} X\n\
+             {{} -2 -1} -> {} {}\n\
+             {abc -1 1} -> c Xc\n\
+             {abc end end} -> ab abX\n"),
+    );
+}

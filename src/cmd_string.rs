@@ -527,12 +527,18 @@ fn dispatch(id: u16, operands: &[Value]) -> Result<String, String> {
                 return Ok(a[0].clone());
             }
             let first = first.max(0) as usize;
-            let last = last.min(end) as usize;
+            // Where the kept tail starts. Computed signed and clamped, not cast
+            // first: an empty subject puts `end` at -1, and `string replace {}
+            // -5 3` reaches here with `last` at 3, so `last.min(end)` is -1 and
+            // casting that to `usize` made `last + 1` overflow and abort the
+            // process. tclsh answers `{}` for that, and `X` for `string replace
+            // {} -5 3 X`, which is what falls out of a tail that starts at 0.
+            let tail = (last.min(end) + 1).max(0) as usize;
             let mut out: String = s[..first].iter().collect();
             if let Some(new) = a.get(3) {
                 out.push_str(new);
             }
-            out.extend(&s[last + 1..]);
+            out.extend(&s[tail..]);
             Ok(out)
         }
         ext::REVERSE => Ok(chars(&a[0]).iter().rev().collect()),
