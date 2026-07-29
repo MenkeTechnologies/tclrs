@@ -161,7 +161,12 @@ fn drive() -> ExitCode {
 
     let (src, file) = match &source {
         Source::File(path) => match std::fs::read_to_string(path) {
-            Ok(src) => (src, Some(path.as_str())),
+            Ok(src) => {
+                // `info script` answers with the file being run, and with the
+                // empty string for `-c` or stdin, as tclsh does for those.
+                tclrs::runtime::note_script(path);
+                (src, Some(path.as_str()))
+            }
             Err(e) => {
                 eprintln!("couldn't read file \"{path}\": {}", read_failure(&e));
                 return ExitCode::FAILURE;

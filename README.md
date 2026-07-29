@@ -349,6 +349,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Procedures | `proc`, `return` (with `-code ok` / `-code error`) |
 | Errors | `catch`, `error` |
 | Coroutines | `coroutine`, `yield`, `yieldto`, `info coroutine` |
+| Introspection | `info` — `args`, `commands`, `complete`, `coroutine`, `default`, `exists`, `globals`, `hostname`, `library`, `nameofexecutable`, `patchlevel`, `procs`, `script`, `sharedlibextension`, `tclversion`, `vars` |
 | Run-time evaluation | `eval` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
 | Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
@@ -502,7 +503,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `catch`'s third (options-variable) argument; `error`'s `info` and `code` arguments | `… the options variable is not supported` |
 | `eval` inside a procedure body | `"eval" inside a procedure is not supported: the script it builds cannot reach the procedure's local variables` |
 | `coroutine` anywhere but a script's top level or a command substitution in one; a coroutine of a built-in or of anything but one of the script's procedures; `yieldto` at a command that is not a coroutine of the script | `"coroutine" is only supported at the top level of a script, or in a command substitution in one` |
-| `info`, apart from `info coroutine` | `unknown or unsupported subcommand "exists": only "info coroutine" is supported` |
+| `info body`; `info locals` / `level` / `frame`; `info class` / `object`; `info constant` / `consts`; `info functions`; `info loaded`; `info cmdcount` / `cmdtype` / `errorstack` | `info body is not supported yet: a procedure's body is compiled into the enclosing chunk and its source text is not kept` |
 | Arbitrary-precision integers. An `i64` that overflows is an error, and so is the one integer division whose true quotient does not fit (`i64::MIN / -1`) and an integer *literal* or operand that does not fit at all (`expr {99999999999999999999 + 1}`) | `integer value too large to represent` |
 | Input nesting past `parser::MAX_NESTING_DEPTH` — 64_000 command substitutions or array indices deep, well past anything the reference interpreter survives | `too many nested substitutions (infinite loop?)` |
 | Ahead-of-time compilation of a script using `catch` or a coroutine | `ahead-of-time compilation of a script using "catch" is not supported: it needs the driver that only the interpreter has` |

@@ -271,8 +271,31 @@ approximated, and nothing is silently mis-run.
   the body is entered through the chunk's sub table. `yieldto` at a command that
   is not a coroutine of the script is refused: it would have to evaluate that
   command in the resumer's context, which this frontend cannot do.
-- **`info`, apart from `info coroutine`.** Every other subcommand is refused by
-  name rather than mis-answered.
+- **The `info` subcommands that report on a running call frame, on TclOO, or on
+  things this interpreter does not keep.** `info body` — a procedure's body is
+  compiled into the enclosing chunk and its source text is not retained; `info
+  locals`, `info level`, `info frame` — the running frame is not exposed yet;
+  `info class`, `info object` — no TclOO; `info constant`, `info consts` — no
+  constant variables; `info functions` — `expr` has no math functions at all, so
+  there is nothing to list; `info loaded` — no loadable extensions; `info
+  cmdcount`, `info cmdtype`, `info errorstack` — not kept. Each is refused by
+  name and says which of these it is; none is silently mis-answered. Everything
+  else in the ensemble is implemented: `args`, `commands`, `complete`,
+  `coroutine`, `default`, `exists`, `globals`, `hostname`, `library`,
+  `nameofexecutable`, `patchlevel`, `procs`, `script`, `sharedlibextension`,
+  `tclversion`, `vars`.
+- **`info library`, and the `auto_path` that follows from it.** tclsh has a
+  script library and `init.tcl` sets `auto_path` and defines the `auto_*`
+  procedures from it. tclrs has no script library, so `info library` raises `no
+  library has been specified for Tcl` — which is tclsh's own message for the
+  state tclrs is permanently in — `auto_path` does not exist, and `info procs`
+  does not list the `auto_*` procedures that a bare `info procs` in tclsh does.
+- **`info args` and `info procs` answer for a procedure declared later in the
+  script.** A whole script is compiled before any of it runs, and the signature
+  table is filled on that pass, so `info args later` before `proc later {q r}
+  {}` returns `q r` where tclsh raises `"later" isn't a procedure`. The same
+  ordering is what lets a procedure call one defined below it, which tclsh also
+  allows; only the introspection disagrees.
 - **Every command outside those above.** `open` / `read` / `close`,
   `source`, `upvar`, `uplevel`, `rename`, `namespace`, `apply`, `clock`,
   `encoding`, `binary`, … An unknown command name is `invalid command name "…"`
@@ -282,7 +305,8 @@ approximated, and nothing is silently mis-run.
   `lassign {1 2} a(x) a(y)`, `lset a(x) 0 v`, `lpop a(x)` and `ledit a(x) 0 0 v`
   are all `this command does not take an array element yet`, from the one
   `Compiler::var_name_of` that resolves the name for each of them. `foreach`
-  refuses one the same way. tclsh takes them.
+  refuses one the same way. tclsh takes them. `info default`'s third argument is
+  not among them: it takes an element.
 - **Code points tclsh 9.0.4 categorises and Unicode 16.0 does not.** The
   reference interpreter's character tables are ahead of the ones this build
   carries. Sweeping `string is` over every code point in both engines puts the
@@ -323,7 +347,9 @@ approximated, and nothing is silently mis-run.
   into an `Expr::Call` that the compiler refuses.
 - **Non-literal variable and body words.** A variable name or a body that is
   itself the result of substitution (`set $name 1`, `while $cond $body`) is
-  refused.
+  refused. Every command that names a variable is bound by this one rule, so
+  `incr $n`, `array exists $n` and `info exists $n` all refuse where tclsh
+  resolves the name at run time.
 - **Editor tooling.** No LSP, no DAP, no inline `rust {}` FFI. `--disasm`,
   `--dump-tokens` and `--dump-ast` exist, the zsh completion is
   `completions/_tclrs` and the man page is `man/man1/tclrs.1`, and

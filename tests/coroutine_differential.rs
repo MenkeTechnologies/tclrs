@@ -342,12 +342,13 @@ fn unsupported_coroutine_constructs_are_refused() {
             "proc h {} {}\nproc g {} {yieldto h}",
             "ceding control to a command that is not a coroutine",
         ),
-        // `info` has exactly one subcommand here.
+        // `info coroutine`'s own arity, and the neighbours in its ensemble that
+        // are still refused. The rest of `info` is covered by
+        // tests/info_differential.rs against tclsh.
         (
-            "puts [info commands]",
-            "only \"info coroutine\" is supported",
+            "puts [info level]",
+            "info level is not supported yet: it reports on the running call frame",
         ),
-        ("puts [info level]", "only \"info coroutine\" is supported"),
         ("info", "wrong # args"),
         (
             "puts [info coroutine x]",

@@ -76,7 +76,7 @@
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">41/59</div>
+            <div class="stat-val">56/87</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -110,7 +110,7 @@
         <tr><td><code>global</code></td><td><code>global ?varName ...?</code></td><td>Address the named variables in the global table rather than the procedure's frame slots. Outside a procedure it does nothing.</td></tr>
         <tr><td><code>if</code></td><td><code>if test ?then? body ?elseif test ?then? body ...? ?else? ?body?</code></td><td>The first branch whose test is a true Tcl boolean; a test that is not a boolean is an error, not a false branch.</td></tr>
         <tr><td><code>incr</code></td><td><code>incr varName ?increment?</code></td><td>Add the increment (1 by default) to the variable; yields the new value.</td></tr>
-        <tr><td><code>info</code></td><td><code>info subcommand ?argument ...?</code></td><td>Interpreter introspection. Only `info coroutine` is implemented; every other subcommand is refused by name.</td></tr>
+        <tr><td><code>info</code></td><td><code>info subcommand ?arg ...?</code></td><td>Interpreter introspection. Variables, procedure signatures, command names, whether text is a complete command, and the versions; the subcommands reporting on the running call frame, on TclOO and on loadable extensions are refused by name.</td></tr>
         <tr><td><code>join</code></td><td><code>join list ?joinString?</code></td><td>Concatenate the list's elements, separated by joinString (a space by default).</td></tr>
         <tr><td><code>lappend</code></td><td><code>lappend varName ?value ...?</code></td><td>Append each value to the list held in the variable; yields the new list.</td></tr>
         <tr><td><code>lassign</code></td><td><code>lassign list ?varName ...?</code></td><td>Assign the elements to the variables in order; yields the unassigned remainder.</td></tr>
@@ -235,12 +235,40 @@
         <tr><td><code>dict with</code></td><td><span class="state-no">dict with is not supported yet</span></td></tr>
           </tbody>
         </table>
-        <h3><code>info</code> &mdash; 1 of 1 implemented</h3>
+        <h3><code>info</code> &mdash; 16 of 29 implemented</h3>
         <table class="file-table">
           <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
           <thead><tr><th>subcommand</th><th>state</th></tr></thead>
           <tbody>
+        <tr><td><code>info args</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info body</code></td><td><span class="state-no">info body is not supported yet: a procedure's body is compiled into the enclosing chunk and its source text is not kept</span></td></tr>
+        <tr><td><code>info class</code></td><td><span class="state-no">info class is not supported yet: TclOO is not implemented</span></td></tr>
+        <tr><td><code>info cmdcount</code></td><td><span class="state-no">info cmdcount is not supported yet: the interpreter does not keep it</span></td></tr>
+        <tr><td><code>info cmdtype</code></td><td><span class="state-no">info cmdtype is not supported yet: the interpreter does not keep it</span></td></tr>
+        <tr><td><code>info commands</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info complete</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info constant</code></td><td><span class="state-no">info constant is not supported yet: constant variables are not implemented</span></td></tr>
+        <tr><td><code>info consts</code></td><td><span class="state-no">info consts is not supported yet: constant variables are not implemented</span></td></tr>
         <tr><td><code>info coroutine</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info default</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info errorstack</code></td><td><span class="state-no">info errorstack is not supported yet: the interpreter does not keep it</span></td></tr>
+        <tr><td><code>info exists</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info frame</code></td><td><span class="state-no">info frame is not supported yet: it reports on the running call frame, which this frontend does not expose yet</span></td></tr>
+        <tr><td><code>info functions</code></td><td><span class="state-no">info functions is not supported yet: math functions are not implemented</span></td></tr>
+        <tr><td><code>info globals</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info hostname</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info level</code></td><td><span class="state-no">info level is not supported yet: it reports on the running call frame, which this frontend does not expose yet</span></td></tr>
+        <tr><td><code>info library</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info loaded</code></td><td><span class="state-no">info loaded is not supported yet: loadable extensions are not implemented</span></td></tr>
+        <tr><td><code>info locals</code></td><td><span class="state-no">info locals is not supported yet: it reports on the running call frame, which this frontend does not expose yet</span></td></tr>
+        <tr><td><code>info nameofexecutable</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info object</code></td><td><span class="state-no">info object is not supported yet: TclOO is not implemented</span></td></tr>
+        <tr><td><code>info patchlevel</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info procs</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info script</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info sharedlibextension</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info tclversion</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info vars</code></td><td><span class="state-yes">implemented</span></td></tr>
           </tbody>
         </table>
       </section>

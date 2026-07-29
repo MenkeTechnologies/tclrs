@@ -550,6 +550,12 @@ impl Hooks {
             }
             let outcome = match id {
                 ext::EVAL => eval_op(&interp, vm, arg),
+                // `info globals` / `vars` answer from the interpreter's own
+                // table, not the chunk's name pool: `argc`, `argv` and `argv0`
+                // are set by the host and are interned only if the script
+                // happens to mention them, so a chunk-only answer omits exactly
+                // the variables every script starts with.
+                crate::cmd_info::ext::NAMES => info_names_op(&interp, vm, arg),
                 ext::FFI_CALL => ffi_op(vm, arg).map_err(TclError::plain),
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
@@ -643,6 +649,57 @@ fn ffi_op(vm: &mut VM, argc: u8) -> Result<(), String> {
 /// re-read after it, so the two see one set of variables in both directions —
 /// including when the nested script fails, since what it did set before failing
 /// is set.
+/// `info commands` / `procs` / `globals` / `vars`.
+///
+/// Lives here rather than in `cmd_info` because two of the four can only be
+/// answered from [`State::globals`], which the extension handler reaches and a
+/// bare `&mut VM` does not.
+fn info_names_op(interp: &Shared, vm: &mut VM, which: u8) -> Result<(), TclError> {
+    let given = matches!(vm.pop(), Value::Int(1));
+    let pattern = to_tcl_string(&vm.pop());
+    let filter = given.then_some(pattern.as_str());
+
+    let mut names: Vec<String> = match which {
+        // commands: every builtin the compiler dispatches, plus this chunk's
+        // procedures.
+        0 => crate::compiler::Compiler::BUILTINS
+            .iter()
+            .map(|s| (*s).to_string())
+            .chain(chunk_procs(vm))
+            .collect(),
+        1 => chunk_procs(vm).collect(),
+        // globals and vars: the union of both halves of where a global lives
+        // mid-run. The interpreter's table is the authority *between*
+        // evaluations and holds what the host set — `argc`, `argv`, `argv0`;
+        // the values a running script has assigned are in the VM and are only
+        // flushed back when the run ends. Asking either alone omits the other's.
+        // A hidden loop-state global is not a script's variable.
+        _ => {
+            let held: Vec<String> = interp
+                .lock()
+                .expect("interpreter lock")
+                .globals
+                .keys()
+                .cloned()
+                .collect();
+            held.into_iter()
+                .chain(vm.chunk.names.iter().enumerate().filter_map(|(i, name)| {
+                    let set = !matches!(vm.globals.get(i), None | Some(Value::Undef));
+                    set.then(|| name.clone())
+                }))
+                .filter(|name| !name.starts_with('\u{0}'))
+                .collect()
+        }
+    };
+    if let Some(p) = filter {
+        names.retain(|name| crate::list::glob_match(p, name));
+    }
+    names.sort();
+    names.dedup();
+    vm.push(Value::Str(Arc::new(crate::list::join(&names))));
+    Ok(())
+}
+
 fn eval_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     let mut args = Vec::with_capacity(argc as usize);
     for _ in 0..argc {
@@ -1835,6 +1892,7 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         ext::ERROR => Err(to_tcl_string(&vm.pop())),
         // The ranges are tested from the highest base down, so that a lower
         // one's `id >= BASE` does not swallow a higher module's ops.
+        id if id >= ext::INFO_BASE => crate::cmd_info::extension(vm, id, arg),
         id if id >= ext::REGEXP_BASE => crate::regexp::extension(vm, id, arg),
         id if id >= ext::STRING_BASE => crate::cmd_string::extension(vm, id, arg),
         id if id >= ext::ASSOC_BASE => crate::assoc::extension(vm, id, arg),
@@ -2244,6 +2302,77 @@ fn chunk_identity(chunk: &fusevm::Chunk) -> u64 {
 /// accumulating for the same reason: a cached chunk runs long after a later one
 /// was lowered.
 static INCR_SITES: Mutex<Option<HashSet<(u64, usize)>>> = Mutex::new(None);
+
+/// What `info args` and `info default` need about one procedure: each formal's
+/// name and its default, in declaration order.
+pub(crate) type ProcParams = Vec<(String, Option<String>)>;
+
+/// Every procedure a chunk defines, keyed by chunk identity.
+///
+/// The compiler already collects signatures before it emits anything, to check
+/// a call's arity; this publishes them so `info` can answer for a *computed*
+/// procedure name as well as a literal one. Same shape as [`TOLERANT_READS`] and
+/// [`INCR_SITES`], accumulating for the same reason: a cached chunk runs long
+/// after a later one was lowered.
+static PROC_TABLE: Mutex<Option<HashMap<(u64, String), ProcParams>>> = Mutex::new(None);
+
+/// Record the procedures `chunk` defines and what their formals are.
+pub(crate) fn note_procs(chunk: &fusevm::Chunk, procs: &[(String, ProcParams)]) {
+    if procs.is_empty() {
+        return;
+    }
+    let id = chunk_identity(chunk);
+    let mut guard = PROC_TABLE.lock().expect("proc table lock");
+    let table = guard.get_or_insert_with(HashMap::new);
+    for (name, params) in procs {
+        table.insert((id, name.clone()), params.clone());
+    }
+}
+
+/// The formals of `name` as the running chunk declared it, or `None` when the
+/// chunk defines no such procedure.
+pub(crate) fn proc_params(vm: &VM, name: &str) -> Option<ProcParams> {
+    let id = chunk_identity(&vm.chunk);
+    PROC_TABLE
+        .lock()
+        .expect("proc table lock")
+        .as_ref()
+        .and_then(|t| t.get(&(id, name.to_string())).cloned())
+}
+
+/// The procedures the running chunk defines.
+fn chunk_procs(vm: &VM) -> impl Iterator<Item = String> + '_ {
+    let id = chunk_identity(&vm.chunk);
+    let names: Vec<String> = PROC_TABLE
+        .lock()
+        .expect("proc table lock")
+        .as_ref()
+        .map(|t| {
+            t.keys()
+                .filter(|(chunk, _)| *chunk == id)
+                .map(|(_, name)| name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.into_iter()
+}
+
+/// The file `info script` reports — what the binary was asked to run, empty when
+/// the script came from `-c` or stdin, as tclsh answers for those.
+pub(crate) fn current_script() -> String {
+    CURRENT_SCRIPT
+        .lock()
+        .expect("script lock")
+        .clone()
+        .unwrap_or_default()
+}
+
+/// Record the path of the file being run.
+pub fn note_script(path: &str) {
+    *CURRENT_SCRIPT.lock().expect("script lock") = Some(path.to_string());
+}
+
+static CURRENT_SCRIPT: Mutex<Option<String>> = Mutex::new(None);
 
 /// Record where `chunk`'s `incr` commands put their arithmetic.
 pub(crate) fn note_incr_sites(chunk: &fusevm::Chunk, ips: &[usize]) {

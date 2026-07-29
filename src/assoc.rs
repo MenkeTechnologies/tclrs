@@ -580,7 +580,7 @@ pub(crate) fn target_of(word: &Word) -> Option<Target> {
 
 impl Compiler {
     /// Emit the index of `a(i)`, whose parts concatenate like any other word.
-    fn index_value(&mut self, index: &[Part]) -> Result<(), CompileError> {
+    pub(crate) fn index_value(&mut self, index: &[Part]) -> Result<(), CompileError> {
         self.word(&Word {
             parts: index.to_vec(),
             ..Word::default()
@@ -619,7 +619,7 @@ impl Compiler {
     /// `dict set` and the scalar guards need a variable's place to read it
     /// without refusing an unset one, and neither makes the name an array —
     /// noting it would make every other mention of it emit a guard.
-    fn var_place_operand(&mut self, name: &str) -> i64 {
+    pub(crate) fn var_place_operand(&mut self, name: &str) -> i64 {
         match self.var_place(name) {
             Place::Global(idx) => i64::from(idx),
             Place::Slot(slot) => -i64::from(slot) - 1,
@@ -1524,7 +1524,7 @@ fn dict_set(dict: &str, keys: &[String], value: String) -> Result<String, String
 
 /// The element map of an array variable, creating it when the variable does not
 /// exist yet. `None` when the variable holds a scalar.
-fn element_map(vm: &mut VM, place: Place) -> Option<&mut HashMap<String, Value>> {
+pub(crate) fn element_map(vm: &mut VM, place: Place) -> Option<&mut HashMap<String, Value>> {
     let cell = crate::runtime::var_cell(vm, place)?;
     if *cell == Value::Undef {
         *cell = Value::Hash(HashMap::new());
@@ -1577,7 +1577,13 @@ fn pop_int(vm: &mut VM) -> i64 {
 
 /// Decode the operand [`Compiler::array_place`] pushed: a name index in the
 /// VM's global table, or a frame slot written as `-(slot + 1)`.
-fn place_of(vm: &mut VM) -> Place {
+///
+/// Paired with [`Compiler::var_place_operand`], and the only thing that may
+/// decode what it encodes. [`crate::runtime::place_at`] looks similar and is
+/// not interchangeable: it takes a *plain* slot number and is told which form
+/// it has by the op id, so handing it this encoding turns slot 0 into slot
+/// 65535 and every answer into a silent false.
+pub(crate) fn place_of(vm: &mut VM) -> Place {
     let raw = pop_int(vm);
     if raw < 0 {
         Place::Slot((-raw - 1) as u16)

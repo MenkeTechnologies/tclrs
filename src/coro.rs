@@ -272,21 +272,14 @@ impl Compiler {
         Ok(())
     }
 
-    /// `info coroutine` — the one `info` subcommand this frontend has.
-    pub(crate) fn cmd_info(&mut self, args: &[Word]) -> Result<(), CompileError> {
-        match args {
-            [w] if w.as_literal() == Some("coroutine") => {
-                self.emit(Op::Extended(ext::CORO_INFO, 0), 1);
-                Ok(())
-            }
-            [w, ..] if w.as_literal() == Some("coroutine") => {
-                self.error("wrong # args: should be \"info coroutine\"")
-            }
-            [] => self.error("wrong # args: should be \"info subcommand ?argument ...?\""),
-            [w, ..] => self.error(format!(
-                "unknown or unsupported subcommand \"{}\": only \"info coroutine\" is supported",
-                w.as_literal().unwrap_or_default()
-            )),
+    /// `info coroutine`, reached from the `info` ensemble in
+    /// [`crate::cmd_info`]. The subcommand's own arity is checked here, where
+    /// the coroutine ops live.
+    pub(crate) fn info_coroutine(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        if !args.is_empty() {
+            return self.error("wrong # args: should be \"info coroutine\"");
         }
+        self.emit(Op::Extended(ext::CORO_INFO, 0), 1);
+        Ok(())
     }
 }

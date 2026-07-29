@@ -289,6 +289,14 @@ pub mod ext {
     /// ensemble's arm, and silently — an id that lands in the wrong module's
     /// range is a wrong answer at run time, not a compile error.
     pub const REGEXP_BASE: u16 = 192;
+
+    /// Where the `info` ensemble begins, dispatched to [`crate::cmd_info`].
+    ///
+    /// Above [`REGEXP_BASE`] for the reason that one is above `STRING_BASE`.
+    /// Ids 66–79 look free in this list and are not: they are `ASSOC_BASE + 2`
+    /// through `+ 15`, every array and `dict` op, and an id landing in the wrong
+    /// module's range is a wrong answer at run time rather than a compile error.
+    pub const INFO_BASE: u16 = 208;
 }
 
 /// Wide extension opcode ids, whose payload is a `usize` rather than a byte.
@@ -380,13 +388,20 @@ pub fn compile_debug(script: &Script) -> Result<fusevm::Chunk, CompileError> {
 
 fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
     let first = Compiler::run(script, ArrayNames::new(), debug)?;
-    let (mut chunk, tolerant, incr_sites) = if first.seen_arrays.is_empty() {
-        (first.b.build(), first.tolerant_reads, first.incr_sites)
+    let (mut chunk, tolerant, incr_sites, procs) = if first.seen_arrays.is_empty() {
+        let procs = signature_table(&first);
+        (
+            first.b.build(),
+            first.tolerant_reads,
+            first.incr_sites,
+            procs,
+        )
     } else {
         let second = Compiler::run(script, first.seen_arrays, debug)?;
         let reads = second.tolerant_reads.clone();
         let incrs = second.incr_sites.clone();
-        (second.b.build(), reads, incrs)
+        let procs = signature_table(&second);
+        (second.b.build(), reads, incrs, procs)
     };
     // Tcl's integers are arbitrary-precision, and so are this frontend's: an
     // `i64` that overflows promotes, in the numeric hook. Native codegen would
@@ -398,7 +413,27 @@ fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
     chunk.int_overflow_deopt = true;
     crate::runtime::note_tolerant_reads(&chunk, &tolerant);
     crate::runtime::note_incr_sites(&chunk, &incr_sites);
+    crate::runtime::note_procs(&chunk, &procs);
     Ok(chunk)
+}
+
+/// The procedures a lowering collected, in the shape `info` answers from.
+///
+/// `prescan` gathers every signature before anything is emitted, so this is
+/// already complete by the time the chunk is built — which is what lets
+/// `info args` answer for a procedure defined further down the script.
+fn signature_table(c: &Compiler) -> Vec<(String, crate::runtime::ProcParams)> {
+    c.procs
+        .iter()
+        .map(|(name, sig)| {
+            let params = sig
+                .params
+                .iter()
+                .map(|p| (p.name.clone(), p.default.clone()))
+                .collect();
+            (name.clone(), params)
+        })
+        .collect()
 }
 
 pub(crate) struct LoopCtx {
@@ -889,7 +924,7 @@ impl Compiler {
     /// What a variable-name word names. `a(i)` is an array element even though
     /// the parser hands it over as ordinary text — the parentheses are only
     /// syntax inside a `$` substitution, so the interpretation happens here.
-    fn target_of(&self, word: &Word) -> Result<Target, CompileError> {
+    pub(crate) fn target_of(&self, word: &Word) -> Result<Target, CompileError> {
         assoc::target_of(word)
             .ok_or_else(|| self.err("variable name must be a literal in this phase".to_string()))
     }

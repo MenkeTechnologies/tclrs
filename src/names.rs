@@ -11,6 +11,7 @@
 //! offered at the prompt is a name the compiler knows.
 
 use crate::assoc::{ARRAY_SUBCOMMANDS, DICT_SUBCOMMANDS};
+use crate::cmd_info;
 use crate::cmd_list;
 use crate::cmd_string;
 use crate::compiler::Compiler;
@@ -136,8 +137,8 @@ pub const CORPUS: &[Entry] = &[
     },
     Entry {
         name: "info",
-        synopsis: "info subcommand ?argument ...?",
-        summary: "Interpreter introspection. Only `info coroutine` is implemented; every other subcommand is refused by name.",
+        synopsis: "info subcommand ?arg ...?",
+        summary: "Interpreter introspection. Variables, procedure signatures, command names, whether text is a complete command, and the versions; the subcommands reporting on the running call frame, on TclOO and on loadable extensions are refused by name.",
     },
     Entry {
         name: "join",
@@ -310,7 +311,7 @@ pub fn subcommands(command: &str) -> &'static [&'static str] {
         "string" => cmd_string::SUBCOMMANDS,
         "array" => ARRAY_SUBCOMMANDS,
         "dict" => DICT_SUBCOMMANDS,
-        "info" => &["coroutine"],
+        "info" => cmd_info::SUBCOMMANDS,
         _ => &[],
     }
 }
@@ -632,11 +633,153 @@ const DICT_CORPUS: &[Entry] = &[
     },
 ];
 
-const INFO_CORPUS: &[Entry] = &[Entry {
-    name: "coroutine",
-    synopsis: "info coroutine",
-    summary: "The name of the running coroutine, or the empty string outside one.",
-}];
+const INFO_CORPUS: &[Entry] = &[
+    Entry {
+        name: "args",
+        synopsis: "info args procname",
+        summary: "The parameter names of a procedure, in order.",
+    },
+    Entry {
+        name: "body",
+        synopsis: "info body procname",
+        summary: "Refused: a procedure's body is compiled into the enclosing chunk and its source text is not kept.",
+    },
+    Entry {
+        name: "class",
+        synopsis: "info class subcommand class ?arg ...?",
+        summary: "Refused: TclOO is not implemented.",
+    },
+    Entry {
+        name: "cmdcount",
+        synopsis: "info cmdcount",
+        summary: "Refused: the interpreter does not keep it.",
+    },
+    Entry {
+        name: "cmdtype",
+        synopsis: "info cmdtype commandName",
+        summary: "Refused: the interpreter does not keep it.",
+    },
+    Entry {
+        name: "commands",
+        synopsis: "info commands ?pattern?",
+        summary: "The command names matching the pattern, builtins and procedures alike.",
+    },
+    Entry {
+        name: "complete",
+        synopsis: "info complete command",
+        summary: "1 when the text is a whole command, 0 when more input could finish it.",
+    },
+    Entry {
+        name: "constant",
+        synopsis: "info constant varName",
+        summary: "Refused: constant variables are not implemented.",
+    },
+    Entry {
+        name: "consts",
+        synopsis: "info consts ?pattern?",
+        summary: "Refused: constant variables are not implemented.",
+    },
+    Entry {
+        name: "coroutine",
+        synopsis: "info coroutine",
+        summary: "The name of the running coroutine, or the empty string outside one.",
+    },
+    Entry {
+        name: "default",
+        synopsis: "info default procname arg varname",
+        summary: "1 and the default written into varname when the parameter has one, else 0.",
+    },
+    Entry {
+        name: "errorstack",
+        synopsis: "info errorstack ?interp?",
+        summary: "Refused: the interpreter does not keep it.",
+    },
+    Entry {
+        name: "exists",
+        synopsis: "info exists varName",
+        summary: "1 when the variable or element is set; asking does not create it.",
+    },
+    Entry {
+        name: "frame",
+        synopsis: "info frame ?number?",
+        summary: "Refused: it reports on the running call frame, which this frontend does not expose yet.",
+    },
+    Entry {
+        name: "functions",
+        synopsis: "info functions ?pattern?",
+        summary: "Refused: math functions are not implemented.",
+    },
+    Entry {
+        name: "globals",
+        synopsis: "info globals ?pattern?",
+        summary: "The global variable names matching the pattern.",
+    },
+    Entry {
+        name: "hostname",
+        synopsis: "info hostname",
+        summary: "The name of this host.",
+    },
+    Entry {
+        name: "level",
+        synopsis: "info level ?number?",
+        summary: "Refused: it reports on the running call frame, which this frontend does not expose yet.",
+    },
+    Entry {
+        name: "library",
+        synopsis: "info library",
+        summary: "Raises: this frontend has no script library, which is what tclsh reports too when `tcl_library` is gone.",
+    },
+    Entry {
+        name: "loaded",
+        synopsis: "info loaded ?interp? ?prefix?",
+        summary: "Refused: loadable extensions are not implemented.",
+    },
+    Entry {
+        name: "locals",
+        synopsis: "info locals ?pattern?",
+        summary: "Refused: it reports on the running call frame, which this frontend does not expose yet.",
+    },
+    Entry {
+        name: "nameofexecutable",
+        synopsis: "info nameofexecutable",
+        summary: "The full path of the running binary.",
+    },
+    Entry {
+        name: "object",
+        synopsis: "info object subcommand object ?arg ...?",
+        summary: "Refused: TclOO is not implemented.",
+    },
+    Entry {
+        name: "patchlevel",
+        synopsis: "info patchlevel",
+        summary: "The full version of the Tcl language implemented.",
+    },
+    Entry {
+        name: "procs",
+        synopsis: "info procs ?pattern?",
+        summary: "The procedure names matching the pattern.",
+    },
+    Entry {
+        name: "script",
+        synopsis: "info script ?filename?",
+        summary: "The file being evaluated; with an argument, sets it and returns it.",
+    },
+    Entry {
+        name: "sharedlibextension",
+        synopsis: "info sharedlibextension",
+        summary: "The suffix a loadable library has on this platform.",
+    },
+    Entry {
+        name: "tclversion",
+        synopsis: "info tclversion",
+        summary: "The major.minor version of the Tcl language implemented.",
+    },
+    Entry {
+        name: "vars",
+        synopsis: "info vars ?pattern?",
+        summary: "The visible variable names matching the pattern.",
+    },
+];
 
 #[cfg(test)]
 mod tests {
