@@ -39,6 +39,9 @@ pub mod regexp;
 pub mod runtime;
 pub mod rust_ffi;
 pub mod tiers;
+/// Hosting the real Tk toolkit. Behind the `tk` feature; see `src/tk/mod.rs`.
+#[cfg(feature = "tk")]
+pub mod tk;
 
 pub use parser::{parse, Command, ParseError, Part, Script, Word};
 pub use runtime::{eval, eval_captured, Interp, Outcome, TclError};

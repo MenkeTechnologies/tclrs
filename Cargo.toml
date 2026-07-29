@@ -55,6 +55,20 @@ path = "src/main.rs"
 name = "gen-docs"
 path = "src/bin/gen_docs.rs"
 
+# Hands the real Tk toolkit a stand-in interpreter and prints the ordered list
+# of stub-table slots it calls. Needs a Tk dylib at run time, so it is behind
+# the `tk` feature and is not part of a default build.
+[[bin]]
+name = "tk-probe"
+path = "src/bin/tk_probe.rs"
+required-features = ["tk"]
+
+[features]
+# The Tk hosting instrument (`src/tk/`). Off by default: a machine with no Tk
+# installed builds and tests exactly as before, and nothing outside `src/tk/`
+# changes behaviour when it is on.
+tk = []
+
 [dependencies]
 # Execution and codegen live in fusevm; this crate only lowers to its ops.
 #
