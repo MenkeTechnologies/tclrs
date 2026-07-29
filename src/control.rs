@@ -22,6 +22,9 @@ use crate::parser::Word;
 
 /// How `switch` compares its subject to a pattern.
 #[derive(Clone, Copy, PartialEq, Eq)]
+/// How a `switch` clause matches, as the low bit of [`ext::MATCH`]'s operand.
+/// The high bit carries `-nocase`, so the four combinations ride in one byte
+/// and an emitter that knows nothing of case folding still means what it did.
 enum Match {
     Exact,
     Glob,
@@ -63,23 +66,37 @@ impl Compiler {
     pub(crate) fn cmd_switch(&mut self, args: &[Word]) -> Result<(), CompileError> {
         let mut i = 0;
         let mut mode = Match::Exact;
-        // `switch(n)`: leading `-` arguments are options unless the command
-        // has exactly two arguments, where the first is always the subject.
-        if args.len() != 2 {
-            while let Some(text) = args.get(i).and_then(|w| w.as_literal()) {
-                if !text.starts_with('-') {
-                    break;
+        let mut nocase = false;
+        // `switch(n)`: a leading `-` argument is an option only while at least
+        // two arguments follow it — the subject and the patterns. That bound is
+        // the interpreter's own (`Tcl_SwitchObjCmd` scans `i < objc-2`), and it
+        // is why `switch -exact -9223372036854775807 {a* {…} default {…}}`
+        // matches on the number rather than reporting a bad option: after
+        // `-exact` only two arguments remain, so the number is the subject.
+        while i + 2 < args.len() {
+            let Some(text) = args.get(i).and_then(|w| w.as_literal()) else {
+                break;
+            };
+            if !text.starts_with('-') {
+                break;
+            }
+            i += 1;
+            match text {
+                "-exact" => mode = Match::Exact,
+                "-glob" => mode = Match::Glob,
+                "-nocase" => nocase = true,
+                // Named so the option list above stays honest, and refused with
+                // this frontend's own wording rather than being mistaken for a
+                // bad option. `-regexp` needs the regular-expression engine.
+                "-regexp" | "-matchvar" | "-indexvar" => {
+                    return self.error(format!("the {text} option of \"switch\" is not supported yet"))
                 }
-                i += 1;
-                match text {
-                    "-exact" => mode = Match::Exact,
-                    "-glob" => mode = Match::Glob,
-                    "--" => break,
-                    other => {
-                        return self.error(format!(
-                            "bad option \"{other}\": only -exact, -glob and -- are supported"
-                        ))
-                    }
+                "--" => break,
+                other => {
+                    return self.error(format!(
+                        "bad option \"{other}\": must be -exact, -glob, -indexvar, \
+                         -matchvar, -nocase, -regexp, or --"
+                    ))
                 }
             }
         }
@@ -111,7 +128,12 @@ impl Compiler {
                 (None, Some(w)) => self.word(w)?,
                 (None, None) => unreachable!("a clause has a pattern"),
             }
-            self.emit(Op::Extended(ext::MATCH, mode as u8), -1);
+            // The string module's matcher, so `-nocase` folds exactly as
+            // `string match -nocase` folds; it answers "1"/"0", which the
+            // boolean op turns into the 1/0 the branch below tests.
+            self.emit(Op::LoadInt(i64::from(mode as u8 | u8::from(nocase) << 1)), 1);
+            self.emit(Op::Extended(crate::cmd_string::ext::SWITCH_MATCH, 3), -2);
+            self.emit(Op::Extended(ext::BOOL, 0), 0);
             let miss = self.emit(Op::JumpIfFalse(usize::MAX), -1);
             self.emit(Op::Pop, -1);
             self.switch_body(&clause.body)?;

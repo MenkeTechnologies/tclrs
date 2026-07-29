@@ -1,14 +1,14 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00396   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 21 -> 5 lines in 2 round(s), 47/400 candidates checked
-# verdict: DIVERGENCE	message-compile-time	msg tclsh=expected integer but got a list tclrs=bad option "-1": only -exact, -glob and -- are supported
+# verdict: DIVERGENCE	message-compile-time	msg tclsh=expected integer but got a list tclrs=empty expression
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: expected integer but got a list\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: bad option "-1": only -exact, -glob and -- are supported\n    (file "target/fuzz/work/record/driven.tcl" line 25)\n
+# tclrs-stderr: empty expression\n    (file "target/fuzz/work/record/driven.tcl" line 25)\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

@@ -129,6 +129,25 @@ approximated, and nothing is silently mis-run.
 
 ## Not implemented
 
+- **`string is graph`, `print` and `punct`, beyond nothing.** All three rest on
+  Unicode general categories Tcl builds its own tables for: `punct` spans the
+  seven punctuation categories *and* the four symbol ones, and `graph` and
+  `print` are defined from that set. They are refused rather than answered from
+  Rust's tables, which track a different Unicode revision — the same rule the
+  rest of `string is` follows beyond ASCII. `string is dict` used to be refused
+  alongside them by mistake; it is structural, not a character class, and now
+  answers.
+- **`string wordend` and `string wordstart` beyond ASCII.** A word is a run of
+  letters, decimal digits and connector punctuation, which is three general
+  categories, so the two subcommands answer for ASCII and refuse past it exactly
+  as `string is wordchar` does. Measured against tclsh: `a²b` is three words
+  because U+00B2 is `No` and not `Nd`, and `a‿b` is one because U+203F is `Pc` —
+  neither is derivable from what Rust's standard library exposes.
+- **`switch -regexp`, `-matchvar` and `-indexvar`.** Named rather than reported
+  as bad options, because `switch` does have them; `-regexp` waits on the
+  regular-expression engine, and the two variable options only mean anything
+  with it.
+
 - **`foreach` and `dict for` reach no tier in any spelling**, procedure locals
   included. Their loop state is carried by frontend extension ops
   (`FOREACH_INIT` / `MORE` / `TAKE` / `ADVANCE`, `DICT_PAIRS`) and
@@ -357,7 +376,7 @@ with a sign, and carries `nan` / `inf` in its value pools.
   tclsh saw an answer.** `catch {lsearch -sorted {a} b} m` leaves `m` as
   `lsearch -sorted -increasing is not supported yet` and the script runs on, where tclsh
   leaves `-1`; the same for `lsort -nocase`. The refusals decided while
-  *compiling* — `string is punct`, `string wordstart` — are not catchable and do
+  *compiling* — `string is punct`, `switch -regexp` — are not catchable and do
   take the whole case out of comparison as a skip. The two halves are pinned
   together, because which side a refusal falls on is what decides whether the
   harness counts it as a skip or as a divergence.
@@ -503,7 +522,7 @@ than an unexamined one. Measured against the 2000-program run above.
   `tests/list_commands_differential.rs`.
 - **`array` on a procedure local, `unset` of one, and `eval` inside a procedure
   body** *are* generated now, at `REFUSAL_RATE` — so are `lsort -command`,
-  `lsearch -regexp`, `string wordstart`, `string is -failindex`, the `string is`
+  `lsearch -regexp`, `switch -regexp`, `string is -failindex`, the `string is`
   classes that need the Unicode tables, and the `dict` subcommands outside the
   implemented set. Each lands in the skip bucket under the refusal's own wording,
   which is coverage waiting for the refusal to go rather than a hole. The rate is

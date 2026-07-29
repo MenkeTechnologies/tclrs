@@ -334,8 +334,11 @@ fn unsupported_procedure_constructs_are_refused() {
             "while {1} {catch {break}}",
             "\"break\" out of a \"catch\" script",
         ),
-        ("switch -nocase a {a {}}", "bad option \"-nocase\""),
-        ("switch -regexp a {a {}}", "bad option \"-regexp\""),
+        // `-nocase` is implemented; `-regexp` is named rather than reported as
+        // a bad option, because `switch` does have it and this frontend does
+        // not yet. A genuinely unknown option is still a bad option.
+        ("switch -regexp a {a {}}", "the -regexp option"),
+        ("switch -bogus a b {a {}}", "bad option \"-bogus\""),
         ("switch a {a}", "extra switch pattern with no body"),
         ("switch a {}", "wrong # args"),
         ("switch a", "wrong # args"),

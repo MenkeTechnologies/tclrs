@@ -69,6 +69,28 @@ pub mod ext {
     /// [`APPEND`] is still emitted for a name the script also uses as an array.
     pub const APPEND_VAR: u16 = BASE + 23;
     pub const APPEND_SLOT: u16 = BASE + 24;
+
+    /// `[string, charIndex]` → the index just past the end of the word holding
+    /// that character, and the index of that word's first character.
+    ///
+    /// Deliberately at `BASE + 32` rather than `+ 25`: ids in the string range
+    /// are handed out in blocks so that two people adding subcommands at the
+    /// same time cannot pick the same number. `runtime::extension` dispatches
+    /// this range by `id >= STRING_BASE`, and an explicit arm above that test
+    /// would shadow it silently, so a new id also has to be absent from there.
+    pub const WORDEND: u16 = BASE + 32;
+    pub const WORDSTART: u16 = BASE + 33;
+
+    /// `[subject, pattern, flags]` → `1` or `0`: how a `switch` clause matches.
+    /// `flags` carries `-glob` in bit 0 and `-nocase` in bit 1, and rides as an
+    /// operand rather than in the op's inline byte because that is how every
+    /// other flag in this module travels (see `push_flag`).
+    ///
+    /// It lives in the string range rather than beside the frontend's own
+    /// `MATCH` because the folding it needs is this module's — the same
+    /// matcher and comparator `string match -nocase` and `string equal -nocase`
+    /// run, so the two cannot drift into two rules for one question.
+    pub const SWITCH_MATCH: u16 = BASE + 34;
 }
 
 /// Every subcommand the ensemble knows, in the order the interpreter lists them
@@ -252,6 +274,8 @@ impl Compiler {
                 };
                 self.fixed(id, rest, 1, 2, sub, "string ?chars?")
             }
+            "wordend" => self.fixed(ext::WORDEND, rest, 2, 2, sub, "string charIndex"),
+            "wordstart" => self.fixed(ext::WORDSTART, rest, 2, 2, sub, "string charIndex"),
             other => self.error(format!("\"string {other}\" is not supported yet")),
         }
     }
@@ -378,7 +402,13 @@ impl Compiler {
                 ));
             }
         }
-        if matches!(class, "dict" | "graph" | "print" | "punct") {
+        // `dict` is structural and answered in `is_class`; these three rest on
+        // Unicode general categories Tcl builds its own tables for — `punct`
+        // spans the seven punctuation categories *and* the four symbol ones,
+        // and `graph` / `print` are defined in terms of that set — so they are
+        // refused rather than answered from Rust's tables, which track a
+        // different Unicode revision.
+        if matches!(class, "graph" | "print" | "punct") {
             return self.error(format!(
                 "the \"{class}\" character class needs Unicode category tables, which are not built yet"
             ));
@@ -607,6 +637,27 @@ fn dispatch(id: u16, operands: &[Value]) -> Result<String, String> {
         ext::LENGTH => Ok(a[0].chars().count().to_string()),
         ext::MAP => map(truth(&a[0]), &a[1], &a[2]),
         ext::MATCH => Ok((matches(&chars(&a[1]), &chars(&a[2]), truth(&a[0])) as i32).to_string()),
+        ext::SWITCH_MATCH => {
+            let flags = want_int(&a[2])?;
+            let (glob, nocase) = (flags & 1 == 1, flags & 2 == 2);
+            let hit = if glob {
+                matches(&chars(&a[1]), &chars(&a[0]), nocase)
+            } else if nocase {
+                compare(&chars(&a[0]), &chars(&a[1]), true, None) == 0
+            } else {
+                a[0] == a[1]
+            };
+            Ok((hit as i32).to_string())
+        }
+        ext::WORDEND | ext::WORDSTART => {
+            let text = chars(&a[0]);
+            let at = word_index(&a[1], text.len())?;
+            Ok(if id == ext::WORDEND {
+                word_end(&text, at)?.to_string()
+            } else {
+                word_start(&text, at)?.to_string()
+            })
+        }
         ext::RANGE => {
             let s = chars(&a[0]);
             let end = s.len() as i64 - 1;
@@ -1261,6 +1312,69 @@ fn convert_case(id: u16, a: &[String]) -> Result<String, String> {
     Ok(out)
 }
 
+// ── words ────────────────────────────────────────────────────────────────
+
+/// `string wordend` / `string wordstart`'s character index, clamped the way the
+/// interpreter clamps it: an index before the string is the first character and
+/// one at or past its end is the last, so neither subcommand can be asked about
+/// a character that is not there. Measured against tclsh 9.0.4, which answers
+/// `wordend "hello world" -1` with 5 and `wordend "hello world" 11` with 11.
+fn word_index(spec: &str, len: usize) -> Result<usize, String> {
+    let last = len as i64 - 1;
+    Ok(index_of(spec, last)?.clamp(0, last.max(0)) as usize)
+}
+
+/// A word character: `string(n)` defines a word as a run of Unicode letters,
+/// decimal digits and connector punctuation, and any other single character is
+/// a word of its own.
+///
+/// Answered for ASCII and refused beyond it, which is this module's standing
+/// rule for anything resting on Unicode general categories: Rust's tables are a
+/// different Unicode revision than Tcl's, so answering from them would be a
+/// guess wearing a number. `string is wordchar` draws the line in the same
+/// place, and the two agree by construction.
+fn is_word_char(c: char) -> Result<bool, String> {
+    if (c as u32) >= 0x80 {
+        return Err(
+            "string wordend/wordstart: characters beyond ASCII need Unicode category tables, \
+             which are not built yet"
+                .to_string(),
+        );
+    }
+    Ok(c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The index just past the word holding `at`. A non-word character is its own
+/// word, so the answer is `at + 1` there.
+fn word_end(text: &[char], at: usize) -> Result<usize, String> {
+    if text.is_empty() {
+        return Ok(0);
+    }
+    if !is_word_char(text[at])? {
+        return Ok(at + 1);
+    }
+    let mut end = at;
+    while end < text.len() && is_word_char(text[end])? {
+        end += 1;
+    }
+    Ok(end)
+}
+
+/// The index of the first character of the word holding `at`.
+fn word_start(text: &[char], at: usize) -> Result<usize, String> {
+    if text.is_empty() {
+        return Ok(0);
+    }
+    if !is_word_char(text[at])? {
+        return Ok(at);
+    }
+    let mut start = at;
+    while start > 0 && is_word_char(text[start - 1])? {
+        start -= 1;
+    }
+    Ok(start)
+}
+
 // ── character classes ────────────────────────────────────────────────────
 
 /// Tcl's whitespace: the C0 set below U+0080, then the Unicode separators plus
@@ -1282,6 +1396,15 @@ fn is_class(class: &str, strict: bool, text: &str) -> Result<bool, String> {
     if class == "list" {
         // Strictness is ignored here: an empty string is a well-formed list.
         return Ok(split_list(text).is_ok());
+    }
+    if class == "dict" {
+        // Structural, not a character class: a dict is a list of an even number
+        // of elements. `string is dict {a 1 b}` is 0 and `string is dict {}` is
+        // 1, both measured. Strictness is ignored for the same reason as `list`.
+        return Ok(match split_list(text) {
+            Ok(elements) => elements.len().is_multiple_of(2),
+            Err(_) => false,
+        });
     }
     if text.is_empty() {
         return Ok(!strict);

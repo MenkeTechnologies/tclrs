@@ -718,14 +718,15 @@ fn append_in_place_matches_tclsh() {
 #[test]
 fn unsupported_string_features_are_refused() {
     for (src, expected) in [
-        ("puts [string wordend abc 1]", "is not supported yet"),
-        ("puts [string wordstart abc 1]", "is not supported yet"),
+        // `wordend`, `wordstart` and `is dict` are implemented; what a word is
+        // made of still rests on Unicode categories, so the two word
+        // subcommands refuse beyond ASCII exactly as `string is alpha` does.
         (
-            "puts [string is graph abc]",
-            "needs Unicode category tables",
+            "puts [string wordend héllo 1]",
+            "beyond ASCII need Unicode category tables",
         ),
         (
-            "puts [string is dict {a b}]",
+            "puts [string is graph abc]",
             "needs Unicode category tables",
         ),
         (
