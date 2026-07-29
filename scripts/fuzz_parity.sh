@@ -381,7 +381,7 @@ done
 if [ "$listed" -ne "$ALLOWED" ]; then
   printf "${R}  %d allowlisted case(s) are not accounted for by the rows above:${N_}\n" \
     "$((ALLOWED - listed))"
-  cut -f1 "$OUT/allowed.txt" | sort -u | while read -r k; do
+  cut -f1 "$OUT/allowed.txt" | LC_ALL=C sort -u | while read -r k; do
     case " $ALLOW_KEYS " in *" $k "*) ;; *) printf '    %s\n' "$k" ;; esac
   done
 fi
@@ -389,13 +389,13 @@ fi
 if [ "$SKIP" -gt 0 ]; then
   echo
   say "skips by refusal (what tclrs declined to run)"
-  cut -f1 "$OUT/skips.txt" | sort | uniq -c | sort -rn | head -25
+  cut -f1 "$OUT/skips.txt" | LC_ALL=C sort | LC_ALL=C uniq -c | LC_ALL=C sort -rn | head -25
 fi
 
 if [ "$EXCLUDED" -gt 0 ]; then
   echo
   say "excluded — tclsh itself crashed or hung, never charged against tclrs"
-  cut -f1 "$OUT/excluded.txt" | sort | uniq -c | sort -rn | head -10
+  cut -f1 "$OUT/excluded.txt" | LC_ALL=C sort | LC_ALL=C uniq -c | LC_ALL=C sort -rn | head -10
   printf '  %s\n' "the cases themselves: $OUT/excluded_detail.txt"
 fi
 
@@ -447,12 +447,17 @@ printf "${R}%d/%d compared cases diverge from tclsh${N_}  ${D}(%s)${N_}\n" \
   "$BAD" "$((PASS + DIVERGE + CRITICAL))" "$OUT/diverge.txt"
 echo
 say "divergences by signature (channel, then what the two engines said)"
+# LC_ALL=C, and on every sort over fuzz output above: a generated case may hold
+# bytes that are not valid UTF-8 in the ambient locale, and GNU/BSD `sort` then
+# fails the whole pipeline with "sort: Illegal byte sequence" and writes a
+# partial histogram. The ranking is what the report is read for, so it must
+# count every line; byte order is a fine order for a frequency table.
 perl -ne '
   next unless /^\#\d+\t([^\t]+)\t(.*)$/;
   my ($key, $sig) = ($1, $2);
   $sig = substr($sig, 0, 110) . "..." if length $sig > 113;
   print "$key  $sig\n";
-' "$OUT/diverge.txt" | sort | uniq -c | sort -rn | head -30
+' "$OUT/diverge.txt" | LC_ALL=C sort | LC_ALL=C uniq -c | LC_ALL=C sort -rn | head -30
 if [ "$QUIET" -eq 0 ]; then
   echo
   say "first divergences"
