@@ -640,7 +640,11 @@ fn dispatch(id: u16, operands: &[Value]) -> Result<String, String> {
         ext::SWITCH_MATCH => {
             let flags = want_int(&a[2])?;
             let (glob, nocase) = (flags & 1 == 1, flags & 2 == 2);
-            let hit = if glob {
+            // `switch -regexp`, whose matcher is the regular-expression engine
+            // rather than this module's glob one. Bit 2, set by `control.rs`.
+            let hit = if flags & 4 == 4 {
+                crate::regexp::matches_anywhere(&a[1], &a[0], nocase)?
+            } else if glob {
                 matches(&chars(&a[1]), &chars(&a[0]), nocase)
             } else if nocase {
                 compare(&chars(&a[0]), &chars(&a[1]), true, None) == 0

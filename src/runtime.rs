@@ -1562,6 +1562,7 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         ext::ERROR => Err(to_tcl_string(&vm.pop())),
         // The ranges are tested from the highest base down, so that a lower
         // one's `id >= BASE` does not swallow a higher module's ops.
+        id if id >= ext::REGEXP_BASE => crate::regexp::extension(vm, id, arg),
         id if id >= ext::STRING_BASE => crate::cmd_string::extension(vm, id, arg),
         id if id >= ext::ASSOC_BASE => crate::assoc::extension(vm, id, arg),
         id if id >= ext::LIST_BASE => crate::cmd_list::run(vm, id, arg),

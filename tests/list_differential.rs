@@ -735,7 +735,6 @@ fn errors_match_tclsh() {
 #[test]
 fn unimplemented_options_are_refused() {
     for (src, expected) in [
-        ("puts [lsearch -regexp {a b} a]", "lsearch -regexp"),
         ("puts [lsearch -sorted {a b} a]", "lsearch -sorted"),
         ("puts [lsearch -nocase {a b} A]", "lsearch -nocase"),
         ("puts [lsort -command x {a b}]", "lsort -command"),
@@ -748,4 +747,15 @@ fn unimplemented_options_are_refused() {
             "{src:?}: expected a refusal mentioning {expected:?}, got {err:?}"
         );
     }
+
+    // `-regexp` was on that list until the regular-expression engine landed.
+    // Pinned here rather than dropped, so that the day it starts refusing
+    // again this test says so; what it *answers* is compared against tclsh by
+    // `tests/regexp_differential.rs`.
+    assert_eq!(
+        tclrs::eval("puts [lsearch -regexp {abc bcd} {^b}]")
+            .expect("lsearch -regexp is implemented")
+            .output,
+        "1\n"
+    );
 }

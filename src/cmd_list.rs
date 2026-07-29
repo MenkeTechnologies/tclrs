@@ -797,6 +797,8 @@ const LSEARCH_OPTIONS: &[&str] = &[
 enum Mode {
     Exact,
     Glob,
+    /// `-regexp`, matched by [`crate::regexp`] rather than by the glob matcher.
+    Regexp,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -827,6 +829,7 @@ fn lsearch(args: &[String]) -> Result<String, String> {
             "-ascii" => data = DataType::Ascii,
             "-exact" => mode = Mode::Exact,
             "-glob" => mode = Mode::Glob,
+            "-regexp" => mode = Mode::Regexp,
             "-inline" => inline = true,
             "-integer" => data = DataType::Integer,
             "-not" => negated = true,
@@ -899,6 +902,7 @@ fn lsearch(args: &[String]) -> Result<String, String> {
             // refuses is `lsearch`'s error too. `-nocase` is not threaded
             // through because `lsearch` does not implement it — that option
             // still reports its own refusal above.
+            (None, Mode::Regexp) => crate::regexp::matches_anywhere(pattern, item, false)?,
         };
         if negated {
             hit = !hit;

@@ -93,6 +93,13 @@ lsp-server = "0.7"
 lsp-types = "0.97"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# `regexp` and `regsub`. Tcl matches with Henry Spencer's ARE engine, which
+# backtracks; this one is a finite automaton and cannot express the two
+# constructs that need backtracking — back-references and look-ahead — so
+# `src/regexp.rs` refuses those by name rather than approximating them. The
+# alternative was porting Spencer's matcher, which is the kind of code that is
+# wrong in ways a test suite does not reach.
+regex = "1.13.1"
 
 [profile.release]
 lto = true
