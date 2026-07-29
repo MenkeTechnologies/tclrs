@@ -8,7 +8,7 @@
 # tclsh-stderr: invalid command name "*"\n
 # tclrs-status: 1
 # tclrs-stdout: a b c\na b c\na b c\n
-# tclrs-stderr: invalid command name "*"\n
+# tclrs-stderr: invalid command name "*"\n    (file "target/fuzz/work/record/driven.tcl" line 24)\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.
