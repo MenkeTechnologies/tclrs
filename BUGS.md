@@ -51,6 +51,35 @@ approximated, and nothing is silently mis-run.
   `x` and nothing after the leading `$x` can run a script, which is the case
   where the two would read the variable at different times. A string another
   value holds is copied instead of extended.
+- **Regular expressions.** `regexp` and `regsub` with `-nocase`, `-all`,
+  `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`,
+  `-start` and `--`, plus `switch -regexp` and `lsearch -regexp`
+  (`src/regexp.rs`). Match variables, `regsub`'s `&` / `\0` / `\1`…`\9`
+  replacement, and Tcl's character — not byte — indices.
+
+  The engine underneath is the `regex` crate, not Henry Spencer's ARE, and the
+  two are not the same language. Three differences are corrected in the
+  translation and pinned by `tests/regexp_differential.rs` against tclsh: `.`
+  matches a newline in ARE and not in Rust, so every pattern is prefixed
+  `(?s)`; `-line` is `-lineanchor` *and* `-linestop`, so it moves both the
+  anchors and what `.` will cross; and the empty-match loop is Tcl's, where
+  `regexp -all {x*} ab` counts 2 but `regsub -all {x*} ab -` substitutes 3
+  times, and the literally empty pattern — not `(?:)` or `a{0}` — stops where
+  `regexp` stops.
+
+  Four ARE constructs are **refused by name** rather than approximated, because
+  a finite-automaton matcher cannot express them at any price: back-references
+  (`(a+)\1`), look-ahead (`(?= )` and `(?! )`), the word-start and word-end
+  boundaries `\m` and `\M`, and collating elements and equivalence classes
+  (`[[. .]]`, `[[= =]]`). tclsh matches all of them. Look-*behind* is not on the
+  list because ARE has none either — tclsh answers `invalid quantifier operand`
+  for `(?<=a)b`. The refusal names the construct and is raised where the pattern
+  is used, so a script can catch it.
+
+  A pattern neither the translation nor `regex` accepts reports
+  `cannot compile regular expression pattern: …` — the interpreter's wording,
+  with the engine's own complaint as the detail, which is not tclsh's: it says
+  `parentheses () not balanced` where this says `unclosed group`.
 - **`expr`.** The whole operator set of `expr(n)` with `expr(n)` precedence,
   compiled straight from a braced word with no runtime parse: `+ - * / % **`,
   unary `+ - ~ !`, `< > <= >= == !=`, `lt gt le ge eq ne`, `& ^ | << >>`,
@@ -143,10 +172,11 @@ approximated, and nothing is silently mis-run.
   as `string is wordchar` does. Measured against tclsh: `a²b` is three words
   because U+00B2 is `No` and not `Nd`, and `a‿b` is one because U+203F is `Pc` —
   neither is derivable from what Rust's standard library exposes.
-- **`switch -regexp`, `-matchvar` and `-indexvar`.** Named rather than reported
-  as bad options, because `switch` does have them; `-regexp` waits on the
-  regular-expression engine, and the two variable options only mean anything
-  with it.
+- **`switch -matchvar` and `-indexvar`.** Named rather than reported as bad
+  options, because `switch` does have them. Both hand the match and its indices
+  back through a variable, which the `switch` lowering has nowhere to put:
+  its clauses are compiled to one comparison op each. `-regexp` itself is
+  implemented.
 
 - **`foreach` and `dict for` reach no tier in any spelling**, procedure locals
   included. Their loop state is carried by frontend extension ops
@@ -183,7 +213,7 @@ approximated, and nothing is silently mis-run.
   command in the resumer's context, which this frontend cannot do.
 - **`info`, apart from `info coroutine`.** Every other subcommand is refused by
   name rather than mis-answered.
-- **Every command outside those above.** `regexp`, `open` / `read` / `close`,
+- **Every command outside those above.** `open` / `read` / `close`,
   `source`, `upvar`, `uplevel`, `rename`, `namespace`, `apply`, `clock`,
   `encoding`, `binary`, … An unknown command name is `invalid command name "…"`
   at compile time rather than at run time, which is where a runtime command
@@ -199,8 +229,8 @@ approximated, and nothing is silently mis-run.
   and the other search subcommands; `dict` subcommands outside the implemented
   set, and `dict set` into an array element; `string` subcommands outside the
   implemented set, and `string is -failindex`; `format` conversions outside the
-  implemented set; `lsearch -regexp`, `-sorted`, `-bisect`, `-dictionary`,
-  `-nocase`, `-index`, `-stride`, `-subindices`; `lsort -command`,
+  implemented set; `lsearch -sorted`, `-bisect`, `-dictionary`, `-nocase`,
+  `-index`, `-stride`, `-subindices`; `lsort -command`,
   `-dictionary`, `-nocase`, `-index`, `-stride`; `catch`'s options variable;
   `error`'s `info` and `code` arguments; `return`'s options other than
   `-code ok` / `-code error`. They go through the reference option parser first,
@@ -376,7 +406,7 @@ with a sign, and carries `nan` / `inf` in its value pools.
   tclsh saw an answer.** `catch {lsearch -sorted {a} b} m` leaves `m` as
   `lsearch -sorted -increasing is not supported yet` and the script runs on, where tclsh
   leaves `-1`; the same for `lsort -nocase`. The refusals decided while
-  *compiling* — `string is punct`, `switch -regexp` — are not catchable and do
+  *compiling* — `string is punct`, `switch -matchvar` — are not catchable and do
   take the whole case out of comparison as a skip. The two halves are pinned
   together, because which side a refusal falls on is what decides whether the
   harness counts it as a skip or as a divergence.
@@ -512,17 +542,18 @@ prints a hit count per entry.
 The generator's own blind spots, so a gap in the report is a known gap rather
 than an unexamined one. Measured against the 2000-program run above.
 
-- **Commands tclrs does not have.** `{*}` expansion, `regexp`, `upvar`,
+- **Commands tclrs does not have.** `{*}` expansion, `upvar`,
   `uplevel`, `namespace`, `apply`, `rename`, `source` and file I/O are outside
   the command set entirely, so a generated use of one is `invalid command name`
   and says nothing about parity. They are deliberately not generated, and belong
-  in the generator on the day the commands exist. `lassign`, `lset`, `lpop`,
+  in the generator on the day the commands exist. `regexp`, `regsub`,
+  `lassign`, `lset`, `lpop`,
   `ledit`, `lrepeat`, `lremove`, `lseq` and `lmap` exist now and are not
   generated yet, so the run above says nothing about them either; what does is
   `tests/list_commands_differential.rs`.
 - **`array` on a procedure local, `unset` of one, and `eval` inside a procedure
   body** *are* generated now, at `REFUSAL_RATE` — so are `lsort -command`,
-  `lsearch -regexp`, `switch -regexp`, `string is -failindex`, the `string is`
+  `string is -failindex`, the `string is`
   classes that need the Unicode tables, and the `dict` subcommands outside the
   implemented set. Each lands in the skip bucket under the refusal's own wording,
   which is coverage waiting for the refusal to go rather than a hole. The rate is

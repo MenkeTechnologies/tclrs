@@ -334,10 +334,12 @@ fn unsupported_procedure_constructs_are_refused() {
             "while {1} {catch {break}}",
             "\"break\" out of a \"catch\" script",
         ),
-        // `-nocase` is implemented; `-regexp` is named rather than reported as
-        // a bad option, because `switch` does have it and this frontend does
-        // not yet. A genuinely unknown option is still a bad option.
-        ("switch -regexp a {a {}}", "the -regexp option"),
+        // `-nocase` and `-regexp` are both implemented now; `-matchvar` and
+        // `-indexvar` are named rather than reported as bad options, because
+        // `switch` does have them and this frontend does not. A genuinely
+        // unknown option is still a bad option.
+        ("switch -matchvar m -regexp a {a {}}", "the -matchvar option"),
+        ("switch -indexvar i -regexp a {a {}}", "the -indexvar option"),
         ("switch -bogus a b {a {}}", "bad option \"-bogus\""),
         ("switch a {a}", "extra switch pattern with no body"),
         ("switch a {}", "wrong # args"),
@@ -352,4 +354,15 @@ fn unsupported_procedure_constructs_are_refused() {
             "{src:?}: expected an error mentioning {expected:?}, got {err:?}"
         );
     }
+
+    // `-regexp` was on that list until the regular-expression engine landed.
+    // Pinned rather than dropped, so the day it starts refusing again this
+    // test says so; what it *matches* is compared against tclsh by
+    // `tests/regexp_differential.rs`.
+    assert_eq!(
+        tclrs::eval("puts [switch -regexp abc {^a {list one} default {list none}}]")
+            .expect("switch -regexp is implemented")
+            .output,
+        "one\n"
+    );
 }

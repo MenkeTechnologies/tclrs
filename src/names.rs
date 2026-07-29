@@ -23,6 +23,7 @@ pub fn commands() -> Vec<&'static str> {
         .iter()
         .copied()
         .chain(cmd_list::COMMANDS.iter().copied())
+        .chain(crate::regexp::COMMANDS.iter().copied())
         .collect();
     all.sort_unstable();
     all.dedup();
@@ -242,6 +243,16 @@ pub const CORPUS: &[Entry] = &[
         name: "puts",
         synopsis: "puts ?-nonewline? string",
         summary: "Write the string to stdout.",
+    },
+    Entry {
+        name: "regexp",
+        synopsis: "regexp ?-option ...? exp string ?matchVar? ?subMatchVar ...?",
+        summary: "Match a regular expression, setting the match variables; the count under -all, the text under -inline.",
+    },
+    Entry {
+        name: "regsub",
+        synopsis: "regsub ?-option ...? exp string subSpec ?varName?",
+        summary: "Substitute for a regular expression's matches; the new string, or the count when a variable is named.",
     },
     Entry {
         name: "return",

@@ -276,6 +276,14 @@ pub mod ext {
     /// and `format` — dispatched to [`crate::cmd_string`], which names them.
     /// The inline operand is the number of stack values the op consumes.
     pub const STRING_BASE: u16 = 128;
+
+    /// Where `regexp` and `regsub` begin, dispatched to [`crate::regexp`].
+    ///
+    /// Above [`STRING_BASE`] because [`crate::runtime`] tests the ranges from
+    /// the highest base down: a base below it would be swallowed by the string
+    /// ensemble's arm, and silently — an id that lands in the wrong module's
+    /// range is a wrong answer at run time, not a compile error.
+    pub const REGEXP_BASE: u16 = 192;
 }
 
 /// Wide extension opcode ids, whose payload is a `usize` rather than a byte.
@@ -845,6 +853,7 @@ impl Compiler {
             "yield" => self.cmd_yield(args),
             "yieldto" => self.cmd_yieldto(args),
             "info" => self.cmd_info(args),
+            "regexp" | "regsub" => crate::regexp::compile(self, &name, args),
             // The command an inline `rust { ... }` block was rewritten into.
             name if name == crate::rust_ffi::COMPILE_COMMAND => self.cmd_rust_compile(args),
             // A coroutine's context command. Its name is refused to `proc`, so

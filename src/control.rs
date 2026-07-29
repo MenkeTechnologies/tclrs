@@ -28,6 +28,9 @@ use crate::parser::Word;
 enum Match {
     Exact,
     Glob,
+    /// `-regexp`, matched by [`crate::regexp`]. Value 2, so it does not collide
+    /// with the `-nocase` bit the operand carries at bit 1.
+    Regexp = 4,
 }
 
 /// One `pattern body` clause, with `-` fall-through already resolved.
@@ -88,7 +91,10 @@ impl Compiler {
                 // Named so the option list above stays honest, and refused with
                 // this frontend's own wording rather than being mistaken for a
                 // bad option. `-regexp` needs the regular-expression engine.
-                "-regexp" | "-matchvar" | "-indexvar" => {
+                "-regexp" => mode = Match::Regexp,
+                // Still refused: both need the match results handed back
+                // through a variable, which this lowering has nowhere to put.
+                "-matchvar" | "-indexvar" => {
                     return self.error(format!("the {text} option of \"switch\" is not supported yet"))
                 }
                 "--" => break,

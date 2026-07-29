@@ -35,6 +35,7 @@ pub mod lsp;
 pub mod names;
 pub mod parser;
 pub mod procs;
+pub mod regexp;
 pub mod runtime;
 pub mod rust_ffi;
 pub mod tiers;

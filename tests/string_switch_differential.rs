@@ -229,13 +229,22 @@ fn bad_switch_option_is_worded_as_tclsh_words_it() {
     }
 }
 
-/// What is still refused says so, and says which option it was. `-regexp`,
-/// `-matchvar` and `-indexvar` are named rather than reported as bad options,
-/// because a bad-option message would be a lie about what `switch` accepts.
+/// What is still refused says so, and says which option it was. `-matchvar` and
+/// `-indexvar` are named rather than reported as bad options, because a
+/// bad-option message would be a lie about what `switch` accepts.
+///
+/// `-regexp` was on this list until the regular-expression engine landed; it is
+/// pinned as *working* below, so that the day it starts refusing again this
+/// test says so.
 #[test]
 fn unsupported_switch_options_are_named() {
+    assert_eq!(
+        tclrs::eval("switch -regexp abc {a.c {puts hit}}")
+            .expect("switch -regexp is implemented")
+            .output,
+        "hit\n"
+    );
     for (src, expected) in [
-        ("switch -regexp abc {a.c {puts hit}}", "-regexp"),
         ("switch -matchvar m -regexp abc {a.c {puts hit}}", "-matchvar"),
         ("switch -indexvar i -regexp abc {a.c {puts hit}}", "-indexvar"),
     ] {

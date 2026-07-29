@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. The 40 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. The 50 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -47,7 +47,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/tclrs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">tclrs v0.2.0 &middot; generated from the compiler's own tables &middot; MIT</p>
+          <p class="docs-build-line">tclrs v0.3.0 &middot; generated from the compiler's own tables &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -72,11 +72,11 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">40</div>
+            <div class="stat-val">50</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">38/59</div>
+            <div class="stat-val">40/59</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -84,7 +84,7 @@
             <div class="stat-label">expr binary operators</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val accent">v0.2.0</div>
+            <div class="stat-val accent">v0.3.0</div>
             <div class="stat-label">Build</div>
           </div>
         </div>
@@ -113,17 +113,27 @@
         <tr><td><code>info</code></td><td><code>info subcommand ?argument ...?</code></td><td>Interpreter introspection. Only `info coroutine` is implemented; every other subcommand is refused by name.</td></tr>
         <tr><td><code>join</code></td><td><code>join list ?joinString?</code></td><td>Concatenate the list's elements, separated by joinString (a space by default).</td></tr>
         <tr><td><code>lappend</code></td><td><code>lappend varName ?value ...?</code></td><td>Append each value to the list held in the variable; yields the new list.</td></tr>
+        <tr><td><code>lassign</code></td><td><code>lassign list ?varName ...?</code></td><td>Assign the elements to the variables in order; yields the unassigned remainder.</td></tr>
+        <tr><td><code>ledit</code></td><td><code>ledit listVar first last ?element ...?</code></td><td>Replace the range in the variable's list with the elements; yields the new list.</td></tr>
         <tr><td><code>lindex</code></td><td><code>lindex list ?index ...?</code></td><td>The element at an index path, or the list itself when no index is given.</td></tr>
         <tr><td><code>linsert</code></td><td><code>linsert list index ?element ...?</code></td><td>A copy of the list with the elements inserted before the index.</td></tr>
         <tr><td><code>list</code></td><td><code>list ?arg ...?</code></td><td>A list of the arguments, quoted by the reference algorithm so it reads back as the same elements.</td></tr>
         <tr><td><code>llength</code></td><td><code>llength list</code></td><td>How many elements the list has.</td></tr>
+        <tr><td><code>lmap</code></td><td><code>lmap varList list ?varList list ...? command</code></td><td>`foreach` that collects each iteration's value into a list; `continue` contributes nothing.</td></tr>
+        <tr><td><code>lpop</code></td><td><code>lpop listvar ?index ...?</code></td><td>Remove the element at an index path from the variable's list and yield it.</td></tr>
         <tr><td><code>lrange</code></td><td><code>lrange list first last</code></td><td>The sublist between two indices, inclusive.</td></tr>
+        <tr><td><code>lremove</code></td><td><code>lremove list ?index ...?</code></td><td>A copy of the list without the indexed elements; an index outside it is ignored.</td></tr>
+        <tr><td><code>lrepeat</code></td><td><code>lrepeat count ?value ...?</code></td><td>The values repeated count times, as one list.</td></tr>
         <tr><td><code>lreplace</code></td><td><code>lreplace list first last ?element ...?</code></td><td>A copy of the list with the range replaced by the elements.</td></tr>
         <tr><td><code>lreverse</code></td><td><code>lreverse list</code></td><td>The list, reversed.</td></tr>
         <tr><td><code>lsearch</code></td><td><code>lsearch ?-option value ...? list pattern</code></td><td>The index of the first matching element, or -1. Option parsing is the reference one, abbreviation included.</td></tr>
+        <tr><td><code>lseq</code></td><td><code>lseq n ??op? n ??by? n??</code></td><td>An arithmetic sequence; a zero step yields one element and a step pointing away from the end yields none.</td></tr>
+        <tr><td><code>lset</code></td><td><code>lset listVar ?index? ?index ...? value</code></td><td>Replace the element at an index path in the variable's list; the end grows by one element only.</td></tr>
         <tr><td><code>lsort</code></td><td><code>lsort ?-option value ...? list</code></td><td>The list sorted by the reference merge sort — the algorithm, not just the ordering, because `-unique` observes it.</td></tr>
         <tr><td><code>proc</code></td><td><code>proc name args body</code></td><td>Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.</td></tr>
         <tr><td><code>puts</code></td><td><code>puts ?-nonewline? string</code></td><td>Write the string to stdout.</td></tr>
+        <tr><td><code>regexp</code></td><td><code>regexp ?-option ...? exp string ?matchVar? ?subMatchVar ...?</code></td><td>Match a regular expression, setting the match variables; the count under -all, the text under -inline.</td></tr>
+        <tr><td><code>regsub</code></td><td><code>regsub ?-option ...? exp string subSpec ?varName?</code></td><td>Substitute for a regular expression's matches; the new string, or the count when a variable is named.</td></tr>
         <tr><td><code>return</code></td><td><code>return ?-code code? ?result?</code></td><td>Return from the enclosing procedure with the result. `-code ok` and `-code error` are the codes implemented.</td></tr>
         <tr><td><code>set</code></td><td><code>set varName ?newValue?</code></td><td>Read or write a variable; yields its value. A procedure's variables are slots, a script's are VM globals.</td></tr>
         <tr><td><code>split</code></td><td><code>split string ?splitChars?</code></td><td>Split the string at any of the characters into a list.</td></tr>
@@ -146,7 +156,7 @@
         abbreviation is ambiguous. Recognising a name is not implementing it:
         the second column is the answer the compiler actually gives when the
         subcommand is put through it.</p>
-        <h3><code>string</code> &mdash; 21 of 23 implemented</h3>
+        <h3><code>string</code> &mdash; 23 of 23 implemented</h3>
         <table class="file-table">
           <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
           <thead><tr><th>subcommand</th><th>state</th></tr></thead>
@@ -172,8 +182,8 @@
         <tr><td><code>string trim</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>string trimleft</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>string trimright</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string wordend</code></td><td><span class="state-no">"string wordend" is not supported yet</span></td></tr>
-        <tr><td><code>string wordstart</code></td><td><span class="state-no">"string wordstart" is not supported yet</span></td></tr>
+        <tr><td><code>string wordend</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>string wordstart</code></td><td><span class="state-yes">implemented</span></td></tr>
           </tbody>
         </table>
         <h3><code>array</code> &mdash; 6 of 13 implemented</h3>
