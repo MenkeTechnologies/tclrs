@@ -179,13 +179,39 @@ struct Run {
     stderr: String,
 }
 
+/// How long a single case may take before it counts as a hang, in seconds.
+/// The same default `scripts/fuzz_parity.sh` uses, so a case that times out
+/// here is one that would time out there.
+const TIMEOUT_SECS: u32 = 10;
+
+/// Run one case, bounded the way the harness that recorded it bounds a run.
+///
+/// The corpus can hold a case that does not terminate: it holds one today,
+/// `message-compile-time-693dbe3e.tcl`, whose record reads `verdict: CRITICAL
+/// hang` and `tclrs-status: 142`. That 142 is SIGALRM — `scripts/fuzz/check_case.sh`
+/// runs every engine through `perl -e 'alarm shift; exec @ARGV'`, so a run that
+/// outlasts the timeout is a *classified* hang rather than a wedged harness.
+///
+/// Replaying that record with a plain `output()` cannot reproduce it and does
+/// not try to: it waits forever, and `cargo test` never returns. So the replay
+/// bounds each run by the same mechanism, which is what makes the recorded
+/// status reproducible at all rather than merely un-hanging the suite.
 fn run(binary: &Path, script: &Path) -> Run {
-    let out = Command::new(binary)
+    let out = Command::new("perl")
+        .arg("-e")
+        .arg("alarm shift; exec @ARGV or die")
+        .arg(TIMEOUT_SECS.to_string())
+        .arg(binary)
         .arg(script)
         .output()
         .unwrap_or_else(|e| panic!("spawn {}: {e}", binary.display()));
     Run {
-        status: out.status.code().unwrap_or(-1),
+        // A signalled exit has no code of its own; `alarm` kills with SIGALRM,
+        // and the recorded status for that is the shell's 128 + 14.
+        status: out
+            .status
+            .code()
+            .unwrap_or(128 + libc::SIGALRM as i32),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     }

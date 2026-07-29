@@ -48,7 +48,26 @@ CASE_FILE="$CASE" perl -0777 -e '
 # exec'd engine. GNU `timeout` is not on a stock macOS. A killed process reports
 # 128 + 14 = 142, which is the status classify.pl reads as a hang.
 run_to() { # run_to SECS CMD...
-    perl -e 'alarm shift; exec @ARGV or die' "$@"
+    # The timeout has to end the run *without* the shell noticing a signalled
+    # child: `exec`ing under `alarm` leaves the engine dying of SIGALRM, and the
+    # shell then writes "Alarm clock: 14" — naming this script by its absolute
+    # path — onto the very stderr being captured. A recorded hang then carries
+    # the recording machine's directory layout inside it and cannot be replayed
+    # anywhere else.
+    #
+    # So fork instead of exec: the child runs the engine, the parent kills it on
+    # the alarm and exits 142 by ordinary means. 142 is what a SIGALRM death
+    # reported anyway (128 + 14), so every record keeps its meaning.
+    perl -e '
+        my $secs = shift;
+        my $pid  = fork;
+        die "fork: $!" unless defined $pid;
+        unless ($pid) { exec @ARGV or die "exec: $!" }
+        $SIG{ALRM} = sub { kill 9, $pid; waitpid $pid, 0; exit 142 };
+        alarm $secs;
+        waitpid $pid, 0;
+        exit $? >> 8;
+    ' "$@"
 }
 
 for engine in tclsh tclrs; do
