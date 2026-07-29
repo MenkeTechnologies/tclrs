@@ -352,12 +352,34 @@ mod tests {
     /// asked for instead, so nothing ineligible is left in the expression.
     #[test]
     fn expr_arithmetic_lowers_to_eligible_ops() {
-        let report = report("expr {2 + 3 * 4 << 1}").expect("runs");
+        let report = report("expr {2 + 3 * 4 - 1}").expect("runs");
         assert!(
             report.ineligible.is_empty(),
             "an expression should lower to eligible ops only: {report}"
         );
         assert!(report.block_eligible, "{report}");
+    }
+
+    /// A shift is the one arithmetic-looking operator that does *not* lower to a
+    /// native op, and this pins the cost rather than leaving it to be
+    /// rediscovered.
+    ///
+    /// fusevm masks a shift distance to six bits and coerces a non-numeric
+    /// operand to zero, where Tcl reports `negative shift argument`, promotes an
+    /// overflowing left shift, and refuses the operand — so `<<` and `>>` are
+    /// extension ops (`ext::SHL` / `ext::SHR`). An extension op in a loop body
+    /// costs that loop its trace, which is why `integer_arith`, whose body is
+    /// `$sum + $i * $i - ($i >> 3)`, no longer reaches native code. Restoring it
+    /// needs the shift to be provably safe from its operands rather than checked
+    /// at run time.
+    #[test]
+    fn a_shift_is_an_extension_op_and_costs_the_native_lowering() {
+        let report = report("expr {8 >> 1}").expect("runs");
+        assert_eq!(
+            report.ineligible.get("Extended").copied(),
+            Some(1),
+            "a shift should be the frontend's op, not the VM's: {report}"
+        );
     }
 
     /// The same for an assignment whose value is an expression, which is the

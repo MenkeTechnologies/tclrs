@@ -614,7 +614,10 @@ impl<'a> ExprParser<'a> {
         // Tested before the `(` below, because there is no `inf(...)`.
         if let Ok(f) = name.parse::<f64>() {
             self.pos = end;
-            return Ok(Expr::Float(f));
+            // The spelling is carried like every other numeric literal's, so
+            // `expr {inf eq "Inf"}` compares what the script wrote rather than
+            // what the number prints as.
+            return Ok(Expr::Float(f, name.into()));
         }
         self.pos = end;
         self.skip_space();
