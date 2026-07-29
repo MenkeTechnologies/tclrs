@@ -797,6 +797,66 @@ fn format_p_is_a_prefixed_full_width_hexadecimal() {
     }
 }
 
+/// `format`'s field padding, swept over every flag combination that can reach
+/// it — because a left-justified field is where Tcl stops agreeing with C, and
+/// where its own conversions stop agreeing with each other.
+///
+/// With both `-` and `0`, tclsh answers three different ways: `%-08d` is
+/// `00000042` (the `0` wins and the zeroes stay left), `%-08.2f` is `42.00␠␠␠`
+/// (the `0` is dropped for spaces on the right), and `%-08s` is `42000000` (the
+/// `0` is kept as the fill and moves right). C99 says `-` always overrides `0`,
+/// so none of the three is C's, and only the first was right here — `%-012s`,
+/// `%-08.2f` and `%-06c` all padded on the wrong side, which is a wrong *value*
+/// rather than a wrong message.
+///
+/// The matrix is built by loops *inside* the program, as the character sweeps
+/// above are: emitting one Tcl command per combination instead would put 18,000
+/// specifiers in the constant pool, and a pool index is a `u16`.
+const PADDING_MATRIX: &str = "\
+foreach conv {d i u o x X b s c e E f g G} {\n\
+  foreach flags {{} - 0 -0 0- + +-0 { } { -0} # #-0} {\n\
+    foreach width {{} 1 6 8 12} {\n\
+      foreach prec {{} .0 .1 .3} {\n\
+        foreach value {0 42 -42 1 -1 65} {\n\
+          set f \"%$flags$width$prec$conv\"\n\
+          if {[catch {format $f $value} r]} { set r ERR:$r }\n\
+          puts \"$f|$value|$r\"\n\
+        }\n\
+      }\n\
+    }\n\
+  }\n\
+}\n";
+
+#[test]
+fn format_padding_matches_tclsh_across_every_flag() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    // A distinct scratch index: `reference_output` names its temp file by
+    // (pid, index), and `usize::MAX` and `usize::MAX - 1` are already claimed.
+    let expected = reference_output(&tclsh, usize::MAX - 2, PADDING_MATRIX);
+    let outcome = tclrs::eval(PADDING_MATRIX).expect("tclrs runs the matrix");
+    assert!(
+        expected.lines().count() > 18_000,
+        "the matrix should be thousands of combinations, got {}",
+        expected.lines().count()
+    );
+    if outcome.output != expected {
+        let (want, got): (Vec<&str>, Vec<&str>) =
+            (expected.lines().collect(), outcome.output.lines().collect());
+        let first = (0..want.len().min(got.len()))
+            .find(|&i| want[i] != got[i])
+            .unwrap_or(0);
+        panic!(
+            "format padding diverges at line {first} of {}:\n  tclsh: {:?}\n  tclrs: {:?}",
+            want.len(),
+            want.get(first),
+            got.get(first)
+        );
+    }
+}
+
 /// A command's value is what command substitution reads, not only what it
 /// prints.
 #[test]

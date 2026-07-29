@@ -165,6 +165,41 @@ const FIXED: &[&str] = &[
     "puts [dict get {{a\\nb} 1} {a\\nb}]",
     "puts [dict get {\"a b\" 1} {a b}]",
     "puts [dict get \"a\tb\nc\td\" c]",
+    // ── dict incr ──
+    // A missing key counts as zero rather than as an error, so the increment
+    // becomes the value; the command yields the whole dict, as `dict set` does.
+    "set d [dict create a 1 b 2]\ndict incr d a\nputs $d",
+    "set d [dict create a 1 b 2]\ndict incr d a 5\nputs $d",
+    "set d [dict create a 1]\ndict incr d fresh\nputs $d",
+    "set d [dict create a 1]\ndict incr d fresh 7\nputs $d",
+    "set d [dict create a 1]\nputs [dict incr d a]",
+    "set d [dict create a 1]\ndict incr d a -3\nputs $d",
+    "set d [dict create a 1]\ndict incr d a 0\nputs $d",
+    // The variable itself may be absent: `dict incr` creates it.
+    "dict incr fresh k\nputs $fresh",
+    "dict incr fresh k 4\nputs [dict get $fresh k]",
+    // Integers in any of Tcl's spellings, and promotion past an `i64` — Tcl's
+    // integers are arbitrary precision and `dict incr` is no exception.
+    "set d [dict create a 1]\ndict incr d a 0x10\nputs $d",
+    "set d [dict create a 1]\ndict incr d a 1_0\nputs $d",
+    "set d [dict create a 9223372036854775807]\ndict incr d a\nputs $d",
+    "set d [dict create a -9223372036854775808]\ndict incr d a -1\nputs $d",
+    "set d [dict create a 99999999999999999999]\ndict incr d a 1\nputs $d",
+    // Refusals: the increment, the stored value, and the argument count. The
+    // wording is `incr`'s own, not an `expr` operand error.
+    "set d [dict create a 1]\nputs [catch {dict incr d a x} m]\nputs $m",
+    "set d [dict create a notanint]\nputs [catch {dict incr d a} m]\nputs $m",
+    "set d [dict create a 1.5]\nputs [catch {dict incr d a} m]\nputs $m",
+    "set d [dict create a 1]\nputs [catch {dict incr d a 1.5} m]\nputs $m",
+    // A key that needs quoting, and one that arrives from a variable.
+    "set d {}\ndict incr d {a b}\nputs $d",
+    "set d {}\nset k {x y}\ndict incr d $k 2\nputs $d",
+    // Inside a procedure the dict is a frame slot, which the place operand
+    // reaches as readily as a global.
+    "proc p {} {dict incr d k 3\nreturn $d}\nputs [p]\nputs [p]",
+    "set d [dict create a 1]\nproc p {} {global d\ndict incr d a\nreturn $d}\nputs [p]\nputs $d",
+    // In a loop, which is where a dict counter is actually used.
+    "set d {}\nforeach w {a b a c a} {dict incr d $w}\nputs [dict get $d a]\nputs [dict size $d]",
     // ── the two together ──
     "array set a {x 1 y 2}\nputs [dict get [array get a] y]\nputs [dict size [array get a]]",
     "array set a {x 1 y 2 z 3}\nset d [array get a]\nputs [dict exists $d z]\nputs [dict exists $d w]",
@@ -383,7 +418,12 @@ fn unimplemented_subcommands_are_refused() {
             "dict filter {a 1} key a",
             "dict filter is not supported yet",
         ),
-        ("dict incr d k", "dict incr is not supported yet"),
+        // `dict incr` is implemented; what it still refuses is an array element
+        // as the target, which is `dict set`'s limitation and now also its own.
+        (
+            "set a(1) x\ndict incr a(1) k",
+            "array element is not supported yet",
+        ),
         ("dict unset d k", "dict unset is not supported yet"),
         ("dict with d {}", "dict with is not supported yet"),
         (

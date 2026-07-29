@@ -1286,7 +1286,7 @@ fn float_bool(f: f64) -> Result<bool, String> {
 
 /// `ParseBoolean`'s word table. `None` means "not one of the words", which is
 /// the cue to try the number parser rather than to fail.
-fn boolean_word(text: &str) -> Option<bool> {
+pub(crate) fn boolean_word(text: &str) -> Option<bool> {
     // "false" is the longest spelling, so nothing longer can be one of these —
     // and the reference implementation measures bytes, not characters.
     if text.is_empty() || text.len() > 5 {
@@ -1353,6 +1353,39 @@ pub(crate) fn tcl_int(v: &Value) -> Result<i64, String> {
         // guessed at (BUGS.md).
         Ok(Num::Big(_)) => Err(too_large()),
         _ => Err(format!("expected integer but got {}", named(&text, 50))),
+    }
+}
+
+/// Add two Tcl integers, promoting on overflow, for a command that increments a
+/// value of its own rather than through `expr`.
+///
+/// `dict incr` is the caller. It cannot use [`tcl_int`], which refuses a bignum
+/// because `format`'s integer conversions must narrow or refuse; incrementing
+/// past an `i64` is ordinary in Tcl — `dict incr d k` on 9223372036854775807 is
+/// 9223372036854775808 there — so this promotes instead. Floats are refused with
+/// the wording tclsh's own `incr` uses.
+pub(crate) fn incr_text(current: &str, by: &str) -> Result<String, String> {
+    let one = incr_operand(current)?;
+    let other = incr_operand(by)?;
+    if let (Num::Int(x), Num::Int(y)) = (&one, &other) {
+        if let Some(sum) = x.checked_add(*y) {
+            return Ok(sum.to_string());
+        }
+    }
+    // Either side is already wide, or the sum left the range: both widen.
+    let (x, y) = (
+        one.as_big().expect("an integer is never a float here"),
+        other.as_big().expect("an integer is never a float here"),
+    );
+    Ok(to_tcl_string(&from_big(x + y)))
+}
+
+/// One operand of [`incr_text`]: an integer in any of Tcl's spellings, refused
+/// the way tclsh's `incr` refuses it.
+fn incr_operand(text: &str) -> Result<Num, String> {
+    match parse_number(text.trim()) {
+        Ok(n) if !matches!(n, Num::Float(_)) => Ok(n),
+        _ => Err(format!("expected integer but got {}", named(text, 50))),
     }
 }
 

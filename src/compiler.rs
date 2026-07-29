@@ -271,6 +271,11 @@ pub mod ext {
     /// `[dict]` → a `Value::Array` of alternating keys and values, which
     /// `dict for` walks with the VM's own `ArrayLen` and `ArrayGet`.
     pub const DICT_PAIRS: u16 = ASSOC_BASE + 21;
+    /// `[name, place, key, increment]` → the updated dict, stored. `dict incr`
+    /// reaches its variable by place like `dict set` does, because it creates
+    /// the variable when it does not exist and its read must therefore tolerate
+    /// absence where a bare `$d` refuses it.
+    pub const DICT_INCR: u16 = ASSOC_BASE + 22;
 
     /// Where the string commands' ops begin — the `string` ensemble, `append`
     /// and `format` — dispatched to [`crate::cmd_string`], which names them.

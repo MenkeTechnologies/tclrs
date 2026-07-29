@@ -974,6 +974,36 @@ impl Compiler {
                 };
                 self.dict_for(vars, dict, body)
             }
+            "incr" => {
+                let (name, key, by) = match rest {
+                    [name, key] => (name, key, None),
+                    [name, key, by] => (name, key, Some(by)),
+                    _ => {
+                        return self.error(
+                            "wrong # args: should be \"dict incr dictVarName key ?increment?\"",
+                        )
+                    }
+                };
+                let Some(Target::Scalar(name)) = target_of(name) else {
+                    return self.error("dict incr into an array element is not supported yet");
+                };
+                self.push_str(&name);
+                // Same reach as `dict set`: the place operand reads the current
+                // value without refusing an unset variable, and finds a frame
+                // slot as readily as a global.
+                let place = self.var_place_operand(&name);
+                self.emit(Op::LoadInt(place), 1);
+                self.word(key)?;
+                match by {
+                    Some(by) => self.word(by)?,
+                    // `dict incr d k` is `dict incr d k 1`.
+                    None => self.push_str("1"),
+                }
+                self.emit(Op::Extended(ext::DICT_INCR, 0), -3);
+                self.emit(Op::Dup, 1);
+                self.emit_set_var(&name);
+                Ok(())
+            }
             other => self.error(format!("dict {other} is not supported yet")),
         }
     }
@@ -1438,6 +1468,18 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             push_str(vm, dict_set(&to_tcl_string(&current), &keys, value)?);
             Ok(())
         }
+        ext::DICT_INCR => {
+            let by = pop_str(vm);
+            let key = pop_str(vm);
+            let place = place_of(vm);
+            let current = peek(vm, place).cloned().unwrap_or(Value::Undef);
+            let name = pop_str(vm);
+            if matches!(current, Value::Hash(_)) {
+                return Err(format!("can't set \"{name}\": variable is array"));
+            }
+            push_str(vm, dict_incr(&to_tcl_string(&current), &key, &by)?);
+            Ok(())
+        }
         ext::DICT_PAIRS => {
             let dict = pop_str(vm);
             let d = Dict::parse(&dict)?;
@@ -1451,6 +1493,20 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
         other => Err(format!("unknown extension op {other}")),
     }
+}
+
+/// `dict incr`: the key's value plus the increment, the key created at zero when
+/// it is absent.
+///
+/// A missing key counts as 0 rather than as an error, so `dict incr d fresh 7`
+/// leaves `fresh 7` — measured against tclsh, along with the promotion past an
+/// `i64` that [`crate::runtime::incr_text`] does.
+fn dict_incr(dict: &str, key: &str, by: &str) -> Result<String, String> {
+    let mut d = Dict::parse(dict)?;
+    let current = d.get(key).unwrap_or("0").to_string();
+    let sum = crate::runtime::incr_text(&current, by)?;
+    d.put(key.to_string(), sum);
+    Ok(d.to_list())
 }
 
 /// `dict set` down a key path, creating the intermediate dicts it needs.

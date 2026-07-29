@@ -38,7 +38,10 @@ approximated, and nothing is silently mis-run.
   is copied instead of extended, which is what keeps that invisible to a script.
 - **Associative data.** Array variables (`a(k)`), `array` — `exists`, `get`,
   `names`, `set`, `size`, `unset` — and `dict` — `create`, `exists`, `get`,
-  `for`, `keys`, `merge`, `remove`, `set`, `size`, `values` (`src/assoc.rs`).
+  `for`, `incr`, `keys`, `merge`, `remove`, `set`, `size`, `values`
+  (`src/assoc.rs`). `dict incr` counts a missing key as zero and promotes past
+  an `i64` as Tcl's integers do, and it refuses a non-integer with `incr`'s own
+  wording rather than an `expr` operand error.
   `dict for` is emitted by the same `Compiler::rotated_loop` every other loop
   goes through, over a cursor the VM's own `ArrayLen` / `ArrayGet` walk. An
   array works inside a procedure as well as at the top level: every one of its
@@ -100,6 +103,27 @@ approximated, and nothing is silently mis-run.
   computed, and Tcl's string form is applied where a string is asked for, which
   is what leaves an arithmetic loop lowerable by the JIT and the ahead-of-time
   compiler.
+
+  **A boolean word is an operand**, not a bare word: `expr {yes}` is `yes`,
+  `expr {true && false}` is 0, `expr {!yes}` is 0, `expr {on ? 1 : 2}` is 1, and
+  `expr {yes + 1}` is refused by the numeric rule with tclsh's own wording rather
+  than by the parser. The word carries its own spelling, so it behaves as the
+  quoted form does. The table is `ParseBoolean`'s, shared with the condition rule
+  rather than copied — which is why `o` is still a bare word, `on` and `off`
+  both starting with it — and it is why `expr {1 y}` is `missing operator at _@_`
+  where `expr {1 x}` names `x`.
+
+  **A refusal carries the context tclsh gives it**: the message, then
+  `in expression "…"` quoting the source verbatim with `_@_` at the parse
+  position, then for a bare word the `should be "$w" or "{w}" or "w(...)" or …`
+  hint. Those three lines are what `catch` yields, so a script that prints a
+  caught message now sees what tclsh's prints; the marker appears only on
+  diagnostics whose own text ends in `at _@_`, and the `;` after the quote only
+  when the hint follows. Measured line by line against tclsh 9.0.4 in
+  `tests/expr_diagnostics_differential.rs`, including the function-call parens:
+  an unterminated argument list is the open paren, a promised argument that never
+  arrives is `missing function argument at _@_`, and a second operand inside the
+  list is the missing operator between them.
 - **Arbitrary-precision integers.** Tcl 9's integers are unbounded and these
   are too: an operation that leaves `i64` promotes rather than wrapping or
   refusing, so `expr {9223372036854775807 + 1}` is `9223372036854775808`,
@@ -274,7 +298,8 @@ approximated, and nothing is silently mis-run.
   it needs exists, but the compiler still refuses it.
 - **Subcommands and options recognised and then refused.** `array startsearch`
   and the other search subcommands; `dict` subcommands outside the implemented
-  set, and `dict set` into an array element; `string` subcommands outside the
+  set, and `dict set` or `dict incr` into an array element; `string`
+  subcommands outside the
   implemented set; `format` conversions outside the
   implemented set; `lsearch -sorted`, `-bisect`, `-dictionary`, `-nocase`,
   `-index`, `-subindices`; `lsort -command`,
@@ -285,13 +310,10 @@ approximated, and nothing is silently mis-run.
   `-nocase` waits on a case-folding table that matches Tcl's, which Rust's
   `to_lowercase` does not: it is a full case mapping and can produce more than
   one character where Tcl maps one to one.
-- **`dict` operations that write a procedure-local variable.** `dict set` writes
-  its variable back through a name index into the global table. Arrays no longer
-  work that way — every `array`, element and `unset` op takes the variable's
-  *place*, so a name index or a frame slot, and an array inside a procedure body
-  is a genuine local: two activations of a recursive procedure hold different
-  elements, and it goes away with the frame. `dict` has not been moved to the
-  same operand yet.
+- **A `dict` written into an array element.** `dict set a(1) k v` and
+  `dict incr a(1) k` are refused: the target travels as a variable *place* — a
+  name index or a frame slot — and an array element is neither. Both work on a
+  procedure-local variable, which is what the place operand bought.
 - **An array variable in a `foreach` variable list.** Refused.
 - **Indices outside `i64`.** Tcl computes index arithmetic in arbitrary
   precision and truncates; tclrs saturates at the `i64` ends instead. Both
@@ -385,6 +407,29 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   the boundary, and it was measured rather than assumed: tclsh defers an
   unterminated quote and an unbalanced bracket *inside* a balanced body, and
   refuses an unbalanced brace anywhere.
+
+  What remains of that class is not a diagnostic difference but *when a script
+  starts running*. tclsh evaluates a file command by command, so everything
+  before an unparseable command has already run and printed by the time the
+  parse error is reported; this crate compiles the whole script first, so it
+  reports the same error having printed nothing:
+
+  ```tcl
+  puts first
+  puts second
+  if {1} {          ;# the brace never closes
+  ```
+
+  tclsh prints `first` and `second` and then reports `missing close-brace`;
+  tclrs reports only the error. Both exit 1, and the message agrees — `info
+  complete` says the script is incomplete in both engines — so this is the
+  compile-once property, not a parse defect. Reaching tclsh's behaviour means
+  compiling and running one top-level command at a time, which is what the
+  stdin-not-a-terminal mode already does; for a file it would give up
+  whole-script compilation, and with it the static dispatch a procedure call
+  resolves through. Deliberately not taken. It is the residue behind the
+  remaining `missing close-brace`, `extra characters after close-brace` and
+  "printed nothing where tclsh printed" divergences the fuzzer reports.
 
   The command half of it — an unknown command, a wrong argument count, an
   unknown ensemble subcommand — is gone: those are raised where the command
@@ -523,6 +568,16 @@ with a sign, and carries `nan` / `inf` in its value pools.
   harness counts it as a skip or as a divergence.
 
 ### Fixed by the four-run campaign
+
+- **`format`'s field padding went on the wrong side** for a left-justified field
+  that also carried the `0` flag. tclsh answers three ways, and none is C's —
+  C99 says `-` always overrides `0`: `%-08d` is `00000042`, the zeroes staying
+  left; `%-08.2f` is `42.00   `, the `0` dropped for spaces on the right; and
+  `%-08s` is `42000000`, the `0` kept as the fill but moved right. Only the
+  integer case was right here, so `%-012s`, `%-08.2f` and `%-06c` each padded
+  the wrong side — a wrong *value* rather than a wrong message, which is why it
+  outranked the wording differences around it. Every flag combination is swept
+  against tclsh in `tests/string_differential.rs`.
 
 Four runs of 4000 programs — seeds 1001 and 2002 at depth 4, 3003 and 4004 at
 depth 6 — produced 7730 divergences, and these came out of grouping them by

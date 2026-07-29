@@ -1663,36 +1663,34 @@ fn bug_expr_zero_over_float_zero_is_nan_not_a_domain_error() {
     agrees(&tclsh, "puts [expr {3 / -0.0}]", out("-Inf\n"));
 }
 
-/// `format`'s `-` flag does not override `0` for the conversions where tclsh
-/// says it does.
+/// `format`'s `-` flag against `0`, which tclsh resolves three different ways —
+/// **fixed**, and pinned here so each way stays pinned.
 ///
-/// tclsh applies `-` for `e`, `f`, `g` and `s` — `format %-08.2f 1.5` is
-/// `1.50    ` — and keeps the zero padding for `d`, `i`, `x` and `o`, where
-/// `format %-08d 5` is `00000005` in both engines. tclrs zero-pads on the left
-/// for every conversion, so the floating-point and string cases come out
-/// `00001.50` and `000000ab`.
+/// None of the three is C's: C99 says `-` always overrides `0`. tclsh keeps the
+/// zeroes on the left for the integer conversions, drops the `0` for spaces on
+/// the right for the floating ones, and keeps the `0` as the fill but moves it
+/// right for `%s` and `%c`. Only the integer case was right here, so `%-08.2f`
+/// came out `00001.50` and `%-08s ab` came out `000000ab` — a wrong value, not
+/// a wrong message. Every flag combination is swept in
+/// `tests/string_differential.rs`; these four are the shapes that named the
+/// three rules.
 #[test]
-fn bug_format_minus_flag_does_not_override_zero_padding() {
+fn format_minus_against_zero_follows_tcls_three_rules() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
-        &tclsh,
-        "puts [format %-08.2f 1.5]",
-        out("1.50    \n"),
-        out("00001.50\n"),
-    );
-    diverges(
-        &tclsh,
-        "puts [format %-08s ab]",
-        out("ab000000\n"),
-        out("000000ab\n"),
-    );
-    // The integer conversions already agree, which is why this is `-` against
-    // `0` rather than the padding as a whole.
+    // Floating: the `0` is dropped, spaces on the right.
+    agrees(&tclsh, "puts [format %-08.2f 1.5]", out("1.50    \n"));
+    // String and character: the `0` is kept as the fill, and moves right.
+    agrees(&tclsh, "puts [format %-08s ab]", out("ab000000\n"));
+    agrees(&tclsh, "puts [format %-06c 65]", out("A00000\n"));
+    // Integer: the `0` wins and the zeroes stay left, which always agreed.
     agrees(&tclsh, "puts [format %-08d 5]", out("00000005\n"));
     agrees(&tclsh, "puts [format %-08x 255]", out("000000ff\n"));
+    // Without the `0` flag every conversion left-justifies with spaces, as C does.
+    agrees(&tclsh, "puts |[format %-8d 5]|", out("|5       |\n"));
+    agrees(&tclsh, "puts |[format %-8s ab]|", out("|ab      |\n"));
 }
 
 // ── fixed by the four-run campaign (seeds 1001/2002 at depth 4, 3003/4004 at

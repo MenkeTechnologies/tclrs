@@ -2049,6 +2049,29 @@ fn extend_exact(digits: &mut String, precision: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// What a left-justified field (`-`) does with the `0` flag, which Tcl answers
+/// three different ways depending on the conversion. Each is tclsh 9.0.4's
+/// answer for `%-08…` of 42, and none of them is C's — C99 says `-` always
+/// overrides `0`:
+///
+/// | | tclsh | this |
+/// | --- | --- | --- |
+/// | `%-08d` | `00000042` | [`Justify::ZeroesLeft`] |
+/// | `%-08.2f` | `42.00␠␠␠` | [`Justify::SpacesRight`] |
+/// | `%-08s` | `42000000` | [`Justify::FillRight`] |
+/// | `%-08c` | `*0000000` | [`Justify::FillRight`] |
+#[derive(Clone, Copy, PartialEq)]
+enum Justify {
+    /// The `0` wins and the zeroes stay on the left, so `-` changes nothing.
+    /// The integer conversions.
+    ZeroesLeft,
+    /// The `0` is dropped and the field is padded on the right with spaces.
+    /// The floating conversions.
+    SpacesRight,
+    /// The `0` is kept as the fill but the fill moves to the right. `%s`, `%c`.
+    FillRight,
+}
+
 /// A converted number split so that padding can go between its sign and its
 /// digits.
 struct Signed {
@@ -2057,14 +2080,19 @@ struct Signed {
     /// C ignores the `0` flag when an integer conversion states a precision,
     /// and for a value that prints as `inf`.
     zero_pad: bool,
+    /// What `-` does to this conversion's padding. See [`Justify`].
+    justify: Justify,
 }
 
 impl Signed {
+    /// A string or a character: no sign to pad inside, and a left-justified
+    /// field keeps the `0` as its fill and moves it to the right.
     fn plain(digits: String) -> Signed {
         Signed {
             prefix: String::new(),
             digits,
             zero_pad: true,
+            justify: Justify::FillRight,
         }
     }
 }
@@ -2089,15 +2117,30 @@ fn push_padded(out: &mut String, value: Signed, flags: Flags, width: i64) -> Res
         out.push_str(&value.digits);
         return Ok(());
     }
-    if flags.zero && value.zero_pad {
-        // Tcl pads with zeroes even when the field is left-justified.
+    let zero_fill = flags.zero && value.zero_pad;
+    // Where the fill goes, and what it is. Without `-` every conversion agrees:
+    // the fill is zeroes if the `0` flag asked for them, and it goes on the
+    // left. With `-` the three families stop agreeing, and stop agreeing with C
+    // — see [`Justify`].
+    let (pad_right, fill_char) = match (flags.minus, zero_fill) {
+        (false, zero) => (false, if zero { '0' } else { ' ' }),
+        // Left-justified without the `0` flag: spaces on the right, as in C.
+        (true, false) => (true, ' '),
+        (true, true) => match value.justify {
+            Justify::ZeroesLeft => (false, '0'),
+            Justify::SpacesRight => (true, ' '),
+            Justify::FillRight => (true, '0'),
+        },
+    };
+    if pad_right {
+        out.push_str(&value.prefix);
+        out.push_str(&value.digits);
+        out.extend(std::iter::repeat_n(fill_char, fill));
+    } else if fill_char == '0' {
+        // The zeroes go between the sign and the digits, never before the sign.
         out.push_str(&value.prefix);
         out.extend(std::iter::repeat_n('0', fill));
         out.push_str(&value.digits);
-    } else if flags.minus {
-        out.push_str(&value.prefix);
-        out.push_str(&value.digits);
-        out.extend(std::iter::repeat_n(' ', fill));
     } else {
         out.extend(std::iter::repeat_n(' ', fill));
         out.push_str(&value.prefix);
@@ -2208,6 +2251,7 @@ fn integer(
         prefix,
         digits,
         zero_pad: precision.is_none(),
+        justify: Justify::ZeroesLeft,
     })
 }
 
@@ -2242,6 +2286,7 @@ fn floating(
             prefix,
             digits: if upper_case { "INF" } else { "inf" }.to_string(),
             zero_pad: false,
+            justify: Justify::SpacesRight,
         });
     }
 
@@ -2308,6 +2353,7 @@ fn floating(
         prefix,
         digits,
         zero_pad: true,
+        justify: Justify::SpacesRight,
     })
 }
 
