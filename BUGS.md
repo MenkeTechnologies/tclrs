@@ -619,3 +619,17 @@ A fourth was not in the list above, because nothing had found it yet:
   the bignum; the fuzzer's ten-second per-process timeout ends the run and
   classifies the case as `EXCLUDED`. tclrs reports the overflow immediately. This
   is why both sides of the harness are timed, not only the subject.
+- **tclsh 9.0.4 answers two different things for the same `string replace`,**
+  depending on whether it compiled the command. `string replace {} 0 0 X` is `{}`
+  through `Tcl_StringObjCmd` — at a script's top level — and `X` through the
+  `INST_STR_REPLACE` bytecode, which is what a procedure body or a braced `catch`
+  script goes through. tclrs compiles everything, so it gives the compiled
+  answer, and agrees with tclsh wherever tclsh agrees with itself. Measured while
+  closing the `string replace` abort above; the whole first/last matrix is pinned
+  in `tests/parity_fuzz_findings.rs` against the compiled path.
+- **The same split for a NaN condition.** `if {"nan"} {puts a}` at a script's top
+  level is `domain error: argument not in valid range`, and inside a `catch` body
+  or a procedure it is `floating point value is Not a Number`. tclrs gives the
+  second everywhere. Pinned as `bug_a_nan_condition_has_two_diagnostics`, which
+  asserts both of tclsh's spellings so the disagreement cannot be mistaken for a
+  change on this side.
