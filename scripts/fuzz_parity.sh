@@ -352,15 +352,12 @@ say "allowlist (every entry, with its hit count)"
 # is a row here, with the reason it is allowed and where that reason is written
 # down — and the rows are summed against the bucket, so an entry that exists in
 # the classifier but not in this table cannot hide inside the total.
-ALLOW_KEYS="A1-unset-variable A1b-unset-variable-then-failed-later A1c-unset-variable-caught \
+ALLOW_KEYS="A1c-unset-variable-caught \
 A2-brace-line-number A3-array-order A4-compile-time-arity A5-trailing-line-number"
 allow_reason() {
   case "$1" in
-    A1-unset-variable)  echo 'unset variable reads as "" where tclsh raises — src/assoc.rs, BUGS.md' ;;
-    A1b-unset-variable-then-failed-later)
-                        echo 'same, and tclrs ran on past the read — no reference behavior beyond it' ;;
     A1c-unset-variable-caught)
-                        echo 'same, seen through catch: tclsh caught a message, tclrs caught none' ;;
+                        echo 'a procedure-local unset read: a frame slot has no name to report — BUGS.md' ;;
     A2-brace-line-number)
                         echo 'unterminated brace located where the input ended — README [0x06]' ;;
     A3-array-order)     echo 'array names/get sorted vs hashed — array(n) leaves the order unspecified' ;;

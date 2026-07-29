@@ -171,40 +171,18 @@ if ($sub_status != 0) {
 # Adding an entry to make a run come back clean is the one thing this file must
 # never be used for.
 
-# A1 — an unset variable reads as the empty string in tclrs (`src/assoc.rs:20`:
-# no-such-variable, unset element and empty all collapse to `Undef`), where
-# tclsh raises an error. Narrow on purpose: tclrs must have run the whole case
-# without failing, so a case where tclrs *also* failed is still a divergence.
-if (   $ref_status == 1
-    && $sub_status == 0
-    && $rmsg =~ /^can't read "[^"]*": no such variable$/)
-{
-    verdict("ALLOWED", "A1-unset-variable", $rmsg);
-}
-
-# A1b — the same deviation, seen from the other side: tclsh stopped at the unset
-# read and tclrs carried on and failed somewhere further down. Everything tclsh
-# printed, tclrs printed too — that is the `index(...) == 0` test — and past the
-# point where tclsh stopped there is no reference behavior to compare with, so
-# the rest of tclrs's run is unmeasured rather than measured-and-excused.
-# Counted under its own key so widening A1 to cover it stays visible in the
-# report instead of hiding inside A1's number.
-if (   $ref_status == 1
-    && $sub_status != 0
-    && $rmsg =~ /^can't read "[^"]*": no such variable$/
-    && index($sout, $rout) == 0)
-{
-    verdict("ALLOWED", "A1b-unset-variable-then-failed-later",
-        "tclsh stopped at: $rmsg / tclrs went on and failed: $smsg");
-}
-
-# A1c — the same deviation seen through `catch`: both engines ran to the end, and
-# the line where their output first parts is one where tclsh printed the
-# no-such-variable message a `catch` had captured and tclrs printed something
-# else, because its read produced the empty string and the `catch` caught
-# nothing. Narrow: tclsh's line must literally carry that message. Whatever the
-# two engines printed after that point followed from a value one of them never
-# had, so it is unmeasured rather than excused.
+# A1c — a *procedure-local* unset read, seen through `catch`. The global case is
+# fixed: a read of a variable that was never set raises tclsh's own message
+# (`VM::set_undef_hook`, fusevm 0.16.0), so A1 and A1b are gone. What remains is
+# a frame slot, which the chunk addresses by index and for which there is no
+# name to report, so the read still produces the empty string and a `catch`
+# catches nothing where tclsh caught a message. Both engines ran to the end and
+# the line where their output first parts is that one. Narrow: tclsh's line must
+# literally carry the message. Whatever the two printed after that point
+# followed from a value one of them never had, so it is unmeasured rather than
+# excused. Closing this needs a chunk to carry slot names; until then the entry
+# scores 1 on the 400-case run at seed 1, and a rise means the global case
+# regressed.
 if (   $ref_status == $sub_status
     && $same_msg
     && !$same_out)
