@@ -486,6 +486,10 @@ tclsh, with the seed and case number of the divergence it was reduced from.
   `empty expression`, `unbalanced open paren`, `unbalanced close paren` and
   `incomplete operator "="`, with `invalid character "@"` kept for a character
   that really is no token. 227 of the compile-time `message` divergences.
+  Text left over once an expression is complete follows the same rule: a word is
+  named, where a second number or variable is only a missing operator, so
+  `expr {1 x}` and `expr {(1)x}` are `invalid bareword "x"` while `expr {1 1}`
+  and `expr {1 $x}` are `missing operator at _@_`.
 - **`#` starts a comment inside an expression**, running to the end of the line —
   which is why `expr {#1}` is `empty expression` in tclsh.
 
@@ -507,6 +511,18 @@ Each of these was a divergence in the run above and is now parity, pinned in
   16, 2 and 10.5. `_` is scanned as part of the literal and dropped before the
   parse, and `radix_literal` advances by the characters it consumed rather than
   the digits it kept.
+  **Where the separator may go is part of that grammar**, and accepting it
+  everywhere was its own divergence: `_` is legal only *between* two digits, so
+  `1_000_000` and even `1__0` are numbers while `0x_10`, `0b_10`, `0o_17`,
+  `0d_9`, `1_`, `0x1_`, `1_.5`, `1e_10`, `1e10_` and `1_e10` are refused as
+  tclsh refuses them — each `invalid bareword`, naming the word the separator
+  sits in rather than the number being read, which is why `1.5_` is
+  `invalid bareword "5_"` and not `"1.5_"`. The runs the rule applies to are all
+  three: `12_34.56_78e9_0` is a number, where the fraction and the exponent used
+  to end the literal early. A leading `_` starts no word at all — `expr {_1}` is
+  `invalid character "_"` — and a `.` that never resolves into a number is named
+  itself, so `expr {1._5}` and `expr {.x}` are `invalid character "."`
+  (`src/expr.rs`, pinned in `tests/expr_lexer_differential.rs`).
 - **A condition is a Tcl boolean**: `if {"b"}` is `expected boolean value but got
   "b"`, and so are `while`, `for`, the ternary, `&&` and `||`. `!` refuses the
   operand rather than answering 0.

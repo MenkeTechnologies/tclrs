@@ -318,6 +318,18 @@ impl<'a> ExprParser<'a> {
         match self.char_here() {
             ')' => self.error("unbalanced close paren"),
             c if is_operator_char(c) => self.error("missing operand at _@_"),
+            // A word left over is named, where a second *number* or variable is
+            // only a missing operator: `expr {1 x}` is `invalid bareword "x"`
+            // and `expr {1 1}` is `missing operator at _@_`. An operator spelt
+            // with letters never reaches here — `eq` and `in` matched already.
+            c if c.is_ascii_alphabetic() => {
+                let b = self.bytes();
+                let mut end = self.pos;
+                while end < b.len() && (b[end].is_ascii_alphanumeric() || b[end] == b'_') {
+                    end += 1;
+                }
+                self.error(&format!("invalid bareword {:?}", &self.src[self.pos..end]))
+            }
             c if starts_an_operand(c) => self.error("missing operator at _@_"),
             c => self.error(&format!("invalid character \"{c}\"")),
         }
@@ -471,13 +483,62 @@ impl<'a> ExprParser<'a> {
                 Ok(Expr::Subst(vec![Part::Lit(text)]))
             }
             Some(b) if b.is_ascii_digit() || b == b'.' => self.parse_number(),
-            Some(b) if b.is_ascii_alphabetic() || b == b'_' => self.parse_call(),
+            // A leading `_` is not a word here. tclsh's lexer starts a bare word
+            // at a letter only, so `expr {_1}` is `invalid character "_"` rather
+            // than a bare word named `_1`, and the arm below is what says so.
+            Some(b) if b.is_ascii_alphabetic() => self.parse_call(),
             // Neither an operand nor a unary operator. `missing_operand` decides
             // between `missing operand at _@_` (a binary operator with nothing
             // to its left, `expr {*1}`) and `invalid character "@"` (no token at
             // all), which is the distinction tclsh's lexer makes.
             Some(_) => Err(self.missing_operand()),
         }
+    }
+
+    /// Scan one run of digits, in which `_` may appear only *between* two of
+    /// them.
+    ///
+    /// Tcl 9 reads `1_000_000` as a million and even `1__0` as ten, but the
+    /// separator has to have a digit on each side: `0x_10`, `1_`, `1e_10` and
+    /// `1_.5` are all refused, each as a bare word rather than as a number.
+    /// Returns the end of the run, or the offset of the `_` that broke the rule.
+    fn digit_run(&self, start: usize) -> Result<usize, usize> {
+        let b = self.bytes();
+        let mut end = start;
+        while end < b.len() && (b[end].is_ascii_digit() || b[end] == b'_') {
+            end += 1;
+        }
+        if end > start && b[start] == b'_' {
+            return Err(start);
+        }
+        if end > start && b[end - 1] == b'_' {
+            return Err(end - 1);
+        }
+        Ok(end)
+    }
+
+    /// What tclsh says about a `_` that is not between two digits.
+    ///
+    /// It names the whole word the separator sits in, which is not always the
+    /// number that was being read: `1.5_` is `invalid bareword "5_"`, because
+    /// the run stops at the `.`, while `0x_10` names itself entire. A literal
+    /// that never got past its own leading `.` is the exception — there is no
+    /// word to name, so the `.` is reported as the invalid character it is.
+    fn separator_error(&self, at: usize, dot_led: bool) -> ParseError {
+        if dot_led {
+            return self.error("invalid character \".\"");
+        }
+        let b = self.bytes();
+        let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let mut lo = at;
+        while lo > 0 && is_word(b[lo - 1]) {
+            lo -= 1;
+        }
+        let mut hi = at;
+        while hi < b.len() && is_word(b[hi]) {
+            hi += 1;
+        }
+        self.error(&format!("invalid bareword {:?}", &self.src[lo..hi]))
     }
 
     /// Tcl integer literals carry the C-ish radix prefixes; anything with a
@@ -501,31 +562,39 @@ impl<'a> ExprParser<'a> {
 
         let mut end = start;
         let b = self.bytes();
-        // `_` separates digits in Tcl 9's integer grammar — `1_0` is ten — and
-        // is part of the literal's text, so it is scanned here and dropped
-        // before the parse below rather than ending the number.
-        while end < b.len() && (b[end].is_ascii_digit() || b[end] == b'_') {
-            end += 1;
-        }
+        // Each run of digits — the integer part, the fraction, the exponent —
+        // may carry `_` between two of its digits and nowhere else. A number
+        // whose leading `.` never resolves is not a number at all, and tclsh
+        // names the `.`: `expr {.5_}` is `invalid character "."`.
+        let dot_led = b[start] == b'.';
+        end = self
+            .digit_run(end)
+            .map_err(|at| self.separator_error(at, dot_led))?;
         let mut is_float = false;
         if end < b.len() && b[end] == b'.' {
             is_float = true;
             end += 1;
-            while end < b.len() && b[end].is_ascii_digit() {
-                end += 1;
-            }
+            // A separator immediately after the point is the point failing to
+            // lead anywhere, which is how tclsh reports it: `1._5` names the
+            // `.`, where `1.5_` names the word the trailing `_` sits in.
+            let fraction = end;
+            end = self
+                .digit_run(end)
+                .map_err(|at| self.separator_error(at, dot_led || at == fraction))?;
         }
         if end < b.len() && (b[end] == b'e' || b[end] == b'E') {
             let mut probe = end + 1;
             if probe < b.len() && (b[probe] == b'+' || b[probe] == b'-') {
                 probe += 1;
             }
-            if probe < b.len() && b[probe].is_ascii_digit() {
+            // A `_` here is an exponent that was *meant*, so it is committed to
+            // and reported, rather than left behind as trailing text: tclsh
+            // answers `invalid bareword "1e_10"`, not a missing operator.
+            if probe < b.len() && (b[probe].is_ascii_digit() || b[probe] == b'_') {
                 is_float = true;
-                end = probe;
-                while end < b.len() && b[end].is_ascii_digit() {
-                    end += 1;
-                }
+                end = self
+                    .digit_run(probe)
+                    .map_err(|at| self.separator_error(at, dot_led))?;
             }
         }
 
@@ -537,7 +606,16 @@ impl<'a> ExprParser<'a> {
         if is_float {
             bare.parse::<f64>()
                 .map(|v| Expr::Float(v, text.into()))
-                .map_err(|_| self.error(&format!("invalid floating-point number {text:?}")))
+                // A lone `.`, or one with nothing a number can use after it, is
+                // not a malformed number to tclsh — it is a character that
+                // begins no token at all, and it says so.
+                .map_err(|_| {
+                    if dot_led {
+                        self.error("invalid character \".\"")
+                    } else {
+                        self.error(&format!("invalid floating-point number {text:?}"))
+                    }
+                })
         } else {
             // Out of `i64` range: Tcl promotes to a bignum, which this frontend
             // does not have. The literal stays its own text, and every *operation*
@@ -566,6 +644,15 @@ impl<'a> ExprParser<'a> {
             .chars()
             .take_while(|c| c.is_digit(radix) || *c == '_')
             .collect();
+        // The separator rule is the prefix's too, and the prefix is not a digit:
+        // `0x1_0` is sixteen, `0x_10` and `0x1_` are bare words. The offset is
+        // the offending `_` itself, so the message names the whole spelling.
+        if written.starts_with('_') {
+            return Err(self.separator_error(self.pos + prefix_len, false));
+        }
+        if written.ends_with('_') {
+            return Err(self.separator_error(self.pos + prefix_len + written.len() - 1, false));
+        }
         let digits: String = written.chars().filter(|c| *c != '_').collect();
         if digits.is_empty() {
             // A radix prefix with no digits is not a number, so tclsh's lexer
