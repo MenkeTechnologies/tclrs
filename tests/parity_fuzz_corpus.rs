@@ -208,10 +208,7 @@ fn run(binary: &Path, script: &Path) -> Run {
     Run {
         // A signalled exit has no code of its own; `alarm` kills with SIGALRM,
         // and the recorded status for that is the shell's 128 + 14.
-        status: out
-            .status
-            .code()
-            .unwrap_or(128 + libc::SIGALRM),
+        status: out.status.code().unwrap_or(128 + libc::SIGALRM),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     }

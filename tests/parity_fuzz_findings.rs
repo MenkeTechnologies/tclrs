@@ -784,8 +784,16 @@ fn unreachable_code_costs_nothing() {
     // An argument count, a command name and an ensemble subcommand are all
     // resolved when the command is reached, as tclsh resolves them.
     agrees(&tclsh, "if {0} {incr}\nputs reached", out("reached\n"));
-    agrees(&tclsh, "if {0} {nosuchcommand}\nputs reached", out("reached\n"));
-    agrees(&tclsh, "if {0} {string bogus x}\nputs reached", out("reached\n"));
+    agrees(
+        &tclsh,
+        "if {0} {nosuchcommand}\nputs reached",
+        out("reached\n"),
+    );
+    agrees(
+        &tclsh,
+        "if {0} {string bogus x}\nputs reached",
+        out("reached\n"),
+    );
     // An expression that cannot be parsed, in a branch that is never taken.
     agrees(
         &tclsh,
@@ -801,9 +809,21 @@ fn unreachable_code_costs_nothing() {
     );
     // A body that will not parse, everywhere a body can be: a loop that never
     // iterates, a procedure never called, a `catch` that traps it.
-    agrees(&tclsh, "while {0} {puts \"a}\nputs reached", out("reached\n"));
-    agrees(&tclsh, "foreach x {} {puts \"a}\nputs reached", out("reached\n"));
-    agrees(&tclsh, "proc p {} {puts \"a}\nputs reached", out("reached\n"));
+    agrees(
+        &tclsh,
+        "while {0} {puts \"a}\nputs reached",
+        out("reached\n"),
+    );
+    agrees(
+        &tclsh,
+        "foreach x {} {puts \"a}\nputs reached",
+        out("reached\n"),
+    );
+    agrees(
+        &tclsh,
+        "proc p {} {puts \"a}\nputs reached",
+        out("reached\n"),
+    );
     // And it still fails when it *is* reached, with the message it always had.
     agrees(
         &tclsh,

@@ -667,7 +667,8 @@ impl<'a> ExprParser<'a> {
         }
         // The spelling, prefix included: `0x10` and `16` are the same number and
         // different strings, and `eq` compares the strings.
-        let text: Box<str> = format!("{}{written}", &self.src[self.pos..self.pos + prefix_len]).into();
+        let text: Box<str> =
+            format!("{}{written}", &self.src[self.pos..self.pos + prefix_len]).into();
         // The written length, not the parsed one: `0x1_0` is five characters and
         // two digits, and advancing by the digits alone left the `_0` behind as
         // "extra characters after expression".

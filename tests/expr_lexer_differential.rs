@@ -190,7 +190,9 @@ fn expr_literal_grammar_matches_tclsh() {
         if want == got {
             continue;
         }
-        failures.push(format!("expr {{{literal}}}\n  tclsh: {want:?}\n  tclrs: {got:?}"));
+        failures.push(format!(
+            "expr {{{literal}}}\n  tclsh: {want:?}\n  tclrs: {got:?}"
+        ));
     }
 
     assert!(

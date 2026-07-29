@@ -338,8 +338,14 @@ fn unsupported_procedure_constructs_are_refused() {
         // `-indexvar` are named rather than reported as bad options, because
         // `switch` does have them and this frontend does not. A genuinely
         // unknown option is still a bad option.
-        ("switch -matchvar m -regexp a {a {}}", "the -matchvar option"),
-        ("switch -indexvar i -regexp a {a {}}", "the -indexvar option"),
+        (
+            "switch -matchvar m -regexp a {a {}}",
+            "the -matchvar option",
+        ),
+        (
+            "switch -indexvar i -regexp a {a {}}",
+            "the -indexvar option",
+        ),
         ("switch -bogus a b {a {}}", "bad option \"-bogus\""),
         ("switch a {a}", "extra switch pattern with no body"),
         ("switch a {}", "wrong # args"),

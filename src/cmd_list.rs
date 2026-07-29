@@ -272,10 +272,7 @@ fn lmap(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
         .map_err(|_| c.err("too many lists for \"lmap\"".to_string()))?;
     let width = u8::try_from(names.len())
         .map_err(|_| c.err("too many variables for \"lmap\"".to_string()))?;
-    c.emit(
-        Op::Extended(ext::LMAP_INIT, lists),
-        1 - pairs.len() as i32,
-    );
+    c.emit(Op::Extended(ext::LMAP_INIT, lists), 1 - pairs.len() as i32);
 
     let script = c.body_of(body)?;
     let taken: Vec<String> = names.iter().rev().cloned().collect();
@@ -1196,8 +1193,10 @@ fn list_var_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     let (stored, yielded) = match id {
         ext::LSET => {
             let Some((value, indices)) = rest.split_last() else {
-                return Err("wrong # args: should be \"lset listVar ?index? ?index ...? value\""
-                    .to_string());
+                return Err(
+                    "wrong # args: should be \"lset listVar ?index? ?index ...? value\""
+                        .to_string(),
+                );
             };
             let new = lset_value(&text, indices, value)?;
             (new.clone(), new)

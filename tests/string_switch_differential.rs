@@ -170,7 +170,14 @@ fn switch_options_match_tclsh() {
 
     // The matching modes, with and without case folding, against subjects that
     // separate them: same letters different case, and a glob metacharacter.
-    for opts in ["", "-exact", "-glob", "-nocase", "-nocase -exact", "-nocase -glob"] {
+    for opts in [
+        "",
+        "-exact",
+        "-glob",
+        "-nocase",
+        "-nocase -exact",
+        "-nocase -glob",
+    ] {
         for subject in ["abc", "ABC", "aXc", "a*c"] {
             programs.push(format!(
                 "switch {opts} -- {subject} {{abc {{puts exact}} a*c {{puts glob}} ABC {{puts upper}} default {{puts none}}}}"
@@ -245,8 +252,14 @@ fn unsupported_switch_options_are_named() {
         "hit\n"
     );
     for (src, expected) in [
-        ("switch -matchvar m -regexp abc {a.c {puts hit}}", "-matchvar"),
-        ("switch -indexvar i -regexp abc {a.c {puts hit}}", "-indexvar"),
+        (
+            "switch -matchvar m -regexp abc {a.c {puts hit}}",
+            "-matchvar",
+        ),
+        (
+            "switch -indexvar i -regexp abc {a.c {puts hit}}",
+            "-indexvar",
+        ),
     ] {
         let err = tclrs::eval(src).expect_err("must be refused").to_string();
         assert!(

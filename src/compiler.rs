@@ -1262,11 +1262,7 @@ impl Compiler {
             return self.error("wrong # args: should be \"while test command\"");
         };
         let script = self.body_of(body)?;
-        self.rotated_loop(
-            |c| c.emit_body(&script),
-            |_| Ok(()),
-            |c| c.expr_word(cond),
-        )?;
+        self.rotated_loop(|c| c.emit_body(&script), |_| Ok(()), |c| c.expr_word(cond))?;
         // A loop's own value is empty.
         self.push_empty();
         Ok(())

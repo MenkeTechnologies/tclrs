@@ -95,7 +95,9 @@ impl Compiler {
                 // Still refused: both need the match results handed back
                 // through a variable, which this lowering has nowhere to put.
                 "-matchvar" | "-indexvar" => {
-                    return self.error(format!("the {text} option of \"switch\" is not supported yet"))
+                    return self.error(format!(
+                        "the {text} option of \"switch\" is not supported yet"
+                    ))
                 }
                 "--" => break,
                 other => {
@@ -137,7 +139,10 @@ impl Compiler {
             // The string module's matcher, so `-nocase` folds exactly as
             // `string match -nocase` folds; it answers "1"/"0", which the
             // boolean op turns into the 1/0 the branch below tests.
-            self.emit(Op::LoadInt(i64::from(mode as u8 | u8::from(nocase) << 1)), 1);
+            self.emit(
+                Op::LoadInt(i64::from(mode as u8 | u8::from(nocase) << 1)),
+                1,
+            );
             self.emit(Op::Extended(crate::cmd_string::ext::SWITCH_MATCH, 3), -2);
             self.emit(Op::Extended(ext::BOOL, 0), 0);
             let miss = self.emit(Op::JumpIfFalse(usize::MAX), -1);

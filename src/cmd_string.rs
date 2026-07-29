@@ -1752,9 +1752,7 @@ fn format_string(fmt: &str, args: &[String]) -> Result<String, String> {
                 value,
             )?,
             'e' | 'E' | 'f' | 'g' | 'G' => floating(conv, flags, precision, value)?,
-            'a' | 'A' => {
-                return Err(format!("the \"%{conv}\" conversion is not supported yet"))
-            }
+            'a' | 'A' => return Err(format!("the \"%{conv}\" conversion is not supported yet")),
             other => return Err(format!("bad field specifier \"{other}\"")),
         };
         push_padded(&mut out, converted, flags, width)?;
