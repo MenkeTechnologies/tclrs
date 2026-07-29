@@ -211,7 +211,7 @@ fn run(binary: &Path, script: &Path) -> Run {
         status: out
             .status
             .code()
-            .unwrap_or(128 + libc::SIGALRM as i32),
+            .unwrap_or(128 + libc::SIGALRM),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     }
