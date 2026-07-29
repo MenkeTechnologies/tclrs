@@ -651,16 +651,6 @@ impl Compiler {
         Some(slot)
     }
 
-    /// Whether `name` would resolve to a frame slot rather than to the VM's
-    /// global table — true inside a procedure body for every name `global` has
-    /// not bound. Unlike [`Compiler::slot_of`] this allocates nothing, so it is
-    /// safe to ask about a name the emitted code may never touch.
-    pub(crate) fn is_local(&self, name: &str) -> bool {
-        self.scope
-            .as_ref()
-            .is_some_and(|s| !s.globals.contains(name))
-    }
-
     /// Whether `set name word` only *grows* `name`: the word begins with that
     /// variable and everything after it is text or another variable's value.
     ///

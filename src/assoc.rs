@@ -8,9 +8,12 @@
 //! so `dict get` takes a string, `dict keys` returns a string, and a dict can be
 //! passed around, nested, and printed like any other value.
 //!
-//! Arrays therefore live in fusevm globals as `Value::Hash`, reached only
-//! through the ops below; dicts never touch a global except when `dict set`
-//! writes one back.
+//! An array therefore lives wherever its *variable* lives — a `Value::Hash` in
+//! fusevm's global table for a script's own variable, and in the call frame's
+//! slot for a procedure's local — reached only through the ops below. Every one
+//! of them takes the variable's [`Place`] rather than a name index, which is
+//! what lets one op serve both; dicts never touch a variable except when `dict
+//! set` writes one back.
 //!
 //! ## Why the VM's hash ops are not used for element access
 //!
@@ -19,7 +22,7 @@
 //! `Value::Hash` is silently dropped (`vm.rs`, `Op::HashSet`). Tcl distinguishes
 //! three cases that all collapse to `Undef` there — no such variable, variable
 //! isn't array, no such element in array — and each is a different error. The
-//! extension handler reads `vm.globals` directly instead, which also avoids the
+//! extension handler reaches the variable itself instead, which also avoids the
 //! whole-map clone that `GetVar` would perform on every element access. The
 //! representation is still fusevm's `Value::Hash`, so the native ops remain
 //! applicable to the same data. `ArrayLen`/`ArrayGet` *are* used, for `dict
@@ -37,7 +40,7 @@ use std::sync::Arc;
 
 use fusevm::{Op, Value, VM};
 
-use crate::compiler::{ext, CompileError, Compiler};
+use crate::compiler::{ext, CompileError, Compiler, Place};
 use crate::parser::{Part, Word};
 use crate::runtime::{tcl_int, to_tcl_string};
 
@@ -594,56 +597,60 @@ impl Compiler {
         self.arrays.contains(name)
     }
 
-    /// The name index a variable is reached by in the VM's global table, for
-    /// the operations that address one that way.
+    /// Where an array variable lives, as the single operand every `array`,
+    /// element and `unset` op takes.
     ///
-    /// An array lives in that table, keyed by the name index the compiler
-    /// hands the op; a procedure's locals live in the call frame's slots, which
-    /// no name index reaches. So an array inside a procedure body is refused
-    /// rather than silently made global — unless `global` already said that is
-    /// what it is.
-    fn global_var(&mut self, name: &str, what: &str) -> Result<u16, CompileError> {
-        if self.is_local(name) {
-            return self.error(format!(
-                "{what} of the procedure-local variable \"{name}\" is not supported yet"
-            ));
-        }
+    /// One integer encodes both homes a variable can have, so one op serves a
+    /// script's own variable and a procedure's local alike: a global is its
+    /// name index, a frame slot is `-(slot + 1)`. The slot case is what makes an
+    /// array inside a procedure body *local* — its elements live in the frame,
+    /// so two activations of a recursive procedure do not share them and the
+    /// array goes away with the frame, which is what tclsh does.
+    ///
+    /// [`runtime::place_of`](crate::assoc::place_of) decodes it; the negative
+    /// half cannot collide with a name index, which is unsigned.
+    fn array_place(&mut self, name: &str) -> i64 {
         self.note_array(name);
-        Ok(self.b.add_name(name))
+        match self.var_place(name) {
+            Place::Global(idx) => i64::from(idx),
+            Place::Slot(slot) => -i64::from(slot) - 1,
+        }
     }
 
     /// Read a scalar variable. The guard is emitted only for names the script
-    /// also uses as arrays, so an ordinary `$x` still lowers to a bare `GetVar`.
-    /// A procedure local can never hold an array — [`Compiler::global_var`]
-    /// refuses the commands that would make one — so it needs no guard.
+    /// also uses as arrays, so an ordinary `$x` still lowers to a bare `GetVar`
+    /// or `GetSlot`.
+    ///
+    /// A procedure local *can* hold an array, so the guard applies there too:
+    /// `$a` on a local array is `can't read "a": variable is array` exactly as
+    /// it is on a global one. The read itself goes through
+    /// [`Compiler::emit_get_var`], which already picks the slot or the global.
     pub(crate) fn scalar_get(&mut self, name: &str) {
-        if !self.is_array(name) || self.is_local(name) {
+        if !self.is_array(name) {
             self.emit_get_var(name);
             return;
         }
-        let idx = self.b.add_name(name);
         self.push_str(name);
-        self.emit(Op::GetVar(idx), 1);
+        self.emit_get_var(name);
         self.emit(Op::Extended(ext::SCALAR, 0), -1);
     }
 
     /// Refuse a scalar assignment to a variable that holds an array.
     pub(crate) fn scalar_set_guard(&mut self, name: &str) {
-        if !self.is_array(name) || self.is_local(name) {
+        if !self.is_array(name) {
             return;
         }
-        let idx = self.b.add_name(name);
         self.push_str(name);
-        self.emit(Op::GetVar(idx), 1);
+        self.emit_get_var(name);
         self.emit(Op::Extended(ext::SCALAR, 1), -2);
     }
 
     /// `$a(i)`.
     pub(crate) fn elem_get(&mut self, name: &str, index: &[Part]) -> Result<(), CompileError> {
-        let slot = self.global_var(name, "an array element")?;
+        let place = self.array_place(name);
         self.push_str(name);
         self.index_value(index)?;
-        self.emit(Op::LoadInt(slot as i64), 1);
+        self.emit(Op::LoadInt(place), 1);
         self.emit(Op::Extended(ext::ELEM_GET, 0), -2);
         Ok(())
     }
@@ -655,11 +662,11 @@ impl Compiler {
         index: &[Part],
         value: &Word,
     ) -> Result<(), CompileError> {
-        let slot = self.global_var(name, "an array element")?;
+        let place = self.array_place(name);
         self.push_str(name);
         self.index_value(index)?;
         self.word(value)?;
-        self.emit(Op::LoadInt(slot as i64), 1);
+        self.emit(Op::LoadInt(place), 1);
         self.emit(Op::Extended(ext::ELEM_SET, 0), -3);
         Ok(())
     }
@@ -671,7 +678,7 @@ impl Compiler {
         index: &[Part],
         by: Option<&Word>,
     ) -> Result<(), CompileError> {
-        let slot = self.global_var(name, "an array element")?;
+        let place = self.array_place(name);
         self.push_str(name);
         self.index_value(index)?;
         match by {
@@ -680,7 +687,7 @@ impl Compiler {
                 self.emit(Op::LoadInt(1), 1);
             }
         }
-        self.emit(Op::LoadInt(slot as i64), 1);
+        self.emit(Op::LoadInt(place), 1);
         self.emit(Op::Extended(ext::ELEM_INCR, 0), -3);
         Ok(())
     }
@@ -707,25 +714,22 @@ impl Compiler {
             };
             match target {
                 Target::Scalar(name) => {
-                    if self.is_local(&name) {
-                        // A local lives in a frame slot, which the VM has no
-                        // op to remove; only the global table can be unset.
-                        return self.error(format!(
-                            "\"unset\" of the procedure-local variable \"{name}\" is not \
-                             supported yet"
-                        ));
-                    }
-                    let slot = self.b.add_name(&name);
+                    // A local is a frame slot rather than a global-table entry,
+                    // and the op reaches either through the place it is handed.
+                    let place = match self.var_place(&name) {
+                        Place::Global(idx) => i64::from(idx),
+                        Place::Slot(slot) => -i64::from(slot) - 1,
+                    };
                     self.push_str(&name);
-                    self.emit(Op::LoadInt(slot as i64), 1);
+                    self.emit(Op::LoadInt(place), 1);
                     self.emit(Op::LoadInt(complain as i64), 1);
                     self.emit(Op::Extended(ext::UNSET_VAR, 0), -3);
                 }
                 Target::Elem { name, index } => {
-                    let slot = self.global_var(&name, "an array element")?;
+                    let place = self.array_place(&name);
                     self.push_str(&name);
                     self.index_value(&index)?;
-                    self.emit(Op::LoadInt(slot as i64), 1);
+                    self.emit(Op::LoadInt(place), 1);
                     self.emit(Op::LoadInt(complain as i64), 1);
                     self.emit(Op::Extended(ext::UNSET_ELEM, 0), -4);
                 }
@@ -757,7 +761,7 @@ impl Compiler {
             ));
         };
         let name = self.literal_of(array, "array name")?.to_string();
-        let slot = self.global_var(&name, format!("\"array {sub}\"").as_str())? as i64;
+        let slot = self.array_place(&name);
         let rest = &args[2..];
 
         match (sub, rest.len()) {
@@ -773,7 +777,14 @@ impl Compiler {
                 self.push_str(&name);
                 self.word(&rest[0])?;
                 self.emit(Op::LoadInt(slot), 1);
-                self.emit(Op::Extended(ext::ARR_SET, 0), -2);
+                // Which name a refusal quotes depends on where the *command*
+                // sits, not on where the variable does: inside a procedure body
+                // tclsh always names the variable, and at the top level it names
+                // the first element it was about to write. Measured — a global
+                // reached through `global` from inside a body takes the body's
+                // wording, so the enclosing scope is what decides.
+                let in_body = u8::from(self.scope.is_some());
+                self.emit(Op::Extended(ext::ARR_SET, in_body), -2);
             }
             ("get", 0..=1) => {
                 self.pattern_args(rest, "-glob")?;
@@ -1090,10 +1101,10 @@ fn array_usage(sub: &str) -> &'static str {
 pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     match id {
         ext::ELEM_GET => {
-            let slot = slot_of(vm);
+            let place = place_of(vm);
             let index = pop_str(vm);
             let name = pop_str(vm);
-            let value = match vm.globals.get(slot) {
+            let value = match peek(vm, place) {
                 Some(Value::Hash(map)) => map.get(&index).cloned().ok_or_else(|| {
                     format!("can't read \"{name}({index})\": no such element in array")
                 })?,
@@ -1110,22 +1121,22 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             Ok(())
         }
         ext::ELEM_SET => {
-            let slot = slot_of(vm);
+            let place = place_of(vm);
             let value = vm.pop();
             let index = pop_str(vm);
             let name = pop_str(vm);
-            element_map(vm, slot)
+            element_map(vm, place)
                 .ok_or_else(|| format!("can't set \"{name}({index})\": variable isn't array"))?
                 .insert(index, value.clone());
             vm.push(value);
             Ok(())
         }
         ext::ELEM_INCR => {
-            let slot = slot_of(vm);
+            let place = place_of(vm);
             let by = tcl_int(&vm.pop())?;
             let index = pop_str(vm);
             let name = pop_str(vm);
-            let map = element_map(vm, slot)
+            let map = element_map(vm, place)
                 .ok_or_else(|| format!("can't set \"{name}({index})\": variable isn't array"))?;
             // A missing element counts as zero, as a missing scalar does.
             let current = match map.get(&index) {
@@ -1141,10 +1152,10 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
         ext::UNSET_ELEM => {
             let complain = pop_int(vm) != 0;
-            let slot = slot_of(vm);
+            let place = place_of(vm);
             let index = pop_str(vm);
             let name = pop_str(vm);
-            let missing = match vm.globals.get_mut(slot) {
+            let missing = match crate::runtime::var_cell(vm, place) {
                 Some(Value::Hash(map)) => map.remove(&index).is_none(),
                 Some(Value::Undef) | None => true,
                 Some(_) => {
@@ -1166,9 +1177,9 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
         ext::UNSET_VAR => {
             let complain = pop_int(vm) != 0;
-            let slot = slot_of(vm);
+            let place = place_of(vm);
             let name = pop_str(vm);
-            match vm.globals.get_mut(slot) {
+            match crate::runtime::var_cell(vm, place) {
                 Some(v) if *v != Value::Undef => {
                     *v = Value::Undef;
                     Ok(())
@@ -1191,14 +1202,14 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
 
         ext::ARR_EXISTS => {
-            let slot = slot_of(vm);
-            let exists = matches!(vm.globals.get(slot), Some(Value::Hash(_)));
+            let place = place_of(vm);
+            let exists = matches!(peek(vm, place), Some(Value::Hash(_)));
             vm.push(Value::Int(exists as i64));
             Ok(())
         }
         ext::ARR_SIZE => {
-            let slot = slot_of(vm);
-            let size = match vm.globals.get(slot) {
+            let place = place_of(vm);
+            let size = match peek(vm, place) {
                 Some(Value::Hash(map)) => map.len() as i64,
                 _ => 0,
             };
@@ -1206,21 +1217,21 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             Ok(())
         }
         ext::ARR_NAMES => {
-            let slot = slot_of(vm);
+            let place = place_of(vm);
             let filter = pop_filter(vm);
-            let mut names = selected(vm, slot, &filter);
+            let mut names = selected(vm, place, &filter);
             names.sort();
             vm.push(Value::Str(Arc::new(join(&names))));
             Ok(())
         }
         ext::ARR_GET => {
-            let slot = slot_of(vm);
+            let place = place_of(vm);
             let filter = pop_filter(vm);
-            let mut names = selected(vm, slot, &filter);
+            let mut names = selected(vm, place, &filter);
             names.sort();
             let mut flat = Vec::with_capacity(names.len() * 2);
             for name in names {
-                let value = match vm.globals.get(slot) {
+                let value = match peek(vm, place) {
                     Some(Value::Hash(map)) => map.get(&name).map(to_tcl_string).unwrap_or_default(),
                     _ => String::new(),
                 };
@@ -1231,18 +1242,18 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             Ok(())
         }
         ext::ARR_UNSET => {
-            let slot = slot_of(vm);
+            let place = place_of(vm);
             let filter = pop_filter(vm);
             match filter {
                 // No pattern: the whole variable goes.
                 None => {
-                    if let Some(v @ Value::Hash(_)) = vm.globals.get_mut(slot) {
+                    if let Some(v @ Value::Hash(_)) = crate::runtime::var_cell(vm, place) {
                         *v = Value::Undef;
                     }
                 }
                 Some(_) => {
-                    let doomed = selected(vm, slot, &filter);
-                    if let Some(Value::Hash(map)) = vm.globals.get_mut(slot) {
+                    let doomed = selected(vm, place, &filter);
+                    if let Some(Value::Hash(map)) = crate::runtime::var_cell(vm, place) {
                         for name in doomed {
                             map.remove(&name);
                         }
@@ -1253,7 +1264,7 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             Ok(())
         }
         ext::ARR_SET => {
-            let slot = slot_of(vm);
+            let place = place_of(vm);
             let list = pop_str(vm);
             let name = pop_str(vm);
             let elements = split(&list, "list")?;
@@ -1263,15 +1274,18 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             // An existing scalar is refused, and the diagnostic names the first
             // element being written — or the variable itself when there is none.
             if !matches!(
-                vm.globals.get(slot),
+                peek(vm, place),
                 Some(Value::Hash(_)) | Some(Value::Undef) | None
             ) {
-                return Err(match elements.first() {
+                // `arg` is 1 when the command was compiled inside a procedure
+                // body, where tclsh names the variable however many elements
+                // were given; at the top level it names the first of them.
+                return Err(match elements.first().filter(|_| arg != 1) {
                     Some(key) => format!("can't set \"{name}({key})\": variable isn't array"),
                     None => format!("can't array set \"{name}\": variable isn't array"),
                 });
             }
-            let map = element_map(vm, slot).expect("scalar case refused above");
+            let map = element_map(vm, place).expect("scalar case refused above");
             let mut it = elements.into_iter();
             while let (Some(k), Some(v)) = (it.next(), it.next()) {
                 map.insert(k, Value::Str(Arc::new(v)));
@@ -1420,22 +1434,20 @@ fn dict_set(dict: &str, keys: &[String], value: String) -> Result<String, String
 
 /// The element map of an array variable, creating it when the variable does not
 /// exist yet. `None` when the variable holds a scalar.
-fn element_map(vm: &mut VM, slot: usize) -> Option<&mut HashMap<String, Value>> {
-    if slot >= vm.globals.len() {
-        vm.globals.resize(slot + 1, Value::Undef);
+fn element_map(vm: &mut VM, place: Place) -> Option<&mut HashMap<String, Value>> {
+    let cell = crate::runtime::var_cell(vm, place)?;
+    if *cell == Value::Undef {
+        *cell = Value::Hash(HashMap::new());
     }
-    if vm.globals[slot] == Value::Undef {
-        vm.globals[slot] = Value::Hash(HashMap::new());
-    }
-    match &mut vm.globals[slot] {
+    match cell {
         Value::Hash(map) => Some(map),
         _ => None,
     }
 }
 
 /// The element names of an array that pass the filter.
-fn selected(vm: &VM, slot: usize, filter: &Option<(String, String)>) -> Vec<String> {
-    let Some(Value::Hash(map)) = vm.globals.get(slot) else {
+fn selected(vm: &VM, place: Place, filter: &Option<(String, String)>) -> Vec<String> {
+    let Some(Value::Hash(map)) = peek(vm, place) else {
         return Vec::new();
     };
     map.keys()
@@ -1473,8 +1485,28 @@ fn pop_int(vm: &mut VM) -> i64 {
     }
 }
 
-fn slot_of(vm: &mut VM) -> usize {
-    pop_int(vm).max(0) as usize
+/// Decode the operand [`Compiler::array_place`] pushed: a name index in the
+/// VM's global table, or a frame slot written as `-(slot + 1)`.
+fn place_of(vm: &mut VM) -> Place {
+    let raw = pop_int(vm);
+    if raw < 0 {
+        Place::Slot((-raw - 1) as u16)
+    } else {
+        Place::Global(raw as u16)
+    }
+}
+
+/// What the variable holds, without creating it.
+///
+/// Separate from [`crate::runtime::var_cell`], which grows the storage to reach
+/// the place: a *read* of a variable that was never set must not allocate one,
+/// and `array exists` on an unset name must stay false rather than becoming a
+/// variable by being asked about.
+fn peek(vm: &VM, place: Place) -> Option<&Value> {
+    match place {
+        Place::Global(idx) => vm.globals.get(idx as usize),
+        Place::Slot(slot) => vm.frames.last().and_then(|f| f.slots.get(slot as usize)),
+    }
 }
 
 fn pop_str(vm: &mut VM) -> String {

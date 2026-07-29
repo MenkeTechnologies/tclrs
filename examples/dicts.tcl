@@ -78,6 +78,31 @@ foreach name [array names stock] {
 }
 check "array total" $total 17
 
+# An array inside a procedure is that procedure's own: two calls do not
+# accumulate, and two frames of a recursive procedure hold different elements.
+proc counted {} {
+    set seen(once) 1
+    return [array size seen]
+}
+check "a local array starts empty" [counted] 1
+check "and again on the next call" [counted] 1
+
+proc depth {n} {
+    set frame($n) here
+    if {$n > 0} {
+        depth [expr {$n - 1}]
+    }
+    return [array names frame]
+}
+check "recursion does not share" [depth 2] 2
+
+# `global` is what reaches the script's own array from inside a procedure.
+proc reach {} {
+    global stock
+    return [array size stock]
+}
+check "global reaches the outer array" [reach] 3
+
 # Converting between the two: an array's `get` is a dict.
 set as_dict [array get stock]
 check "array get is a dict" [dict get $as_dict figs] 2

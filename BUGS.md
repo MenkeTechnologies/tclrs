@@ -40,7 +40,11 @@ approximated, and nothing is silently mis-run.
   `names`, `set`, `size`, `unset` — and `dict` — `create`, `exists`, `get`,
   `for`, `keys`, `merge`, `remove`, `set`, `size`, `values` (`src/assoc.rs`).
   `dict for` is emitted by the same `Compiler::rotated_loop` every other loop
-  goes through, over a cursor the VM's own `ArrayLen` / `ArrayGet` walk.
+  goes through, over a cursor the VM's own `ArrayLen` / `ArrayGet` walk. An
+  array works inside a procedure as well as at the top level: every one of its
+  ops takes the variable's place — a name index in the global table, or a frame
+  slot written as `-(slot + 1)` — so a local array belongs to its activation and
+  two frames of a recursive procedure do not share one.
 - **Strings.** `format` and the `string` ensemble — `cat`, `compare`, `equal`,
   `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`,
   `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`,
@@ -238,10 +242,13 @@ approximated, and nothing is silently mis-run.
   `-nocase` waits on a case-folding table that matches Tcl's, which Rust's
   `to_lowercase` does not: it is a full case mapping and can produce more than
   one character where Tcl maps one to one.
-- **`array` and `dict` on a procedure-local variable.** An array lives in the
-  global table keyed by a name index; a procedure's locals live in the frame's
-  slots, which no name index reaches. Refused rather than silently made global —
-  unless `global` already said that is what it is.
+- **`dict` operations that write a procedure-local variable.** `dict set` writes
+  its variable back through a name index into the global table. Arrays no longer
+  work that way — every `array`, element and `unset` op takes the variable's
+  *place*, so a name index or a frame slot, and an array inside a procedure body
+  is a genuine local: two activations of a recursive procedure hold different
+  elements, and it goes away with the frame. `dict` has not been moved to the
+  same operand yet.
 - **An array variable in a `foreach` variable list.** Refused.
 - **Indices outside `i64`.** Tcl computes index arithmetic in arbitrary
   precision and truncates; tclrs saturates at the `i64` ends instead. Both
