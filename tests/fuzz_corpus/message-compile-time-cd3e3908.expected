@@ -2,7 +2,7 @@
 # seed: 1   case: 00399   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 17 -> 6 lines in 2 round(s), 53/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=exponentiation of zero by negative power tclrs=missing "
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: pre-42-post\npre-42-post\npre-42-post\npre-42-post\n
 # tclsh-stderr: exponentiation of zero by negative power\n

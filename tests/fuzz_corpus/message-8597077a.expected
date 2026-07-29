@@ -2,7 +2,7 @@
 # seed: 1   case: 00225   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 20 -> 2 lines in 2 round(s), 18/400 candidates checked
 # verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: expected integer but got a list\n

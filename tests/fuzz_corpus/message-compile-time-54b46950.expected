@@ -2,7 +2,7 @@
 # seed: 1   case: 00020   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 20 -> 3 lines in 4 round(s), 44/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=-7 tclrs=missing operand at _@_
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: -7\n

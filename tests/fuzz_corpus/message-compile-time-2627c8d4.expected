@@ -2,7 +2,7 @@
 # seed: 1   case: 00209   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 13 -> 3 lines in 2 round(s), 25/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=cannot use non-numeric string "abc" as left operand of "**" tclrs=extra characters after close-quote
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: cannot use non-numeric string "abc" as left operand of "**"\n

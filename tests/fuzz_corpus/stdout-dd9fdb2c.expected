@@ -2,7 +2,7 @@
 # seed: 1   case: 00349   depth: 3   generator: scripts/fuzz/gen.tcl
 # verdict: SKIP	integer value too large to represent	BUGS.md — arbitrary-precision integers
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 0
 # tclsh-stdout: -1844674407370955162-1844674407370955162-18446744073709551621.000000e+00\n\x1e
 # tclsh-stderr: 

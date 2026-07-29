@@ -2,7 +2,7 @@
 # seed: 1   case: 00185   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 16 -> 3 lines in 2 round(s), 33/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=wrong # args: should be "p4 r1 r2"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 0
 # tclsh-stdout: m:can't read "s2": no such variable\n\x1e
 # tclsh-stderr: 

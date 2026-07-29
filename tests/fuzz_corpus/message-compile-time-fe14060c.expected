@@ -2,7 +2,7 @@
 # seed: 1   case: 00251   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 14 -> 2 lines in 2 round(s), 20/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=invalid bareword "a"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 0
 # tclsh-stdout: 1000 {}1000 {}1000 {}1000 {}1000 {}\x1e
 # tclsh-stderr: 

@@ -2,7 +2,7 @@
 # seed: 1   case: 00371   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 22 -> 3 lines in 4 round(s), 42/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=invalid character "日"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: \n

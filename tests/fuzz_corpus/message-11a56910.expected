@@ -2,7 +2,7 @@
 # seed: 1   case: 00253   depth: 4   generator: scripts/fuzz/gen.tcl   reduced by hand to the operator
 # verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: domain error: argument not in valid range\n

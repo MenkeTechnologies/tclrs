@@ -2,7 +2,7 @@
 # seed: 1   case: 00206   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 19 -> 3 lines in 3 round(s), 33/400 candidates checked
 # verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: expected floating-point number but got a list\n

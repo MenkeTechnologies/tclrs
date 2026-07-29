@@ -2,7 +2,7 @@
 # seed: 1   case: 00118   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 23 -> 5 lines in 4 round(s), 81/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=42 tclrs=empty expression
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: 42\n

@@ -2,7 +2,7 @@
 # seed: 1   case: 00021   depth: 4   generator: scripts/fuzz/gen.tcl   reduced by hand to the literal
 # verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: cannot use non-numeric floating-point value "nan" as left operand of "+"\n
