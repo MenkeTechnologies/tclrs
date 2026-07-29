@@ -355,18 +355,30 @@ pub mod ext_wide {
 /// * `unknown or ambiguous subcommand ` — the same, one level down, for an
 ///   ensemble.
 ///
-/// Everything else stays where it is. A parse error is a property of the text
-/// and cannot wait for control to arrive; `{*}`, the shape refusals in BUGS.md
-/// and the "not supported yet" refusals are decisions about what this compiler
-/// can lower at all, and deferring them would only move the same refusal later
-/// while giving up the earliest possible report.
+/// A fourth class defers for a different reason:
 ///
-/// These three wordings are Tcl's own and are pinned against tclsh by the
+/// * `… is not supported yet` — something tclrs cannot lower and tclsh *can*.
+///   The interpreter never reports these at all, so the question is not when to
+///   report but whether the script survives: `catch {info locals}` answers 0
+///   there and killed the whole script here, and `if {0} {info locals}` ran
+///   there and was refused here. Deferring makes the refusal catchable and
+///   leaves an unexecuted one silent, which is what tclsh does; a script that
+///   really reaches the construct still gets the same message, one phase later.
+///   Being refused earlier than tclsh is not a service when tclsh's answer is to
+///   work.
+///
+/// Only a parse error stays where it is: it is a property of the text and cannot
+/// wait for control to arrive. A refusal raised *after* its handler has emitted
+/// ops cannot be deferred either — there is nothing to roll back — and
+/// [`Compiler::command`] re-arms it as an ordinary compile error.
+///
+/// The first three wordings are Tcl's own and are pinned against tclsh by the
 /// differential suites, so they cannot drift here without a test noticing.
 fn defers_to_run_time(msg: &str) -> bool {
     msg.starts_with("wrong # args:")
         || msg.starts_with("invalid command name ")
         || msg.starts_with("unknown or ambiguous subcommand ")
+        || msg.contains("is not supported yet")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -328,3 +328,39 @@ fn every_subcommand_is_answered_or_refused_by_name() {
         problems.join("\n")
     );
 }
+
+/// A refusal for something tclsh *supports* is catchable, and silent where the
+/// script never reaches it.
+///
+/// This is the shape of every "not supported yet" refusal, and `info locals` is
+/// the one to hang it on: tclsh answers it, so tclsh never raises anything.
+/// While the refusal was a compile-time verdict, `catch {info locals}` killed
+/// the whole script and `if {0} {info locals}` refused a branch tclsh runs — a
+/// script was punished for *mentioning* a construct. Reporting earlier than
+/// tclsh is no service when tclsh's answer is to work.
+///
+/// The dead-branch half is a real differential assertion: both engines print
+/// `survived` and nothing else. The `catch` half cannot be — tclsh succeeds
+/// there and tclrs still lacks the subcommand — so it pins that the refusal is
+/// *reachable by a script* rather than fatal to it, which is the part that
+/// changed.
+#[test]
+fn a_refusal_for_something_tclsh_has_is_catchable_and_skippable() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+
+    // Never executed: both engines run the script to completion.
+    compare(&tclsh, &["if {0} {info locals}\nputs survived"]);
+    compare(&tclsh, &["proc p {} {if {0} {info locals}; return ok}\nputs [p]"]);
+
+    // Executed: catchable here, where it used to end the program.
+    let out = tclrs::eval("puts [catch {info locals} e]\nputs [string match {*not supported yet*} $e]")
+        .expect("the script runs to completion");
+    assert_eq!(
+        out.output, "1\n1\n",
+        "the refusal should reach the script's own catch: {:?}",
+        out.output
+    );
+}
