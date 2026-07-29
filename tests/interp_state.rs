@@ -214,11 +214,16 @@ fn distinct_eval_texts_are_distinct_entries() {
 
 /// A script that does not compile is not cached: the diagnostic is produced
 /// again, and no slot is spent on it.
+///
+/// The example is a parse error rather than an unknown command, because an
+/// unknown command compiles now — it is an error raised where the command
+/// would have run, which is where tclsh raises it, so the script it appears in
+/// is cached like any other.
 #[test]
 fn a_script_that_fails_to_compile_is_not_cached() {
     let mut cache = tclrs::cache::ChunkCache::new();
-    assert!(cache.compile("nosuchcmd").is_err());
-    assert!(cache.compile("nosuchcmd").is_err());
+    assert!(cache.compile("puts {").is_err());
+    assert!(cache.compile("puts {").is_err());
     assert!(cache.is_empty());
     assert_eq!(cache.stats(), (0, 2));
 }

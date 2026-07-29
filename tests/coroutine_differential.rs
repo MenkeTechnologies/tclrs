@@ -320,8 +320,12 @@ fn unsupported_coroutine_constructs_are_refused() {
             "proc g {a b} {yield}\ncoroutine c g 1",
             "wrong # args: should be \"g a b\"",
         ),
+        // The coroutine is created so that the body actually runs: an argument
+        // count is checked when the command is reached, as tclsh checks it, so
+        // defining a procedure whose body could not work is not itself an
+        // error in either engine.
         (
-            "proc g {} {yield a b}",
+            "proc g {} {yield a b}\ncoroutine c g",
             "wrong # args: should be \"yield ?value?\"",
         ),
         (

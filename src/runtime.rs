@@ -518,12 +518,27 @@ impl Hooks {
         }));
 
         let entered = Arc::clone(&self.catches);
+        let wide_err = Arc::clone(&self.error);
         vm.set_extension_wide_handler(Box::new(move |vm: &mut VM, id: u16, payload: usize| {
             if id == ext_wide::DBG_LINE {
                 // Only a chunk compiled by `compile_debug` carries these, and
                 // only `--dap` answers them; without a session attached this is
                 // one `Option` check.
                 crate::dap::at_line(vm, payload);
+                return;
+            }
+            if id == ext_wide::ERROR_AT {
+                // A failure the compiler found and lowered as code (see
+                // `Compiler::defer`). It carries the line the refusal would have
+                // been reported at, so deferring it costs the diagnostic
+                // nothing but its timing.
+                let msg = to_tcl_string(&vm.pop());
+                *wide_err.lock().expect("error lock") = Some(TclError {
+                    msg,
+                    line: Some(payload),
+                });
+                vm.push(Value::Undef);
+                vm.request_halt();
                 return;
             }
             if id == ext_wide::CATCH {

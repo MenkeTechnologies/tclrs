@@ -1,6 +1,6 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00326   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 14 -> 4 lines in 3 round(s), 68/400 candidates checked
-# verdict: DIVERGENCE	message-compile-time	msg tclsh=1.5 tclrs=wrong # args: should be "p4 ?o1?"
+# verdict: PASS	failed alike	
 # tclsh: 9.0.4
 # tclrs: tclrs 0.3.0
 # tclsh-status: 1
@@ -8,7 +8,7 @@
 # tclsh-stderr: 1.5\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: wrong # args: should be "p4 ?o1?"\n    (file "target/fuzz/work/record/driven.tcl" line 24)\n
+# tclrs-stderr: 1.5\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

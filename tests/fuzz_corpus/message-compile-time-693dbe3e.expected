@@ -1,14 +1,14 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00364   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 26 -> 3 lines in 2 round(s), 31/400 candidates checked
-# verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=wrong # args: should be "set varName ?newValue?"
+# verdict: CRITICAL	hang	tclrs did not finish within the timeout
 # tclsh: 9.0.4
 # tclrs: tclrs 0.3.0
 # tclsh-status: 0
 # tclsh-stdout: \n\n\x1e
 # tclsh-stderr: 
-# tclrs-status: 1
+# tclrs-status: 142
 # tclrs-stdout: 
-# tclrs-stderr: wrong # args: should be "set varName ?newValue?"\n    (file "target/fuzz/work/record/driven.tcl" line 23)\n
+# tclrs-stderr: /private/tmp/claude-502/-Users-tommy-RustRoverProjects-MenkeTechnologiesMeta-tclrs/c1ba299d-b4a1-432f-aeba-38248e993760/deferral/scripts/fuzz/check_case.sh: line 50: 21469 Alarm clock: 14            perl -e 'alarm shift; exec @ARGV or die' "$@"\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

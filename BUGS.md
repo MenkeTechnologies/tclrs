@@ -316,32 +316,64 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   `Op::Extended` — every loop that counts with `incr` would lose its compiled
   trace, which is the one thing this frontend has that reaches native code.
   Deliberately not taken.
-- **Unreachable code is still compiled**, so a script tclsh runs to completion can
-  be refused outright: `if {0} {incr}` is `wrong # args`, `if {0} {puts [expr {1
-  +}]}` is `missing operand at _@_`, and `if {0} {nosuchcommand}` is
-  `invalid command name`, and a `switch` arm that is never selected is parsed too:
-  `switch -- x {*b {puts "a}}` is `missing "` where tclsh never looks inside the
-  braced body. The mechanism is documented (README [0x05], errors "at compile time
-  where the script's shape decides it"); this consequence is not.
+- **A parse error in unreachable code is still an error**, so a script tclsh
+  runs to completion can still be refused: `if {0} {puts [expr {1 +}]}` is
+  `missing operand at _@_`, and a `switch` arm that is never selected is parsed
+  too — `switch -- x {*b {puts "a}}` is `missing "` where tclsh never looks
+  inside the braced body.
 
-  **This is the largest single class by a wide margin: 105 of the 150 divergences
-  in the 400-program run (seed 1, depth 3) are it** — the harness names them
-  `…-compile-time`, decided by re-running the case under `--disasm`, so the count
-  is measured rather than read off the wording — because any dead branch a
-  generated program happens to contain takes the whole script down. The minimal
-  case is one line:
+  This is what is left of what was the largest divergence class by a wide
+  margin. The rest of it — an unknown command, a wrong argument count, an
+  unknown ensemble subcommand — is gone: those are raised where the command
+  stands rather than while the script is read, so `if {0} {incr}` and
+  `if {0} {nosuchcommand}` now run to completion and print nothing, as they do
+  in tclsh, and `catch {nosuchcommand}` answers 1 instead of taking the script
+  down (`Compiler::defer`, `src/compiler.rs`).
+
+  Measured on the 400-program run (seed 1, depth 3): **150 parity / 162
+  divergence before, 229 / 77 after**. The `wrong # args` group went from 83
+  cases to none and the ensemble-subcommand group from 19 to none. Runtime
+  divergences rose from 10 to 17 in the same run, which is the expected shape of
+  the change rather than a regression — those scripts now reach code the
+  compile-time refusal used to hide, so the differences they were always going
+  to have became visible.
+
+  **One of them is a hang, and it is the cost of this change.**
+  `tests/fuzz_corpus/message-compile-time-693dbe3e.tcl` is recorded `CRITICAL
+  hang`: it contains `catch {... while {$w13 < 1} {}}` over a variable that was
+  never set. tclsh raises `can't read "w13": no such variable` on the read, the
+  `catch` takes it, and the script ends; here an unset variable reads as the
+  empty string, `"" < 1` is true as a string comparison, and the loop never
+  ends. Reduced:
 
   ```tcl
-  if {0} {nosuchcommand}
+  catch {while {$w13 < 1} {}} m
+  puts "caught: $m"
   ```
 
-  tclsh runs that script to completion and prints nothing; tclrs refuses it with
-  `invalid command name "nosuchcommand"` before running anything. It is not a
-  patchable defect — resolving a command name while compiling is what makes a
-  call a `Op::Call` to a known sub instead of a runtime table lookup, and it is
-  the same mechanism behind the arity and `expr`-shape refusals above. Changing it
-  is an architectural decision about compile-time dispatch resolution, not a bug
-  fix, and it is left as it is.
+  Nothing about that is new — it is the unset-variable divergence at the top of
+  this section (allowlist A1), which every one of these scripts was always going
+  to reach. What changed is that the script now gets there: the compile-time
+  refusal used to stop it first. A refusal was masking a hang, which is the
+  worse of the two failures, and any further parity work will expose more of
+  them. The fix is A1, not a return to refusing early; it is recorded here
+  rather than papered over because a hang is the one verdict this project's
+  harness never suppresses.
+
+  The entry used to say this was not a patchable defect — that resolving a name
+  while compiling is what makes a call an `Op::Call` to a known sub, so fixing
+  it meant a runtime dispatch table. That reasoning was wrong in an instructive
+  way. Nothing about dispatch had to become dynamic: a command that *cannot*
+  work is lowered as code that raises its own error, and a command that can work
+  is lowered exactly as before. Static dispatch, the `Op::Call`, and the JIT and
+  ahead-of-time paths are all untouched — only the failing command changed shape.
+
+  What remains cannot take the same treatment. A parse error is a property of
+  the text rather than of control flow: there is no command to attach a deferred
+  failure to, because the failure is that the compiler cannot tell where the
+  command ends. Reaching tclsh's behaviour here means not parsing a body until
+  it runs, which is a real architectural change — and unlike the last one, it
+  would cost the compile-once-lower-once property this frontend exists for.
 - **Arbitrary-precision integers, seen from the fuzzer.** An integer beyond `i64`
   is refused with `integer value too large to represent` where tclsh promotes and
   answers exactly, so `expr {99999999999999999999 + 1}` is an error against

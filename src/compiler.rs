@@ -297,6 +297,47 @@ pub mod ext_wide {
     /// way carries none of these, so nothing is paid for a debugger that is not
     /// attached.
     pub const DBG_LINE: u16 = 1;
+
+    /// Raise the message on top of the stack as an error located at the script
+    /// line the payload carries.
+    ///
+    /// [`super::ext::ERROR`] raises the same message with no location, which is
+    /// what `error` and `return -code error` want: a script raising its own
+    /// error is not reporting a place in the source. A failure the compiler
+    /// found and deferred is — it knows the command's line, and reporting it is
+    /// what keeps `(file "…" line N)` on the diagnostics that used to be
+    /// refusals. See [`super::Compiler::defer`].
+    pub const ERROR_AT: u16 = 2;
+}
+
+/// Whether a failure is one the reference interpreter reports only when the
+/// command runs, rather than while the script is being read.
+///
+/// The three classes are named by the interpreter's own wording rather than by
+/// a guess at what a message means, and each is generated in this crate with
+/// exactly one meaning:
+///
+/// * `wrong # args:` — a command invoked with an argument count its signature
+///   does not admit. `Tcl_WrongNumArgs` is reached from a command's
+///   implementation, so tclsh cannot report it before the command is called.
+/// * `invalid command name ` — a name no command answers to. tclsh resolves a
+///   name at invocation, which is why a typo in a branch never taken is not an
+///   error there.
+/// * `unknown or ambiguous subcommand ` — the same, one level down, for an
+///   ensemble.
+///
+/// Everything else stays where it is. A parse error is a property of the text
+/// and cannot wait for control to arrive; `{*}`, the shape refusals in BUGS.md
+/// and the "not supported yet" refusals are decisions about what this compiler
+/// can lower at all, and deferring them would only move the same refusal later
+/// while giving up the earliest possible report.
+///
+/// These three wordings are Tcl's own and are pinned against tclsh by the
+/// differential suites, so they cannot drift here without a test noticing.
+fn defers_to_run_time(msg: &str) -> bool {
+    msg.starts_with("wrong # args:")
+        || msg.starts_with("invalid command name ")
+        || msg.starts_with("unknown or ambiguous subcommand ")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -469,6 +510,42 @@ impl Compiler {
 
     pub(crate) fn error<T>(&self, msg: impl Into<String>) -> Result<T, CompileError> {
         Err(self.err(msg))
+    }
+
+    /// Lower a command that cannot succeed as code that fails when it runs.
+    ///
+    /// Tcl resolves a command name and checks its argument count at the moment
+    /// the command is invoked, so a command that could never work costs a
+    /// script nothing until control reaches it: `if {0} {incr}` prints nothing
+    /// and exits 0, and `catch {nosuchcmd}` answers 1. Deciding either while
+    /// compiling took the whole script down instead, which is one class and 113
+    /// of the 162 cases the differential fuzzer reports.
+    ///
+    /// The arguments are evaluated and discarded before the error is raised,
+    /// because Tcl substitutes every word of a command *before* dispatching on
+    /// the first: `p [puts hi] extra` prints `hi` and then reports the argument
+    /// count. Evaluating them is also what keeps a nested failure nested — a
+    /// command substitution inside an argument lowers through this same path.
+    ///
+    /// Nothing here weakens a refusal. The message, its usage string and its
+    /// line are the handler's own; the only change is when it fires. A command
+    /// this frontend does not implement still refuses, loudly, on the line it
+    /// was written — it simply refuses when reached, as the unknown command it
+    /// is to a Tcl interpreter.
+    fn defer(&mut self, msg: &str, args: &[Word]) -> Result<(), CompileError> {
+        for arg in args {
+            self.word(arg)?;
+            self.emit(Op::Pop, -1);
+        }
+        self.push_str(msg);
+        // Located, not plain: the line is the one the refusal carried when this
+        // was decided while compiling, so a deferred failure still reports
+        // `(file "…" line N)` — and tclsh locates its runtime errors too.
+        self.emit(Op::ExtendedWide(ext_wide::ERROR_AT, self.command_line), -1);
+        // Control has left; the value keeps the depth arithmetic honest, the
+        // way `error` and `return` do.
+        self.push_empty();
+        Ok(())
     }
 
     /// A failure located where the reference interpreter locates one: at the
@@ -827,7 +904,31 @@ impl Compiler {
         let name = self.literal_of(first, "command name")?.to_string();
         let args = &cmd.words[1..];
 
-        match name.as_str() {
+        // A failure that the reference interpreter only reports when the
+        // command *runs* is lowered as code that raises it, so a command in a
+        // branch that is never taken costs the script nothing — `if {0} {incr}`
+        // prints nothing and exits 0 in tclsh, where refusing here took the
+        // whole script down. See [`Compiler::defer`].
+        //
+        // The handler is asked first and only its verdict is reinterpreted, so
+        // the wording, the usage string and the line all stay exactly what they
+        // were. `mark` guards the one thing that would corrupt the chunk: a
+        // handler that emitted ops before failing has no rollback, so its error
+        // stays where it is.
+        let mark = self.b.current_pos();
+        let depth = self.depth;
+        match self.dispatch(&name, args) {
+            Err(e) if defers_to_run_time(&e.msg) && self.b.current_pos() == mark => {
+                self.depth = depth;
+                self.defer(&e.msg, args)
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// Lower one command, given its name and arguments.
+    fn dispatch(&mut self, name: &str, args: &[Word]) -> Result<(), CompileError> {
+        match name {
             "set" => self.cmd_set(args),
             "eval" => self.cmd_eval(args),
             "puts" => self.cmd_puts(args),
@@ -838,7 +939,7 @@ impl Compiler {
             "for" => self.cmd_for(args),
             "foreach" => self.cmd_foreach(args),
             "switch" => self.cmd_switch(args),
-            "string" | "append" | "format" => self.cmd_string_family(&name, args),
+            "string" | "append" | "format" => self.cmd_string_family(name, args),
             "break" => self.cmd_loop_exit(args, true),
             "continue" => self.cmd_loop_exit(args, false),
             "proc" => self.cmd_proc(args),
@@ -853,7 +954,7 @@ impl Compiler {
             "yield" => self.cmd_yield(args),
             "yieldto" => self.cmd_yieldto(args),
             "info" => self.cmd_info(args),
-            "regexp" | "regsub" => crate::regexp::compile(self, &name, args),
+            "regexp" | "regsub" => crate::regexp::compile(self, name, args),
             // The command an inline `rust { ... }` block was rewritten into.
             name if name == crate::rust_ffi::COMPILE_COMMAND => self.cmd_rust_compile(args),
             // A coroutine's context command. Its name is refused to `proc`, so

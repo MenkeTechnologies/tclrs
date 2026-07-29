@@ -1,14 +1,14 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00363   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 17 -> 3 lines in 3 round(s), 77/400 candidates checked
-# verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=wrong # args: should be "p5 r1 ?o1? ?arg ...?"
+# verdict: ALLOWED	A1c-unset-variable-caught	m:can't read "s3": no such variable
 # tclsh: 9.0.4
 # tclrs: tclrs 0.3.0
 # tclsh-status: 0
 # tclsh-stdout: m:can't read "s3": no such variable\n\x1e
 # tclsh-stderr: 
-# tclrs-status: 1
-# tclrs-stdout: 
-# tclrs-stderr: wrong # args: should be "p5 r1 ?o1? ?arg ...?"\n    (file "target/fuzz/work/record/driven.tcl" line 23)\n
+# tclrs-status: 0
+# tclrs-stdout: m:?\n\x1e
+# tclrs-stderr: 
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

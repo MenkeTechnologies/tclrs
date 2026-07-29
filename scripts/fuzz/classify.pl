@@ -262,21 +262,13 @@ if (   $ref_status == $sub_status
     }
 }
 
-# A4 — tclrs resolves arity while compiling, so a call with the wrong number of
-# arguments fails before the script runs; tclsh reports it when the call is
-# reached. The message is the same, but tclsh has already printed whatever ran
-# before the bad call, and a `catch` around it can see the failure where tclrs's
-# cannot (README [0x05], BUGS.md). Narrow: tclrs's stdout must be a prefix of
-# tclsh's — anything else is a divergence in what ran, not in when it was
-# reported.
-if (   $sub_status == 1
-    && $smsg =~ /^wrong # args:/
-    && $rmsg eq $smsg
-    && length($sout) < length($rout)
-    && index($rout, $sout) == 0)
-{
-    verdict("ALLOWED", "A4-compile-time-arity", $smsg);
-}
+# A4 is gone. It excused tclrs reporting an argument count before the script
+# ran, where tclsh reports it when the call is reached; a wrong count is now
+# raised where the call stands (`Compiler::defer`), so the two engines print the
+# same thing in the same order and the cases this entry used to catch land in
+# PASS. Removed rather than kept at zero hits: an allowlist entry that no longer
+# describes the implementation can only mislead the next reader of this report,
+# and if the class ever comes back it should be counted as the divergence it is.
 
 # A5 — a tclrs error located while compiling carries a trailing ` (line N)` in
 # its message when the message is read through the library rather than printed

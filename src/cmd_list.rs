@@ -1467,14 +1467,24 @@ mod tests {
     use super::COMMANDS;
 
     /// [`COMMANDS`] is a second spelling of the match in [`super::compile`], and
-    /// the REPL completes from it. Compiling each listed name must therefore
-    /// reach a real command: a name the match does not know is reported as
-    /// `invalid command name`, and nothing else here is. Argument counts are not
-    /// the subject — a bare name may well be the wrong number of arguments.
+    /// the REPL completes from it. Running each listed name must therefore
+    /// reach a real command: a name the match does not know answers
+    /// `invalid command name`, and nothing else here does. Argument counts are
+    /// not the subject — a bare name may well be the wrong number of arguments.
+    ///
+    /// Asked of a *run* rather than of a compile, because an unknown name is
+    /// now what it is to the reference interpreter: an error raised when the
+    /// command is reached, not a refusal to read the script (see
+    /// `Compiler::defer`). Compiling alone would answer `Ok` for every string
+    /// and prove nothing.
     #[test]
-    fn every_listed_command_compiles() {
+    fn every_listed_command_runs_as_a_command() {
         for name in COMMANDS {
-            let err = crate::runtime::compile(name).err().unwrap_or_default();
+            let err = crate::Interp::capturing()
+                .eval(name)
+                .err()
+                .map(|e| e.msg)
+                .unwrap_or_default();
             assert!(
                 !err.contains("invalid command name"),
                 "{name} is listed but the compiler does not know it: {err}"
@@ -1485,10 +1495,22 @@ mod tests {
     /// The other half: a name that is not a command is still refused, so the
     /// test above is not passing because nothing is refused.
     #[test]
-    fn an_unlisted_name_is_refused() {
-        let err = crate::runtime::compile("lnotacommand")
+    fn an_unlisted_name_is_refused_when_it_runs() {
+        let err = crate::Interp::capturing()
+            .eval("lnotacommand")
             .err()
+            .map(|e| e.msg)
             .unwrap_or_default();
         assert!(err.contains("invalid command name"), "got {err:?}");
+    }
+
+    /// And the refusal waits for control to arrive, which is the whole point of
+    /// deferring it: tclsh runs this script to completion and so does this one.
+    #[test]
+    fn an_unlisted_name_in_a_branch_never_taken_is_not_an_error() {
+        let outcome = crate::Interp::capturing()
+            .eval("if {0} {lnotacommand}\nset x done")
+            .expect("a branch never taken cannot fail");
+        assert_eq!(outcome, "done");
     }
 }

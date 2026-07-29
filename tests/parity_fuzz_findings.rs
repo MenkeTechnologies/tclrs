@@ -183,23 +183,38 @@ fn deviation_unset_variable_reads_as_empty() {
     );
 }
 
-/// A4: arity is resolved while compiling, so nothing runs at all — where tclsh
-/// reaches the call, having already run everything before it.
+/// A4, **fixed**: an argument count is checked when the call is reached, so
+/// everything before it has already run — which is where tclsh checks it.
+///
+/// This was the largest divergence class the fuzzer reported. Arity was
+/// resolved while compiling, so a script with one bad call anywhere produced no
+/// output at all; now the call fails where it stands (`Compiler::defer`).
 #[test]
-fn deviation_arity_is_reported_before_anything_runs() {
+fn arity_is_reported_where_the_call_is_reached() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    let program = "proc f {} {puts body}\nf\nf 1\n";
-    diverges(
+    agrees(
         &tclsh,
-        program,
+        "proc f {} {puts body}\nf\nf 1\n",
         Observed {
             stdout: "body\n".to_string(),
             error: "wrong # args: should be \"f\"".to_string(),
         },
-        err("wrong # args: should be \"f\""),
+    );
+    // The other half of the same rule: a call that is never reached is not an
+    // error at all, in either engine.
+    agrees(
+        &tclsh,
+        "proc f {} {}\nif {0} {f 1 2 3}\nputs done\n",
+        out("done\n"),
+    );
+    // And an unknown command follows the same rule, at the same moment.
+    agrees(
+        &tclsh,
+        "if {0} {nosuchcommand}\nputs [catch {nosuchcommand} m]\nputs $m\n",
+        out("1\ninvalid command name \"nosuchcommand\"\n"),
     );
 }
 
@@ -753,37 +768,34 @@ fn an_unusable_character_in_an_expression_is_named_as_a_character() {
     }
 }
 
-/// tclrs lowers a whole script before running any of it, so a compile-time error
-/// inside code that never executes stops a script tclsh runs to completion. The
-/// mechanism is documented (README [0x05]: "at compile time where the script's
-/// shape decides it"); this consequence — a working script refused — is not.
+/// tclrs lowers a whole script before running any of it, so a *parse* error
+/// inside code that never executes still stops a script tclsh runs to
+/// completion — the text has to be read before anything can run.
+///
+/// The rest of this finding is fixed: an argument count and a command name are
+/// resolved when the command is reached, as tclsh resolves them, so the two
+/// engines now agree on the first three cases this test used to record.
 #[test]
-fn bug_unreachable_code_is_still_compiled() {
+fn unreachable_code_is_compiled_but_only_parse_errors_survive_it() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    // An arity error in a branch that is never taken.
-    diverges(
-        &tclsh,
-        "if {0} {incr}\nputs reached",
-        out("reached\n"),
-        err("wrong # args: should be \"incr varName ?increment?\""),
-    );
+    // An arity error in a branch that is never taken — fixed.
+    agrees(&tclsh, "if {0} {incr}\nputs reached", out("reached\n"));
+    // A command that does not exist, in a branch that is never taken — fixed.
+    // tclsh resolves command names when it reaches them, and so does this now.
+    agrees(&tclsh, "if {0} {nosuchcommand}\nputs reached", out("reached\n"));
+    // An unknown ensemble subcommand, the same — fixed.
+    agrees(&tclsh, "if {0} {string bogus x}\nputs reached", out("reached\n"));
     // An expression that cannot be parsed, in a branch that is never taken.
+    // Still refused: there is no command to hang a deferred failure on when the
+    // failure is that the text cannot be read.
     diverges(
         &tclsh,
         "if {0} {puts [expr {1 +}]}\nputs reached",
         out("reached\n"),
         err("missing operand at _@_"),
-    );
-    // A command that does not exist, in a branch that is never taken. tclsh
-    // resolves command names when it reaches them.
-    diverges(
-        &tclsh,
-        "if {0} {nosuchcommand}\nputs reached",
-        out("reached\n"),
-        err("invalid command name \"nosuchcommand\""),
     );
     // A `switch` arm that is never selected. Its body is a braced word, so
     // nothing in it is even parsed until tclsh picks the arm — this is the
