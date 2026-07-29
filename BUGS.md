@@ -404,10 +404,10 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   compile-time refusal used to hide, so the differences they were always going
   to have became visible.
 
-  **One of them is a hang, and it is the cost of this change.**
-  `tests/fuzz_corpus/message-compile-time-693dbe3e.tcl` is recorded `CRITICAL
-  hang`: it contains `catch {... while {$w13 < 1} {}}` over a variable that was
-  never set. tclsh raises `can't read "w13": no such variable` on the read, the
+  **One of them was a hang, and it is now fixed** — see the strict-undef entry
+  below. `tests/fuzz_corpus/message-compile-time-693dbe3e.tcl` was recorded
+  `CRITICAL hang`: it contains `catch {... while {$w13 < 1} {}}` over a variable
+  that was never set. tclsh raises `can't read "w13": no such variable` on the read, the
   `catch` takes it, and the script ends; here an unset variable reads as the
   empty string, `"" < 1` is true as a string comparison, and the loop never
   ends. Reduced:
@@ -426,7 +426,7 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   rather than papered over because a hang is the one verdict this project's
   harness never suppresses.
 
-  **What A1 would actually take, measured rather than guessed.** The value model
+  **What A1 took, now that it is done.** The value model
   already tells absence from emptiness: an unset variable reaches a hook as
   `Value::Undef`, and no assignment can produce one — `set x ""` stores
   `Value::Str("")`. The information is there; what is missing is a *read* that
@@ -438,8 +438,26 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   coercing silently. The equivalent for variables — a strict-undef mode in which
   `GetVar` and `GetSlot` raise through a host callback, with the name index the
   VM already carries — leaves the op native and JIT-eligible while letting this
-  frontend supply `can't read "x": no such variable`. That is a fusevm change,
-  and it closes the divergence class and the hang together.
+  frontend supply `can't read "x": no such variable`. That was a fusevm change,
+  and it closed the divergence class and the hang together: fusevm 0.16.0's
+  `VM::set_undef_hook`, wired in `runtime::Hooks::install`.
+
+  Two details the wiring settled. The hook is told the read's **chunk and op
+  index**, because `incr x` on a variable that does not exist creates it at zero
+  where `$x` refuses, and both lower to the same read op on the same name — only
+  the site separates them. The pair is needed rather than the index alone: a
+  nested `eval` is a chunk of its own whose indices start at zero again, and
+  `Chunk::op_hash` will not do as the key because it ignores the name pool by
+  design (it keys the JIT's native-code cache, where a name is only an index).
+  And the array guards, `dict set` and the scalar guards now read through their
+  place operand rather than a bare `GetVar`, because a refusing read would fire
+  before the guard could answer — `set b 5` emits its guard *before* the
+  assignment, so every first assignment to a name used as an array would refuse.
+
+  **What is left**: a procedure-local read. A frame slot carries no name — the
+  chunk addresses it by index — so `proc p {} {puts $x}` still reads empty
+  rather than naming `x`. It is the one case the fuzzer's `A1c` entry still
+  excuses. Closing it needs a chunk to carry slot names.
 
   The entry used to say this was not a patchable defect — that resolving a name
   while compiling is what makes a call an `Op::Call` to a known sub, so fixing
@@ -714,7 +732,8 @@ Each of these was a divergence in the run above and is now parity, pinned in
 
 The five divergences the fuzzer's report allowlists rather than counting are the
 documented ones, and each is pinned in `tests/parity_fuzz_findings.rs` too, so an
-entry cannot outlive the behavior it excuses: an unset variable reading as `""`,
+entry cannot outlive the behavior it excuses: an unset *procedure-local* reading
+as `""` — a frame slot has no name to report, and the global case is fixed —
 an unterminated brace located where the input ran out, `array names` / `array
 get` sorted where tclsh hashes (order is unspecified in `array(n)`), arity
 refused before anything runs, and a message carrying ` (line N)` through the

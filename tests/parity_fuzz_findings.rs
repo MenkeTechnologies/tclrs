@@ -158,28 +158,72 @@ fn agrees(tclsh: &PathBuf, program: &str, expected: Observed) {
 
 // ── deviations the harness allowlists ───────────────────────────────────────
 
-/// A1: reading a variable that was never set. tclrs collapses no-such-variable,
-/// unset element and empty into one `Undef` (`src/assoc.rs`), so the read
-/// succeeds with the empty string where tclsh raises an error.
+/// A1, **fixed**: reading a variable that was never set raises tclsh's error.
+///
+/// tclrs collapsed no-such-variable and empty into one `Undef`, so the read
+/// succeeded with the empty string. It was the longest-standing divergence, and
+/// it was also the only way the differential fuzzer ever produced a hang:
+/// `catch {while {$w13 < 1} {}} m` never terminates when `"" < 1` is a true
+/// string comparison, where tclsh's error ends the loop through the `catch`.
+///
+/// The check is fusevm's (`VM::set_undef_hook`, 0.16.0) rather than a frontend
+/// op, because a counted loop reads its counter every iteration and an
+/// extension op there would cost the loop its JIT trace. fusevm hands the hook
+/// the read's chunk and op index, which is what separates `$x` — an error —
+/// from `incr x`, which Tcl initialises to zero: both are the same read op on
+/// the same name.
 #[test]
-fn deviation_unset_variable_reads_as_empty() {
+fn an_unset_variable_read_is_an_error() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
+    agrees(
         &tclsh,
         "puts <$nosuchvar>",
         err("can't read \"nosuchvar\": no such variable"),
-        out("<>\n"),
     );
-    // Through `catch`, the same deviation is visible without either engine
-    // failing: tclsh's catch has a message to report and tclrs's has none.
-    diverges(
+    // Through `catch`, both engines now have the same message to report.
+    agrees(
         &tclsh,
         "catch {set x $nosuchvar} m\nputs [string length $m]",
         out("40\n"),
-        out("0\n"),
+    );
+    // The loop that used to hang terminates, because the read ends it.
+    agrees(
+        &tclsh,
+        "catch {while {$w13 < 1} {}} m\nputs $m",
+        out("can't read \"w13\": no such variable\n"),
+    );
+}
+
+/// The other half of that rule: `incr` on a variable that does not exist
+/// creates it, and says so *after* a nested script has been compiled.
+///
+/// The tolerant sites are keyed by the chunk they belong to as well as their op
+/// index. Keyed by index alone — or by `Chunk::op_hash`, which ignores the name
+/// pool because it keys the JIT's native-code cache — an `eval` would answer
+/// for the wrong script and this `incr` would refuse instead of initialising.
+#[test]
+fn incr_creates_a_variable_that_does_not_exist() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(&tclsh, "incr fresh\nputs $fresh", out("1\n"));
+    agrees(&tclsh, "incr fresh 5\nputs $fresh", out("5\n"));
+    // A nested script is a chunk of its own, whose op indices start at zero
+    // again; the read below is a different site in a different chunk.
+    agrees(
+        &tclsh,
+        "eval {set q 1}\nincr counter\nputs $counter",
+        out("1\n"),
+    );
+    // And the refusing read still refuses in the same script.
+    agrees(
+        &tclsh,
+        "incr n\ncatch {puts $absent} m\nputs \"$n $m\"",
+        out("1 can't read \"absent\": no such variable\n"),
     );
 }
 

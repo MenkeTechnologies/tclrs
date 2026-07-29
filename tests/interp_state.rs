@@ -263,6 +263,10 @@ fn interpreters_do_not_share_state() {
 fn the_one_shot_eval_is_still_one_shot() {
     assert_eq!(tclrs::eval("set x 5").unwrap().result, "5");
     assert_eq!(tclrs::eval("puts hi").unwrap().output, "hi\n");
-    // No state from the call before.
-    assert_eq!(tclrs::eval("set y $x").unwrap().result, "");
+    // No state from the call before: `x` is not merely empty in the fresh
+    // interpreter, it is absent, and reading it says so.
+    assert_eq!(
+        tclrs::eval("set y $x").unwrap_err(),
+        "can't read \"x\": no such variable"
+    );
 }

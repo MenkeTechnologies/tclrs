@@ -375,10 +375,12 @@ pub fn compile_debug(script: &Script) -> Result<fusevm::Chunk, CompileError> {
 
 fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
     let first = Compiler::run(script, ArrayNames::new(), debug)?;
-    let mut chunk = if first.seen_arrays.is_empty() {
-        first.b.build()
+    let (mut chunk, tolerant) = if first.seen_arrays.is_empty() {
+        (first.b.build(), first.tolerant_reads)
     } else {
-        Compiler::run(script, first.seen_arrays, debug)?.b.build()
+        let second = Compiler::run(script, first.seen_arrays, debug)?;
+        let reads = second.tolerant_reads.clone();
+        (second.b.build(), reads)
     };
     // Tcl's integers are arbitrary-precision, and so are this frontend's: an
     // `i64` that overflows promotes, in the numeric hook. Native codegen would
@@ -388,6 +390,7 @@ fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
     // compiler print -9223372036854775808 where the interpreter answers
     // 9223372036854775808.
     chunk.int_overflow_deopt = true;
+    crate::runtime::note_tolerant_reads(&chunk, &tolerant);
     Ok(chunk)
 }
 
@@ -437,6 +440,14 @@ pub(crate) enum Place {
 
 pub(crate) struct Compiler {
     pub(crate) b: ChunkBuilder,
+    /// Op indices of variable reads that must tolerate an unset variable.
+    ///
+    /// `incr x` on a variable that does not exist creates it at zero, where
+    /// `$x` refuses; both lower to the same read op on the same name, so the
+    /// site is the only thing that separates them. `lower` pairs these with the
+    /// chunk they belong to and [`crate::runtime`] answers fusevm's undef hook
+    /// from that set.
+    pub(crate) tolerant_reads: Vec<usize>,
     pub(crate) depth: usize,
     pub(crate) loops: Vec<LoopCtx>,
     /// The line of the command being lowered, recorded against every op it
@@ -502,6 +513,7 @@ impl Compiler {
     fn run(script: &Script, arrays: ArrayNames, debug: bool) -> Result<Compiler, CompileError> {
         let mut c = Compiler {
             b: ChunkBuilder::new(),
+            tolerant_reads: Vec::new(),
             depth: 0,
             loops: Vec::new(),
             line: 1,
@@ -1164,7 +1176,16 @@ impl Compiler {
             Target::Scalar(name) => name,
             Target::Elem { name, index } => return self.elem_incr(&name, &index, by),
         };
+        // `incr` on a variable that does not exist creates it at zero, so this
+        // read tolerates absence where `$x` refuses it. Recorded by site,
+        // because the two are the same op on the same name; a guarded read
+        // emits more than one op and owns its own diagnostic, so only the bare
+        // single-op read is marked.
+        let read_at = self.b.current_pos();
         self.scalar_get(&name);
+        if self.b.current_pos() == read_at + 1 {
+            self.tolerant_reads.push(read_at);
+        }
         match by {
             Some(w) => self.word(w)?,
             None => {

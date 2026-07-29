@@ -471,6 +471,33 @@ impl Hooks {
         let sink = self.output.clone();
         vm.set_output_sink(Box::new(move |s: &str| sink.write(s)));
         vm.set_numeric_hook(Arc::new(numeric));
+        // Reading a variable that was never assigned is an error in Tcl, not
+        // the empty string. fusevm calls this for every variable read that
+        // finds `Undef` (`VM::set_undef_hook`); answering here rather than
+        // through a frontend op is what keeps the read a native op, and a
+        // counted loop traced — an extension op in a loop body costs that loop
+        // its JIT trace.
+        vm.set_undef_hook(Arc::new(|read: fusevm::UndefRead<'_>| {
+            if tolerates_undef(read.chunk, read.ip) {
+                // `incr x` on a variable that does not exist creates it at
+                // zero. It is the same read op on the same name as `$x`, so
+                // only the site tells them apart.
+                return Ok(Value::Undef);
+            }
+            match read.name {
+                // The compiler generates hidden globals for its own loop
+                // state, named so that no script can spell them. One reaching
+                // here is not a script's variable and must not be reported as
+                // one.
+                Some(name) if !name.starts_with('\u{0}') => {
+                    Err(format!("can't read \"{name}\": no such variable"))
+                }
+                // A frame slot carries no name — the chunk addresses it by
+                // index — so a procedure's local keeps the old reading until a
+                // chunk carries slot names. `Undef` is exactly that reading.
+                _ => Ok(Value::Undef),
+            }
+        }));
 
         let err_cell = Arc::clone(&self.error);
         let open = Arc::clone(&self.catches);
@@ -2088,6 +2115,59 @@ pub(crate) fn place_at(operand: &Value, slot_form: bool) -> Result<Place, String
         }),
         other => Err(format!("not a variable place: {other:?}")),
     }
+}
+
+/// The reads a lowering marked as tolerating an unset variable, keyed by the
+/// chunk they belong to.
+///
+/// An op index alone does not identify a read: `eval` compiles a chunk of its
+/// own whose indices start at zero again, so a set keyed by index would answer
+/// for the wrong script — `eval {...}` followed by `incr counter` on an unset
+/// counter would refuse where Tcl initialises. The key is fusevm's own
+/// [`fusevm::UndefRead::chunk`] identity, and entries accumulate rather than
+/// replacing, because a cached chunk can be run long after a later one was
+/// lowered.
+static TOLERANT_READS: Mutex<Option<HashSet<(u64, usize)>>> = Mutex::new(None);
+
+/// fusevm's identity for a chunk: its ops **and** its names.
+///
+/// Deliberately not `Chunk::op_hash`, which ignores the name pool because it
+/// keys the JIT's native-code cache, where a name is only an index. `incr x`
+/// and `set y [expr {$z + 1}]` lower to the same op vector and disagree about
+/// which read tolerates an unset variable, so a key that ignored names would
+/// merge exactly the two this set exists to separate.
+///
+/// This must agree with `VM::chunk_identity`; the tests below run a script
+/// through both sides, so a drift in either shows up as a refusal where Tcl
+/// initialises rather than as a silent mismatch.
+fn chunk_identity(chunk: &fusevm::Chunk) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    chunk.op_hash.hash(&mut h);
+    chunk.names.hash(&mut h);
+    h.finish() | 1
+}
+
+/// Record which of `chunk`'s reads tolerate an unset variable.
+pub(crate) fn note_tolerant_reads(chunk: &fusevm::Chunk, ips: &[usize]) {
+    if ips.is_empty() {
+        return;
+    }
+    let id = chunk_identity(chunk);
+    let mut guard = TOLERANT_READS.lock().expect("tolerant reads lock");
+    let set = guard.get_or_insert_with(HashSet::new);
+    for &ip in ips {
+        set.insert((id, ip));
+    }
+}
+
+/// Whether the read at `ip` in the chunk `id` was lowered as a tolerant one.
+fn tolerates_undef(id: u64, ip: usize) -> bool {
+    TOLERANT_READS
+        .lock()
+        .expect("tolerant reads lock")
+        .as_ref()
+        .is_some_and(|set| set.contains(&(id, ip)))
 }
 
 /// A value's Tcl string form, borrowed when the value already carries one.

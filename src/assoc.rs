@@ -611,6 +611,15 @@ impl Compiler {
     /// half cannot collide with a name index, which is unsigned.
     fn array_place(&mut self, name: &str) -> i64 {
         self.note_array(name);
+        self.var_place_operand(name)
+    }
+
+    /// The same encoding, without recording the name as an array.
+    ///
+    /// `dict set` and the scalar guards need a variable's place to read it
+    /// without refusing an unset one, and neither makes the name an array —
+    /// noting it would make every other mention of it emit a guard.
+    fn var_place_operand(&mut self, name: &str) -> i64 {
         match self.var_place(name) {
             Place::Global(idx) => i64::from(idx),
             Place::Slot(slot) => -i64::from(slot) - 1,
@@ -630,8 +639,15 @@ impl Compiler {
             self.emit_get_var(name);
             return;
         }
+        // The guard reads through the op's own place operand rather than
+        // `emit_get_var`: a `GetVar` of a variable that was never set is
+        // refused by strict-undef mode before the guard can answer, and the
+        // guard owns two answers a bare read cannot give — `variable is array`,
+        // and, for a name the script also uses as an array, the unset
+        // diagnostic itself.
+        let place = self.var_place_operand(name);
         self.push_str(name);
-        self.emit_get_var(name);
+        self.emit(Op::LoadInt(place), 1);
         self.emit(Op::Extended(ext::SCALAR, 0), -1);
     }
 
@@ -640,8 +656,12 @@ impl Compiler {
         if !self.is_array(name) {
             return;
         }
+        // Same place operand, and for the same reason twice over: `set b 5`
+        // emits this guard *before* the assignment, so a refusing read here
+        // would refuse every first assignment to a name used as an array.
+        let place = self.var_place_operand(name);
         self.push_str(name);
-        self.emit_get_var(name);
+        self.emit(Op::LoadInt(place), 1);
         self.emit(Op::Extended(ext::SCALAR, 1), -2);
     }
 
@@ -929,7 +949,12 @@ impl Compiler {
                     return self.error("dict set into an array element is not supported yet");
                 };
                 self.push_str(&name);
-                self.emit_get_var(&name);
+                // `dict set` creates the variable when it does not exist, so
+                // its read of the current value must tolerate absence where a
+                // bare `$d` refuses it. The place operand reads without
+                // refusing, and reaches a frame slot as well as a global.
+                let place = self.var_place_operand(&name);
+                self.emit(Op::LoadInt(place), 1);
                 for key in keys {
                     self.word(key)?;
                 }
@@ -1189,13 +1214,21 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             }
         }
         ext::SCALAR => {
-            let value = vm.pop();
+            let place = place_of(vm);
             let name = pop_str(vm);
+            let value = peek(vm, place).cloned().unwrap_or(Value::Undef);
             if matches!(value, Value::Hash(_)) {
                 let verb = if arg == 1 { "set" } else { "read" };
                 return Err(format!("can't {verb} \"{name}\": variable is array"));
             }
             if arg != 1 {
+                // The read half owns the unset diagnostic for these names,
+                // because the guard replaced the `GetVar` that would have
+                // raised it. `arg == 1` is the assignment guard, where an unset
+                // variable is exactly what is about to be created.
+                if matches!(value, Value::Undef) {
+                    return Err(format!("can't read \"{name}\": no such variable"));
+                }
                 vm.push(value);
             }
             Ok(())
@@ -1396,7 +1429,8 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let mut args = pop_args(vm);
             let value = args.pop().expect("value operand");
             let keys = args;
-            let current = vm.pop();
+            let place = place_of(vm);
+            let current = peek(vm, place).cloned().unwrap_or(Value::Undef);
             let name = pop_str(vm);
             if matches!(current, Value::Hash(_)) {
                 return Err(format!("can't set \"{name}\": variable is array"));
