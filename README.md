@@ -463,7 +463,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `dict` subcommands outside the implemented set; `dict set` into an array element | `dict append is not supported yet` |
 | `string` subcommands outside the implemented set; `string is -failindex` | `"string wordend" is not supported yet` |
 | `format` conversions outside the implemented set | `the "%n" conversion is not supported yet` |
-| `lsearch -regexp` / `-sorted` / `-dictionary` / `-nocase` / `-index` / `-stride` / `-subindices` / `-bisect`; `lsort -command` / `-dictionary` / `-index` / `-nocase` / `-stride` | `lsearch -regexp is not supported yet` |
+| `lsearch -regexp` / `-sorted` / `-dictionary` / `-nocase` / `-index` / `-stride` / `-subindices` / `-bisect`; `lsort -command` / `-dictionary` / `-index` / `-nocase` / `-stride`. `-increasing` and `-decreasing` *are* taken: they only describe the order `-sorted` and `-bisect` search in, so the two that read it name it — `lsearch -sorted -increasing is not supported yet` | `lsearch -regexp is not supported yet` |
 | `proc` anywhere but a script's top level; redefining a built-in; redefining a procedure; a procedure and a coroutine of the same name | `"proc" is only supported at the top level of a script` |
 | `return` outside a procedure; `return` or `break` or `continue` out of a `catch` script; `return -code` other than `ok` or `error`; `return`'s other options | `"return" outside of a procedure is not supported` |
 | `catch`'s third (options-variable) argument; `error`'s `info` and `code` arguments | `… the options variable is not supported` |
@@ -975,8 +975,8 @@ The differential suites test what tclrs claims to do. `conformance/` measures th
 opposite: how much of *real Tcl* it does, by running the Tcl project's own test
 suite against it.
 
-**2158 of 5066 attempted cases pass — 42.6%.** Over every case the suite
-contains, including the ones that cannot be run here, that is 2158 of 69424.
+**2248 of 5066 attempted cases pass — 44.4%.** Over every case the suite
+contains, including the ones that cannot be run here, that is 2248 of 69424.
 [`conformance/REPORT.md`](conformance/REPORT.md) has the breakdown behind the
 number: attempted, passed, failed and skipped per suite file, why each skipped
 case could not be run, and the failure causes ranked.
@@ -1002,7 +1002,7 @@ regression. The previous report — taken before `proc`, the `string` ensemble,
 coroutines and `eval` landed — passed 1404 of 2941. Those commands existing is
 what moved 2,125 cases out of the skip column and into the attempted one, and a
 case that was previously skipped for a missing `proc` is now attempted against
-everything *else* it uses. Passes went 1404 → 2158; the denominator went 2941 →
+everything *else* it uses. Passes went 1404 → 2248; the denominator went 2941 →
 5066 faster. A number that only ever rises is a number measuring the wrong
 thing.
 
