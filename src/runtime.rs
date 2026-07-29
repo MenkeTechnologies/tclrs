@@ -1256,10 +1256,15 @@ fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
     if cmp {
         let ordering = match (approx_num(a), approx_num(b)) {
             (Some(Num::Int(i)), Some(Num::Int(j))) => i.cmp(&j),
-            (Some(p), Some(q)) => p
-                .as_f64()
-                .partial_cmp(&q.as_f64())
-                .unwrap_or(std::cmp::Ordering::Greater),
+            (Some(p), Some(q)) => match p.as_f64().partial_cmp(&q.as_f64()) {
+                Some(ordering) => ordering,
+                // A NaN operand has no ordering at all, and IEEE 754 is what
+                // Tcl follows here: every ordered comparison against one is
+                // false, and `!=` is the single one that is true. No `Ordering`
+                // can express that — calling it `Greater` made `nan > 1` and
+                // `nan >= 1` answer 1 where tclsh answers 0 — so answer here.
+                None => return Ok(Value::Int(matches!(op, NumOp::Ne) as i64)),
+            },
             _ => a.as_str_cow().cmp(&b.as_str_cow()),
         };
         let truth = match op {

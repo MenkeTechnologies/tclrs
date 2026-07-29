@@ -1128,6 +1128,22 @@ impl Compiler {
         // the text that spelt it. `yields_number` is the same static test the
         // boolean conversion uses, and it is false only where no arithmetic
         // happened.
+        // tclsh will not answer with a NaN: `expr {nan}` is `domain error:
+        // argument not in valid range`, the same message a *computed* NaN gets
+        // from the arithmetic that produced it. A literal is the one spelling
+        // that reaches the result without passing through an operation, so it
+        // is the one the operations cannot catch.
+        //
+        // Raised when the expression runs rather than while it is read, because
+        // a command inside a branch that never executes is not an error in
+        // tclsh — the same rule the deferred failures follow.
+        if matches!(&parsed, Expr::Float(v, _) if v.is_nan()) {
+            self.push_str("domain error: argument not in valid range");
+            self.emit(Op::Extended(ext::ERROR, 0), -1);
+            // Control has left; the value keeps the depth arithmetic honest.
+            self.push_empty();
+            return Ok(());
+        }
         self.expr(&parsed)?;
         if !Self::yields_number(&parsed) {
             self.emit(Op::Extended(ext::CANON, 0), 0);
@@ -1541,10 +1557,38 @@ impl Compiler {
     /// loop's test is, already produces a number and keeps the loop traceable.
     pub(crate) fn condition(&mut self, e: &Expr) -> Result<(), CompileError> {
         self.expr(e)?;
-        if !Self::yields_number(e) {
+        if !Self::yields_number(e) || Self::can_be_nan(e) {
             self.emit(Op::Extended(ext::BOOL, 0), 0);
         }
         Ok(())
+    }
+
+    /// Whether this expression's value could be a NaN, which a condition has to
+    /// refuse — `if {nan}` is `floating point value is Not a Number` in tclsh,
+    /// not a taken branch.
+    ///
+    /// The VM's own truthiness has no opinion about NaN, so the check lives in
+    /// [`ext::BOOL`], and an extension op in a loop's test would cost that loop
+    /// its JIT trace. This is what keeps it off the loops that matter: an
+    /// expression that yields an *integer* cannot be a NaN, and a counted
+    /// loop's test is a comparison, which does. `while {$i < $n}` is therefore
+    /// untouched, while `if {nan}` and `expr {nan ? 1 : 2}` reach the check.
+    fn can_be_nan(e: &Expr) -> bool {
+        if Self::yields_integer(e) {
+            return false;
+        }
+        match e {
+            // A double literal is a NaN only if it is spelled as one; `1.5` and
+            // `inf` are ordinary values.
+            Expr::Float(v, _) => v.is_nan(),
+            // Sign does not make a NaN, and does not unmake one.
+            Expr::Unary(UnOp::Plus | UnOp::Neg, operand) => Self::can_be_nan(operand),
+            Expr::Ternary(_, then, other) => Self::can_be_nan(then) || Self::can_be_nan(other),
+            // Arithmetic can reach `inf - inf` from operands that are not NaN
+            // themselves, a substituted operand could be anything, and a math
+            // function could answer with one.
+            _ => true,
+        }
     }
 
     /// Whether this expression's value is necessarily a number, whatever the
@@ -1726,8 +1770,15 @@ impl Compiler {
             // `!` wants a number or a boolean word, so a numeric operand is
             // `Op::LogNot` — whose truthiness agrees with Tcl's on every number
             // — and anything that could be a string goes through `ext::BOOL`.
-            Expr::Unary(UnOp::Not, operand) if !Self::yields_number(operand) => {
-                self.expr(operand)?;
+            Expr::Unary(UnOp::Not, operand)
+                if !Self::yields_number(operand) || Self::can_be_nan(operand) =>
+            {
+                // `numeric_operand` rather than `expr`: `!` refuses a NaN by
+                // naming it, and tclsh names an operand by what the script
+                // wrote — `!nan` says `"nan"`, not the `NaN` the number prints
+                // as. A literal the formatter reproduces exactly is unaffected
+                // and stays a native `LoadFloat`.
+                self.numeric_operand(operand)?;
                 self.emit(Op::Extended(ext::BOOL, 1), 0);
                 Ok(())
             }
@@ -1745,7 +1796,11 @@ impl Compiler {
                 Ok(())
             }
             Expr::Unary(op, operand) => {
-                self.expr(operand)?;
+                // Sign refuses a NaN by naming the operand the script wrote —
+                // `expr {-nan}` is `cannot use non-numeric floating-point value
+                // "nan" as operand of "-"` — so the operand carries its
+                // spelling for the same reason an arithmetic one does.
+                self.numeric_operand(operand)?;
                 match op {
                     UnOp::Neg => self.emit(Op::Negate, 0),
                     UnOp::Plus => 0, // identity, but still requires a number

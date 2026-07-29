@@ -316,6 +316,18 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   `Op::Extended` — every loop that counts with `incr` would lose its compiled
   trace, which is the one thing this frontend has that reaches native code.
   Deliberately not taken.
+
+  Re-verified rather than assumed, and the mechanism is worth writing down:
+  `incr i` lowers to `GetVar / LoadInt(1) / Add` — *the same ops* as
+  `expr {$i + 1}` — and the message comes from the numeric hook, whose signature
+  is `(NumOp, &Value, &Value)`. The hook sees `NumOp::Add` and the operands and
+  cannot see which construct emitted them, so the two cannot be told apart at
+  the point the message is made. The distinguishing op would be `Op::Inc`, which
+  fusevm's `is_block_eligible_op_at` refuses under strict numeric mode — the
+  mode a numeric hook turns on — so using it would cost `counted_loop` its
+  trace. Closing this needs the hook to carry the construct, which is a fusevm
+  change, not a frontend one. `expr {$x + 1}` on the same value already matches
+  tclsh exactly; only `incr`'s own wording differs.
 - **Unreachable code costs a script nothing** — the whole class is closed. Both
   halves of it: a command that cannot work raises where it stands, and a body
   whose own text will not parse is lowered *as* that failure, so it raises only
@@ -370,6 +382,21 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   them. The fix is A1, not a return to refusing early; it is recorded here
   rather than papered over because a hang is the one verdict this project's
   harness never suppresses.
+
+  **What A1 would actually take, measured rather than guessed.** The value model
+  already tells absence from emptiness: an unset variable reaches a hook as
+  `Value::Undef`, and no assignment can produce one — `set x ""` stores
+  `Value::Str("")`. The information is there; what is missing is a *read* that
+  refuses. Putting that check in the frontend means an extension op at every
+  variable read, and a counted loop reads its counter every iteration, so every
+  traced loop in the language would lose its trace — the same wall the `incr`
+  wording hits. The shape that works is fusevm's own: it already has a strict
+  *numeric* mode, where the VM's arithmetic defers to a host hook instead of
+  coercing silently. The equivalent for variables — a strict-undef mode in which
+  `GetVar` and `GetSlot` raise through a host callback, with the name index the
+  VM already carries — leaves the op native and JIT-eligible while letting this
+  frontend supply `can't read "x": no such variable`. That is a fusevm change,
+  and it closes the divergence class and the hang together.
 
   The entry used to say this was not a patchable defect — that resolving a name
   while compiling is what makes a call an `Op::Call` to a known sub, so fixing
@@ -541,6 +568,26 @@ tclsh, with the seed and case number of the divergence it was reduced from.
 Each of these was a divergence in the run above and is now parity, pinned in
 `tests/parity_fuzz_findings.rs` against a live tclsh:
 
+- **A NaN compares as IEEE says it does.** `expr {nan > 1}` and `expr {nan >= 1}`
+  answered 1 where tclsh answers 0: the numeric hook ordered its operands with
+  `partial_cmp` and called the `None` a NaN produces `Ordering::Greater`. Every
+  ordered comparison against a NaN is false and `!=` is the one that is true, so
+  the hook answers that directly instead of inventing an ordering.
+- **A NaN is refused where it is asked to be a boolean.** `if {nan} {…}`,
+  `expr {nan && 1}` and `expr {nan ? 1 : 2}` took the true branch; tclsh says
+  `floating point value is Not a Number`. The check already existed in
+  `ext::BOOL` — nothing reached it, because a condition skips that op when its
+  value is statically a number. `Compiler::can_be_nan` narrows that: an
+  expression that yields an *integer* cannot be a NaN, and a counted loop's test
+  is a comparison, which does — so `while {$i < $n}` still carries no extension
+  op and keeps its trace, while a float-valued condition reaches the check.
+  `expr {!nan}` and `expr {-nan}` name the operand the script wrote, and
+  `expr {nan}` alone raises tclsh's `domain error: argument not in valid range`
+  when it runs rather than when it is read.
+- **`format %p`** is hexadecimal over the whole word, always prefixed. It was
+  refused; it differs from `%#x` in exactly two ways, both pinned: a zero keeps
+  its prefix (`0x0`, where `%#x` gives `0`) and the value is taken as a full 64
+  bits (`-1` is `0xffffffffffffffff`, where `%#x` gives `0xffffffff`).
 - **A refused operand is quoted by its spelling**: `expr {1e10 % 3}` names
   `1e10` and `expr {nan + 1}` names `nan`, where the value's own formatting
   would have said `10000000000.0` and `NaN`. tclsh quotes an operand by its

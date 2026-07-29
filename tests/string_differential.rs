@@ -738,7 +738,6 @@ fn unsupported_string_features_are_refused() {
             "beyond ASCII need Unicode category tables",
         ),
         ("puts [format %a 1.5]", "is not supported yet"),
-        ("puts [format %p 255]", "is not supported yet"),
         ("puts [string nosuch a]", "unknown or ambiguous subcommand"),
         ("puts [string wor abc 1]", "unknown or ambiguous subcommand"),
         ("puts [string is nosuch a]", "bad class"),
@@ -766,6 +765,39 @@ fn unsupported_string_features_are_refused() {
             err.contains(expected),
             "{src:?}: expected an error mentioning {expected:?}, got {err:?}"
         );
+    }
+}
+
+/// `%p` is hexadecimal over the whole word, always prefixed — it used to be
+/// refused, and this pins the two ways it differs from `%#x` rather than
+/// leaving them to be rediscovered: a zero keeps its prefix (`0x0`, where
+/// `%#x` gives `0`), and the value is taken as a full 64 bits (`-1` is
+/// `0xffffffffffffffff`, where `%#x` gives `0xffffffff`).
+#[test]
+fn format_p_is_a_prefixed_full_width_hexadecimal() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    for program in [
+        "puts [format %p 4]",
+        "puts [format %p 0]",
+        "puts [format %p -1]",
+        "puts [format %p 255]",
+        "puts |[format %12p 4]|[format %-12p 4]|[format %012p 4]|",
+        "puts [format %.4p 4]",
+        "puts |[format %8.4p 255]|[format %+p 255]|",
+        "puts [catch {format %p abc} m]$m",
+        "puts [catch {format %p 1.5} m]$m",
+        "puts [catch {format %p {1 2}} m]$m",
+    ] {
+        // A distinct scratch index: `reference_output` names its temp file by
+        // (pid, index), and `append_in_place_matches_tclsh` already claims
+        // `usize::MAX` — sharing it makes the two tests read each other's
+        // output when they run concurrently.
+        let expected = reference_output(&tclsh, usize::MAX - 1, program);
+        let outcome = tclrs::eval(program).expect("tclrs runs the program");
+        assert_eq!(outcome.output, expected, "{program}");
     }
 }
 

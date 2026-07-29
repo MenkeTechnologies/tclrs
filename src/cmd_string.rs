@@ -1736,8 +1736,23 @@ fn format_string(fmt: &str, args: &[String]) -> Result<String, String> {
             'd' | 'i' | 'u' | 'o' | 'x' | 'X' | 'b' => {
                 integer(conv, flags, precision, size, value)?
             }
+            // `%p` is hexadecimal over the whole word, always prefixed: tclsh
+            // prints `0xffffffffffffffff` for -1 where `%#x` prints
+            // `0xffffffff`, and `0x0` for zero where `%#x` prints `0`. Those
+            // two are the whole difference, so it takes the same path with the
+            // width fixed and the prefix made unconditional.
+            'p' => integer(
+                conv,
+                Flags {
+                    hash: true,
+                    ..flags
+                },
+                precision,
+                Width::Bits64,
+                value,
+            )?,
             'e' | 'E' | 'f' | 'g' | 'G' => floating(conv, flags, precision, value)?,
-            'a' | 'A' | 'p' => {
+            'a' | 'A' => {
                 return Err(format!("the \"%{conv}\" conversion is not supported yet"))
             }
             other => return Err(format!("bad field specifier \"{other}\"")),
@@ -1877,7 +1892,7 @@ fn integer(
     let signed_conv = matches!(conv, 'd' | 'i');
     let radix = match conv {
         'o' => 8,
-        'x' | 'X' => 16,
+        'x' | 'X' | 'p' => 16,
         'b' => 2,
         _ => 10,
     };
@@ -1937,10 +1952,11 @@ fn integer(
             prefix.push(' ');
         }
     }
-    if flags.hash && magnitude != 0 {
+    // `%p` prefixes a zero too; every other conversion follows C and does not.
+    if flags.hash && (magnitude != 0 || conv == 'p') {
         prefix.push_str(match conv {
             'o' => "0o",
-            'x' => "0x",
+            'x' | 'p' => "0x",
             'X' => "0x",
             'b' => "0b",
             'd' | 'i' => "0d",
