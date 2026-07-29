@@ -316,14 +316,22 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   `Op::Extended` — every loop that counts with `incr` would lose its compiled
   trace, which is the one thing this frontend has that reaches native code.
   Deliberately not taken.
-- **A parse error in unreachable code is still an error**, so a script tclsh
-  runs to completion can still be refused: `if {0} {puts [expr {1 +}]}` is
-  `missing operand at _@_`, and a `switch` arm that is never selected is parsed
-  too — `switch -- x {*b {puts "a}}` is `missing "` where tclsh never looks
-  inside the braced body.
+- **Unreachable code costs a script nothing** — the whole class is closed. Both
+  halves of it: a command that cannot work raises where it stands, and a body
+  whose own text will not parse is lowered *as* that failure, so it raises only
+  if the body is entered. `if {0} {puts [expr {1 +}]}`, `while {0} {puts "a}`,
+  `proc p {} {puts "a}` with `p` never called, and a `switch` arm that is never
+  selected all run to completion, as they do in tclsh.
 
-  This is what is left of what was the largest divergence class by a wide
-  margin. The rest of it — an unknown command, a wrong argument count, an
+  One class stays eager, because tclsh reports it eagerly too: an unbalanced
+  brace. `if {0} {puts {unclosed}` is `missing close-brace` in both engines —
+  brace counting is how the enclosing script delimits the body's word at all, so
+  neither can read past it to decide whether the body would ever run. That is
+  the boundary, and it was measured rather than assumed: tclsh defers an
+  unterminated quote and an unbalanced bracket *inside* a balanced body, and
+  refuses an unbalanced brace anywhere.
+
+  The command half of it — an unknown command, a wrong argument count, an
   unknown ensemble subcommand — is gone: those are raised where the command
   stands rather than while the script is read, so `if {0} {incr}` and
   `if {0} {nosuchcommand}` now run to completion and print nothing, as they do
@@ -331,8 +339,11 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   down (`Compiler::defer`, `src/compiler.rs`).
 
   Measured on the 400-program run (seed 1, depth 3): **150 parity / 162
-  divergence before, 229 / 77 after**. The `wrong # args` group went from 83
-  cases to none and the ensemble-subcommand group from 19 to none. Runtime
+  divergence before the command half, 230 / 77 after it, and 269 / 31 once
+  bodies were deferred too**. The `wrong # args` group went from 83 cases to
+  none, the ensemble-subcommand group from 19 to none, and the parse-error
+  groups — `invalid bareword`, `invalid character`, `missing operand`, the
+  unterminated quotes and brackets — from 66 to none. Runtime
   divergences rose from 10 to 17 in the same run, which is the expected shape of
   the change rather than a regression — those scripts now reach code the
   compile-time refusal used to hide, so the differences they were always going
@@ -368,12 +379,21 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   is lowered exactly as before. Static dispatch, the `Op::Call`, and the JIT and
   ahead-of-time paths are all untouched — only the failing command changed shape.
 
-  What remains cannot take the same treatment. A parse error is a property of
-  the text rather than of control flow: there is no command to attach a deferred
-  failure to, because the failure is that the compiler cannot tell where the
-  command ends. Reaching tclsh's behaviour here means not parsing a body until
-  it runs, which is a real architectural change — and unlike the last one, it
-  would cost the compile-once-lower-once property this frontend exists for.
+  The parse-error remainder is closed too, and by the same insight one level up.
+  It looked architectural — reaching tclsh seemed to mean not parsing a body
+  until it ran, at the cost of the compile-once property. It did not. A body is
+  still parsed once, where it always was; what changed is that a body whose text
+  will not parse is *lowered as* that failure (`Compiler::body_of`,
+  `Compiler::emit_body`) instead of failing the command that owns it. The raise
+  stands where the body's code would have, which is exactly where tclsh reports
+  it, and a body that parses is lowered exactly as before.
+
+  The shape was settled by measurement, not by reading: tclsh evaluates an `if`
+  condition and only then fails on an unparsable body (`if {[puts hi; expr 0]}
+  {puts "a}` prints `hi` and exits 0), and it runs the commands *before* the
+  failing one in a body (`if {1} {puts one; puts [expr {a}]}` prints `one`
+  first). So the failure belongs at the command inside the body, and the body's
+  own parse failure belongs at the body — not at either enclosing command.
 - **Arbitrary-precision integers, seen from the fuzzer.** An integer beyond `i64`
   is refused with `integer value too large to represent` where tclsh promotes and
   answers exactly, so `expr {99999999999999999999 + 1}` is an error against

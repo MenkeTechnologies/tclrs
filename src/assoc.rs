@@ -977,7 +977,7 @@ impl Compiler {
         self.emit(Op::LoadInt(0), 1);
         self.emit(Op::SetVar(cursor), -1);
 
-        let script = self.body_script(body)?;
+        let script = self.body_of(body)?;
         self.rotated_loop(
             |c| {
                 c.scalar_set_guard(&key_name);
@@ -992,7 +992,7 @@ impl Compiler {
                 c.emit(Op::ArrayGet(pairs), 0);
                 c.emit_set_var(&value_name);
 
-                c.nested_effect(&script)
+                c.emit_body(&script)
             },
             |c| {
                 c.emit(Op::GetVar(cursor), 1);

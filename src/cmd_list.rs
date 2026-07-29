@@ -277,7 +277,7 @@ fn lmap(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
         1 - pairs.len() as i32,
     );
 
-    let script = c.body_script(body)?;
+    let script = c.body_of(body)?;
     let taken: Vec<String> = names.iter().rev().cloned().collect();
     c.rotated_loop(
         |c| {
@@ -286,7 +286,7 @@ fn lmap(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
                 c.emit_set_var(name);
             }
             // The body's value, then straight into the accumulator.
-            c.nested_value(&script)?;
+            c.emit_body_value(&script)?;
             c.emit(Op::Extended(ext::LMAP_COLLECT, 0), -1);
             Ok(())
         },

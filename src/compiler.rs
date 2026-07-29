@@ -414,6 +414,19 @@ pub(crate) struct Scope {
     pub next_slot: u16,
 }
 
+/// A control-flow body, in whichever of its two states it is in.
+///
+/// A body's text is parsed separately from the script that contains it, and a
+/// failure there is one the reference interpreter reports only when the body
+/// runs. [`Compiler::body_of`] carries that failure instead of raising it, so
+/// the command owning the body still compiles and the raise lands where the
+/// body's code would have.
+pub(crate) enum Body {
+    Script(Script),
+    /// The message the body's own parse failed with.
+    Deferred(String),
+}
+
 /// Where a variable lives once the script is lowered: a frame slot inside a
 /// procedure body, a name index in the VM's global table anywhere else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -468,6 +481,19 @@ pub(crate) struct Compiler {
     /// How many command substitutions enclose the command being compiled. A
     /// debugger stops before a statement, and a substitution is part of one.
     pub(crate) subst_depth: usize,
+    /// Whether the failure now propagating is one the reference interpreter
+    /// only reports when the command runs, set where the failure is *raised*
+    /// rather than guessed from its wording.
+    ///
+    /// The three command-level classes are recognisable by their message
+    /// ([`defers_to_run_time`]), but an expression's are not: `expr` refuses in
+    /// a dozen wordings, and matching a list of prefixes would silently stop
+    /// covering one the day it is reworded. So `expr::parse` and a body's own
+    /// parse mark their failures here instead, and [`Compiler::command`] reads
+    /// the mark. Cleared per command, and re-armed when a failure passes
+    /// through a command that could not absorb it, so an enclosing one still
+    /// can.
+    pub(crate) deferrable: bool,
 }
 
 impl Compiler {
@@ -492,6 +518,7 @@ impl Compiler {
             static_ctx: true,
             debug,
             subst_depth: 0,
+            deferrable: false,
         };
         // Signatures are collected before anything is emitted so a procedure
         // may call one that the script defines further down, which is legal in
@@ -565,6 +592,20 @@ impl Compiler {
             msg: msg.into(),
             line: self.command_line,
         }
+    }
+
+    /// The same, for a failure the reference interpreter reports only when the
+    /// command runs: parsing an expression, or parsing a body's own text.
+    ///
+    /// tclsh reaches neither until execution does — `if {0} {expr {a}}` and
+    /// `if {0} {puts "unterminated}` both run to completion there — so a
+    /// refusal here has to become code inside the branch rather than a verdict
+    /// on the script. Marking it at the point it is raised is what lets
+    /// [`Compiler::command`] tell it apart from a refusal that is genuinely the
+    /// script's shape, such as an unbalanced brace, which tclsh reports too.
+    pub(crate) fn deferrable_err(&mut self, msg: impl Into<String>) -> CompileError {
+        self.deferrable = true;
+        self.err(msg)
     }
 
     pub(crate) fn push_value(&mut self, v: Value) {
@@ -917,10 +958,24 @@ impl Compiler {
         // stays where it is.
         let mark = self.b.current_pos();
         let depth = self.depth;
-        match self.dispatch(&name, args) {
-            Err(e) if defers_to_run_time(&e.msg) && self.b.current_pos() == mark => {
+        // Fresh per command: a nested one may have marked and absorbed a
+        // failure of its own, and that verdict is not this command's.
+        self.deferrable = false;
+        let outcome = self.dispatch(&name, args);
+        let marked = std::mem::take(&mut self.deferrable);
+        match outcome {
+            Err(e) if (defers_to_run_time(&e.msg) || marked) && self.b.current_pos() == mark => {
                 self.depth = depth;
                 self.defer(&e.msg, args)
+            }
+            // The failure is one that belongs at run time, but this command had
+            // already emitted for it, so it cannot become code here. Re-arm the
+            // mark: an enclosing command that has emitted nothing yet can still
+            // absorb it, which is how `if {0} {puts "unterminated}` defers even
+            // though the body's parse fails inside `if`'s own handler.
+            Err(e) if marked => {
+                self.deferrable = true;
+                Err(e)
             }
             outcome => outcome,
         }
@@ -1060,7 +1115,7 @@ impl Compiler {
             }
             text.push_str(piece);
         }
-        let parsed = expr::parse(&text).map_err(|e| self.err(e.msg))?;
+        let parsed = expr::parse(&text).map_err(|e| self.deferrable_err(e.msg))?;
         // Arithmetic normalizes nothing: the result stays the value the VM
         // computed — an integer, a double, a boolean — and Tcl's string form is
         // applied wherever one is asked for (`ext::PUTS`, `ext::STR_CMP`, the
@@ -1190,9 +1245,9 @@ impl Compiler {
         let [cond, body] = args else {
             return self.error("wrong # args: should be \"while test command\"");
         };
-        let script = self.body_script(body)?;
+        let script = self.body_of(body)?;
         self.rotated_loop(
-            |c| c.nested_effect(&script),
+            |c| c.emit_body(&script),
             |_| Ok(()),
             |c| c.expr_word(cond),
         )?;
@@ -1254,7 +1309,7 @@ impl Compiler {
 
         // `MORE` and `TAKE` read the state where it lies instead of consuming
         // it, so there is no `Dup` here and no copy of the state per iteration.
-        let script = self.body_script(body)?;
+        let script = self.body_of(body)?;
         let taken: Vec<String> = names.iter().rev().cloned().collect();
         self.rotated_loop(
             |c| {
@@ -1262,7 +1317,7 @@ impl Compiler {
                 for name in &taken {
                     c.emit_set_var(name);
                 }
-                c.nested_effect(&script)
+                c.emit_body(&script)
             },
             |c| {
                 c.emit(Op::Extended(ext::FOREACH_ADVANCE, 0), 0);
@@ -1388,21 +1443,89 @@ impl Compiler {
     }
 
     /// A control-flow body: braced text compiled in place.
+    ///
+    /// A body whose own text will not parse becomes a raise standing where its
+    /// code would have stood, because that is where the reference interpreter
+    /// reports it: `if {0} {puts "unterminated}` runs to completion in tclsh,
+    /// and `if {[puts hi; expr 0]} {puts "unterminated}` prints `hi` first —
+    /// the condition is evaluated, and only entering the body fails. Nothing of
+    /// the body has been emitted when its parse fails, so the substitution is
+    /// exact rather than a rollback.
+    ///
+    /// An unbalanced *brace* never reaches here: brace counting is how the
+    /// enclosing script delimits this word at all, so tclsh reports that one
+    /// eagerly too, and so does [`crate::parser`].
     pub(crate) fn body(&mut self, word: &Word) -> Result<(), CompileError> {
-        let script = self.body_script(word)?;
-        self.nested_value(&script)
+        match self.body_script(word) {
+            Ok(script) => self.nested_value(&script),
+            Err(e) if std::mem::take(&mut self.deferrable) => self.raise_at_run_time(&e.msg),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Lower a failure as the only thing a stretch of code does: push its
+    /// message and raise it, located at the command it belongs to.
+    ///
+    /// The same shape [`Compiler::defer`] ends with, minus the arguments — a
+    /// body has none to evaluate first.
+    pub(crate) fn raise_at_run_time(&mut self, msg: &str) -> Result<(), CompileError> {
+        self.push_str(msg);
+        self.emit(Op::ExtendedWide(ext_wide::ERROR_AT, self.command_line), -1);
+        self.push_empty();
+        Ok(())
     }
 
     pub(crate) fn body_script(&mut self, word: &Word) -> Result<Script, CompileError> {
         let text = self.literal_of(word, "script body")?;
-        crate::parser::parse(text).map_err(|e| self.err(e.msg))
+        crate::parser::parse(text).map_err(|e| self.deferrable_err(e.msg))
+    }
+
+    /// A body, held in whichever of its two states it is in: parsed, or known
+    /// to fail the moment it is entered.
+    ///
+    /// A loop, a `switch` arm and a procedure all place their body somewhere
+    /// control may never reach, so a body that will not parse cannot be allowed
+    /// to fail the command that owns it — `while {0} {puts "unterminated}` runs
+    /// to completion in tclsh. Carrying the failure this far and emitting it
+    /// *as* the body is what puts the raise where the reference interpreter
+    /// puts it.
+    pub(crate) fn body_of(&mut self, word: &Word) -> Result<Body, CompileError> {
+        match self.body_script(word) {
+            Ok(script) => Ok(Body::Script(script)),
+            Err(e) if std::mem::take(&mut self.deferrable) => Ok(Body::Deferred(e.msg)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Emit a body for its effect, leaving the stack as it was found.
+    pub(crate) fn emit_body(&mut self, body: &Body) -> Result<(), CompileError> {
+        match body {
+            Body::Script(script) => self.nested_effect(script),
+            Body::Deferred(msg) => {
+                let msg = msg.clone();
+                self.raise_at_run_time(&msg)?;
+                self.emit(Op::Pop, -1);
+                Ok(())
+            }
+        }
+    }
+
+    /// Emit a body for its value.
+    pub(crate) fn emit_body_value(&mut self, body: &Body) -> Result<(), CompileError> {
+        match body {
+            Body::Script(script) => self.nested_value(script),
+            Body::Deferred(msg) => {
+                let msg = msg.clone();
+                self.raise_at_run_time(&msg)
+            }
+        }
     }
 
     /// A word used as a condition: its text is an expression, and its value has
     /// to be a Tcl boolean.
     pub(crate) fn expr_word(&mut self, word: &Word) -> Result<(), CompileError> {
         let text = self.literal_of(word, "condition")?.to_string();
-        let parsed = expr::parse(&text).map_err(|e| self.err(e.msg))?;
+        let parsed = expr::parse(&text).map_err(|e| self.deferrable_err(e.msg))?;
         self.condition(&parsed)
     }
 

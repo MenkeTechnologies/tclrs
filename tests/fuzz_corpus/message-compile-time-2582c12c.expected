@@ -1,14 +1,14 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00341   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 13 -> 3 lines in 3 round(s), 48/400 candidates checked
-# verdict: DIVERGENCE	message-compile-time	msg tclsh=hello world tclrs=missing close-bracket
+# verdict: PASS	failed alike	
 # tclsh: 9.0.4
 # tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: 5\n
 # tclsh-stderr: hello world\n
 # tclrs-status: 1
-# tclrs-stdout: 
-# tclrs-stderr: missing close-bracket\n    (file "target/fuzz/work/record/driven.tcl" line 22)\n
+# tclrs-stdout: 5\n
+# tclrs-stderr: hello world\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

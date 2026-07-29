@@ -1,6 +1,6 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00291   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 14 -> 4 lines in 3 round(s), 58/400 candidates checked
-# verdict: DIVERGENCE	message-compile-time	msg tclsh=cannot use non-numeric string "abc" as left operand of "+" tclrs=invalid character "α"
+# verdict: PASS	failed alike	
 # tclsh: 9.0.4
 # tclrs: tclrs 0.3.0
 # tclsh-status: 1
@@ -8,7 +8,7 @@
 # tclsh-stderr: cannot use non-numeric string "abc" as left operand of "+"\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: invalid character "α"\n    (file "target/fuzz/work/record/driven.tcl" line 1)\n
+# tclrs-stderr: cannot use non-numeric string "abc" as left operand of "+"\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

@@ -768,43 +768,60 @@ fn an_unusable_character_in_an_expression_is_named_as_a_character() {
     }
 }
 
-/// tclrs lowers a whole script before running any of it, so a *parse* error
-/// inside code that never executes still stops a script tclsh runs to
-/// completion — the text has to be read before anything can run.
+/// Code that never executes costs a script nothing — **fixed**, in both halves.
 ///
-/// The rest of this finding is fixed: an argument count and a command name are
-/// resolved when the command is reached, as tclsh resolves them, so the two
-/// engines now agree on the first three cases this test used to record.
+/// A command's failure is lowered where the command stands, and a body's own
+/// parse failure is lowered as the body, so neither is a verdict on the script.
+/// What stays eager is the one class tclsh reports eagerly too: an unbalanced
+/// brace, because brace counting is how the enclosing script delimits the word
+/// at all, and neither engine can read past it.
 #[test]
-fn unreachable_code_is_compiled_but_only_parse_errors_survive_it() {
+fn unreachable_code_costs_nothing() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    // An arity error in a branch that is never taken — fixed.
+    // An argument count, a command name and an ensemble subcommand are all
+    // resolved when the command is reached, as tclsh resolves them.
     agrees(&tclsh, "if {0} {incr}\nputs reached", out("reached\n"));
-    // A command that does not exist, in a branch that is never taken — fixed.
-    // tclsh resolves command names when it reaches them, and so does this now.
     agrees(&tclsh, "if {0} {nosuchcommand}\nputs reached", out("reached\n"));
-    // An unknown ensemble subcommand, the same — fixed.
     agrees(&tclsh, "if {0} {string bogus x}\nputs reached", out("reached\n"));
     // An expression that cannot be parsed, in a branch that is never taken.
-    // Still refused: there is no command to hang a deferred failure on when the
-    // failure is that the text cannot be read.
-    diverges(
+    agrees(
         &tclsh,
         "if {0} {puts [expr {1 +}]}\nputs reached",
         out("reached\n"),
-        err("missing operand at _@_"),
     );
-    // A `switch` arm that is never selected. Its body is a braced word, so
-    // nothing in it is even parsed until tclsh picks the arm — this is the
-    // largest single signature in a fuzz run.
-    diverges(
+    // A `switch` arm that is never selected: its body is a braced word, and
+    // nothing in it is parsed until the arm is picked.
+    agrees(
         &tclsh,
         "switch -- x {*b {puts \"a}}\nputs reached",
         out("reached\n"),
-        err("missing \""),
+    );
+    // A body that will not parse, everywhere a body can be: a loop that never
+    // iterates, a procedure never called, a `catch` that traps it.
+    agrees(&tclsh, "while {0} {puts \"a}\nputs reached", out("reached\n"));
+    agrees(&tclsh, "foreach x {} {puts \"a}\nputs reached", out("reached\n"));
+    agrees(&tclsh, "proc p {} {puts \"a}\nputs reached", out("reached\n"));
+    // And it still fails when it *is* reached, with the message it always had.
+    agrees(
+        &tclsh,
+        "proc p {} {puts [expr {a}]}\np",
+        err("invalid bareword \"a\""),
+    );
+    // The condition runs first: tclsh evaluates it, then fails only on entry.
+    agrees(
+        &tclsh,
+        "if {[puts hi; expr 0]} {puts \"a}\nputs reached",
+        out("hi\nreached\n"),
+    );
+    // Eager, in both engines: an unbalanced brace is not a body's failure but
+    // the enclosing script's, since it is what delimits the body's word.
+    agrees(
+        &tclsh,
+        "if {0} {puts {unclosed}\nputs reached",
+        err("missing close-brace"),
     );
 }
 

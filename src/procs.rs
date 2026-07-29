@@ -199,7 +199,11 @@ impl Compiler {
             })?
             .into();
         self.procs.insert(name.clone(), sig.clone());
-        let body = self.body_script(body_w)?;
+        // A body that will not parse is still a definition: tclsh compiles a
+        // procedure's body when it is first called, so `proc p {} {puts "x}`
+        // with `p` never called runs to completion there. The failure becomes
+        // the body's only instruction, which is where calling it finds it.
+        let body = self.body_of(body_w)?;
 
         let skip = self.emit(Op::Jump(usize::MAX), 0);
         let entry = self.b.current_pos();
@@ -216,7 +220,13 @@ impl Compiler {
         for slot in (0..slots).rev() {
             self.emit(Op::SetSlot(slot as u16), -1);
         }
-        let compiled = self.script_value(&body);
+        let compiled = match &body {
+            crate::compiler::Body::Script(script) => self.script_value(script),
+            crate::compiler::Body::Deferred(msg) => {
+                let msg = msg.clone();
+                self.raise_at_run_time(&msg)
+            }
+        };
         // A body that falls off its end returns the value of its last command.
         self.emit(Op::ReturnValue, -1);
 

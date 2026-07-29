@@ -47,17 +47,17 @@ impl Compiler {
         let [start, test, next, body] = args else {
             return self.error("wrong # args: should be \"for start test next body\"");
         };
-        let start = self.body_script(start)?;
-        let body = self.body_script(body)?;
-        let next = self.body_script(next)?;
+        let start = self.body_of(start)?;
+        let body = self.body_of(body)?;
+        let next = self.body_of(next)?;
 
-        self.nested_effect(&start)?;
+        self.emit_body(&start)?;
         // `continue` skips the rest of the body and runs the step; `break` in
         // the step terminates the loop, as `for(n)` specifies. Both fall out of
         // the rotated shape, where the step precedes the next test.
         self.rotated_loop(
-            |c| c.nested_effect(&body),
-            |c| c.nested_effect(&next),
+            |c| c.emit_body(&body),
+            |c| c.emit_body(&next),
             |c| c.expr_word(test),
         )?;
         self.push_empty();
@@ -226,11 +226,15 @@ impl Compiler {
     }
 
     fn switch_body(&mut self, text: &str) -> Result<(), CompileError> {
-        let script = match crate::parser::parse(text) {
-            Ok(s) => s,
-            Err(e) => return Err(self.err(e.msg)),
-        };
-        self.nested_value(&script)
+        // An arm that is never selected is never parsed by tclsh, so an arm
+        // whose text will not parse raises only if it is the arm chosen.
+        match crate::parser::parse(text) {
+            Ok(script) => self.nested_value(&script),
+            Err(e) => {
+                let msg = e.msg;
+                self.raise_at_run_time(&msg)
+            }
+        }
     }
 
     /// `catch script ?resultVarName?`.
@@ -245,7 +249,7 @@ impl Compiler {
                 )
             }
         };
-        let script = self.body_script(body)?;
+        let script = self.body_of(body)?;
         let entry = self.depth;
 
         // The handler comes first so its op index is known when the region is
@@ -263,7 +267,7 @@ impl Compiler {
         self.depth = entry;
         self.emit(Op::ExtendedWide(ext_wide::CATCH, handler), 0);
         self.catch_depth += 1;
-        let compiled = self.nested_value(&script);
+        let compiled = self.emit_body_value(&script);
         self.catch_depth -= 1;
         compiled?;
         self.emit(Op::Extended(ext::CATCH_END, 0), 0);
