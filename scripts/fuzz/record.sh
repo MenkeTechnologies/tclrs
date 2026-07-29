@@ -51,6 +51,11 @@ printf '# tclsh-stdout: %s\n' "$(esc <"$WORK/tclsh.out")"
 printf '# tclsh-stderr: %s\n' "$(head -1 "$WORK/tclsh.err" | esc)"
 printf '# tclrs-status: %s\n' "$(cat "$WORK/tclrs.status")"
 printf '# tclrs-stdout: %s\n' "$(esc <"$WORK/tclrs.out")"
-printf '# tclrs-stderr: %s\n' "$(head -3 "$WORK/tclrs.err" | esc)"
+# Every line, not a window. It was `head -3`, sized when a tclrs diagnostic was
+# at most a message and its location; a refusal that carries tclsh's context is
+# four lines now, so the window silently stopped recording the `(file … line N)`
+# trailer for that whole class — the record went on comparing equal while
+# verifying less. Any fixed window has that failure mode, so there is none.
+printf '# tclrs-stderr: %s\n' "$(esc <"$WORK/tclrs.err")"
 printf '#\n# The case itself is the sibling .tcl file. It is run spliced into\n'
 printf '# scripts/fuzz/drive.tcl, which is what the captured output above is of.\n'

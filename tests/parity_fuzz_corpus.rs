@@ -283,11 +283,12 @@ fn every_committed_finding_still_behaves_as_recorded() {
             &record.tclrs_status.to_string(),
             &actual.status.to_string(),
         );
-        // The record keeps the first three stderr lines; compare that many.
+        // The record keeps every stderr line, so compare every line. It kept
+        // three once, which quietly stopped covering the `(file … line N)`
+        // trailer as soon as a diagnostic grew to four.
         let got_err: String = actual
             .stderr
             .lines()
-            .take(3)
             .map(|l| format!("{l}\n"))
             .collect();
 
