@@ -71,12 +71,29 @@ fn reference(tclsh: &PathBuf, program: &str) -> Observed {
     let out = Command::new(tclsh).arg(&path).output().expect("run tclsh");
     Observed {
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        error: String::from_utf8_lossy(&out.stderr)
-            .lines()
-            .next()
-            .unwrap_or("")
-            .to_string(),
+        error: message_of(&String::from_utf8_lossy(&out.stderr)),
     }
+}
+
+/// The error *message* out of tclsh's stderr, without the stack trace under it.
+///
+/// Every trace line is indented — `    (parsing expression "a")`, `    invoked
+/// from within`, `    (file "…" line N)` — and the message is the unindented
+/// lines above them. Taking only the first line was enough while every message
+/// this file records was one line; `expr`'s are three, since a refusal carries
+/// the expression it was reading and a bare word carries the spelling hint, and
+/// those lines are part of what `catch` yields rather than part of the trace.
+/// Capturing them is what keeps this file comparing tclrs's whole message
+/// against tclsh's whole message.
+fn message_of(stderr: &str) -> String {
+    let mut lines = Vec::new();
+    for line in stderr.lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            break;
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
 }
 
 /// Run `program` under tclrs, through the library.
@@ -797,15 +814,23 @@ fn an_unusable_character_in_an_expression_is_named_as_a_character() {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    agrees(&tclsh, "puts [expr {Ü}]", err("invalid character \"Ü\""));
+    agrees(
+        &tclsh,
+        "puts [expr {Ü}]",
+        err("invalid character \"Ü\"\nin expression \"Ü\""),
+    );
     agrees(
         &tclsh,
         "puts [expr {1 + αβγ}]",
-        err("invalid character \"α\""),
+        err("invalid character \"α\"\nin expression \"1 + αβγ\""),
     );
     // The same wording covers the ASCII characters, which were named correctly
     // before but with the other message.
-    agrees(&tclsh, "puts [expr {@}]", err("invalid character \"@\""));
+    agrees(
+        &tclsh,
+        "puts [expr {@}]",
+        err("invalid character \"@\"\nin expression \"@\""),
+    );
     for same in [
         "puts [expr {1 + @}]",
         "puts [expr {é}]",
@@ -876,7 +901,7 @@ fn unreachable_code_costs_nothing() {
     agrees(
         &tclsh,
         "proc p {} {puts [expr {a}]}\np",
-        err("invalid bareword \"a\""),
+        err("invalid bareword \"a\"\nin expression \"a\";\nshould be \"$a\" or \"{a}\" or \"a(...)\" or ..."),
     );
     // The condition runs first: tclsh evaluates it, then fails only on entry.
     agrees(
@@ -1448,7 +1473,11 @@ fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
     // `string is punct` used to sit here as the compile-time half of the
     // distinction — refused before `catch` could run. It is answered now, from
     // the category tables the class needs, so it belongs on the other side.
-    agrees(&tclsh, "catch {string is punct a} m; puts m:$m", out("m:0\n"));
+    agrees(
+        &tclsh,
+        "catch {string is punct a} m; puts m:$m",
+        out("m:0\n"),
+    );
     // The refusal that remains is narrower and still catchable, because it is
     // decided when the character is read rather than when the script is: U+20C1
     // is one of the 4804 code points tclsh 9.0.4 categorises and Unicode 16.0
@@ -1457,8 +1486,10 @@ fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
         &tclsh,
         "catch {string is punct [format %c 0x20C1]} m; puts m:$m",
         out("m:0\n"),
-        out("m:string is punct: U+20C1 is categorised by tclsh 9.0.4 and not by \
-             Unicode 16.0, which is the table this build carries\n"),
+        out(
+            "m:string is punct: U+20C1 is categorised by tclsh 9.0.4 and not by \
+             Unicode 16.0, which is the table this build carries\n",
+        ),
     );
 }
 
@@ -1495,14 +1526,18 @@ fn expr_left_shift_past_the_word_width_promotes() {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    agrees(&tclsh, "puts [expr {1 << 63}]", out("9223372036854775808\n"));
-    agrees(&tclsh, "puts [expr {1 << 64}]", out("18446744073709551616\n"));
-    // A distance far past the word, and the round trip back down.
     agrees(
         &tclsh,
-        "puts [expr {(1 << 200) >> 200}]",
-        out("1\n"),
+        "puts [expr {1 << 63}]",
+        out("9223372036854775808\n"),
     );
+    agrees(
+        &tclsh,
+        "puts [expr {1 << 64}]",
+        out("18446744073709551616\n"),
+    );
+    // A distance far past the word, and the round trip back down.
+    agrees(&tclsh, "puts [expr {(1 << 200) >> 200}]", out("1\n"));
     // A right shift still saturates rather than wrapping its distance.
     agrees(&tclsh, "puts [expr {-1 >> 100}]", out("-1\n"));
     // The shifts that do fit still answer, and a right shift at any distance
@@ -1538,12 +1573,12 @@ fn bug_expr_literal_grammar_lacks_nan_and_inf() {
     agrees(
         &tclsh,
         "puts [expr {infx}]",
-        err("invalid bareword \"infx\""),
+        err("invalid bareword \"infx\"\nin expression \"infx\";\nshould be \"$infx\" or \"{infx}\" or \"infx(...)\" or ..."),
     );
     agrees(
         &tclsh,
         "puts [expr {nano}]",
-        err("invalid bareword \"nano\""),
+        err("invalid bareword \"nano\"\nin expression \"nano\";\nshould be \"$nano\" or \"{nano}\" or \"nano(...)\" or ..."),
     );
     // The runtime parser has both, which is what makes this `expr::parse_number`
     // rather than the number grammar as a whole.
@@ -2150,29 +2185,29 @@ fn fixed_expr_compile_time_diagnostics_match_the_reference() {
         return;
     };
     for (program, message) in [
-        ("puts [expr {a}]", "invalid bareword \"a\""),
-        ("puts [expr {1 + a}]", "invalid bareword \"a\""),
-        ("puts [expr {0x}]", "invalid bareword \"0x\""),
-        ("puts [expr {1 + }]", "missing operand at _@_"),
-        ("puts [expr {1 &&}]", "missing operand at _@_"),
+        ("puts [expr {a}]", "invalid bareword \"a\"\nin expression \"a\";\nshould be \"$a\" or \"{a}\" or \"a(...)\" or ..."),
+        ("puts [expr {1 + a}]", "invalid bareword \"a\"\nin expression \"1 + a\";\nshould be \"$a\" or \"{a}\" or \"a(...)\" or ..."),
+        ("puts [expr {0x}]", "invalid bareword \"0x\"\nin expression \"0x\";\nshould be \"$0x\" or \"{0x}\" or \"0x(...)\" or ..."),
+        ("puts [expr {1 + }]", "missing operand at _@_\nin expression \"1 + _@_\""),
+        ("puts [expr {1 &&}]", "missing operand at _@_\nin expression \"1 &&_@_\""),
         // An operator where an operand belongs, which tclrs called an invalid
         // character.
-        ("puts [expr {*1}]", "missing operand at _@_"),
-        ("puts [expr {&1}]", "missing operand at _@_"),
-        ("puts [expr {1 ? 2 : }]", "missing operand at _@_"),
-        ("puts [expr {1 2}]", "missing operator at _@_"),
-        ("puts [expr {1..2}]", "missing operator at _@_"),
-        ("puts [expr {1 ? 2}]", "missing operator \":\" at _@_"),
-        ("puts [expr {(1}]", "unbalanced open paren"),
-        ("puts [expr {1 + (}]", "unbalanced open paren"),
-        ("puts [expr {(1))}]", "unbalanced close paren"),
-        ("puts [expr {}]", "empty expression"),
-        ("puts [expr {   }]", "empty expression"),
+        ("puts [expr {*1}]", "missing operand at _@_\nin expression \"_@_*1\""),
+        ("puts [expr {&1}]", "missing operand at _@_\nin expression \"_@_&1\""),
+        ("puts [expr {1 ? 2 : }]", "missing operand at _@_\nin expression \"1 ? 2 : _@_\""),
+        ("puts [expr {1 2}]", "missing operator at _@_\nin expression \"1 _@_2\""),
+        ("puts [expr {1..2}]", "missing operator at _@_\nin expression \"1._@_.2\""),
+        ("puts [expr {1 ? 2}]", "missing operator \":\" at _@_\nin expression \"1 ? 2_@_\""),
+        ("puts [expr {(1}]", "unbalanced open paren\nin expression \"(1\""),
+        ("puts [expr {1 + (}]", "unbalanced open paren\nin expression \"1 + (\""),
+        ("puts [expr {(1))}]", "unbalanced close paren\nin expression \"(1))\""),
+        ("puts [expr {}]", "empty expression\nin expression \"\""),
+        ("puts [expr {   }]", "empty expression\nin expression \"   \""),
         // Still an invalid character when it really is no token.
-        ("puts [expr {1 @ 2}]", "invalid character \"@\""),
-        ("puts [expr {1 ; 2}]", "invalid character \";\""),
-        ("puts [expr {$}]", "invalid character \"$\""),
-        ("puts [expr {=1}]", "incomplete operator \"=\""),
+        ("puts [expr {1 @ 2}]", "invalid character \"@\"\nin expression \"1 @ 2\""),
+        ("puts [expr {1 ; 2}]", "invalid character \";\"\nin expression \"1 ; 2\""),
+        ("puts [expr {$}]", "invalid character \"$\"\nin expression \"$\""),
+        ("puts [expr {=1}]", "incomplete operator \"=\"\nin expression \"=1\""),
     ] {
         agrees(&tclsh, program, err(message));
     }
@@ -2191,7 +2226,11 @@ fn fixed_expr_takes_a_hash_comment() {
     };
     agrees(&tclsh, "puts [expr {1 #c}]", out("1\n"));
     agrees(&tclsh, "puts [expr {1 + # c\n2}]", out("3\n"));
-    agrees(&tclsh, "puts [expr {#1}]", err("empty expression"));
+    agrees(
+        &tclsh,
+        "puts [expr {#1}]",
+        err("empty expression\nin expression \"#1\""),
+    );
 }
 
 /// `in` and `ni` split the list on Tcl's string form — **fixed**.

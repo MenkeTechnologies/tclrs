@@ -8,7 +8,7 @@
 # tclsh-stderr: cannot use floating-point value "1.0" as operand of "~"\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: invalid character "日"\n    (file "target/fuzz/work/record/driven.tcl" line 22)\n
+# tclrs-stderr: invalid character "日"\nin expression "[llength $s3] ni 日本語"\n    (file "target/fuzz/work/record/driven.tcl" line 22)\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

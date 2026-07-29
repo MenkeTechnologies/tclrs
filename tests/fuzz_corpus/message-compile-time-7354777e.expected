@@ -8,7 +8,7 @@
 # tclsh-stderr: missing operand at _@_\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: missing operand at _@_\n    (file "target/fuzz/work/record/driven.tcl" line 22)\n
+# tclrs-stderr: missing operand at _@_\nin expression "123456789 ni _@_*"\n    (file "target/fuzz/work/record/driven.tcl" line 22)\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

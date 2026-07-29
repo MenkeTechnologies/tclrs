@@ -120,14 +120,74 @@ pub fn parse(src: &str) -> Result<Expr, ParseError> {
     // are both `empty expression`, not the missing-operand the first token's
     // absence would otherwise report.
     if p.pos >= p.src.len() {
-        return Err(p.error("empty expression"));
+        return Err(in_expression(src, p.error("empty expression")));
     }
-    let e = p.parse_binary(0)?;
+    let e = p.parse_binary(0).map_err(|e| in_expression(src, e))?;
     p.skip_space();
     if p.pos < p.src.len() {
-        return Err(p.after_expression());
+        return Err(in_expression(src, p.after_expression()));
     }
     Ok(e)
+}
+
+/// Add the context tclsh 9.0.4 puts under a refused expression.
+///
+/// Every one of its expression diagnostics carries the source it was reading,
+/// and a bare word additionally gets the spelling hint:
+///
+/// ```text
+/// invalid bareword "a"
+/// in expression "a";
+/// should be "$a" or "{a}" or "a(...)" or ...
+///
+/// missing operand at _@_
+/// in expression "1 + _@_* 2"
+/// ```
+///
+/// Three rules, each measured against tclsh rather than inferred:
+///
+/// * The source is quoted verbatim, leading and trailing space included —
+///   `expr {  a  }` reports `in expression "  a  "`.
+/// * `_@_` marks the position, and only for the diagnostics whose own text ends
+///   in `at _@_`: the missing operand, the missing operator, and the missing
+///   `":"`. `unbalanced open paren` and the bare word carry no marker.
+/// * The `;` after the closing quote appears only when a third line follows,
+///   which is only for a bare word.
+///
+/// This is the whole message a script sees, because `catch` yields these three
+/// lines; the stack trace tclsh adds beyond them is not part of the result.
+fn in_expression(src: &str, mut err: ParseError) -> ParseError {
+    let marked = if err.msg.ends_with("at _@_") {
+        let at = char_boundary(src, err.offset.min(src.len()));
+        format!("{}_@_{}", &src[..at], &src[at..])
+    } else {
+        src.to_string()
+    };
+
+    // `invalid bareword "w"` — the only diagnostic with a hint, and the word is
+    // already quoted in it, so it is read back out rather than threaded through.
+    let hint = err
+        .msg
+        .strip_prefix("invalid bareword \"")
+        .and_then(|rest| rest.strip_suffix('"'))
+        .map(|w| format!("should be \"${w}\" or \"{{{w}}}\" or \"{w}(...)\" or ..."));
+
+    err.msg = match hint {
+        Some(hint) => format!("{}\nin expression \"{marked}\";\n{hint}", err.msg),
+        None => format!("{}\nin expression \"{marked}\"", err.msg),
+    };
+    err
+}
+
+/// The largest character boundary at or below `at`, so inserting the marker
+/// cannot split a character. A position past one — the parser measures bytes —
+/// would otherwise panic on a multi-byte operand.
+fn char_boundary(src: &str, at: usize) -> usize {
+    let mut at = at;
+    while at > 0 && !src.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
 }
 
 /// Binding powers, lowest first. Each entry is one precedence level; every
@@ -328,7 +388,14 @@ impl<'a> ExprParser<'a> {
                 while end < b.len() && (b[end].is_ascii_alphanumeric() || b[end] == b'_') {
                     end += 1;
                 }
-                self.error(&format!("invalid bareword {:?}", &self.src[self.pos..end]))
+                let word = &self.src[self.pos..end];
+                // A boolean word is an operand, so two of them running together
+                // is the missing operator between them: `expr {1 y}` is
+                // `missing operator at _@_` where `expr {1 x}` names `x`.
+                if crate::runtime::boolean_word(word).is_some() {
+                    return self.error("missing operator at _@_");
+                }
+                self.error(&format!("invalid bareword {word:?}"))
             }
             c if starts_an_operand(c) => self.error("missing operator at _@_"),
             c => self.error(&format!("invalid character \"{c}\"")),
@@ -722,14 +789,40 @@ impl<'a> ExprParser<'a> {
                 self.pos = start;
                 return Err(self.error("missing operand at _@_"));
             }
+            // A boolean word is an *operand* in `expr(n)`, not a bad bareword:
+            // `expr {yes}` is `yes`, `expr {true && false}` is 0, `expr {!yes}`
+            // is 0 and `expr {on ? 1 : 2}` is 1. It carries its own spelling, so
+            // it behaves exactly as the quoted form does — `eq` compares the
+            // text, and arithmetic refuses it through the numeric rule with
+            // tclsh's own wording (`cannot use non-numeric string "yes" as left
+            // operand of "+"`) rather than through the parser.
+            //
+            // The table is `ParseBoolean`'s, shared with the condition rule
+            // rather than copied: a unique prefix of true/false/yes/no/on/off in
+            // any case, which is why `o` is still a bareword — `on` and `off`
+            // both start with it.
+            if crate::runtime::boolean_word(&name).is_some() {
+                return Ok(Expr::Subst(vec![Part::Lit(name)]));
+            }
             return Err(self.error(&format!("invalid bareword {name:?}")));
         }
         self.pos += 1;
+        // A call's paren counts like a grouping one, so running out of input
+        // inside the argument list is `unbalanced open paren` as it is for
+        // `expr {1 + (}` — tclsh reports that for `expr {sin(}`, not the
+        // missing operand the empty argument would otherwise be.
+        self.open_parens += 1;
         let mut args = Vec::new();
         self.skip_space();
         if self.peek() == Some(b')') {
             self.pos += 1;
+            self.open_parens -= 1;
             return Ok(Expr::Call(name, args));
+        }
+        // An argument list that opens with a comma has no first argument, which
+        // tclsh names rather than reporting the comma as a stray operator.
+        if self.peek() == Some(b',') {
+            return Err(self.error("missing function argument at _@_"));
         }
         loop {
             args.push(self.nested(|p| p.parse_binary(0))?);
@@ -737,12 +830,28 @@ impl<'a> ExprParser<'a> {
             match self.peek() {
                 Some(b',') => {
                     self.pos += 1;
+                    self.skip_space();
+                    // A comma promises another argument, so its absence is that
+                    // argument's — `expr {sin(1,}` and `expr {sin(1,)}` are both
+                    // `missing function argument at _@_` in tclsh 9.0.4, where
+                    // running out with no comma pending (`expr {sin(1}`) is the
+                    // unbalanced paren below. A comma followed by an *operator*
+                    // is neither: `expr {max(1,,2}` is the ordinary missing
+                    // operand, which the operand parser reports on its own.
+                    if self.peek().is_none() || self.peek() == Some(b')') {
+                        return Err(self.error("missing function argument at _@_"));
+                    }
                 }
                 Some(b')') => {
                     self.pos += 1;
+                    self.open_parens -= 1;
                     return Ok(Expr::Call(name, args));
                 }
-                _ => return Err(self.error("missing close-paren in function call")),
+                // Input ran out with the call's paren still open, which is the
+                // same diagnostic a grouping paren gets; anything else is a
+                // second operand with no operator between them.
+                None => return Err(self.error("unbalanced open paren")),
+                Some(_) => return Err(self.error("missing operator at _@_")),
             }
         }
     }
