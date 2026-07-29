@@ -56,6 +56,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "Append every value to the variable's string; yields the new value.",
     },
     Entry {
+        name: "apply",
+        synopsis: "apply lambdaExpr ?arg ...?",
+        summary: "Run a lambda — a list of parameters, a body and an optional namespace — as what it is: a procedure body with a frame of its own. A wrong argument count is reported against the lambda, which has no name to report.",
+    },
+    Entry {
         name: "array",
         synopsis: "array subcommand ?arg ...?",
         summary: "The array ensemble, over a variable rather than a value: an array is never itself a value.",
@@ -284,6 +289,11 @@ pub const CORPUS: &[Entry] = &[
         name: "unset",
         synopsis: "unset ?-nocomplain? ?--? ?name ...?",
         summary: "Remove variables or array elements.",
+    },
+    Entry {
+        name: "uplevel",
+        synopsis: "uplevel ?level? arg ?arg ...?",
+        summary: "Concatenate the arguments and run the result as a script in the frame of a caller: #0 is the global level, a bare number counts calls outwards from this one. Only a procedure call is a level, so uplevel 1 at a script's top level is a bad level.",
     },
     Entry {
         name: "while",

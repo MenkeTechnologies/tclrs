@@ -233,10 +233,18 @@ impl Compiler {
         self.depth = outer_depth;
         self.loops = outer_loops;
         self.catch_depth = outer_catch;
-        self.scope = outer_scope;
+        // The body's scope is taken rather than dropped: its slot names are what
+        // lets a nested script reach this procedure's variables at run time, and
+        // they are only known once the whole body has been lowered — a local is
+        // allocated a slot the first time the body mentions it.
+        let body_scope = std::mem::replace(&mut self.scope, outer_scope);
         self.top_level = outer_top;
         self.static_ctx = outer_static;
         compiled?;
+
+        if let Some(scope) = body_scope {
+            self.b.set_sub_slot_names(entry, slot_names_of(&scope));
+        }
 
         let after = self.b.current_pos();
         self.b.patch_jump(skip, after);
@@ -376,6 +384,22 @@ impl Compiler {
 
 /// The slot scope a procedure body starts with: one slot per formal parameter,
 /// in declaration order, matching the prologue's `Op::SetSlot` sequence.
+/// A procedure's slots, by name, indexed by slot number.
+///
+/// `Scope::locals` maps the other way and is sparse in neither direction, but a
+/// frame answers by index, so this is the order fusevm wants. A slot with no
+/// name cannot arise from `proc` — every slot is allocated for a mention — but
+/// the vector is filled defensively so an index is never wrong by one.
+fn slot_names_of(scope: &crate::compiler::Scope) -> Vec<String> {
+    let mut names = vec![String::new(); scope.next_slot as usize];
+    for (name, &slot) in &scope.locals {
+        if let Some(at) = names.get_mut(slot as usize) {
+            *at = name.clone();
+        }
+    }
+    names
+}
+
 fn scope_for(sig: &Signature) -> Scope {
     let mut scope = Scope::default();
     for (i, p) in sig.params.iter().enumerate() {

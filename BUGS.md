@@ -249,9 +249,28 @@ approximated, and nothing is silently mis-run.
   outside `VM::run`, and fusevm's ahead-of-time entry owns the run, so `--aot`
   refuses the script rather than compiling one that would turn a caught error
   into a fatal one.
-- **`eval` inside a procedure body.** A procedure's locals are frame slots and
-  the nested script is a chunk of its own that addresses globals, so it could not
-  see them. Refused rather than run against the wrong variables.
+- **`yield` inside a script run by `eval`, `uplevel` or `apply`.** tclsh
+  suspends the coroutine from inside the nested script and resumes into the
+  middle of it. Here the nested script runs a machine of its own, several Rust
+  frames below the VM that would have to park, and that VM saves only its own
+  state — the nested machine is not part of it — so a resumption could not come
+  back to where the script left off. Refused, in those words, rather than
+  approximated: every approximation loses whatever the nested script had set, at
+  a yield, silently. A `yield` that is in no coroutine at all still reports the
+  reference interpreter's `yield can only be called in a coroutine`, and an
+  `eval` inside a coroutine that does not yield is unaffected
+  (`tests/frame_differential.rs`).
+- **`break`, `continue` or `return` inside a script `eval` or `uplevel` runs.**
+  The script is a chunk of its own and this frontend does not propagate a return
+  code across one, so a `break` there raises instead of breaking the loop in the
+  level the script ran in: `while {1} {catch {eval {break}}}` answers 1 with
+  `invoked "break" outside of a loop` where tclsh answers 3 with no message. The
+  message is also the wrong one for the situation — the loop exists, one level
+  out — but the right one cannot be produced without telling a nested compile
+  from an outermost one, and the chunk cache is keyed by source text alone, so
+  the two share a chunk. Keying it by nestedness as well is the fix. `uplevel`
+  inherits this from `eval`; pinned in `tests/frame_differential.rs` with what
+  tclsh gives.
 - **Procedures across an `eval`.** An evaluated script shares the interpreter's
   variables but not its procedures: it is a chunk of its own, and a call site
   resolves its command while compiling against that chunk's own `proc`
@@ -296,8 +315,30 @@ approximated, and nothing is silently mis-run.
   {}` returns `q r` where tclsh raises `"later" isn't a procedure`. The same
   ordering is what lets a procedure call one defined below it, which tclsh also
   allows; only the introspection disagrees.
+- **`upvar`.** The one of the three frame commands that is still absent, and the
+  reason is not the one the other two had. `uplevel` and `apply` each *run a
+  script* against another frame, which a projection of that frame can serve
+  (`runtime::run_in_frame`). An `upvar` alias is not a script: it is a live link
+  that every later command of the body reads and writes through, so the two names
+  must denote one cell for the rest of the frame's life.
+  A variable here is a frame slot holding a `Value` and a plain `$y` compiles to
+  a native slot read, so there is nothing for a link to point through and no hook
+  on a slot write to redirect. What it needs, precisely: a third
+  `compiler::Place` — a cell addressed by name — plus extension ops for reading
+  and writing one, so that a name the body ever passes to `upvar` is compiled as
+  a cell for the whole body rather than as a slot; and a redirect table keyed by
+  the frame's depth, which `upvar` fills in at run time once it has resolved its
+  level, cleared on entry to the body so a later call at the same depth cannot
+  see the previous one's aliases. Every in-place command already reaches its
+  variable through `runtime::var_cell`, so those follow the redirect for free;
+  the plain read and write are what need the new ops.
+  Reported meanwhile as `invalid command name "upvar"` — what a Tcl interpreter
+  says for a command it does not have, which is what this is. Deliberately not
+  reworded into an `is not supported` refusal: that would move every generated
+  use of it from the fuzzer's divergence bucket to its skip bucket without
+  implementing anything.
 - **Every command outside those above.** `open` / `read` / `close`,
-  `source`, `upvar`, `uplevel`, `rename`, `namespace`, `apply`, `clock`,
+  `source`, `rename`, `namespace`, `clock`,
   `encoding`, `binary`, … An unknown command name is `invalid command name "…"`
   at compile time rather than at run time, which is where a runtime command
   table would move it.
@@ -525,10 +566,23 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   before the guard could answer — `set b 5` emits its guard *before* the
   assignment, so every first assignment to a name used as an array would refuse.
 
-  **What is left**: a procedure-local read. A frame slot carries no name — the
-  chunk addresses it by index — so `proc p {} {puts $x}` still reads empty
-  rather than naming `x`. It is the one case the fuzzer's `A1c` entry still
-  excuses. Closing it needs a chunk to carry slot names.
+  **What is left**: a procedure-local read. `proc p {} {puts $x}` still reads
+  empty rather than naming `x`, and `catch {set x}` in a body answers 0 where
+  tclsh answers 1. It is the one case the fuzzer's `A1c` entry still excuses.
+
+  The blocker used to be that nothing carried slot names. That is no longer true:
+  fusevm 0.17.0 added `Chunk::sub_slot_names` and `Frame::entry_ip`, and
+  `src/procs.rs` fills in the name of every slot of every procedure — which is
+  what `uplevel`, `apply` and `eval` in a body now run against. What remains is
+  one site in fusevm: `Op::GetSlot` builds its `UndefRead` with `name: None`
+  (`vm.rs:1940`), under a comment that 0.17.0 made stale. Resolving it there —
+  `self.frames.last().and_then(|f| f.entry_ip)`, then
+  `self.chunk.sub_slot_names_at(entry).get(slot)`, skipping an empty name — is
+  the whole change, in the shape the `Op::GetVar` arm above it already uses.
+  Nothing in this frontend needs to change with it: the hook already reports a
+  name it is given (`runtime.rs`, `Hooks::install`) and only falls back to
+  `Ok(Value::Undef)` when there is none. The read stays a native op, so no traced
+  loop pays for it.
 
   The entry used to say this was not a patchable defect — that resolving a name
   while compiling is what makes a call an `Op::Call` to a known sub, so fixing
@@ -826,26 +880,26 @@ prints a hit count per entry.
 The generator's own blind spots, so a gap in the report is a known gap rather
 than an unexamined one. Measured against the 2000-program run above.
 
-- **`upvar`, `uplevel` and `apply` need a variable table this design does not
-  have.** Each has to reach a *caller's* variables by name at run time. A
-  procedure's locals here are frame slots the compiler assigned, so nothing
-  addresses them by name once the chunk is built, and a nested script is a chunk
-  of its own that reaches only globals — which is the same wall `eval` inside a
-  procedure body hits, and why that is refused rather than run against the wrong
-  variables.
+- **`uplevel` and `apply` are not generated yet.** Both exist now. The wall they
+  used to be behind was that a procedure's locals are frame slots the compiler
+  assigned, so nothing addressed them by name once the chunk was built; what
+  removed it is `fusevm::Chunk::sub_slot_names`, which `src/procs.rs` fills in
+  with the name of every slot of every procedure. The commands run their script
+  against a projection of the named frame and read it back
+  (`runtime::run_in_frame`), which is also how `eval` inside a procedure body
+  works. What covers them meanwhile is `tests/frame_differential.rs` — 51
+  programs compared against tclsh, including every `bad level` wording — so the
+  gap here is the *generator's*, and closing it belongs in a change to
+  `scripts/fuzz/gen.tcl` of its own.
 
-  A subset *is* expressible: `uplevel #0`, and `uplevel 1` from a procedure the
-  top level called, both target the global table, which is exactly what `eval`
-  already does; `upvar #0 g l` is a global alias. That subset was deliberately
-  not shipped. Whether `uplevel 1` means "the global table" or "another
-  procedure's slots" is a run-time property of the call stack, so the working
-  cases and the refused ones could not be told apart until the script ran, and
-  the mechanism would have to be unpicked by the real fix rather than extended
-  by it. The real fix is a run-time variable table addressable by name at any
-  level — the same machinery that would move an unknown command name from
-  compile time to run time.
+  `scripts/fuzz/gen.tcl` also still documents `eval` inside a procedure body as
+  refused (its comments at the `eval` generator and at `REFUSAL_RATE`) and
+  generates it at that rate. That is now a working construct being generated as
+  rarely as a refused one, which under-measures it. Same fix, same separate
+  change: the generator is measurement infrastructure, so it is not edited in the
+  same pass as the thing it measures.
 - **Commands tclrs does not have.** `{*}` expansion, `upvar`,
-  `uplevel`, `namespace`, `apply`, `rename`, `source` and file I/O are outside
+  `namespace`, `rename`, `source` and file I/O are outside
   the command set entirely, so a generated use of one is `invalid command name`
   and says nothing about parity. They are deliberately not generated, and belong
   in the generator on the day the commands exist. `regexp`, `regsub`,

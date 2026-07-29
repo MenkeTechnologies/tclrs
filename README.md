@@ -346,11 +346,11 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Output | `puts`, with `-nonewline` |
 | Expressions | `expr` |
 | Control flow | `if` / `elseif` / `else`, `while`, `for`, `foreach`, `switch` (`-exact`, `-glob`), `break`, `continue` |
-| Procedures | `proc`, `return` (with `-code ok` / `-code error`) |
+| Procedures | `proc`, `return` (with `-code ok` / `-code error`), `apply` |
 | Errors | `catch`, `error` |
 | Coroutines | `coroutine`, `yield`, `yieldto`, `info coroutine` |
 | Introspection | `info` — `args`, `commands`, `complete`, `coroutine`, `default`, `exists`, `globals`, `hostname`, `library`, `nameofexecutable`, `patchlevel`, `procs`, `script`, `sharedlibextension`, `tclversion`, `vars` |
-| Run-time evaluation | `eval` |
+| Run-time evaluation | `eval`, `uplevel` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
 | Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
 | Regular expressions | `regexp`, `regsub` — with `-nocase`, `-all`, `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`, `-start` and `--`; `switch -regexp` and `lsearch -regexp` take one too |
@@ -477,6 +477,29 @@ loop is lowered once however many times it runs. The nested script sees the
 interpreter's variables in both directions, including the ones a failing nested
 script had already set.
 
+Inside a procedure body it sees that procedure's **frame**, which is what tclsh
+does: a local is readable and writable, a variable the script creates becomes a
+local, and a global the body did not declare is refused there exactly as it is
+in the body. A procedure's locals are frame slots, so nothing addresses them by
+name once the chunk is built — `proc` therefore records the name of each slot in
+the chunk (`fusevm::Chunk::sub_slot_names`), and the op runs the script against a
+projection of the frame built from them, reading it back into the slots
+afterwards.
+
+`uplevel ?level? arg …` is the same mechanism aimed at a different frame: `#0`
+is the global level, a bare number counts calls outwards from the running one,
+and a level that does not exist is `bad level "…"`. Only a procedure call is a
+level — the frame a scope or a JIT side exit pushes is not one — so `uplevel 1`
+at a script's top level reports `bad level "1"` as it does in tclsh. Control
+flow does not cross one: `break`, `continue` and `return` belong to the script
+`uplevel` is running, which is measured against tclsh in
+`tests/frame_differential.rs`.
+
+`apply {params body ?ns?} ?arg …?` runs a lambda as what it is — a procedure
+body with a frame of its own, its own locals, the same defaults and variadic
+`args` rules, and `return` returning from it. A wrong argument count is reported
+against `apply lambdaExpr`, because a lambda has no name to report.
+
 ---
 
 ## [0x05] WHAT IS REFUSED
@@ -501,7 +524,8 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `proc` anywhere but a script's top level; redefining a built-in; redefining a procedure; a procedure and a coroutine of the same name | `"proc" is only supported at the top level of a script` |
 | `return` outside a procedure; `return` or `break` or `continue` out of a `catch` script; `return -code` other than `ok` or `error`; `return`'s other options | `"return" outside of a procedure is not supported` |
 | `catch`'s third (options-variable) argument; `error`'s `info` and `code` arguments | `… the options variable is not supported` |
-| `eval` inside a procedure body | `"eval" inside a procedure is not supported: the script it builds cannot reach the procedure's local variables` |
+| `yield` or `yieldto` inside a script run by `eval`, `uplevel` or `apply`. tclsh suspends the coroutine from inside the nested script; here that script runs a machine of its own, below the VM that would have to park, and that VM saves only its own state — so resuming could not return to the middle of the script | `yield inside a script run by "eval", "uplevel" or "apply" is not supported: a coroutine cannot suspend across one` |
+| `upvar`. An alias has to be a live link to a variable of another frame, and a variable here is a frame slot holding a value, with no indirection for one to point through. Reported as the command this frontend does not have, which is what it is | `invalid command name "upvar"` |
 | `coroutine` anywhere but a script's top level or a command substitution in one; a coroutine of a built-in or of anything but one of the script's procedures; `yieldto` at a command that is not a coroutine of the script | `"coroutine" is only supported at the top level of a script, or in a command substitution in one` |
 | `info body`; `info locals` / `level` / `frame`; `info class` / `object`; `info constant` / `consts`; `info functions`; `info loaded`; `info cmdcount` / `cmdtype` / `errorstack` | `info body is not supported yet: a procedure's body is compiled into the enclosing chunk and its source text is not kept` |
 | Arbitrary-precision integers. An `i64` that overflows is an error, and so is the one integer division whose true quotient does not fit (`i64::MIN / -1`) and an integer *literal* or operand that does not fit at all (`expr {99999999999999999999 + 1}`) | `integer value too large to represent` |
@@ -1222,12 +1246,21 @@ counted loop, from inside a procedure and inside a `catch`, procedures that call
 procedures along an acyclic call graph, and `eval` nested several levels deep.
 
 Shapes that tclrs **recognises and refuses** — `array` on a procedure local,
-`eval` inside a procedure body, `lsort -command`, `string is punct`, `dict unset`
-— are generated on purpose at a low rate rather than avoided. Each lands in the
-skip bucket under the refusal's own wording, so the coverage is already in place
-on the day the refusal goes; the rate is one number in the generator
-(`REFUSAL_RATE`) because every one of those refusals is decided while compiling,
-so one anywhere in a case takes the whole case out of comparison.
+`lsort -command`, `string is punct`, `dict unset` — are generated on purpose at a
+low rate rather than avoided. Each lands in the skip bucket under the refusal's
+own wording, so the coverage is already in place on the day the refusal goes; the
+rate is one number in the generator (`REFUSAL_RATE`) because every one of those
+refusals is decided while compiling, so one anywhere in a case takes the whole
+case out of comparison.
+
+That is what happened to `eval` inside a procedure body, which was on that list
+until it was implemented: a 400-program run at seed 1 moved ten cases from the
+skip bucket to the pass bucket and left every other bucket where it was
+(`DIVERGENCE` 19, `ALLOWED` 7, `CRITICAL` 0). It is still generated at
+`REFUSAL_RATE` rather than at the rate a working construct deserves, which
+under-measures it — the generator has not caught up, and `uplevel` and `apply`
+are not generated at all yet. What covers all three meanwhile is
+`tests/frame_differential.rs`.
 
 ```sh
 bash scripts/fuzz_parity.sh -M -n 500 -m       # mutate instead of generate

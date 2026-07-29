@@ -114,6 +114,22 @@ pub mod ext {
     /// Tcl's for a double or a boolean. Same trade as [`PUTS`]: those ops are
     /// not JIT-eligible either, so comparing here costs a frontend op only
     /// where one was already going to stop a trace.
+    /// `[declared, arg …]` with the count in the inline operand — `eval` inside a
+    /// procedure body, whose script runs against that procedure's *frame*.
+    ///
+    /// `declared` is the list of names the body gave to `global`, pushed by the
+    /// compiler because only it knows them: tclsh runs an `eval`'s script in
+    /// exactly the calling frame's variable context, so a bare read of a global
+    /// refuses there unless `global` linked it, and the projection the handler
+    /// builds is the frame's own names plus those.
+    pub const EVAL_FRAME: u16 = 58;
+    /// `[declared, level, arg …]` — `uplevel`, which is [`EVAL_FRAME`] against a
+    /// frame further out. `level` is the level word, still in Tcl's spelling so
+    /// the handler reports `bad level "…"` in tclsh's words.
+    pub const UPLEVEL: u16 = 59;
+    /// `[lambda, arg …]` with the count in the inline operand — `apply`.
+    pub const APPLY: u16 = 60;
+
     pub const STR_CMP: u16 = 62;
 
     /// Where the list commands' ops begin. Everything at or above this id is
@@ -752,6 +768,20 @@ impl Compiler {
         Ok(())
     }
 
+    /// The names the enclosing procedure body gave to `global`, as a Tcl list —
+    /// `None` at a script's top level, where there is no frame.
+    ///
+    /// A nested script sees the frame it runs in and the globals that frame
+    /// linked, and nothing else. The frame's own names come from the chunk at
+    /// run time; these do not, because `global` is a statement about the body
+    /// rather than about a slot.
+    pub(crate) fn declared_globals(&self) -> Option<String> {
+        let scope = self.scope.as_ref()?;
+        let mut names: Vec<&str> = scope.globals.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        Some(crate::list::join(&names))
+    }
+
     /// Where a variable lives, for an op that reaches it itself rather than
     /// through `GetVar` / `SetVar` — [`crate::cmd_list`]'s `lappend` is the one
     /// that does, so that it can extend the list in place.
@@ -949,6 +979,8 @@ impl Compiler {
     pub const BUILTINS: &'static [&'static str] = &[
         "set",
         "eval",
+        "uplevel",
+        "apply",
         "puts",
         "expr",
         "incr",
@@ -1039,6 +1071,8 @@ impl Compiler {
         match name {
             "set" => self.cmd_set(args),
             "eval" => self.cmd_eval(args),
+            "uplevel" => self.cmd_uplevel(args),
+            "apply" => self.cmd_apply(args),
             "puts" => self.cmd_puts(args),
             "expr" => self.cmd_expr(args),
             "incr" => self.cmd_incr(args),
@@ -1118,18 +1152,27 @@ impl Compiler {
     ///
     /// The nested script is a chunk of its own, and a chunk addresses variables
     /// through the interpreter's global table. A procedure's parameters and
-    /// locals are frame slots instead, so a script compiled inside one could
-    /// not see them: `eval` in a procedure body is refused rather than run
-    /// against the wrong variables.
+    /// locals are frame slots instead, so inside a procedure body the op runs
+    /// the script against a *projection* of the frame: the names the chunk
+    /// recorded for it (`fusevm::Chunk::sub_slot_names`, published by
+    /// [`crate::procs`]) become the table the script sees, and are read back
+    /// into the slots afterwards. See [`crate::runtime`]'s `run_in_frame`.
     fn cmd_eval(&mut self, args: &[Word]) -> Result<(), CompileError> {
         if args.is_empty() {
             return self.error("wrong # args: should be \"eval arg ?arg ...?\"");
         }
-        if self.scope.is_some() {
-            return self.error(
-                "\"eval\" inside a procedure is not supported: the script it builds cannot \
-                 reach the procedure's local variables",
-            );
+        // Inside a procedure the script runs against that procedure's frame, so
+        // the op needs to know which names the body linked to globals — the one
+        // fact about the frame that is not in the frame. See [`ext::EVAL_FRAME`].
+        if let Some(declared) = self.declared_globals() {
+            let count = u8::try_from(args.len() + 1)
+                .map_err(|_| self.err("too many arguments for \"eval\"".to_string()))?;
+            self.push_str(&declared);
+            for arg in args {
+                self.word(arg)?;
+            }
+            self.emit(Op::Extended(ext::EVAL_FRAME, count), -(args.len() as i32));
+            return Ok(());
         }
         let count = u8::try_from(args.len())
             .map_err(|_| self.err("too many arguments for \"eval\"".to_string()))?;
@@ -1137,6 +1180,56 @@ impl Compiler {
             self.word(arg)?;
         }
         self.emit(Op::Extended(ext::EVAL, count), 1 - args.len() as i32);
+        Ok(())
+    }
+
+    /// `uplevel ?level? arg ?arg ...?`.
+    ///
+    /// The level word is optional and is told from a script by the rule
+    /// `Tcl_GetFrame` uses: a first argument that reads as a level *and* is not
+    /// the only argument is the level. It travels as an operand rather than being
+    /// resolved here, because `uplevel $n {…}` is ordinary.
+    fn cmd_uplevel(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        if args.is_empty() {
+            return self.error("wrong # args: should be \"uplevel ?level? command ?arg ...?\"");
+        }
+        // A literal first word that looks like a level, with a script after it.
+        let has_level = args.len() > 1
+            && args[0]
+                .as_literal()
+                .is_some_and(looks_like_a_level);
+        let declared = self.declared_globals().unwrap_or_default();
+        let count = u8::try_from(args.len() + if has_level { 1 } else { 2 })
+            .map_err(|_| self.err("too many arguments for \"uplevel\"".to_string()))?;
+        self.push_str(&declared);
+        if has_level {
+            self.word(&args[0])?;
+            for arg in &args[1..] {
+                self.word(arg)?;
+            }
+        } else {
+            // No level given: the default is one frame out.
+            self.push_str("1");
+            for arg in args {
+                self.word(arg)?;
+            }
+        }
+        let pushed = if has_level { args.len() + 1 } else { args.len() + 2 };
+        self.emit(Op::Extended(ext::UPLEVEL, count), 1 - pushed as i32);
+        Ok(())
+    }
+
+    /// `apply lambdaExpr ?arg ...?`.
+    fn cmd_apply(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        if args.is_empty() {
+            return self.error("wrong # args: should be \"apply lambdaExpr ?arg ...?\"");
+        }
+        let count = u8::try_from(args.len())
+            .map_err(|_| self.err("too many arguments for \"apply\"".to_string()))?;
+        for arg in args {
+            self.word(arg)?;
+        }
+        self.emit(Op::Extended(ext::APPLY, count), 1 - args.len() as i32);
         Ok(())
     }
 
@@ -2058,6 +2151,17 @@ impl Compiler {
 /// A double literal inside an `expr` still becomes `Op::LoadFloat`
 /// ([`Compiler::expr`]), which is the arithmetic fast path this used to be
 /// about; what it costs here is one parse of a literal double at run time.
+/// Whether a word has the shape of an `uplevel` / `upvar` level: `#n`, or a
+/// bare integer. Only the shape — whether the level *exists* is a run-time
+/// question, and answering it here would refuse `uplevel 2 …` while compiling a
+/// procedure that is only ever called two deep.
+fn looks_like_a_level(word: &str) -> bool {
+    match word.strip_prefix('#') {
+        Some(rest) => !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()),
+        None => !word.is_empty() && word.bytes().all(|b| b.is_ascii_digit()),
+    }
+}
+
 pub(crate) fn literal_value(text: &str) -> Value {
     if let Ok(i) = text.parse::<i64>() {
         if i.to_string() == text {

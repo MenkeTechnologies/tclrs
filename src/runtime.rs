@@ -209,6 +209,14 @@ struct State {
     /// How many scripts are running, counting the outermost.
     depth: usize,
     limit: usize,
+    /// The contexts whose VMs are running, outermost first: the coroutine's
+    /// name, or `None` for a script's own main context.
+    ///
+    /// A nested script runs a machine of its own, which cannot see the machine
+    /// that started it. This is what lets a `yield` in an `eval`'d script tell
+    /// that it is inside a coroutine, and say so, rather than report the
+    /// reference interpreter's message for a `yield` that is in no coroutine.
+    running: Vec<Option<String>>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -243,6 +251,7 @@ impl Interp {
                 output,
                 depth: 0,
                 limit: DEFAULT_RECURSION_LIMIT,
+                running: Vec::new(),
             })),
         }
     }
@@ -509,9 +518,12 @@ impl Hooks {
                 Some(name) if !name.starts_with('\u{0}') => {
                     Err(format!("can't read \"{name}\": no such variable"))
                 }
-                // A frame slot carries no name — the chunk addresses it by
-                // index — so a procedure's local keeps the old reading until a
-                // chunk carries slot names. `Undef` is exactly that reading.
+                // fusevm builds this read's `UndefRead` with `name: None` for a
+                // frame slot, so a procedure's local keeps the old reading:
+                // `Undef` is exactly that reading. The chunk *does* carry the
+                // names now — `src/procs.rs` publishes them and `uplevel` and
+                // `apply` run against them — so what is left is for fusevm to
+                // resolve one at its `Op::GetSlot` arm. See BUGS.md.
                 _ => Ok(Value::Undef),
             }
         }));
@@ -556,6 +568,9 @@ impl Hooks {
                 // happens to mention them, so a chunk-only answer omits exactly
                 // the variables every script starts with.
                 crate::cmd_info::ext::NAMES => info_names_op(&interp, vm, arg),
+                ext::EVAL_FRAME => eval_frame_op(&interp, vm, arg),
+                ext::UPLEVEL => uplevel_op(&interp, vm, arg),
+                ext::APPLY => apply_op(&interp, vm, arg),
                 ext::FFI_CALL => ffi_op(vm, arg).map_err(TclError::plain),
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
@@ -722,6 +737,272 @@ fn eval_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     Ok(())
 }
 
+/// `eval` inside a procedure body: `[declared, arg …]`.
+///
+/// The script runs against the procedure's own frame, which is what tclsh does —
+/// see [`run_in_frame`].
+fn eval_frame_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
+    let mut args = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        args.push(to_tcl_string(&vm.pop()));
+    }
+    args.reverse();
+    let declared = args.remove(0);
+    let src = script_of(args);
+    // The current level, which is the innermost procedure frame — not the
+    // innermost VM frame, which a scope or a side exit may have pushed inside it.
+    let up = levels(vm).first().copied().unwrap_or(0);
+    run_in_frame(interp, vm, &src, up, &declared)
+}
+
+/// `uplevel ?level? arg …`: `[declared, level, arg …]`.
+///
+/// `#0` is the global level, which is what an ordinary `eval` already runs
+/// against; any other level is a frame, counted outwards from this one.
+fn uplevel_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
+    let mut args = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        args.push(to_tcl_string(&vm.pop()));
+    }
+    args.reverse();
+    let declared = args.remove(0);
+    let level = args.remove(0);
+    let src = script_of(args);
+
+    // The levels this context has: one per active procedure call, which is what
+    // Tcl counts. The global level is not one of them — it is what `#0` names,
+    // and what a relative level reaches by counting past the outermost call.
+    let ups = levels(vm);
+    let up = match parse_level(&level, ups.len()) {
+        Some(Level::Global) => {
+            flush(&vm.chunk, interp, &vm.globals);
+            let result = run_source(interp, &src);
+            vm.globals = seed(&vm.chunk, interp);
+            vm.push(result?);
+            return Ok(());
+        }
+        // A level counted in calls, resolved to the frame that call pushed.
+        Some(Level::Up(out)) => match ups.get(out) {
+            Some(&up) => up,
+            None => return Err(TclError::plain(format!("bad level \"{level}\""))),
+        },
+        None => return Err(TclError::plain(format!("bad level \"{level}\""))),
+    };
+    run_in_frame(interp, vm, &src, up, &declared)
+}
+
+/// The `up` distances of the frames that are Tcl levels, innermost first.
+///
+/// A Tcl level is a procedure call, and fusevm pushes a frame for other reasons
+/// too: the base frame a script's top level runs in, the frame a scope opens, and
+/// one materialized after a JIT side exit. Only a call to a named subroutine
+/// records an `entry_ip`, so that is what tells a level from a frame.
+///
+/// Counting VM frames instead is what made `uplevel 1` at the top level find the
+/// base frame and answer, where tclsh reports `bad level "1"` — there is no level
+/// above the global one.
+fn levels(vm: &VM) -> Vec<usize> {
+    let n = vm.frames.len();
+    (0..n)
+        .filter(|&up| vm.frames[n - 1 - up].entry_ip.is_some())
+        .collect()
+}
+
+/// Which level a `level` word names.
+enum Level {
+    /// `#0`, or a relative level that reaches past the outermost call.
+    Global,
+    /// This many calls outwards from the running one.
+    Up(usize),
+}
+
+/// Read `uplevel`'s level word the way `Tcl_GetFrame` reads it: `#n` counts from
+/// the global level inwards, a bare number counts outwards from here, and
+/// anything else is not a level at all.
+fn parse_level(word: &str, depth: usize) -> Option<Level> {
+    if let Some(abs) = word.strip_prefix('#') {
+        let abs: usize = abs.parse().ok()?;
+        // `#0` is the global level; `#1` is the outermost frame, and so on.
+        if abs == 0 {
+            return Some(Level::Global);
+        }
+        return depth.checked_sub(abs).map(Level::Up);
+    }
+    let rel: usize = word.parse().ok()?;
+    if rel > depth {
+        return None;
+    }
+    if rel == depth {
+        Some(Level::Global)
+    } else {
+        Some(Level::Up(rel))
+    }
+}
+
+/// One argument is the script; several are concatenated as `concat` does, which
+/// is where `eval $cmd $args` gets its meaning — and why `uplevel 1 set y {a b}`
+/// loses the braces and becomes three words, as it does in tclsh.
+fn script_of(mut args: Vec<String>) -> String {
+    if args.len() == 1 {
+        args.remove(0)
+    } else {
+        crate::cmd_list::concat(&args)
+    }
+}
+
+/// Run `src` against the variables of the frame `up` levels out.
+///
+/// tclsh runs an `eval`'s script in *exactly* the calling frame's context: a
+/// local is visible and writable, a variable the script creates becomes a local,
+/// `unset` removes one, and a bare read of a global **refuses** unless the body
+/// linked it with `global`. So the interpreter's variable table is replaced for
+/// the duration by a projection of that frame — its named slots, plus the names
+/// the body declared global — and read back afterwards. Nothing else is visible,
+/// which is the half that a projection merely *added* to the globals would get
+/// wrong.
+fn run_in_frame(
+    interp: &Shared,
+    vm: &mut VM,
+    src: &str,
+    up: usize,
+    declared: &str,
+) -> Result<(), TclError> {
+    let names: Vec<String> = vm.slot_names_at(up).to_vec();
+    let frame = match vm.frames.len().checked_sub(up + 1) {
+        // A frame with no name for its slots — the base frame, a scope frame, or
+        // one materialized after a JIT side exit — cannot be projected, so the
+        // script runs against the globals, as an ordinary `eval` does.
+        Some(_) if names.is_empty() => {
+            flush(&vm.chunk, interp, &vm.globals);
+            let result = run_source(interp, src);
+            vm.globals = seed(&vm.chunk, interp);
+            vm.push(result?);
+            return Ok(());
+        }
+        Some(index) => index,
+        None => return Err(TclError::plain("bad level".to_string())),
+    };
+    let declared = crate::list::split(declared).unwrap_or_default();
+
+    // The enclosing chunk's globals are the authority for a declared name, so
+    // they go into the table before anything is read out of it.
+    flush(&vm.chunk, interp, &vm.globals);
+    let outer = std::mem::take(&mut interp.lock().expect("interpreter lock").globals);
+
+    let mut view: HashMap<String, Value> = HashMap::new();
+    for name in &declared {
+        if let Some(v) = outer.get(name) {
+            view.insert(name.clone(), v.clone());
+        }
+    }
+    for (slot, name) in names.iter().enumerate() {
+        if name.is_empty() {
+            continue;
+        }
+        match vm.frames[frame].slots.get(slot) {
+            Some(v) if *v != Value::Undef => {
+                view.insert(name.clone(), v.clone());
+            }
+            // An unset local is absent rather than empty, so a read of it in the
+            // nested script refuses exactly as it would in the body.
+            _ => {
+                view.remove(name);
+            }
+        }
+    }
+    interp.lock().expect("interpreter lock").globals = view;
+
+    let result = run_source(interp, src);
+
+    let after = std::mem::take(&mut interp.lock().expect("interpreter lock").globals);
+    for (slot, name) in names.iter().enumerate() {
+        if name.is_empty() {
+            continue;
+        }
+        let value = after.get(name).cloned().unwrap_or(Value::Undef);
+        let slots = &mut vm.frames[frame].slots;
+        if slot >= slots.len() {
+            slots.resize(slot + 1, Value::Undef);
+        }
+        slots[slot] = value;
+    }
+    let mut outer = outer;
+    for name in &declared {
+        match after.get(name) {
+            Some(v) => outer.insert(name.clone(), v.clone()),
+            None => outer.remove(name),
+        };
+    }
+    interp.lock().expect("interpreter lock").globals = outer;
+    vm.globals = seed(&vm.chunk, interp);
+    vm.push(result?);
+    Ok(())
+}
+
+/// `apply lambdaExpr ?arg …?`: `[lambda, arg …]`.
+///
+/// A lambda is a procedure body with its own frame — its parameters are locals,
+/// a bare name is a local, a global needs `$::g`, and `return` returns from it —
+/// so it is run as one rather than given a second calling convention. The
+/// procedure is named with a leading NUL, which no Tcl name can be, and lives
+/// only in the chunk built for this call.
+fn apply_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
+    let mut args = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        args.push(to_tcl_string(&vm.pop()));
+    }
+    args.reverse();
+    let lambda = args.remove(0);
+
+    let parts = crate::list::split(&lambda)
+        .map_err(|_| TclError::plain(bad_lambda(&lambda)))?;
+    let (params, body) = match parts.as_slice() {
+        [params, body] => (params, body),
+        // The third element is a namespace. This frontend has one namespace, so
+        // any other is refused rather than silently ignored.
+        [params, body, ns] if ns == "::" || ns.is_empty() => (params, body),
+        [_, _, ns] => {
+            return Err(TclError::plain(format!(
+                "the namespace \"{ns}\" of a lambda is not supported yet: this frontend has only \"::\""
+            )))
+        }
+        _ => return Err(TclError::plain(bad_lambda(&lambda))),
+    };
+
+    const NAME: &str = "\u{0}apply";
+    let mut src = String::with_capacity(body.len() + params.len() + 32);
+    src.push_str("proc ");
+    src.push_str(NAME);
+    src.push(' ');
+    src.push_str(&crate::list::quote(params, false));
+    src.push(' ');
+    src.push_str(&crate::list::quote(body, false));
+    src.push('\n');
+    src.push_str(NAME);
+    for a in &args {
+        src.push(' ');
+        src.push_str(&crate::list::quote(a, false));
+    }
+
+    flush(&vm.chunk, interp, &vm.globals);
+    let result = run_source(interp, &src);
+    vm.globals = seed(&vm.chunk, interp);
+    // The synthesized name must not surface in a diagnostic the script can see:
+    // tclsh reports a lambda's arity against `apply lambdaExpr`.
+    vm.push(result.map_err(|e| TclError::plain(rename_lambda(&e.msg)))?);
+    Ok(())
+}
+
+fn bad_lambda(lambda: &str) -> String {
+    format!("can't interpret \"{lambda}\" as a lambda expression")
+}
+
+/// Replace the synthesized procedure's name in a diagnostic with what tclsh
+/// names: `apply lambdaExpr`, followed by the lambda's own parameters.
+fn rename_lambda(msg: &str) -> String {
+    msg.replace("\u{0}apply", "apply lambdaExpr")
+}
+
 // ── the driver ───────────────────────────────────────────────────────────
 
 /// How a context is suspended, which decides what resuming it may pass in.
@@ -856,16 +1137,31 @@ impl Machine {
     /// `catch` regions move rather than being copied.
     fn run_current(&mut self) -> VMResult {
         let current = self.current;
-        *self.hooks.current.lock().expect("coroutine lock") = self.contexts[current].name.clone();
+        let name = self.contexts[current].name.clone();
+        *self.hooks.current.lock().expect("coroutine lock") = name.clone();
         *self.hooks.catches.lock().expect("catch lock") =
             std::mem::take(&mut self.contexts[current].catches);
         let globals = std::mem::take(&mut self.globals);
+        // A script this VM starts runs a machine of its own, which reads this to
+        // see what is running around it — see `State::running`.
+        self.hooks
+            .interp
+            .lock()
+            .expect("interpreter lock")
+            .running
+            .push(name);
 
         let vm = self.vm(current);
         vm.globals = globals;
         vm.clear_halt();
         let outcome = vm.run();
         let globals = std::mem::take(&mut vm.globals);
+        self.hooks
+            .interp
+            .lock()
+            .expect("interpreter lock")
+            .running
+            .pop();
 
         self.globals = globals;
         self.contexts[current].catches =
@@ -1075,12 +1371,34 @@ impl Machine {
         }
     }
 
-    /// `yield` and `yieldto` are errors outside a coroutine.
+    /// `yield` and `yieldto` are errors outside a coroutine — and are refused,
+    /// for a different reason and with a different message, inside a script that
+    /// a coroutine reached through `eval`, `uplevel` or `apply`.
     fn in_coroutine(&self, command: &str) -> Result<(), String> {
-        if self.contexts[self.current].name.is_none() {
-            return Err(format!("{command} can only be called in a coroutine"));
+        if self.contexts[self.current].name.is_some() {
+            return Ok(());
         }
-        Ok(())
+        // Suspending here would have to park a VM that is waiting inside an op
+        // handler, several Rust frames below this one: the nested script's state
+        // is not part of what the outer VM saves when it parks, so resuming it
+        // could not come back to the middle of this script. It is refused
+        // outright rather than approximated, because every approximation loses
+        // whatever the nested script had set.
+        let nested = self
+            .hooks
+            .interp
+            .lock()
+            .expect("interpreter lock")
+            .running
+            .iter()
+            .any(Option::is_some);
+        if nested {
+            return Err(format!(
+                "{command} inside a script run by \"eval\", \"uplevel\" or \"apply\" is not \
+                 supported: a coroutine cannot suspend across one"
+            ));
+        }
+        Err(format!("{command} can only be called in a coroutine"))
     }
 }
 

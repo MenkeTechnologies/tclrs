@@ -192,10 +192,12 @@ fn script_value_is_the_last_command() {
 #[test]
 fn unsupported_constructs_are_refused() {
     for (src, expected) in [
-        // `proc`, `foreach` and `set a(1) x` all stood here until the phases
-        // that built them landed. `uplevel` is a command this frontend has no
-        // implementation of at all, so it stands in now.
-        ("uplevel 1 {set x 1}", "invalid command name \"uplevel\""),
+        // `proc`, `foreach`, `set a(1) x` and `uplevel` all stood here until the
+        // phases that built them landed — `uplevel 1 {set x 1}` now reports the
+        // `bad level "1"` that tclsh reports for it, compared against tclsh in
+        // `tests/frame_differential.rs`. `upvar` is a command this frontend has
+        // no implementation of at all, so it stands in now.
+        ("upvar 1 x y", "invalid command name \"upvar\""),
         (
             "array startsearch a",
             "array startsearch is not supported yet",
