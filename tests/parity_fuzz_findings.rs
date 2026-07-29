@@ -619,36 +619,49 @@ fn incr_reports_its_own_diagnostic_for_a_literal_increment() {
     }
 }
 
-/// The rest of the same finding, still open: when it is the *variable* that does
-/// not hold an integer, the refusal comes from the numeric hook behind
-/// `Op::Add`, in `expr`'s wording.
+/// The rest of the same finding, **fixed**: when it is the *variable* that does
+/// not hold an integer, the refusal is `incr`'s wording too.
 ///
-/// The fix would be an extension op in `incr`'s lowering, and fusevm's tracing
-/// tier rejects `Op::Extended` inside a loop body — so it would take the
-/// compiled trace away from every loop that counts with `incr`, which
-/// `tiers::tests::a_proc_local_counter_loop_reaches_a_compiled_trace` and
-/// `bench/counted_loop_proc.tcl` both depend on. Not taken; recorded instead.
+/// It was the numeric hook behind `Op::Add` that answered, in `expr`'s words,
+/// because `incr x` and `expr {$x + 1}` lower to the same arithmetic on the same
+/// value. An extension op in `incr`'s lowering would have separated them and
+/// cost every `incr` loop its compiled trace — `tiers::tests::
+/// a_proc_local_counter_loop_reaches_a_compiled_trace` and
+/// `bench/counted_loop_proc.tcl` both depend on that trace. The site separates
+/// them instead: fusevm hands the hook the chunk and op index
+/// (`fusevm::NumericCall`), the compiler records where each `incr` put its
+/// arithmetic, and the arithmetic stays a native `Op::Add`.
 #[test]
-fn bug_incr_reports_an_expr_error_for_a_non_integer_variable() {
+fn incr_reports_its_own_wording_for_a_non_integer_variable() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
-        &tclsh,
+    for same in [
         "set x abc\nincr x",
-        err("expected integer but got \"abc\""),
-        err("cannot use non-numeric string \"abc\" as left operand of \"+\""),
-    );
-    diverges(
-        &tclsh,
         "set x 5\nset y abc\nincr x $y",
-        err("expected integer but got \"abc\""),
-        err("cannot use non-numeric string \"abc\" as right operand of \"+\""),
-    );
-    // The variable being *absent* is no longer this case: `incr` counts from
-    // zero there, as tclsh does.
+        // A double is not an integer to `incr`, even though the addition would
+        // have answered 2.5 quite happily.
+        "set x 1.5\nincr x",
+        "set x 5\nset y 1.5\nincr x $y",
+        // An element and a procedure's local reach the same hook by other ops.
+        "set a(k) abc\nincr a(k)",
+        "proc p {} {set q abc\nincr q}\np",
+        // `expr` keeps its own wording — the point of separating them.
+        "set x abc\nexpr {$x + 1}",
+        "set x abc\nexpr {1 + $x}",
+    ] {
+        assert_eq!(reference(&tclsh, same), subject(same), "{same}");
+    }
+    // The variable being *absent* is a different case: `incr` counts from zero.
     agrees(&tclsh, "incr fresh 5\nputs $fresh", out("5\n"));
+    // And a promoted integer is still an integer, so this is arithmetic rather
+    // than a refusal.
+    agrees(
+        &tclsh,
+        "set y 99999999999999999999\nputs [incr y -1]",
+        out("99999999999999999998\n"),
+    );
 }
 
 /// `format`'s integer conversions name a list as a list. tclrs quotes the value

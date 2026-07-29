@@ -380,12 +380,13 @@ pub fn compile_debug(script: &Script) -> Result<fusevm::Chunk, CompileError> {
 
 fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
     let first = Compiler::run(script, ArrayNames::new(), debug)?;
-    let (mut chunk, tolerant) = if first.seen_arrays.is_empty() {
-        (first.b.build(), first.tolerant_reads)
+    let (mut chunk, tolerant, incr_sites) = if first.seen_arrays.is_empty() {
+        (first.b.build(), first.tolerant_reads, first.incr_sites)
     } else {
         let second = Compiler::run(script, first.seen_arrays, debug)?;
         let reads = second.tolerant_reads.clone();
-        (second.b.build(), reads)
+        let incrs = second.incr_sites.clone();
+        (second.b.build(), reads, incrs)
     };
     // Tcl's integers are arbitrary-precision, and so are this frontend's: an
     // `i64` that overflows promotes, in the numeric hook. Native codegen would
@@ -396,6 +397,7 @@ fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
     // 9223372036854775808.
     chunk.int_overflow_deopt = true;
     crate::runtime::note_tolerant_reads(&chunk, &tolerant);
+    crate::runtime::note_incr_sites(&chunk, &incr_sites);
     Ok(chunk)
 }
 
@@ -453,6 +455,14 @@ pub(crate) struct Compiler {
     /// chunk they belong to and [`crate::runtime`] answers fusevm's undef hook
     /// from that set.
     pub(crate) tolerant_reads: Vec<usize>,
+    /// Op indices of the `Op::Add` / `Op::Sub` an `incr` lowered.
+    ///
+    /// `incr` words an operand refusal in its own terms — `expected integer but
+    /// got "abc"` — where `expr` names the operator. The two lower to the same
+    /// arithmetic on the same value, so only the site separates them, and the
+    /// alternative was an extension op here, which costs every counted loop its
+    /// trace. Read by the sited numeric hook in [`crate::runtime`].
+    pub(crate) incr_sites: Vec<usize>,
     pub(crate) depth: usize,
     pub(crate) loops: Vec<LoopCtx>,
     /// The line of the command being lowered, recorded against every op it
@@ -519,6 +529,7 @@ impl Compiler {
         let mut c = Compiler {
             b: ChunkBuilder::new(),
             tolerant_reads: Vec::new(),
+            incr_sites: Vec::new(),
             depth: 0,
             loops: Vec::new(),
             line: 1,
@@ -1203,6 +1214,7 @@ impl Compiler {
         // reaching native code. The cost is that a *variable* holding something
         // that is not an integer is refused by the numeric hook in `expr`'s
         // wording rather than `incr`'s — recorded in BUGS.md.
+        self.incr_sites.push(self.b.current_pos());
         self.emit(Op::Add, -1);
         self.emit(Op::Dup, 1);
         self.emit_set_var(&name);

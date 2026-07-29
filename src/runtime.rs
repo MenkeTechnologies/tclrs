@@ -470,7 +470,24 @@ impl Hooks {
     fn install(&self, vm: &mut VM) {
         let sink = self.output.clone();
         vm.set_output_sink(Box::new(move |s: &str| sink.write(s)));
-        vm.set_numeric_hook(Arc::new(numeric));
+        // Sited rather than plain, so `incr`'s operand refusal can be worded
+        // as `incr`'s: it and `expr {$x + 1}` lower to the same `Op::Add` on
+        // the same value, and only the site tells them apart. Keeping the
+        // arithmetic a native op is what keeps a counted loop traced, so the
+        // distinction cannot live in an extension op here.
+        vm.set_sited_numeric_hook(Arc::new(|call: fusevm::NumericCall<'_>| {
+            // At an `incr` site the operands are held to `incr`'s rule before
+            // the arithmetic runs, not after it fails: `incr` takes an integer,
+            // so `set x 1.5; incr x` is refused where the addition would
+            // happily have answered 2.5. An operand that *is* an integer falls
+            // through, so promotion to a bignum still works here.
+            if is_incr_site(call.chunk, call.ip) {
+                if let Some(e) = incr_operand_error(call.a, call.b) {
+                    return Err(e);
+                }
+            }
+            numeric(call.op, call.a, call.b)
+        }));
         // Reading a variable that was never assigned is an error in Tcl, not
         // the empty string. fusevm calls this for every variable read that
         // finds `Undef` (`VM::set_undef_hook`); answering here rather than
@@ -938,6 +955,10 @@ impl Machine {
             return_ip: self.chunk.ops.len(),
             stack_base: base,
             slots: Vec::new(),
+            // The body is a procedure of this chunk, so the frame carries which
+            // one: that is what lets the VM answer a slot's name inside a
+            // coroutine, as it does inside an ordinary call.
+            entry_ip: Some(entry),
         });
         vm.ip = entry;
 
@@ -1391,6 +1412,38 @@ fn incr_operand(text: &str) -> Result<Num, String> {
 
 /// The numeric hook: called when an operand is not something the VM can
 /// compute on natively, or when an integer operation overflows.
+/// `incr`'s own wording for an operand that is not an integer.
+///
+/// `incr` takes an integer, so it names the value rather than the operator, and
+/// it names whichever of the two is at fault — the variable first, since that is
+/// the one tclsh reports when both are. `None` when neither operand explains the
+/// failure, which leaves the arithmetic's own message in place rather than
+/// inventing one.
+fn incr_operand_error(a: &Value, b: &Value) -> Option<String> {
+    for operand in [a, b] {
+        // `Undef` is the variable not existing, which `incr` reads as zero — the
+        // undef hook answered it deliberately for this site. Absent is not the
+        // same as not-an-integer.
+        if matches!(operand, Value::Undef) {
+            continue;
+        }
+        // Integral of *any* width, not `tcl_int`'s machine integer: a promoted
+        // value is still an integer, and `incr y -1` on 10^20 is arithmetic
+        // tclsh performs rather than refuses.
+        let integral = matches!(
+            parse_number(to_tcl_string(operand).trim()),
+            Ok(Num::Int(_)) | Ok(Num::Big(_))
+        );
+        if !integral {
+            return Some(format!(
+                "expected integer but got {}",
+                named(&to_tcl_string(operand), 50)
+            ));
+        }
+    }
+    None
+}
+
 fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
     // Comparisons prefer numbers but fall back to string order, which is what
     // makes `expr {"10" < "9"}` false and `expr {10 < 9}` also false while
@@ -2179,6 +2232,39 @@ fn chunk_identity(chunk: &fusevm::Chunk) -> u64 {
     chunk.op_hash.hash(&mut h);
     chunk.names.hash(&mut h);
     h.finish() | 1
+}
+
+/// The arithmetic sites an `incr` lowered, as `(chunk identity, op index)`.
+///
+/// `incr x` and `expr {$x + 1}` are the same `Op::Add` on the same value, and
+/// the reference interpreter refuses them in different words: `expected integer
+/// but got "abc"` against `cannot use non-numeric string "abc" as left operand
+/// of "+"`. Only the site separates them, which is what
+/// `fusevm::NumericCall::ip` is for. Same shape as [`TOLERANT_READS`], and
+/// accumulating for the same reason: a cached chunk runs long after a later one
+/// was lowered.
+static INCR_SITES: Mutex<Option<HashSet<(u64, usize)>>> = Mutex::new(None);
+
+/// Record where `chunk`'s `incr` commands put their arithmetic.
+pub(crate) fn note_incr_sites(chunk: &fusevm::Chunk, ips: &[usize]) {
+    if ips.is_empty() {
+        return;
+    }
+    let id = chunk_identity(chunk);
+    let mut guard = INCR_SITES.lock().expect("incr sites lock");
+    let set = guard.get_or_insert_with(HashSet::new);
+    for &ip in ips {
+        set.insert((id, ip));
+    }
+}
+
+/// Whether the arithmetic at `ip` in the chunk `id` is an `incr`'s.
+fn is_incr_site(id: u64, ip: usize) -> bool {
+    INCR_SITES
+        .lock()
+        .expect("incr sites lock")
+        .as_ref()
+        .is_some_and(|set| set.contains(&(id, ip)))
 }
 
 /// Record which of `chunk`'s reads tolerate an unset variable.
