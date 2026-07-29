@@ -93,7 +93,14 @@ approximated, and nothing is silently mis-run.
   `jit-disk-cache` and `aot`. Every VM this crate builds arms the tracing JIT;
   `src/aot.rs` lowers a script to a native object and links it into a standalone
   binary; `src/tiers.rs` reports which tiers a script's bytecode actually
-  reaches. What that report says today, and why, is in the README.
+  reaches. Every counted `while` / `for` loop reaches a compiled trace, whether
+  its counter is a procedure's frame slot or a script's top-level variable: the
+  loop is emitted rotated so fusevm's trace compiler accepts its shape
+  (`Compiler::rotated_loop`), nothing in an `expr` is an extension op any more,
+  and fusevm 0.15.0 promotes the globals a trace references to registers at
+  entry and spills them at every exit. `--aot` lowers the same loops
+  closed-world. What the tier report says today, and the numbers, are in the
+  README.
 - **Editor servers.** `tclrs --lsp` speaks the Language Server Protocol on
   stdio — diagnostics from the parser and then the compiler, completion and
   hover from the same tables the REPL completes from, signature help and
@@ -121,30 +128,13 @@ approximated, and nothing is silently mis-run.
 
 ## Not implemented
 
-- **The JIT compiles nothing for a loop outside a procedure.** A `while` or `for`
-  loop *inside* a `proc` does reach a compiled trace — `tclrs --tiers` reports
-  `traced=true`, and the benchmark row is 37× the interpreter. Two things had to
-  hold for that, and only one of them generalises:
-  - **Shape — fixed.** Every loop is now emitted rotated: entered at its test,
-    closed by a conditional backward branch (`Compiler::rotated_loop`,
-    `src/compiler.rs`). The textbook `while` shape — a forward `JumpIfFalse` exit
-    closed by an unconditional backward `Jump` — records an op sequence
-    `is_trace_eligible` accepts and fusevm's trace compiler then declines, so
-    nothing was ever installed. Both shapes are pinned by hand-built chunks with
-    no Tcl involved in `src/tiers.rs`.
-  - **Ops — still open at the top level.** A Tcl variable at a script's top level
-    is a VM global, and `Op::GetVar` / `Op::SetVar` are absent from fusevm's
-    `is_block_eligible_op_at` (`fusevm-0.14.20/src/jit.rs:4249`), which both the
-    block tier (`:4419`) and the tracing tier (`is_trace_op_allowed_at`, `:6180`)
-    require. Rotation does not touch this: a top-level loop reports
-    `trace-eligible=false` before its shape is consulted. Slot-allocating a
-    top-level variable whose name is known at compile time would fix it.
-  - **`foreach` and `dict for` reach no tier in any spelling**, procedure locals
-    included. Their loop state is carried by frontend extension ops
-    (`FOREACH_INIT` / `MORE` / `TAKE` / `ADVANCE`, `DICT_PAIRS`) and
-    `is_trace_op_allowed_at` rejects `Op::Extended` outright — an extension
-    handler is arbitrary Rust with no Cranelift lowering. Lowering their state to
-    native ops is the fix; rotation is not.
+- **`foreach` and `dict for` reach no tier in any spelling**, procedure locals
+  included. Their loop state is carried by frontend extension ops
+  (`FOREACH_INIT` / `MORE` / `TAKE` / `ADVANCE`, `DICT_PAIRS`) and
+  `is_trace_op_allowed_at` rejects `Op::Extended` outright — an extension handler
+  is arbitrary Rust with no Cranelift lowering. Lowering their state to native
+  ops is the fix. A counted `while` or `for` loop does reach a compiled trace
+  now, wherever its variables live — see the "Implemented" entry above.
 - **Ahead-of-time compilation of `catch` or a coroutine.** Both are driven from
   outside `VM::run`, and fusevm's ahead-of-time entry owns the run, so `--aot`
   refuses the script rather than compiling one that would turn a caught error

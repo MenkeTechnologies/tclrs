@@ -593,7 +593,7 @@ repeated four times.
 and the persistent native-code cache:
 
 ```toml
-fusevm = { version = "0.14.20", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
+fusevm = { version = "0.15.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
 ```
 
 | Feature | What it adds |
@@ -611,9 +611,10 @@ get the same VM.
 
 Not an estimate. `tclrs --tiers` asks fusevm's own predicates
 (`is_block_eligible`, `is_trace_eligible`, `trace_is_compiled`,
-`block_jit_is_compiled`) after running the script. The answer splits on one
-thing: whether the loop's variables are a procedure's locals or a script's
-top-level globals.
+`block_jit_is_compiled`) after running the script. Every counted loop this
+frontend emits now reaches a compiled trace, whether its counter is a
+procedure's local or a script's top-level variable; what a loop still fails on
+is an extension op in its body.
 
 #### A loop inside a procedure reaches a compiled trace
 
@@ -630,24 +631,30 @@ puts [count 3000000]
 
 ```
 $ tclrs --tiers bench/counted_loop_proc.tcl
-ops                     29
+ops                     28
 block-JIT eligible      false
 block-JIT compiled      false
 largest eligible region none
 loop @7                trace-eligible=true traced=true blacklisted=false
-JIT-ineligible ops
+block-ineligible ops
   Call                  1
-  PrintLn               1
+  Extended              1
   ReturnValue           2
 reaches native code     true
 ```
+
+The ops listed are the ones the **block** tier refuses, which is a different
+question from whether a loop is traced: the block tier compiles a chunk whole or
+not at all, and the `Call` around this loop settles that. It is the tracing tier
+that runs here.
 
 `traced=true`. Two things have to hold at once for that, and each was a separate
 blocker.
 
 **The ops.** A procedure's locals are frame slots, so the counter is
-`GetSlot` / `SetSlot`, which the tiers accept. A top-level Tcl variable is a VM
-global instead, and that is still fatal — see below.
+`GetSlot` / `SetSlot`, which the tiers have always accepted. A top-level Tcl
+variable is a VM global instead, which the tracing tier used to refuse and now
+takes — see below.
 
 **The shape.** fusevm arms its trace recorder at a backward branch and closes the
 recording when a branch lands back on the anchor. A textbook `while` — evaluate
@@ -701,38 +708,50 @@ The chunk as a whole stays block-ineligible for a separate reason — the `Call`
 and the `puts` around the loop — so the whole-chunk tier is not what runs here.
 It is the tracing tier.
 
-#### A loop at a script's top level still reaches nothing
+#### A loop at a script's top level reaches one too
 
 ```
 $ tclrs --tiers bench/counted_loop.tcl
-ops                     20
+ops                     19
 block-JIT eligible      false
 block-JIT compiled      false
 largest eligible region none
-loop @5                trace-eligible=false traced=false blacklisted=false
-JIT-ineligible ops
+loop @5                trace-eligible=true traced=true blacklisted=false
+block-ineligible ops
+  Extended              1
   GetVar                3
-  PrintLn               1
   SetVar                2
-reaches native code     false
+reaches native code     true
 ```
 
-Same rotated shape, and `trace-eligible=false` before the shape is even
-consulted. The arithmetic is not the problem — `tclrs --disasm` shows `NumLt`,
-`Add`, `LoadInt`, `Jump` and `JumpIfTrue` with no extension op anywhere in the
-loop. `GetVar` / `SetVar` are. A Tcl variable at a script's top level lowers to a
-VM **global**, and fusevm's tiers accept slots, not globals: `Op::GetVar` and
-`Op::SetVar` are absent from `is_block_eligible_op_at`
-(`fusevm-0.14.20/src/jit.rs:4249`), whole-chunk eligibility is the conjunction of
-that predicate over every op (`:4419`), and the tracing tier defers to the same
-predicate for everything but `Call` / `Return` (`is_trace_op_allowed_at`,
-`:6180`).
+This is the row that used to read `trace-eligible=false traced=false`. A Tcl
+variable at a script's top level lowers to a VM **global**, and fusevm's tiers
+accepted slots and not globals: `Op::GetVar` and `Op::SetVar` were absent from
+`is_block_eligible_op_at`, and the tracing tier defers to that same predicate for
+everything but `Call` / `Return` (`is_trace_op_allowed_at`). Nothing about the
+loop's arithmetic or shape was the problem — `tclrs --disasm` shows `NumLt`,
+`Add`, `LoadInt`, `Jump` and `JumpIfTrue`, no extension op anywhere in it.
 
-The fix is not in the loop's shape and is not attempted here: it is
-slot-allocating a top-level Tcl variable whose name is known at compile time,
-spilling to a global only where a script can reach a variable by computed name.
-Wrapping the hot loop in a `proc` is the workaround, and it is what the
-`counted_loop_proc` benchmark row measures.
+fusevm 0.15.0 takes them, by the same mechanism it already had for slots: the
+globals a trace references are promoted to registers when the trace is entered
+and spilled back at every exit, including every side exit. Two details make that
+safe for a Tcl script rather than only for a synthetic loop:
+
+- **The entry guard is per referenced index, not per table.** The slot path can
+  ask "are *all* slots numeric?"; the equivalent question about globals is always
+  no, because `argv0`, `argc` and `argv` are strings in every run. Only the
+  indices the trace actually touches are checked, so a script's string variables
+  neither block the trace nor get flattened by the spill.
+- **A trace that would *write* a global that is not numeric at entry is refused
+  outright**, because the write-back would otherwise drop the store silently.
+
+The ops are still listed above because that list answers the *block* tier's
+question, and the block tier still refuses globals — the whole chunk is not
+compiled in one piece. The loop inside it is.
+
+Wrapping a hot loop in a `proc` is no longer the workaround it was; the
+`counted_loop` and `counted_loop_proc` benchmark rows now land within a
+millisecond of each other.
 
 #### `foreach` and `dict for` reach nothing either, for a third reason
 
@@ -749,25 +768,24 @@ puts [sum $l]
 
 ```
 $ tclrs --tiers foreach_proc.tcl
-ops                     61
+ops                     58
 block-JIT eligible      false
 block-JIT compiled      false
 largest eligible region none
 loop @10               trace-eligible=false traced=false blacklisted=false
 loop @39               trace-eligible=false traced=false blacklisted=false
-JIT-ineligible ops
+block-ineligible ops
   Call                  1
-  Extended              5
-  GetVar                4
-  PrintLn               1
+  Extended              6
+  GetVar                3
   ReturnValue           2
-  SetVar                4
+  SetVar                3
 reaches native code     false
 ```
 
 `loop @10` is the `foreach` inside the procedure — slots, and still refused;
-`loop @39` is the top-level `while` that builds the list, refused for the global
-counter *and* for `lappend`. `foreach`'s loop state is carried by four frontend
+`loop @39` is the top-level `while` that builds the list, refused for `lappend`
+now that its global counter is no longer a reason. `foreach`'s loop state is carried by four frontend
 extension ops (`FOREACH_INIT` / `MORE` / `TAKE` / `ADVANCE`), and
 `is_trace_op_allowed_at` rejects `Op::Extended` outright — an extension handler
 is arbitrary Rust with no Cranelift lowering. `dict for` is refused the same way
@@ -929,77 +947,100 @@ them pays for an exec the others do not:
 ### Measured
 
 Apple M5 Max, macOS 26.5.2, rustc 1.97.0, `--release` (`lto = true`,
-`codegen-units = 1`), tclsh 9.0.4 from `/opt/homebrew/bin`, 20 runs after 5
-warmup runs. The machine is a shared workstation and its load average sat near
-14 for this run, so every row's *mean* carries whatever else was running;
-**the table is the minimum of the 20 runs**, the least contaminated figure
-hyperfine reports, and the means are below it so the spread is visible rather
-than hidden. Both come from the `target/bench/*.md` exports that run produced.
+`codegen-units = 1`), tclsh 9.0.4 from `/opt/homebrew/bin`, fusevm 0.15.0,
+20 runs after 5 warmup runs, `hyperfine -N` — each command exec'd directly.
+
+`-N` matters at this scale. With a shell in the way, hyperfine measures the
+shell's own startup and subtracts it, and on a loaded machine that correction
+once came out larger than the command itself: an ahead-of-time row that runs in
+about 5 ms was reported as `0.0 ms ± 0.0` with a relative of `inf ± NaN`. Exec'd
+directly there is nothing to subtract, so every row carries its process spawn and
+none of them can go negative. The numbers are therefore ~1–2 ms above what an
+earlier shell-calibrated run reported for the same work.
+
+The machine is a shared workstation and its load average sat near 12, so a row's
+*mean* carries whatever else was running; **the table is the minimum of the 20
+runs**, and the means are below it so the spread stays visible.
 
 Minimum of 20 runs, in milliseconds:
 
 | Benchmark | tclsh 9.0.4 | tclrs interp | tclrs JIT | tclrs AOT |
 | --- | ---: | ---: | ---: | ---: |
-| `startup` — the empty script | 11.2 | **3.9** | 4.7 | 4.8 |
-| `counted_loop_proc` — 3M × `incr`, inside a `proc` | 51.6 | 176.6 | 4.9 | **4.8** |
-| `counted_loop` — 3M × `incr`, at the top level | 386.0 | 169.6 | 221.1 | **4.2** |
-| `counted_loop_expr` — 3M × `set i [expr {$i + 1}]` | 465.6 | 168.7 | 234.3 | **5.0** |
-| `integer_arith` — 1M × `$sum + $i * $i - ($i >> 3)` | 280.7 | 138.4 | 166.1 | **5.1** |
-| `string_build` — 100k × `set s "$s$i"` | 640.7 | **15.2** | 17.1 | 17.5 |
-| `list_iterate` — 5k × `lappend`, then `foreach` | 12.9 | 5.4 | 6.2 | **5.4** |
+| `startup` — the empty script | 12.4 | 4.5 | 4.5 | **2.9** |
+| `counted_loop_proc` — 3M × `incr`, inside a `proc` | 51.5 | 185.9 | 5.6 | **4.3** |
+| `counted_loop` — 3M × `incr`, at the top level | 386.6 | 175.3 | 5.8 | **4.3** |
+| `counted_loop_expr` — 3M × `set i [expr {$i + 1}]` | 461.9 | 175.8 | 7.0 | **4.7** |
+| `integer_arith` — 1M × `$sum + $i * $i - ($i >> 3)` | 284.7 | 143.6 | 6.4 | **4.2** |
+| `string_build` — 100k × `set s "$s$i"` | 618.3 | **17.3** | 19.5 | 18.3 |
+| `list_iterate` — 5k × `lappend`, then `foreach` | 13.2 | 6.8 | 6.6 | **4.9** |
 
 Mean ± σ over the same runs:
 
 | Benchmark | tclsh 9.0.4 | tclrs interp | tclrs JIT | tclrs AOT |
 | --- | ---: | ---: | ---: | ---: |
-| `startup` | 12.5 ± 0.7 | 4.7 ± 0.4 | 5.4 ± 0.6 | 5.6 ± 0.5 |
-| `counted_loop_proc` | 54.7 ± 2.2 | 183.3 ± 5.0 | 6.0 ± 1.1 | 5.8 ± 0.5 |
-| `counted_loop` | 399.3 ± 6.9 | 175.9 ± 2.9 | 225.7 ± 2.8 | 5.1 ± 0.4 |
-| `counted_loop_expr` | 487.9 ± 17.7 | 180.9 ± 5.9 | 303.9 ± 42.7 | 5.9 ± 0.5 |
-| `integer_arith` | 288.1 ± 6.2 | 141.2 ± 1.5 | 168.0 ± 1.3 | 5.6 ± 0.3 |
-| `string_build` | 977.0 ± 175.1 | 16.3 ± 0.7 | 17.7 ± 0.5 | 18.0 ± 0.4 |
-| `list_iterate` | 14.3 ± 0.9 | 6.8 ± 0.6 | 6.8 ± 0.4 | 6.1 ± 0.4 |
+| `startup` | 13.6 ± 0.7 | 5.1 ± 0.4 | 5.4 ± 0.5 | 3.2 ± 0.3 |
+| `counted_loop_proc` | 56.2 ± 3.1 | 192.1 ± 3.7 | 6.5 ± 1.4 | 4.5 ± 0.1 |
+| `counted_loop` | 407.4 ± 9.6 | 181.7 ± 3.9 | 6.4 ± 0.4 | 4.9 ± 0.3 |
+| `counted_loop_expr` | 480.5 ± 10.0 | 188.0 ± 7.8 | 7.4 ± 0.3 | 5.3 ± 0.3 |
+| `integer_arith` | 298.7 ± 5.5 | 149.0 ± 2.9 | 7.0 ± 0.4 | 4.7 ± 0.4 |
+| `string_build` | 823.8 ± 134.4 | 18.3 ± 0.6 | 20.7 ± 0.9 | 19.1 ± 0.5 |
+| `list_iterate` | 15.1 ± 1.8 | 7.5 ± 0.5 | 7.7 ± 1.4 | 5.2 ± 0.3 |
 
 Every ratio below is the first table's numbers divided; nothing else is
 inferred.
 
-**What the JIT is worth when it fires.** `counted_loop_proc` is `counted_loop`
-with the loop moved inside a `proc`, which is the whole difference: the counter
-becomes a frame slot and the tracing tier takes it (`--tiers` says
-`traced=true`; see [JIT Compilation](#0x08-jit-compilation)). 4.9 ms against
-176.6 ms interpreted — **36× tclrs interpreted and 11× tclsh** — with `startup`
-measured at 3.9 ms on the same run, so the 3,000,000 iterations themselves are
-inside the noise of process startup. Scaling the script to 30,000,000 iterations
-does not move it out. Ten times the iterations for the same wall clock is not a
-per-iteration cost at all — Cranelift can close a counted loop whose result is
-its own bound — so read that row as the loop disappearing, not as nanoseconds
-per iteration.
+**Every arithmetic loop reaches native code now, with or without `--aot`.** The
+three loop rows are within a millisecond or two of each other across the JIT and
+AOT columns, and all of them are a few milliseconds above `startup`:
 
-That row also inverts tclsh's own ranking. tclsh compiles a procedure's locals
-too, so it runs the proc-local loop in 51.6 ms against 386.0 ms for the
-top-level one — a 7.5× spread on the same arithmetic. tclrs interpreted is
-indifferent to the boundary (176.6 vs 169.6 ms); it is the JIT that makes it 36×.
+| | tclsh | JIT | AOT | JIT vs tclsh |
+| --- | ---: | ---: | ---: | ---: |
+| `counted_loop` | 386.6 | 5.8 | 4.3 | **67×** |
+| `counted_loop_expr` | 461.9 | 7.0 | 4.7 | **66×** |
+| `integer_arith` | 284.7 | 6.4 | 4.2 | **44×** |
 
-**Every arithmetic loop is ahead-of-time compiled now.** The three loop
-benchmarks all reach native code through `--aot`: 4.2 ms for the top-level
-counted loop, 5.0 for the same loop written with `expr`, 5.1 for the arithmetic
-one — against tclsh's 386.0, 465.6 and 280.7. That is **92×, 93× and 55×
-tclsh**, and 40×, 34× and 27× tclrs interpreted, with the ahead-of-time binary's
-own startup (4.8 ms) inside every one of those figures.
+Both halves of that took a change. The **ahead-of-time** column was blocked on
+`expr`: every one used to end in an extension op that converted its result to
+Tcl's string form, fusevm's ahead-of-time compiler has no lowering for an
+extension op, and one deopt on the first iteration handed the whole loop back to
+the interpreter — `counted_loop_expr` took 251.5 ms compiled and `integer_arith`
+165.1. Tcl's string form is now applied where a string is asked for, so an
+arithmetic loop lowers to native ops end to end.
 
-Two of those three used to run interpreted end to end. Every `expr` ended in an
-extension op that converted its result to Tcl's string form, and fusevm's
-ahead-of-time compiler has no lowering for an extension op, so one deopt on the
-first iteration handed the whole loop back to the interpreter:
-`counted_loop_expr` took 251.5 ms compiled and `integer_arith` 165.1. Tcl's
-string form is now applied where a string is asked for — `puts`, the
-always-string comparisons, word concatenation — rather than to every `expr`
-result, so an arithmetic loop lowers to native ops end to end.
+The **JIT** column was blocked on where a Tcl variable lives. A top-level one is
+a VM global, fusevm's tiers took slots and not globals, and the three rows ran
+221.1, 234.3 and 166.1 ms — interpreted, with the tracing recorder's overhead on
+top. fusevm 0.15.0 promotes the globals a trace references to registers at entry
+and spills them at every exit, guarded per referenced index; see
+[JIT Compilation](#0x08-jit-compilation) for why the guard cannot be the
+whole-table check the slot path uses.
 
-**Where tclrs wins without the JIT.** Interpreted, tclrs is **42× tclsh on
-`string_build`**, 2.8× on the counted loop written with `expr`, 2.4× on
-`list_iterate`, 2.3× on the top-level counted loop, 2.0× on integer arithmetic,
-and starts in 3.9 ms against tclsh's 11.2.
+**What the JIT is worth on a loop it takes.** `counted_loop` runs in 5.8 ms
+against 175.3 interpreted — **30×** — with `startup` at 4.5 ms on the same run,
+so the 3,000,000 iterations are inside the noise of process startup. Scaling the
+script to 30,000,000 iterations does not move it out; ten times the iterations
+for the same wall clock is not a per-iteration cost at all — Cranelift can close
+a counted loop whose result is its own bound — so read that as the loop
+disappearing, not as nanoseconds per iteration.
+
+tclsh's own ranking still splits on the procedure boundary: it runs the
+proc-local loop in 51.5 ms against 386.6 for the top-level one, a 7.5× spread on
+the same arithmetic, because it compiles a procedure's locals and not a script's
+globals. tclrs no longer splits at all — 5.6 against 5.8 ms — which is the
+practical difference: a hot loop no longer has to be wrapped in a `proc` to
+reach native code.
+
+**Where tclrs wins without any tier.** Interpreted, tclrs is **36× tclsh on
+`string_build`**, 2.6× on the counted loop written with `expr`, 2.2× on the
+top-level counted loop, 2.0× on integer arithmetic, 1.9× on `list_iterate`, and
+starts in 4.5 ms against tclsh's 12.4.
+
+**Where a tier still buys nothing.** `string_build` and `list_iterate` spend
+their time in frontend extension ops — the in-place append, the list commands —
+which no tier lowers, so their three tclrs columns sit within a couple of
+milliseconds of each other and the interpreter is as fast as anything else. That
+is the remaining shape of the problem: what is left outside native code is the
+data-structure work, not the arithmetic.
 
 **`lappend` builds a list in place.** `list_iterate` was the one row tclrs lost,
 by 14×: the list lived in the variable as its string representation and every
@@ -1040,24 +1081,22 @@ the wrong number rather than a fast time.
 
 **What the JIT costs where it does not fire.** The `tclrs JIT` column is the same
 binary as `tclrs interp` with the tracing JIT armed. On a script whose loops it
-cannot take it is not free: 30% slower on `counted_loop`, 39% on
-`counted_loop_expr`, 20% on `integer_arith`, and 15% on `list_iterate`. That is
-the recorder check in the dispatch loop plus the once-per-run block-tier lookup,
-and on `counted_loop` it is paid for a tier that never fires — the loop's
-`GetVar`/`SetVar` disqualify it, which is the one thing standing between these
-loops and the JIT column now that nothing else in them is an extension op. The
-same overhead on `counted_loop_proc` buys a 36× win. It stays on unconditionally
-because which of those a script gets is not knowable before the script runs, and
-hiding the cost would make the table dishonest.
+cannot take it is not free: 13% slower on `string_build`, and within noise on
+`list_iterate` and `startup`. That is the recorder check in the dispatch loop
+plus the once-per-run block-tier lookup, paid on every script whether or not a
+trace is ever installed. It used to be paid on the counted loops too, for a tier
+that then refused them; those now return 30–44× for it. It stays on
+unconditionally because which of the two a script gets is not knowable before the
+script runs, and hiding the cost would make the table dishonest.
 
 Caveats worth knowing before quoting any of this: the machine was not idle — a
-shared workstation at a load average near 14 — which is why the minima are the
+shared workstation at a load average near 12 — which is why the minima are the
 table and the means are the second table, and why `string_build`'s tclsh row
-spreads over 500 ms between its best and worst run; `startup`, the two counted-loop JIT and AOT
-rows and the whole `list_iterate` row are a few milliseconds, close enough to
-hyperfine's calibration floor that it warns, so treat those ratios as lower
-bounds on the work and not as precise process-level figures; and the AOT
-rows run with the JIT armed too, since the ahead-of-time runtime hook goes
+spreads over 400 ms between its best and worst run; every tclrs row on a loop
+benchmark is now within a few milliseconds of `startup`, so those ratios are
+bounded by process spawn rather than by the loop, and a larger iteration count is
+the way to see the loop itself; and the AOT rows run with the JIT armed too,
+since the ahead-of-time runtime hook goes
 through the same install point.
 
 ---

@@ -44,8 +44,13 @@ pub struct Report {
     pub largest_eligible_region: Option<(usize, usize)>,
     /// Every loop header, and whether the tracing JIT compiled it.
     pub loops: Vec<Loop>,
-    /// Op kinds in this chunk that no JIT tier accepts, by occurrence count.
-    /// These are what keeps the chunk out of native code.
+    /// Op kinds the **block** tier refuses, by occurrence count — what keeps
+    /// the whole chunk from being compiled in one piece.
+    ///
+    /// Not the same question as whether a loop is traced: the tracing tier
+    /// takes `GetVar` / `SetVar` (fusevm 0.15.0 promotes a referenced global to
+    /// a register at trace entry and spills it at every exit), so a chunk can
+    /// list those here and still reach native code through a trace.
     pub ineligible: BTreeMap<String, usize>,
 }
 
@@ -76,9 +81,9 @@ impl std::fmt::Display for Report {
             )?;
         }
         if self.ineligible.is_empty() {
-            writeln!(f, "JIT-ineligible ops      none")?;
+            writeln!(f, "block-ineligible ops    none")?;
         } else {
-            writeln!(f, "JIT-ineligible ops")?;
+            writeln!(f, "block-ineligible ops")?;
             for (name, count) in &self.ineligible {
                 writeln!(f, "  {name:<22}{count}")?;
             }
@@ -220,20 +225,22 @@ mod tests {
         assert!(report.loops[0].trace_eligible, "{report}");
     }
 
-    /// The Tcl spelling of that same loop. Its arithmetic is native ops, but
-    /// its counter is a VM global, and no tier takes `GetVar`/`SetVar` — so
-    /// the chunk is refused whole and the loop body is refused as a trace.
+    /// The Tcl spelling of that same loop. Its counter is a VM global rather
+    /// than a frame slot, which the *block* tier still refuses — so the chunk
+    /// as a whole is not compiled — but the tracing tier promotes a referenced
+    /// global to a register at trace entry and spills it at every exit, so the
+    /// loop itself reaches native code.
     #[test]
-    fn the_tcl_counter_loop_reaches_no_tier() {
+    fn the_tcl_counter_loop_is_traced_through_its_globals() {
         let report = report("set i 0\nwhile {$i < 1000} {incr i}").expect("runs");
         assert!(!report.block_eligible, "{report}");
         assert!(
             report.ineligible.contains_key("GetVar") && report.ineligible.contains_key("SetVar"),
-            "the variable ops are what disqualify it: {report}"
+            "the variable ops are what keep the whole chunk out: {report}"
         );
         assert_eq!(report.loops.len(), 1, "{report}");
-        assert!(!report.loops[0].trace_eligible, "{report}");
-        assert!(!report.reaches_native(), "{report}");
+        assert!(report.loops[0].trace_eligible, "{report}");
+        assert!(report.reaches_native(), "{report}");
     }
 
     /// The same loop inside a `proc` reaches native code. Two things have to

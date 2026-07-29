@@ -39,8 +39,11 @@ path = "src/bin/gen_docs.rs"
 [dependencies]
 # Execution and codegen live in fusevm; this crate only lowers to its ops.
 #
-# 0.14.20 is the floor: coroutines are built on the halt-and-request mechanism
-# `sched.rs` uses, and the driver resumes a parked VM with `VM::clear_halt`.
+# 0.15.0 is the floor: the tracing tier compiles a loop over VM *globals* there,
+# which is what a Tcl script's top-level loop is made of — before it, only a
+# loop whose counter was a procedure's frame slot reached native code. It is
+# also where coroutines' halt-and-request mechanism and `VM::clear_halt` live,
+# which the driver resumes a parked VM with.
 #
 # `jit` is fusevm's three-tier Cranelift JIT (linear / block / tracing);
 # `jit-disk-cache` adds the persistent on-disk cache of compiled native code
@@ -48,7 +51,7 @@ path = "src/bin/gen_docs.rs"
 # disable) so codegen is not repaid on every process start; `aot` is the
 # closed-world compiler that lowers a whole `Chunk` to a relocatable object
 # (`src/aot.rs` here links one into a native executable).
-fusevm = { version = "0.14.20", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
+fusevm = { version = "0.15.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
 
 # The interactive line editor: history, completion menu, emacs/vi keymaps and
 # multi-line editing driven by the parser's own "still open" answer. Used by
