@@ -1494,7 +1494,11 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         ext::IN | ext::NI => {
             let haystack = vm.pop();
             let needle = vm.pop();
-            let elements = crate::list::split(&haystack.as_str_cow())?;
+            // Tcl's string form of the list, not the VM's: a double reaching
+            // here as a `Value::Float` — which a literal operand now does —
+            // spells itself `3` through `as_str_cow` and `3.0` through Tcl's
+            // formatter, and the membership test is on the latter.
+            let elements = crate::list::split(&to_tcl_string(&haystack))?;
             let needle = to_tcl_string(&needle);
             let found = elements.contains(&needle);
             vm.push(Value::Int(i64::from(found == (id == ext::IN))));

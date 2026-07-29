@@ -1331,6 +1331,35 @@ impl Compiler {
     /// `Bool`; the exceptions are an operand that is substituted text
     /// ([`Expr::Subst`]) and unary `+`, which is the identity and so passes its
     /// operand's value straight through.
+    /// An operand of an *arithmetic* operator.
+    ///
+    /// Ordinarily this is [`Compiler::expr`], which pushes a double literal as
+    /// `Op::LoadFloat` — the number, with the spelling dropped. Tcl quotes a
+    /// refused operand by its string representation, and for a literal that is
+    /// what the script wrote: `expr {1e10 % 3}` names `1e10`, not the
+    /// `10000000000.0` the number prints as, and `expr {nan + 1}` names `nan`,
+    /// not `NaN`. An operand read from a variable is already a string and was
+    /// always quoted right; only a literal was not.
+    ///
+    /// So a double literal whose spelling the formatter would not reproduce is
+    /// pushed as that spelling instead, and the numeric hook parses it back on
+    /// the way into the operation. The cost is paid only where it cannot be
+    /// seen: a literal already in canonical form — `1.5`, `0.5`, `-0.0`, which
+    /// is almost every one a script writes — is still `Op::LoadFloat` and still
+    /// native, and a non-finite one is refused by the operator anyway. The test
+    /// is the formatter itself rather than a list of shapes, because the shapes
+    /// are not obvious: `1.0e-7` looks canonical and is not, since
+    /// `format_double` gives `1e-7` for it.
+    fn numeric_operand(&mut self, e: &Expr) -> Result<(), CompileError> {
+        if let Expr::Float(v, text) = e {
+            if !v.is_finite() || crate::runtime::format_double(*v) != **text {
+                self.push_str(text);
+                return Ok(());
+            }
+        }
+        self.expr(e)
+    }
+
     /// An operand of an always-string operator, pushed as a string. A numeric
     /// literal becomes the text the script wrote rather than the number it
     /// parses to, which is the difference between `expr {1e3 eq 1000.0}` being
@@ -1520,8 +1549,8 @@ impl Compiler {
                 // provably integers; otherwise they are extension ops that hold
                 // Tcl's operand rule. See [`ext::BIT_AND`].
                 let integral = Self::yields_integer(a) && Self::yields_integer(b);
-                self.expr(a)?;
-                self.expr(b)?;
+                self.numeric_operand(a)?;
+                self.numeric_operand(b)?;
                 let native = match op {
                     BinOp::Add => Some(Op::Add),
                     BinOp::Sub => Some(Op::Sub),

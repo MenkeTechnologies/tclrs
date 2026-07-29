@@ -2093,43 +2093,81 @@ fn fixed_expr_takes_a_hash_comment() {
     agrees(&tclsh, "puts [expr {#1}]", err("empty expression"));
 }
 
-/// A double *literal* written in exponential form is quoted by its value, not
-/// by its spelling.
+/// `in` and `ni` split the list on Tcl's string form — **fixed**.
 ///
-/// tclsh keeps an operand's original string representation and quotes that:
-/// `expr {1e300 % 2}` names `1e300`. A literal in tclrs is an `Op::LoadFloat`
-/// and has no spelling left by the time the operator refuses it, so it is
-/// named by `runtime::format_double`, which is the canonical form tclsh itself
-/// prints for a *computed* double. The two agree for every spelling that is
-/// already canonical — `1.0`, `0.5`, `-0.0`, `1.0e-7` — and part for the three
-/// the campaign reached: `1e300`, `1e10` and `2.5e-3`, 82 of 7730 divergences.
-///
-/// An operand read from a *variable* is unaffected: it is a `Value::Str` and is
-/// quoted verbatim, which is why `1.0e-7` above is exact.
+/// The membership test is string equality against the list's elements, so what
+/// the list *is* decides the answer. The haystack was split through fusevm's
+/// `as_str_cow`, which spells a double the VM's way: the literal list `3.0`
+/// became the one-element list `3`, and `expr {$x in 3.0}` with `x` of 3 was
+/// true where tclsh says false. It only surfaced once a double literal could
+/// reach the operator as a `Value::Float` at all.
 #[test]
-fn bug_float_literal_is_named_by_value_not_by_spelling() {
+fn in_and_ni_test_membership_on_tcls_string_form() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
-        &tclsh,
+    for program in [
+        "set x 3\nputs [expr {$x in 3.0}]",
+        "set x 3\nputs [expr {$x ni 3.0}]",
+        "puts [expr {3.0 in 3.0}]",
+        "puts [expr {1 in {01}}]",
+        "puts [expr {1.5 in {1.5 2}}]",
+        "puts [expr {1e10 in 1e10}]",
+        "set l {1.0 2.0}\nputs [expr {1 in $l}]",
+    ] {
+        assert_eq!(reference(&tclsh, program), subject(program), "{program}");
+    }
+}
+
+/// A refused operand is quoted by its **spelling** — **fixed**, and pinned here
+/// so it stays that way.
+///
+/// tclsh keeps an operand's original string representation and quotes that, so
+/// `expr {1e300 % 2}` names `1e300`. A literal used to reach the operator as an
+/// `Op::LoadFloat` with no spelling left, and was named by
+/// `runtime::format_double` instead — right for a *computed* double, wrong for
+/// a written one. `Compiler::numeric_operand` now pushes the spelling itself
+/// for a literal the formatter would not reproduce, and the numeric hook parses
+/// it back on the way into the operation.
+///
+/// The claim this test used to make — that the two agreed for `1.0e-7` because
+/// it "is already canonical" — was wrong: `format_double(1e-7)` is `1e-7`, and
+/// that case is in the committed corpus (`message-compile-time-8af73dba`).
+#[test]
+fn a_refused_operand_is_quoted_by_its_spelling() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    for program in [
+        // Exponential forms, whose canonical spelling differs.
         "puts [expr {1e300 % 2}]",
-        err("cannot use floating-point value \"1e300\" as left operand of \"%\""),
-        err("cannot use floating-point value \"1e+300\" as left operand of \"%\""),
-    );
-    diverges(
-        &tclsh,
         "puts [expr {2.5e-3 % 2}]",
-        err("cannot use floating-point value \"2.5e-3\" as left operand of \"%\""),
-        err("cannot use floating-point value \"0.0025\" as left operand of \"%\""),
-    );
-    // The same value reached through a variable keeps its spelling in both.
-    agrees(
-        &tclsh,
+        "puts [expr {1e10 % 3}]",
+        "puts [expr {1.0e-7 >> 1}]",
+        "puts [expr {1e10 << 1}]",
+        // A non-finite literal is refused as an operand, and named as written:
+        // lower-case `nan`, not the `NaN` the formatter prints.
+        "puts [expr {nan + 1}]",
+        "puts [expr {nan * 2}]",
+        "puts [expr {nan / 2}]",
+        "puts [expr {nan | 1}]",
+        "puts [expr {2 ** nan}]",
+        // A canonical spelling is unaffected, and stays a native operand.
+        "puts [expr {1.5 % 2}]",
+        "puts [expr {0.5 | 1}]",
+        // The same value reached through a variable was always quoted right.
         "set y 1e300\nputs [expr {$y % 2}]",
-        err("cannot use floating-point value \"1e300\" as left operand of \"%\""),
-    );
+        "set n nan\nputs [expr {$n + 1}]",
+        // An infinity is a valid operand, not a refused one, and still prints
+        // as the formatter spells it rather than as the script wrote it.
+        "puts [expr {inf}]",
+        "puts [expr {inf + 1}]",
+        "puts [expr {inf > 1}]",
+    ] {
+        assert_eq!(reference(&tclsh, program), subject(program), "{program}");
+    }
 }
 
 /// `string replace` on an empty subject aborted the process.

@@ -316,15 +316,6 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   `Op::Extended` — every loop that counts with `incr` would lose its compiled
   trace, which is the one thing this frontend has that reaches native code.
   Deliberately not taken.
-- **A double *literal* written in exponential form is quoted by its value.**
-  `expr {1e300 % 2}` names `1e+300` where tclsh names `1e300`, and `2.5e-3`
-  becomes `0.0025`. tclsh keeps an operand's original string representation and
-  quotes that; a literal here is an `Op::LoadFloat` with no spelling left by the
-  time an operator refuses it, so it is named by `runtime::format_double` — which
-  is exactly right for a *computed* double, and for every spelling that is
-  already canonical (`1.0`, `0.5`, `-0.0`, `1.0e-7`). An operand read from a
-  variable is a `Value::Str` and is quoted verbatim, so only a literal is
-  affected: 82 of the 7730 divergences in the four-run campaign.
 - **Unreachable code is still compiled**, so a script tclsh runs to completion can
   be refused outright: `if {0} {incr}` is `wrong # args`, `if {0} {puts [expr {1
   +}]}` is `missing operand at _@_`, and `if {0} {nosuchcommand}` is
@@ -498,6 +489,51 @@ tclsh, with the seed and case number of the divergence it was reduced from.
 Each of these was a divergence in the run above and is now parity, pinned in
 `tests/parity_fuzz_findings.rs` against a live tclsh:
 
+- **A refused operand is quoted by its spelling**: `expr {1e10 % 3}` names
+  `1e10` and `expr {nan + 1}` names `nan`, where the value's own formatting
+  would have said `10000000000.0` and `NaN`. tclsh quotes an operand by its
+  string representation, which for a literal is what the script wrote;
+  `Compiler::numeric_operand` pushes that spelling for a literal the formatter
+  would not reproduce, and the numeric hook parses it back into the operation.
+  A literal already in canonical form (`1.5`, `0.5`, `-0.0`) is untouched and
+  stays a native operand. The claim that `1.0e-7` was canonical was wrong —
+  `format_double(1e-7)` is `1e-7` — and that case was in the committed corpus.
+- **A NaN *operand* is refused as an operand**, not reported as a domain error.
+  `expr {nan + 1}` and `expr {nan * 2}` answered `domain error: argument not in
+  valid range`, which is what tclsh says for a NaN *result*; an operand that is
+  already NaN is `cannot use non-numeric floating-point value "nan" as left
+  operand of "+"`. The literal now reaches the operation as its spelling, so the
+  operand rule sees it before the result gate does.
+- **`in` and `ni` split the list on Tcl's string form.** The haystack was split
+  through fusevm's `as_str_cow`, which spells a double the VM's way, so the list
+  `3.0` became the one-element list `3` and `expr {3 in 3.0}` was true where
+  tclsh says false. Only reachable once a double literal could arrive as a
+  `Value::Float`.
+- A **float literal keeps its spelling**: `puts 3.0` prints `3.0`. It was interned
+  as a `Value::Float`, which `puts` stringifies through fusevm's `as_str_cow`
+  rather than Tcl's formatter.
+- **The always-string operators compare as written**: `expr {1.0 eq 1}`,
+  `expr {010 eq 10}` and `expr {1e3 eq 1000.0}` are all 0. A numeric literal now
+  carries the text the script wrote next to its value (`expr::Expr::Int` /
+  `Float`), and the comparison is a frontend op over Tcl's string form of each
+  operand rather than fusevm's `StrEq`, whose string form is the VM's.
+- **`expr`'s literal number grammar is the whole integer grammar**: `expr {0d9}`,
+  `expr {1_0}`, `expr {0x1_0}`, `expr {0b1_0}` and `expr {1_0.5}` answer 9, 10,
+  16, 2 and 10.5. `_` is scanned as part of the literal and dropped before the
+  parse, and `radix_literal` advances by the characters it consumed rather than
+  the digits it kept.
+  **Where the separator may go is part of that grammar**, and accepting it
+  everywhere was its own divergence: `_` is legal only *between* two digits, so
+  `1_000_000` and even `1__0` are numbers while `0x_10`, `0b_10`, `0o_17`,
+  `0d_9`, `1_`, `0x1_`, `1_.5`, `1e_10`, `1e10_` and `1_e10` are refused as
+  tclsh refuses them — each `invalid bareword`, naming the word the separator
+  sits in rather than the number being read, which is why `1.5_` is
+  `invalid bareword "5_"` and not `"1.5_"`. The runs the rule applies to are all
+  three: `12_34.56_78e9_0` is a number, where the fraction and the exponent used
+  to end the literal early. A leading `_` starts no word at all — `expr {_1}` is
+  `invalid character "_"` — and a `.` that never resolves into a number is named
+  itself, so `expr {1._5}` and `expr {.x}` are `invalid character "."`
+  (`src/expr.rs`, pinned in `tests/expr_lexer_differential.rs`).
 - A **float literal keeps its spelling**: `puts 3.0` prints `3.0`. It was interned
   as a `Value::Float`, which `puts` stringifies through fusevm's `as_str_cow`
   rather than Tcl's formatter.
@@ -558,6 +594,24 @@ prints a hit count per entry.
 The generator's own blind spots, so a gap in the report is a known gap rather
 than an unexamined one. Measured against the 2000-program run above.
 
+- **`upvar`, `uplevel` and `apply` need a variable table this design does not
+  have.** Each has to reach a *caller's* variables by name at run time. A
+  procedure's locals here are frame slots the compiler assigned, so nothing
+  addresses them by name once the chunk is built, and a nested script is a chunk
+  of its own that reaches only globals — which is the same wall `eval` inside a
+  procedure body hits, and why that is refused rather than run against the wrong
+  variables.
+
+  A subset *is* expressible: `uplevel #0`, and `uplevel 1` from a procedure the
+  top level called, both target the global table, which is exactly what `eval`
+  already does; `upvar #0 g l` is a global alias. That subset was deliberately
+  not shipped. Whether `uplevel 1` means "the global table" or "another
+  procedure's slots" is a run-time property of the call stack, so the working
+  cases and the refused ones could not be told apart until the script ran, and
+  the mechanism would have to be unpicked by the real fix rather than extended
+  by it. The real fix is a run-time variable table addressable by name at any
+  level — the same machinery that would move an unknown command name from
+  compile time to run time.
 - **Commands tclrs does not have.** `{*}` expansion, `upvar`,
   `uplevel`, `namespace`, `apply`, `rename`, `source` and file I/O are outside
   the command set entirely, so a generated use of one is `invalid command name`
