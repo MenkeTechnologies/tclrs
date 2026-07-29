@@ -2,7 +2,7 @@
 # seed: 1   case: 00357   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 17 -> 2 lines in 2 round(s), 22/400 candidates checked
 # verdict: DIVERGENCE	stdout	line tclsh=-4611686018427387904000 tclrs=m:integer value too large to represent
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 0
 # tclsh-stdout: -4611686018427387904000\nm:\n\x1e
 # tclsh-stderr: 

@@ -2,7 +2,7 @@
 # seed: 1   case: 00312   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 27 -> 4 lines in 3 round(s), 45/400 candidates checked
 # verdict: DIVERGENCE	stdout-compile-time	line tclsh=-7 tclrs=<no more output>
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: -7\nm:invalid command name "p6"\nm:\n
 # tclsh-stderr: missing close-brace\n

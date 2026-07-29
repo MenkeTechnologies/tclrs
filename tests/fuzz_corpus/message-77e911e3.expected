@@ -2,7 +2,7 @@
 # seed: 1   case: 00066   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 17 -> 4 lines in 3 round(s), 58/400 candidates checked
 # verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: {hello world}\n1000\n{hello world}\n1000\n{hello world}\n1000\n{hello world}\n1000\n{hello world}\n1000\n2\n
 # tclsh-stderr: cannot use floating-point value "1.0" as left operand of "%"\n

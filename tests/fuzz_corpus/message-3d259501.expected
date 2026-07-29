@@ -2,7 +2,7 @@
 # seed: 1   case: 00210   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 19 -> 4 lines in 3 round(s), 62/400 candidates checked
 # verdict: DIVERGENCE	message	msg tclsh=can't read "v12": no such variable tclrs=expected integer but got ""
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: abc\nabc\nabc\nabc\nabc\nm:can't read "s1": no such variable\n
 # tclsh-stderr: can't read "v12": no such variable\n

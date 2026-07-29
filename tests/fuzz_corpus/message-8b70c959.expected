@@ -2,7 +2,7 @@
 # seed: 1   case: 00296   depth: 3   generator: scripts/fuzz/gen.tcl
 # verdict: DIVERGENCE	message	msg tclsh=expected integer but got "2hello[ab]" tclrs=cannot use non-numeric string "2hello[ab]" as left operand of "+"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: expected integer but got "2hello[ab]"\n

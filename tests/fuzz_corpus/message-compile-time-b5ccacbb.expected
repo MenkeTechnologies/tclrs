@@ -2,7 +2,7 @@
 # seed: 1   case: 00047   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 16 -> 2 lines in 2 round(s), 27/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=can't read "m13": no such variable tclrs=extra characters after close-brace
 # tclsh: 9.0.4
-# tclrs: tclrs 0.2.0
+# tclrs: tclrs 0.3.0
 # tclsh-status: 1
 # tclsh-stdout: a\n7\n
 # tclsh-stderr: can't read "m13": no such variable\n
