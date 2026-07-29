@@ -152,6 +152,42 @@ pub mod ext {
     pub const FOREACH_TAKE: u16 = 31;
     pub const FOREACH_ADVANCE: u16 = 32;
 
+    // The list commands that name a variable or build one, 48–57. They are in
+    // the range `runtime::extension` routes to [`crate::cmd_list`] by id, and
+    // nothing between 48 and 61 has an explicit arm ahead of that range test —
+    // one there would shadow this block silently.
+
+    /// `[list, count]` → the unassigned remainder, then one value per variable
+    /// in reverse, so that a `SetVar` per variable pops them in order.
+    pub const LASSIGN: u16 = 48;
+    /// `[name, slot?, place, index …, value]` → the variable's new value, also
+    /// stored. Like [`LAPPEND_VAR`] it reaches the variable itself, so that an
+    /// unset one is `can't read "…": no such variable` rather than a read of
+    /// the empty string.
+    pub const LSET: u16 = 49;
+    /// `[name, slot?, place, index …]` → the element removed, with the
+    /// variable left holding the rest.
+    pub const LPOP: u16 = 50;
+    /// `[name, slot?, place, first, last, element …]` → the variable's new
+    /// value, also stored.
+    pub const LEDIT: u16 = 51;
+    /// `[count, element …]` → the elements repeated `count` times.
+    pub const LREPEAT: u16 = 52;
+    /// `[list, index …]` → the list without those elements.
+    pub const LREMOVE: u16 = 53;
+    /// `[arg …]` → Tcl 9's arithmetic sequence.
+    pub const LSEQ: u16 = 54;
+
+    /// `lmap`'s three steps beyond the four `foreach` already has. `INIT`
+    /// builds the same loop state with an accumulator on the end, `COLLECT`
+    /// moves one iteration's value into it, and `RESULT` takes the state apart
+    /// and yields the accumulated list. The accumulator rides the VM stack with
+    /// the rest of the state rather than living in a hidden global, so an
+    /// `lmap` inside a recursive procedure keeps its own.
+    pub const LMAP_INIT: u16 = 55;
+    pub const LMAP_COLLECT: u16 = 56;
+    pub const LMAP_RESULT: u16 = 57;
+
     /// The bitwise operators, in Tcl's semantics rather than the VM's.
     ///
     /// fusevm's `Op::BitAnd`/`BitOr`/`BitXor`/`BitNot`/`Shl`/`Shr` coerce their

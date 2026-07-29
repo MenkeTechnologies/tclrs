@@ -29,7 +29,8 @@ approximated, and nothing is silently mis-run.
 - **Lists.** List parsing and canonical quoting ported from `TclFindElement` and
   `TclScanElement` / `TclConvertElement` (`src/list.rs`), plus `list`,
   `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`,
-  `lsearch`, `lsort`, `join`, `split` and `concat` (`src/cmd_list.rs`). `in` and
+  `lsearch`, `lsort`, `join`, `split`, `concat`, `lassign`, `lset`, `lpop`,
+  `ledit`, `lrepeat`, `lremove`, `lseq` and `lmap` (`src/cmd_list.rs`). `in` and
   `ni` test string membership. Index expressions (`end`, `end±n`, `m±n`) follow
   `Tcl_GetIntForIndex`. `lappend` reaches its variable itself instead of taking
   the value through `GetVar`, so the elements go onto the list's own string and
@@ -163,12 +164,16 @@ approximated, and nothing is silently mis-run.
   command in the resumer's context, which this frontend cannot do.
 - **`info`, apart from `info coroutine`.** Every other subcommand is refused by
   name rather than mis-answered.
-- **Every command outside those above.** `regexp`, `lassign`, `lset`, `lrepeat`,
-  `lremove`, `lpop`, `ledit`, `lmap`, `lseq`, `open` / `read` / `close`,
+- **Every command outside those above.** `regexp`, `open` / `read` / `close`,
   `source`, `upvar`, `uplevel`, `rename`, `namespace`, `apply`, `clock`,
   `encoding`, `binary`, … An unknown command name is `invalid command name "…"`
   at compile time rather than at run time, which is where a runtime command
   table would move it.
+- **An array element as the variable a list command names.** `lappend a(x) v`,
+  `lassign {1 2} a(x) a(y)`, `lset a(x) 0 v`, `lpop a(x)` and `ledit a(x) 0 0 v`
+  are all `this command does not take an array element yet`, from the one
+  `Compiler::var_name_of` that resolves the name for each of them. `foreach`
+  refuses one the same way. tclsh takes them.
 - **`{*}` expansion.** The parser records `{*}` on the word and the list splitter
   it needs exists, but the compiler still refuses it.
 - **Subcommands and options recognised and then refused.** `array startsearch`
@@ -489,10 +494,13 @@ The generator's own blind spots, so a gap in the report is a known gap rather
 than an unexamined one. Measured against the 2000-program run above.
 
 - **Commands tclrs does not have.** `{*}` expansion, `regexp`, `upvar`,
-  `uplevel`, `namespace`, `apply`, `lassign`, `lset`, `lmap`, `rename`, `source`
-  and file I/O are outside the command set entirely, so a generated use of one is
-  `invalid command name` and says nothing about parity. They are deliberately not
-  generated, and belong in the generator on the day the commands exist.
+  `uplevel`, `namespace`, `apply`, `rename`, `source` and file I/O are outside
+  the command set entirely, so a generated use of one is `invalid command name`
+  and says nothing about parity. They are deliberately not generated, and belong
+  in the generator on the day the commands exist. `lassign`, `lset`, `lpop`,
+  `ledit`, `lrepeat`, `lremove`, `lseq` and `lmap` exist now and are not
+  generated yet, so the run above says nothing about them either; what does is
+  `tests/list_commands_differential.rs`.
 - **`array` on a procedure local, `unset` of one, and `eval` inside a procedure
   body** *are* generated now, at `REFUSAL_RATE` — so are `lsort -command`,
   `lsearch -regexp`, `string wordstart`, `string is -failindex`, the `string is`

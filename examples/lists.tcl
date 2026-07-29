@@ -77,4 +77,63 @@ foreach n [split "1,2,3,4,5" ,] {
 }
 check "sum of split" $total 15
 
+# lassign spreads a list across variables and hands back what is left over.
+set rest [lassign {a b c d} first second]
+check "lassign first" $first a
+check "lassign second" $second b
+check "lassign remainder" $rest {c d}
+# More variables than elements: the rest get the empty string.
+set rest [lassign {x} p q]
+check "lassign past the end" <$q> <>
+
+# lset replaces an element in place, and grows the list by one at the end.
+set row {a b c}
+lset row 1 X
+check "lset" $row {a X c}
+lset row end Z
+check "lset end" $row {a X Z}
+lset row 3 W
+check "lset grows by one" $row {a X Z W}
+set grid {{a b} {c d}}
+lset grid 1 0 Q
+check "lset index path" $grid {{a b} {Q d}}
+
+# lpop takes an element out of the variable, the last one by default.
+set stack {1 2 3}
+check "lpop yields the element" [lpop stack] 3
+check "lpop shortened the list" $stack {1 2}
+check "lpop at an index" [lpop stack 0] 1
+
+# ledit replaces a range; both ends clamp rather than refusing.
+set letters {a b c d}
+ledit letters 1 2 X
+check "ledit" $letters {a X d}
+ledit letters 9 9 Y
+check "ledit clamps" $letters {a X d Y}
+
+# lremove is the same idea by index, and ignores an index outside the list.
+check "lremove" [lremove {a b c d} 1 3] {a c}
+check "lremove ignores out of range" [lremove {a b c} 9] {a b c}
+
+# lrepeat builds a list by repetition.
+check "lrepeat" [lrepeat 3 x] {x x x}
+check "lrepeat many" [lrepeat 2 a b] {a b a b}
+
+# lseq is Tcl 9's arithmetic sequence. A zero step is one element, not a hang,
+# and a step pointing away from the end is none at all.
+check "lseq count" [lseq 4] {0 1 2 3}
+check "lseq range" [lseq 1 5] {1 2 3 4 5}
+check "lseq counts down" [lseq 3 1] {3 2 1}
+check "lseq by" [lseq 1 to 10 by 3] {1 4 7 10}
+check "lseq count form" [lseq 5 count 3] {5 6 7}
+check "lseq zero step" [lseq 1 10 0] 1
+check "lseq wrong way" <[lseq 1 10 -2]> <>
+
+# lmap is foreach that collects. An iteration that continues contributes
+# nothing, where an empty body contributes an empty element.
+check "lmap" [lmap n {1 2 3} {expr {$n * $n}}] {1 4 9}
+check "lmap two lists" [lmap a {1 2} b {x y} {list $a $b}] {{1 x} {2 y}}
+check "lmap continue omits" [lmap n {1 2 3} {if {$n == 2} continue; set n}] {1 3}
+check "lmap empty body" [lmap n {1 2} {}] {{} {}}
+
 puts "lists.tcl: $checks checks passed"

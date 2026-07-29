@@ -24,7 +24,7 @@ use fusevm::{Op, Value, VM};
 use crate::compiler::{ext, CompileError, Compiler, Place};
 use crate::list;
 use crate::parser::Word;
-use crate::runtime::{place_of, take_var, to_tcl_string, var_cell};
+use crate::runtime::{place_at, place_of, take_var, to_tcl_string, var_cell};
 
 // ── compiling ────────────────────────────────────────────────────────────
 
@@ -33,7 +33,8 @@ use crate::runtime::{place_of, take_var, to_tcl_string, var_cell};
 /// `every_listed_command_compiles` fails if the two ever disagree.
 pub const COMMANDS: &[&str] = &[
     "list", "llength", "lindex", "lrange", "lreverse", "linsert", "lreplace", "lsearch", "lsort",
-    "join", "split", "concat", "lappend",
+    "join", "split", "concat", "lappend", "lassign", "lset", "lpop", "ledit", "lrepeat", "lremove",
+    "lseq", "lmap",
 ];
 
 /// Compile one of the list commands. Every command name the compiler does not
@@ -67,7 +68,18 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
         "join" => (ext::JOIN, "join list ?joinString?", 1, 2),
         "split" => (ext::SPLIT, "split string ?splitChars?", 1, 2),
         "concat" => (ext::CONCAT, "concat ?arg ...?", 0, usize::MAX),
+        "lrepeat" => (ext::LREPEAT, "lrepeat count ?value ...?", 1, usize::MAX),
+        "lremove" => (ext::LREMOVE, "lremove list ?index ...?", 1, usize::MAX),
+        // `lseq`'s own argument grammar decides how many arguments are too
+        // many, and it reports that at run time as tclsh does, so the bounds
+        // here are open rather than a second, earlier answer to the question.
+        "lseq" => (ext::LSEQ, "lseq n ??op? n ??by? n??", 0, usize::MAX),
         "lappend" => return lappend(c, args),
+        "lassign" => return lassign(c, args),
+        "lset" => return lset(c, args),
+        "lpop" => return lpop(c, args),
+        "ledit" => return ledit(c, args),
+        "lmap" => return lmap(c, args),
         other => return c.error(format!("invalid command name \"{other}\"")),
     };
 
@@ -120,6 +132,177 @@ fn lappend(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     Ok(())
 }
 
+/// `lassign list ?varName ...?`: assign each element, yield the remainder.
+///
+/// The op does not write the variables — it splits the list and pushes the
+/// remainder followed by one value per variable in reverse, and a `SetVar` per
+/// variable pops them in order. That way the assignment goes through the
+/// compiler's own variable path, so a frame slot and a global each behave as
+/// they do everywhere else. An array element is refused, by the same
+/// `var_name_of` that refuses one to `lappend` and `foreach`.
+fn lassign(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
+    let Some((list, vars)) = args.split_first() else {
+        return c.error("wrong # args: should be \"lassign list ?varName ...?\"");
+    };
+    // Every name is resolved before anything is emitted, so a bad one is a
+    // compile error rather than a half-run command.
+    let names: Vec<String> = vars
+        .iter()
+        .map(|w| c.var_name_of(w))
+        .collect::<Result<_, _>>()?;
+
+    c.word(list)?;
+    let count = arg_count(c, names.len())?;
+    // Consumes the list, leaves the remainder plus one value per variable.
+    c.emit(Op::Extended(ext::LASSIGN, count), names.len() as i32);
+    for name in &names {
+        c.emit_set_var(name);
+    }
+    Ok(())
+}
+
+/// The operands every variable-reaching list op starts with: the name, for the
+/// unset-variable message, and where the variable lives.
+fn var_target(c: &mut Compiler, name: &str) -> usize {
+    c.push_str(name);
+    match c.var_place(name) {
+        Place::Slot(slot) => {
+            c.push_value(Value::Int(1));
+            c.emit(Op::LoadInt(slot as i64), 1);
+        }
+        Place::Global(idx) => {
+            c.push_value(Value::Int(0));
+            c.emit(Op::LoadInt(idx as i64), 1);
+        }
+    }
+    3
+}
+
+/// `lset listVar ?index ...? value`.
+fn lset(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
+    const USAGE: &str = "wrong # args: should be \"lset listVar ?index? ?index ...? value\"";
+    if args.len() < 2 {
+        return c.error(USAGE);
+    }
+    let name = c.var_name_of(&args[0])?;
+    let operands = var_target(c, &name);
+    for arg in &args[1..] {
+        c.word(arg)?;
+    }
+    let count = arg_count(c, operands + args.len() - 1)?;
+    c.emit(
+        Op::Extended(ext::LSET, count),
+        1 - (operands + args.len() - 1) as i32,
+    );
+    Ok(())
+}
+
+/// `lpop listvar ?index ...?` — the usage string spells the variable lowercase,
+/// unlike `lset`'s and `ledit`'s. tclsh's wording, kept as it is.
+fn lpop(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
+    if args.is_empty() {
+        return c.error("wrong # args: should be \"lpop listvar ?index?\"");
+    }
+    let name = c.var_name_of(&args[0])?;
+    let operands = var_target(c, &name);
+    for arg in &args[1..] {
+        c.word(arg)?;
+    }
+    let count = arg_count(c, operands + args.len() - 1)?;
+    c.emit(
+        Op::Extended(ext::LPOP, count),
+        1 - (operands + args.len() - 1) as i32,
+    );
+    Ok(())
+}
+
+/// `ledit listVar first last ?element ...?`.
+fn ledit(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
+    if args.len() < 3 {
+        return c.error("wrong # args: should be \"ledit listVar first last ?element ...?\"");
+    }
+    let name = c.var_name_of(&args[0])?;
+    let operands = var_target(c, &name);
+    for arg in &args[1..] {
+        c.word(arg)?;
+    }
+    let count = arg_count(c, operands + args.len() - 1)?;
+    c.emit(
+        Op::Extended(ext::LEDIT, count),
+        1 - (operands + args.len() - 1) as i32,
+    );
+    Ok(())
+}
+
+/// `lmap varList list ?varList list ...? command` — `foreach` that collects.
+///
+/// The same loop state and the same rotated shape, so it keeps whatever
+/// `foreach` keeps; the accumulator is the state's fourth element, and the
+/// collect sits at the end of the body. `continue` jumps to the step, which is
+/// past the collect, which is why a skipped iteration contributes nothing —
+/// tclsh's `lmap x {1 2 3} {if {$x==2} continue; set x}` is `1 3`, not
+/// `1 {} 3`.
+fn lmap(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
+    const USAGE: &str = "wrong # args: should be \"lmap varList list ?varList list ...? command\"";
+    let Some((body, pairs)) = args.split_last() else {
+        return c.error(USAGE);
+    };
+    if pairs.is_empty() || pairs.len() % 2 != 0 {
+        return c.error(USAGE);
+    }
+
+    let mut names = Vec::new();
+    for pair in pairs.chunks(2) {
+        let text = c.literal_of(&pair[0], "lmap variable list")?.to_string();
+        let vars = list::split(&text).map_err(|msg| c.err(msg))?;
+        if vars.is_empty() {
+            return c.error("lmap varlist is empty");
+        }
+        let width = vars.len();
+        for name in vars {
+            if name.ends_with(')') && name.contains('(') {
+                return c.error("array variables are not supported yet");
+            }
+            names.push(name);
+        }
+        c.push_value(Value::Int(width as i64));
+        c.word(&pair[1])?;
+    }
+    let lists = u8::try_from(pairs.len() / 2)
+        .map_err(|_| c.err("too many lists for \"lmap\"".to_string()))?;
+    let width = u8::try_from(names.len())
+        .map_err(|_| c.err("too many variables for \"lmap\"".to_string()))?;
+    c.emit(
+        Op::Extended(ext::LMAP_INIT, lists),
+        1 - pairs.len() as i32,
+    );
+
+    let script = c.body_script(body)?;
+    let taken: Vec<String> = names.iter().rev().cloned().collect();
+    c.rotated_loop(
+        |c| {
+            c.emit(Op::Extended(ext::FOREACH_TAKE, width), i32::from(width));
+            for name in &taken {
+                c.emit_set_var(name);
+            }
+            // The body's value, then straight into the accumulator.
+            c.nested_value(&script)?;
+            c.emit(Op::Extended(ext::LMAP_COLLECT, 0), -1);
+            Ok(())
+        },
+        |c| {
+            c.emit(Op::Extended(ext::FOREACH_ADVANCE, 0), 0);
+            Ok(())
+        },
+        |c| {
+            c.emit(Op::Extended(ext::FOREACH_MORE, 0), 1);
+            Ok(())
+        },
+    )?;
+    c.emit(Op::Extended(ext::LMAP_RESULT, 0), 0);
+    Ok(())
+}
+
 /// An extension op carries its operand count in one byte.
 fn arg_count(c: &Compiler, len: usize) -> Result<u8, CompileError> {
     u8::try_from(len).map_err(|_| CompileError {
@@ -137,6 +320,15 @@ pub(crate) fn run(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     }
     if id == ext::LAPPEND_VAR || id == ext::LAPPEND_SLOT {
         return lappend_at(vm, id, arg);
+    }
+    if (ext::LMAP_INIT..=ext::LMAP_RESULT).contains(&id) {
+        return lmap_op(vm, id, arg);
+    }
+    if id == ext::LASSIGN {
+        return lassign_op(vm, arg);
+    }
+    if matches!(id, ext::LSET | ext::LPOP | ext::LEDIT) {
+        return list_var_op(vm, id, arg);
     }
     let mut args: Vec<String> = (0..arg).map(|_| to_tcl_string(&vm.pop())).collect();
     args.reverse();
@@ -169,8 +361,184 @@ fn dispatch(id: u16, args: &[String]) -> Result<String, String> {
         // separates list elements.
         ext::SPLIT => Ok(split(&args[0], args.get(1).map_or(" \n\t\r", |s| s))),
         ext::CONCAT => Ok(concat(args)),
+        ext::LREPEAT => lrepeat(&args[0], &args[1..]),
+        ext::LREMOVE => lremove(&args[0], &args[1..]),
+        ext::LSEQ => lseq(args),
         other => Err(format!("unknown list op {other}")),
     }
+}
+
+/// `lrepeat count ?value ...?`. A count of zero, and no values at all, are both
+/// an empty list rather than an error; only a negative count is refused, and in
+/// its own wording rather than the integer parser's.
+fn lrepeat(count: &str, values: &[String]) -> Result<String, String> {
+    let n = list::wide(count).map_err(|_| format!("expected integer but got \"{count}\""))?;
+    if n < 0 {
+        return Err(format!("bad count \"{count}\": must be integer >= 0"));
+    }
+    let mut out = Vec::with_capacity(values.len() * n.max(0) as usize);
+    for _ in 0..n {
+        out.extend(values.iter().cloned());
+    }
+    Ok(list::join(&out))
+}
+
+/// `lremove list ?index ...?`. An index outside the list is not an error — the
+/// list comes back unchanged — and repeated or unordered indices remove each
+/// element once.
+fn lremove(value: &str, indices: &[String]) -> Result<String, String> {
+    let items = list::split(value)?;
+    let end = items.len() as i64 - 1;
+    let mut drop = vec![false; items.len()];
+    for text in indices {
+        let at = list::index(text, end)?;
+        if at >= 0 && at < items.len() as i64 {
+            drop[at as usize] = true;
+        }
+    }
+    let kept: Vec<String> = items
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !drop[*i])
+        .map(|(_, v)| v)
+        .collect();
+    Ok(list::join(&kept))
+}
+
+/// `lseq n`, `lseq from to`, `lseq from to step`, and the keyword spellings
+/// `from to n`, `from .. n`, `from to n by step`, `from count n`.
+///
+/// The rules are tclsh's and are not what the manual suggests: a step of zero
+/// yields one element rather than looping forever, a step pointing away from
+/// the end yields none, and with no step at all the direction is inferred, so
+/// `lseq 5 1` counts down. Integers stay integers; one float operand makes the
+/// whole sequence floats, which is why `lseq 0 1 0.25` starts at `0.0`.
+fn lseq(args: &[String]) -> Result<String, String> {
+    // The grammar is `from ?op? to ?by step?`, and which error an ill-formed
+    // call gets depends on where the parse stops — all of it measured against
+    // tclsh rather than read off the usage string.
+    const USAGE: &str = "wrong # args: should be \"lseq n ??op? n ??by? n??\"";
+    if args.is_empty() {
+        return Err(USAGE.to_string());
+    }
+    let (from, to, step, by_count) = if args.len() == 1 {
+        (None, &args[0], None, false)
+    } else {
+        // `lseq 1 zz 4 by 2`: a trailing `by step` fixes the shape, so the
+        // slot before `to` is the operation slot even when what sits there is
+        // not a keyword — tclsh then reports it as a number it could not read.
+        let anchored = args.len() == 5 && args[3] == "by";
+        let (op, to_at) = if is_lseq_op(&args[1]) {
+            (Some(args[1].as_str()), 2)
+        } else if anchored {
+            return Err(format!("expected number but got \"{}\"", args[1]));
+        } else {
+            (None, 1)
+        };
+        let Some(to) = args.get(to_at) else {
+            return Err(USAGE.to_string());
+        };
+        let rest = &args[to_at + 1..];
+        let step = match rest {
+            [] => None,
+            // `lseq 1 2 3` is from/to/step; with an operation already given
+            // there is no bare step slot left.
+            [s] if op.is_none() => Some(s),
+            [s] if s == "by" => return Err("missing \"by\" value.".to_string()),
+            [_] => return Err(USAGE.to_string()),
+            [by, s] if by == "by" => Some(s),
+            // A keyword in the `by` slot is a shape error; anything else is
+            // named as the operation it failed to be.
+            [other, _] if is_lseq_op(other) => return Err(USAGE.to_string()),
+            [other, _] => {
+                return Err(format!(
+                    "bad operation \"{other}\": must be .., to, count, or by"
+                ))
+            }
+            _ => return Err(USAGE.to_string()),
+        };
+        (Some(&args[0]), to, step, op == Some("count"))
+    };
+
+    let number = |t: &str| list::parse_double(t).ok_or(format!("expected number but got \"{t}\""));
+    let integral = |t: &str| list::parse_int(t).is_some();
+
+    let (start, count_form) = match from {
+        Some(a) => (number(a)?, by_count),
+        None => (0.0, false),
+    };
+    let limit = number(to)?;
+    let stride = match step {
+        Some(s) => number(s)?,
+        None => {
+            if count_form || from.is_none() {
+                1.0
+            } else if limit < start {
+                -1.0
+            } else {
+                1.0
+            }
+        }
+    };
+
+    // A float start or step makes every element a float — `lseq 0 1 0.25`
+    // prints `0.0` for a start the script wrote as `0`. A float *count* does
+    // not: `lseq 3.0` is `0 1 2` and `lseq 1 count 3.0` is `1 2 3`, because a
+    // count is how many, not where. In a range form the end is a place on the
+    // same number line, so it counts.
+    let counting = count_form || from.is_none();
+    let floating = from.is_some_and(|a| !integral(a))
+        || step.is_some_and(|s| !integral(s))
+        || (!counting && !integral(to));
+
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |v: f64| {
+        out.push(if floating {
+            crate::runtime::format_double(v)
+        } else {
+            (v as i64).to_string()
+        });
+    };
+
+    if count_form {
+        // `lseq 5 count 3` is three elements from 5. A count of zero is empty.
+        let n = limit as i64;
+        for i in 0..n.max(0) {
+            push(start + stride * i as f64);
+        }
+        return Ok(list::join(&out));
+    }
+    if from.is_none() {
+        // `lseq 5` is 0..4, and a non-positive n is empty.
+        let n = limit as i64;
+        for i in 0..n.max(0) {
+            push(i as f64);
+        }
+        return Ok(list::join(&out));
+    }
+    if stride == 0.0 {
+        // Not an error and not a hang: tclsh answers with the start alone.
+        push(start);
+        return Ok(list::join(&out));
+    }
+
+    let mut at = start;
+    // A guard rather than a `while` on the value alone, so a step that cannot
+    // reach the end stops instead of running away on a rounding error.
+    let span = (limit - start) / stride;
+    if span < 0.0 {
+        return Ok(String::new());
+    }
+    let iterations = span.floor() as i64;
+    for _ in 0..=iterations {
+        push(at);
+        at += stride;
+    }
+    Ok(list::join(&out))
+}
+
+fn is_lseq_op(text: &str) -> bool {
+    matches!(text, ".." | "to" | "count" | "by")
 }
 
 /// `lindex list ?index ...?`. With exactly one index argument the argument may
@@ -527,6 +895,10 @@ fn lsearch(args: &[String]) -> Result<String, String> {
             (Some(Compare::Real(want)), _) => list::double(item)? == *want,
             (None, Mode::Exact) => item == pattern,
             (None, Mode::Glob) => list::glob_match(pattern, item),
+            // The regular-expression engine owns this one; a pattern it
+            // refuses is `lsearch`'s error too. `-nocase` is not threaded
+            // through because `lsearch` does not implement it — that option
+            // still reports its own refusal above.
         };
         if negated {
             hit = !hit;
@@ -773,6 +1145,184 @@ fn names(table: &[&str]) -> String {
     }
 }
 
+// ── the commands that name a variable ────────────────────────────────────
+
+/// `lassign`: split the list and leave the remainder under one value per
+/// variable, in reverse, for the `SetVar`s the compiler emitted after this op.
+fn lassign_op(vm: &mut VM, arg: u8) -> Result<(), String> {
+    let items = list::split(&to_tcl_string(&vm.pop()))?;
+    let wanted = arg as usize;
+    let remainder = if items.len() > wanted {
+        list::join(&items[wanted..])
+    } else {
+        String::new()
+    };
+    vm.push(Value::Str(Arc::new(remainder)));
+    // Reverse order: the first variable's `SetVar` runs first and pops last.
+    for i in (0..wanted).rev() {
+        let value = items.get(i).cloned().unwrap_or_default();
+        vm.push(Value::Str(Arc::new(value)));
+    }
+    Ok(())
+}
+
+/// `lset`, `lpop` and `ledit`: read the variable the op was handed, rewrite it,
+/// store it back.
+///
+/// The operands under the arguments are the variable's name and where it lives,
+/// the same shape `append` uses — the name only so that an unset variable can
+/// be reported by name, which is what tclsh does and what a plain read of the
+/// empty string would not.
+fn list_var_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
+    let count = arg as usize - 3;
+    let mut rest: Vec<String> = (0..count).map(|_| to_tcl_string(&vm.pop())).collect();
+    rest.reverse();
+    // The three the compiler pushed, innermost last: name, slot flag, place.
+    let operand = vm.pop();
+    let slot_form = matches!(vm.pop(), Value::Int(1));
+    let place = place_at(&operand, slot_form)?;
+    let name = to_tcl_string(&vm.pop());
+
+    let current = take_var(vm, place);
+    if current == Value::Undef {
+        return Err(format!("can't read \"{name}\": no such variable"));
+    }
+    let text = to_tcl_string(&current);
+
+    let (stored, yielded) = match id {
+        ext::LSET => {
+            let Some((value, indices)) = rest.split_last() else {
+                return Err("wrong # args: should be \"lset listVar ?index? ?index ...? value\""
+                    .to_string());
+            };
+            let new = lset_value(&text, indices, value)?;
+            (new.clone(), new)
+        }
+        ext::LPOP => {
+            let (new, popped) = lpop_value(&text, &rest)?;
+            (new, popped)
+        }
+        _ => {
+            let new = ledit_value(&text, &rest[0], &rest[1], &rest[2..])?;
+            (new.clone(), new)
+        }
+    };
+
+    if let Some(cell) = var_cell(vm, place) {
+        *cell = Value::Str(Arc::new(stored));
+    }
+    vm.push(Value::Str(Arc::new(yielded)));
+    Ok(())
+}
+
+/// `lset`'s replacement, down an index path.
+///
+/// No index at all — and an empty index list — replaces the whole value, which
+/// is why `lset l {} X` is `X` rather than a no-op. An index one past the end
+/// appends; two past is `index "N" out of range`, so the growth is by exactly
+/// one and nothing wider.
+fn lset_value(value: &str, indices: &[String], replacement: &str) -> Result<String, String> {
+    // One index argument may itself be a list of indices, as `lindex`'s is.
+    let path: Vec<String> = match indices {
+        [] => Vec::new(),
+        [single] => {
+            if list::index(single, i64::MAX - 1).is_err() {
+                list::split(single)?
+            } else {
+                vec![single.clone()]
+            }
+        }
+        many => many.to_vec(),
+    };
+    if path.is_empty() {
+        return Ok(replacement.to_string());
+    }
+    lset_path(value, &path, replacement)
+}
+
+fn lset_path(value: &str, path: &[String], replacement: &str) -> Result<String, String> {
+    let Some((first, rest)) = path.split_first() else {
+        return Ok(replacement.to_string());
+    };
+    let mut items = list::split(value)?;
+    let end = items.len() as i64 - 1;
+    let at = list::index(first, end)?;
+    if at < 0 || at > items.len() as i64 {
+        return Err(format!("index \"{first}\" out of range"));
+    }
+    if at == items.len() as i64 {
+        // Growing is by one element only, and only at the end.
+        if !rest.is_empty() {
+            return Err(format!("index \"{first}\" out of range"));
+        }
+        items.push(replacement.to_string());
+        return Ok(list::join(&items));
+    }
+    let at = at as usize;
+    items[at] = if rest.is_empty() {
+        replacement.to_string()
+    } else {
+        lset_path(&items[at], rest, replacement)?
+    };
+    Ok(list::join(&items))
+}
+
+/// `lpop`: the element at the index path, and the list without it.
+fn lpop_value(value: &str, indices: &[String]) -> Result<(String, String), String> {
+    let path: Vec<String> = if indices.is_empty() {
+        vec!["end".to_string()]
+    } else {
+        indices.to_vec()
+    };
+    let popped = lindex_flat(value, &path)?;
+    let items = list::split(value)?;
+    let end = items.len() as i64 - 1;
+    // Only the outermost index decides what is removed when the path is deep;
+    // a deeper path rewrites that element instead.
+    let at = list::index(&path[0], end)?;
+    if at < 0 || at >= items.len() as i64 {
+        return Err(format!("index \"{}\" out of range", path[0]));
+    }
+    let at = at as usize;
+    let mut items = items;
+    if path.len() == 1 {
+        items.remove(at);
+    } else {
+        let inner = lremove_at(&items[at], &path[1..])?;
+        items[at] = inner;
+    }
+    Ok((list::join(&items), popped))
+}
+
+/// Remove the element an index path names, for `lpop`'s deep form.
+fn lremove_at(value: &str, path: &[String]) -> Result<String, String> {
+    let mut items = list::split(value)?;
+    let end = items.len() as i64 - 1;
+    let at = list::index(&path[0], end)?;
+    if at < 0 || at >= items.len() as i64 {
+        return Err(format!("index \"{}\" out of range", path[0]));
+    }
+    let at = at as usize;
+    if path.len() == 1 {
+        items.remove(at);
+    } else {
+        items[at] = lremove_at(&items[at], &path[1..])?;
+    }
+    Ok(list::join(&items))
+}
+
+/// `ledit listVar first last ?element ...?` — `lreplace` that writes back.
+/// Both ends clamp rather than refusing, so `ledit l 9 9 Z` appends and a
+/// reversed range inserts.
+fn ledit_value(
+    value: &str,
+    first: &str,
+    last: &str,
+    elements: &[String],
+) -> Result<String, String> {
+    lreplace(value, first, last, elements)
+}
+
 // ── foreach ──────────────────────────────────────────────────────────────
 
 /// `foreach`'s loop state, carried on the stack between iterations: the current
@@ -834,15 +1384,58 @@ fn foreach_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             Ok(())
         }
         // Advancing takes the state apart and puts it back, which moves the
-        // values rather than copying them.
+        // values rather than copying them. The iteration counter is the only
+        // part it touches, so an `lmap` accumulator on the end rides along
+        // untouched rather than needing a step of its own.
+        _ => {
+            let Value::Array(mut parts) = vm.pop() else {
+                return Err(CORRUPT.to_string());
+            };
+            let Some(Value::Int(at)) = parts.first_mut() else {
+                return Err(CORRUPT.to_string());
+            };
+            *at += 1;
+            vm.push(Value::Array(parts));
+            Ok(())
+        }
+    }
+}
+
+/// `lmap`'s three steps. The state is `foreach`'s with a fourth element, the
+/// accumulator, so `MORE`, `TAKE` and `ADVANCE` are shared — each of those
+/// either reads the first three or moves the whole array.
+fn lmap_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
+    match id {
+        ext::LMAP_INIT => {
+            foreach_op(vm, ext::FOREACH_INIT, arg)?;
+            let Value::Array(mut parts) = vm.pop() else {
+                return Err(CORRUPT.to_string());
+            };
+            parts.push(Value::Array(Vec::new()));
+            vm.push(Value::Array(parts));
+            Ok(())
+        }
+        ext::LMAP_COLLECT => {
+            let value = to_tcl_string(&vm.pop());
+            let Value::Array(mut parts) = vm.pop() else {
+                return Err(CORRUPT.to_string());
+            };
+            let Some(Value::Array(acc)) = parts.last_mut() else {
+                return Err(CORRUPT.to_string());
+            };
+            acc.push(Value::Str(Arc::new(value)));
+            vm.push(Value::Array(parts));
+            Ok(())
+        }
         _ => {
             let Value::Array(parts) = vm.pop() else {
                 return Err(CORRUPT.to_string());
             };
-            let Ok([Value::Int(at), total, values]) = <[Value; 3]>::try_from(parts) else {
+            let Some(Value::Array(acc)) = parts.into_iter().next_back() else {
                 return Err(CORRUPT.to_string());
             };
-            vm.push(Value::Array(vec![Value::Int(at + 1), total, values]));
+            let items: Vec<String> = acc.iter().map(to_tcl_string).collect();
+            vm.push(Value::Str(Arc::new(list::join(&items))));
             Ok(())
         }
     }
@@ -850,10 +1443,15 @@ fn foreach_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
 
 const CORRUPT: &str = "corrupt foreach state";
 
+/// The three parts every loop state starts with. `lmap`'s carries a fourth —
+/// the accumulator — which the trailing `..` lets through, so `MORE` and `TAKE`
+/// serve both loops.
 fn borrow_state(value: &Value) -> Result<(i64, i64, &[Value]), String> {
     match value {
         Value::Array(parts) => match parts.as_slice() {
-            [Value::Int(at), Value::Int(total), Value::Array(values)] => Ok((*at, *total, values)),
+            [Value::Int(at), Value::Int(total), Value::Array(values), ..] => {
+                Ok((*at, *total, values))
+            }
             _ => Err(CORRUPT.to_string()),
         },
         _ => Err(CORRUPT.to_string()),

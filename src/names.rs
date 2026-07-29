@@ -149,6 +149,16 @@ pub const CORPUS: &[Entry] = &[
         summary: "Append each value to the list held in the variable; yields the new list.",
     },
     Entry {
+        name: "lassign",
+        synopsis: "lassign list ?varName ...?",
+        summary: "Assign the elements to the variables in order; yields the unassigned remainder.",
+    },
+    Entry {
+        name: "ledit",
+        synopsis: "ledit listVar first last ?element ...?",
+        summary: "Replace the range in the variable's list with the elements; yields the new list.",
+    },
+    Entry {
         name: "lindex",
         synopsis: "lindex list ?index ...?",
         summary: "The element at an index path, or the list itself when no index is given.",
@@ -169,9 +179,29 @@ pub const CORPUS: &[Entry] = &[
         summary: "How many elements the list has.",
     },
     Entry {
+        name: "lmap",
+        synopsis: "lmap varList list ?varList list ...? command",
+        summary: "`foreach` that collects each iteration's value into a list; `continue` contributes nothing.",
+    },
+    Entry {
+        name: "lpop",
+        synopsis: "lpop listvar ?index ...?",
+        summary: "Remove the element at an index path from the variable's list and yield it.",
+    },
+    Entry {
         name: "lrange",
         synopsis: "lrange list first last",
         summary: "The sublist between two indices, inclusive.",
+    },
+    Entry {
+        name: "lremove",
+        synopsis: "lremove list ?index ...?",
+        summary: "A copy of the list without the indexed elements; an index outside it is ignored.",
+    },
+    Entry {
+        name: "lrepeat",
+        synopsis: "lrepeat count ?value ...?",
+        summary: "The values repeated count times, as one list.",
     },
     Entry {
         name: "lreplace",
@@ -187,6 +217,16 @@ pub const CORPUS: &[Entry] = &[
         name: "lsearch",
         synopsis: "lsearch ?-option value ...? list pattern",
         summary: "The index of the first matching element, or -1. Option parsing is the reference one, abbreviation included.",
+    },
+    Entry {
+        name: "lseq",
+        synopsis: "lseq n ??op? n ??by? n??",
+        summary: "An arithmetic sequence; a zero step yields one element and a step pointing away from the end yields none.",
+    },
+    Entry {
+        name: "lset",
+        synopsis: "lset listVar ?index? ?index ...? value",
+        summary: "Replace the element at an index path in the variable's list; the end grows by one element only.",
     },
     Entry {
         name: "lsort",
