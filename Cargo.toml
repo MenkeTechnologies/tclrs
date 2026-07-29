@@ -108,6 +108,16 @@ regex = "1.13.1"
 # every code point before it was taken (see `src/cmd_string.rs`).
 unicode-general-category = "1.1"
 
+# Tcl 9's integers are arbitrary precision, and an `i64` overflow is a promotion
+# rather than an error. `num-bigint` is pure Rust with one small dependency
+# (`num-integer`/`num-traits`), so it builds wherever the crate already builds;
+# `rug` is faster and binds GMP, which would put a C library between this crate
+# and every target the release workflow cross-compiles for. The arithmetic here
+# only reaches a bignum once an `i64` has already overflowed, so the constant
+# factor never lands on a hot path — see `runtime::numeric`.
+num-bigint = "0.4"
+num-traits = "0.2"
+
 [profile.release]
 lto = true
 codegen-units = 1

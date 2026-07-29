@@ -20,6 +20,15 @@ use std::process::Command;
 /// branches, string and list work it runs through the boxed shim, and the
 /// extension ops it has no lowering for at all.
 const PROGRAMS: &[&str] = &[
+    // An `i64` that overflows promotes rather than failing, and the two tiers
+    // have to promote alike. This is the case native codegen is most likely to
+    // drift on: the register path wraps unless the overflow reaches the numeric
+    // hook, and a wrapped answer would differ from the interpreter's here
+    // rather than merely being wrong somewhere unobserved.
+    "puts [expr {9223372036854775807 + 1}]",
+    "puts [expr {-9223372036854775808 - 1}]",
+    "puts [expr {9223372036854775807 * 3}]",
+    "puts [expr {2 ** 100}]",
     // Straight-line scalar arithmetic — the register path.
     "puts [expr {1 + 2 * 3}]",
     "puts [expr {(7 - 2) * (3 + 1)}]",
@@ -54,7 +63,6 @@ const PROGRAMS: &[&str] = &[
 /// mid-run has to reach the caller the same way it does interpreted.
 const FAILING: &[&str] = &[
     "puts [expr {1 / 0}]",
-    "puts [expr {9223372036854775807 + 1}]",
     "puts [expr {\"abc\" + 1}]",
 ];
 

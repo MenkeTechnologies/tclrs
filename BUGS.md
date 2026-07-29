@@ -100,6 +100,32 @@ approximated, and nothing is silently mis-run.
   computed, and Tcl's string form is applied where a string is asked for, which
   is what leaves an arithmetic loop lowerable by the JIT and the ahead-of-time
   compiler.
+- **Arbitrary-precision integers.** Tcl 9's integers are unbounded and these
+  are too: an operation that leaves `i64` promotes rather than wrapping or
+  refusing, so `expr {9223372036854775807 + 1}` is `9223372036854775808`,
+  `2 ** 100` is exact, `1 << 200` grows, and `i64::MIN / -1` answers instead of
+  reporting an overflow. A spelling wider than `i64` is a value in every radix,
+  and keeps the text it was written with where `eq` can see it.
+
+  The fast path is untouched, which is the point of the shape: fusevm computes
+  on `i64` in registers and calls the frontend's `NumericHook` only when its
+  *checked* arithmetic overflows, so a loop that never leaves the word never
+  builds a `BigInt`. A promoted value travels as its canonical decimal string —
+  Tcl's own model, and one that needs no new `fusevm::Value` variant — and comes
+  back down to `Value::Int` the moment a result fits again. Ordering is exact at
+  any width rather than through a double, which is observable:
+  `expr {99999999999999999999 < 1e20}` is 1 while `== 1e20` is 0, though both
+  sides are the same double once converted (`runtime::big_cmp`,
+  `tests/bignum_differential.rs`).
+
+  Two bounds are this frontend's own. A promoted integer may reach 2^20 bits,
+  a little over 315,000 digits, and a wider one is refused: tclsh has no bound
+  and `expr {10 ** 123456789}` sits there computing — measured, still running
+  after 30 seconds — where a catchable error is the better answer, the same
+  trade `expr::MAX_EXPR_DEPTH` already makes. And `format`'s integer
+  conversions still refuse a value past `i64` rather than narrowing to one:
+  tclsh answers `format %d 99999999999999999999` with `1661992959`, its low 32
+  bits, and narrowing silently is the one thing this frontend will not do.
 - **Tcl arithmetic.** Floored integer division and remainder, integral `**` for
   integral operands — a negative exponent included, where the integral result
   truncates to 0 or ±1 and a zero base is an error — numeric-preferring comparison
@@ -276,13 +302,6 @@ approximated, and nothing is silently mis-run.
 - **Non-literal variable and body words.** A variable name or a body that is
   itself the result of substitution (`set $name 1`, `while $cond $body`) is
   refused.
-- **Arbitrary-precision integers.** Tcl promotes an overflowing integer to a
-  bignum. tclrs has no bignum, so an operation that overflows `i64` is
-  `integer value too large to represent` rather than a silent wrap. `i64::MIN`
-  divided by `-1` is the same case, and so is an integer *literal* or operand that
-  does not fit at all — `expr {99999999999999999999 + 1}` is the overflow, not the
-  `1e+20` a fall-through to the double parser used to answer. `<<` is the one
-  operator that does *not* report and does wrap; it is a defect, recorded below.
 - **Editor tooling.** No LSP, no DAP, no inline `rust {}` FFI. `--disasm`,
   `--dump-tokens` and `--dump-ast` exist, the zsh completion is
   `completions/_tclrs` and the man page is `man/man1/tclrs.1`, and
@@ -445,19 +464,6 @@ tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
   failing one in a body (`if {1} {puts one; puts [expr {a}]}` prints `one`
   first). So the failure belongs at the command inside the body, and the body's
   own parse failure belongs at the body — not at either enclosing command.
-- **Arbitrary-precision integers, seen from the fuzzer.** An integer beyond `i64`
-  is refused with `integer value too large to represent` where tclsh promotes and
-  answers exactly, so `expr {99999999999999999999 + 1}` is an error against
-  `100000000000000000000`. The report counts those as skips, not divergences,
-  because the refusal is the documented behavior — what was a divergence, and is
-  fixed, was answering `1e+20` instead of refusing at all.
-
-  The sharp case is `expr {-9223372036854775808}`, where the *value* fits and the
-  spelling does not: `expr(n)` reads it as unary minus applied to
-  `9223372036854775808`, which is one past `i64::MAX`, so the operand is refused
-  before the negation can bring it back. tclsh answers `-9223372036854775808`.
-  Folding a leading sign into the literal in `expr::parse_number` would close it
-  without a bignum.
 - **`format`'s floating-point conversions lose precision on an integer past
   `i64`.** `format %.2f 99999999999999999999` prints
   `100000000000000016384.00` against tclsh's `100000000000000000000.00`:
@@ -483,13 +489,6 @@ Seven more, from the 2000-program run above. Each is pinned in
 because the generator now builds `format`'s specifier matrix, draws shift counts
 with a sign, and carries `nan` / `inf` in its value pools.
 
-- **A left shift past the word width is still the missing bignum.**
-  `expr {1 << 63}` and `expr {1 << 64}` report `integer value too large to
-  represent` where tclsh promotes and answers `9223372036854775808` and
-  `18446744073709551616`. It used to *wrap* — `i64::MIN` and 1 — which was the
-  one place a value silently changed instead of being refused; now it is the same
-  documented refusal as every other overflow, and the remaining gap is the bignum
-  itself.
 - **`format`'s `-` flag does not override `0`.** `format %-08.2f 1.5` is
   `00001.50` against tclsh's `1.50    `, and `format %-08s ab` is `000000ab`
   against `ab000000`. The integer conversions already agree — `format %-08d 5` is
@@ -632,6 +631,16 @@ Each of these was a divergence in the run above and is now parity, pinned in
   `3.0` became the one-element list `3` and `expr {3 in 3.0}` was true where
   tclsh says false. Only reachable once a double literal could arrive as a
   `Value::Float`.
+- **An integer beyond `i64` promotes**: `expr {99999999999999999999 + 1}` is
+  `100000000000000000000`, `1 << 64` is `18446744073709551616`, and
+  `expr {-9223372036854775808}` answers rather than being refused for a spelling
+  one past `i64::MAX`. Three stages of this are now closed — the value first
+  became a double and answered `1e+20`, then became a refusal, and is now exact.
+- **`lsort -integer` refuses a value too wide for a machine integer**, as tclsh
+  does. `list::parse_int` saturated to `i64::MAX` instead, so
+  `lsort -integer {99999999999999999999 5}` sorted by a value the script never
+  wrote; an *index* still saturates deliberately, since one past the end is out
+  of range either way (`list::parse_int_exact`).
 - A **float literal keeps its spelling**: `puts 3.0` prints `3.0`. It was interned
   as a `Value::Float`, which `puts` stringifies through fusevm's `as_str_cow`
   rather than Tcl's formatter.

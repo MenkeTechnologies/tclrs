@@ -673,14 +673,19 @@ impl<'a> ExprParser<'a> {
         // two digits, and advancing by the digits alone left the `_0` behind as
         // "extra characters after expression".
         self.pos += prefix_len + written.len();
-        i64::from_str_radix(&digits, radix)
-            .map(|v| Expr::Int(v, text))
-            // The same bignum case as a decimal literal's, and the same wording —
-            // but refused here rather than deferred, because a radix spelling is
-            // *not* what tclsh prints for the value: `expr {0x10000000000000000}`
-            // is `18446744073709551616` there, so carrying the text through would
-            // answer with something the script did not mean.
-            .map_err(|_| self.error("integer value too large to represent"))
+        Ok(match i64::from_str_radix(&digits, radix) {
+            Ok(v) => Expr::Int(v, text),
+            // Wider than an `i64`, which is a bignum and not an error. It takes
+            // the same shape a wide decimal literal takes — the text as its own
+            // operand — and for the same reason: the spelling is what `eq`
+            // compares, and tclsh agrees, answering 1 for
+            // `expr {0x10000000000000000 eq "0x10000000000000000"}` and 0 for
+            // the same against `"18446744073709551616"`. Arithmetic reads the
+            // radix back through `runtime::parse_number`, and a result that is
+            // printed rather than computed on is canonicalised to the decimal
+            // `18446744073709551616` by `ext::CANON`.
+            Err(_) => Expr::Subst(vec![Part::Lit(text.to_string())]),
+        })
     }
 
     fn parse_call(&mut self) -> Result<Expr, ParseError> {

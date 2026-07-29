@@ -52,6 +52,8 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use fusevm::{Chunk, Frame, NumOp, VMResult, Value, VM};
+use num_bigint::BigInt;
+use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
 
 use crate::cache::ChunkCache;
 use crate::compiler::{ext, ext_wide, Place};
@@ -978,18 +980,98 @@ impl Machine {
 }
 
 /// A Tcl number: integral until something forces a double.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Num {
     Int(i64),
     Float(f64),
+    /// An integer past what an `i64` holds. Tcl 9's integers are arbitrary
+    /// precision, so this is a value like any other rather than an error.
+    ///
+    /// It is reached only by a spelling that does not fit or by an operation
+    /// that overflowed: the VM computes on `i64` in registers and hands the
+    /// frontend the operands only when its checked arithmetic fails, so nothing
+    /// on a hot path ever builds one (`fusevm`'s `NumericHook`, and
+    /// [`numeric`]).
+    Big(BigInt),
 }
 
 impl Num {
-    fn as_f64(self) -> f64 {
+    fn as_f64(&self) -> f64 {
         match self {
-            Num::Int(i) => i as f64,
-            Num::Float(f) => f,
+            Num::Int(i) => *i as f64,
+            Num::Float(f) => *f,
+            // `to_f64` saturates to an infinity for a magnitude no double can
+            // hold, which is what Tcl answers for the same conversion.
+            Num::Big(b) => b.to_f64().unwrap_or(f64::INFINITY),
         }
+    }
+
+    /// The value as a `BigInt`, for an operation with a bignum on either side.
+    /// `None` for a double, which promotes the *other* side instead.
+    fn as_big(&self) -> Option<BigInt> {
+        match self {
+            Num::Int(i) => Some(BigInt::from(*i)),
+            Num::Big(b) => Some(b.clone()),
+            Num::Float(_) => None,
+        }
+    }
+
+    fn is_big(&self) -> bool {
+        matches!(self, Num::Big(_))
+    }
+}
+
+/// Order two numbers exactly when at least one is wider than an `i64`.
+///
+/// Going through `f64` would be wrong in both directions: it rounds a bignum to
+/// the nearest double, which makes distinct integers compare equal, and it
+/// cannot represent one larger than `f64::MAX` at all. `None` only for a NaN,
+/// which has no ordering.
+fn big_cmp(p: &Num, q: &Num) -> Option<std::cmp::Ordering> {
+    match (p, q) {
+        (Num::Float(f), _) | (_, Num::Float(f)) if f.is_nan() => None,
+        // An infinity is beyond every integer, so its side decides outright.
+        (Num::Float(f), _) if f.is_infinite() => Some(if *f < 0.0 {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
+        }),
+        (_, Num::Float(f)) if f.is_infinite() => Some(if *f < 0.0 {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Less
+        }),
+        // One side a finite double: compare against its integer part, and let
+        // the fraction break a tie. `2 < 2.5` and `3 > 2.5` both fall out of
+        // that, exactly, without either side becoming the other's type.
+        (left, Num::Float(f)) => {
+            let whole = BigInt::from_f64(f.trunc())?;
+            Some(match left.as_big()?.cmp(&whole) {
+                std::cmp::Ordering::Equal => 0.0.partial_cmp(&(f - f.trunc()))?,
+                other => other,
+            })
+        }
+        (Num::Float(f), right) => {
+            let whole = BigInt::from_f64(f.trunc())?;
+            Some(match whole.cmp(&right.as_big()?) {
+                std::cmp::Ordering::Equal => (f - f.trunc()).partial_cmp(&0.0)?,
+                other => other,
+            })
+        }
+        (left, right) => Some(left.as_big()?.cmp(&right.as_big()?)),
+    }
+}
+
+/// A `BigInt` as the value a script sees: an `i64` when it fits, and its
+/// canonical decimal spelling when it does not.
+///
+/// Demoting matters as much as promoting. `expr {(1 << 64) >> 64}` is 1 in
+/// tclsh, an ordinary integer again, and a value that stayed wide would compare
+/// and print the same but would take the slow path on every later operation.
+pub(crate) fn from_big(b: BigInt) -> Value {
+    match i64::try_from(&b) {
+        Ok(i) => Value::Int(i),
+        Err(_) => Value::Str(Arc::new(b.to_string())),
     }
 }
 
@@ -998,11 +1080,6 @@ impl Num {
 pub(crate) enum NotNumeric {
     /// No numeric spelling at all.
     Unparsable,
-    /// An integer spelling whose value does not fit an `i64`. Tcl promotes it to
-    /// a bignum; this frontend has none, so the operand is refused rather than
-    /// silently becoming the nearest double — `expr {99999999999999999999 + 1}`
-    /// is the overflow error, not `1e+20`.
-    TooLarge,
 }
 
 /// Interpret a value as a Tcl number. Leading and trailing whitespace is
@@ -1016,14 +1093,13 @@ fn tcl_num(v: &Value) -> Result<Num, NotNumeric> {
     }
 }
 
-/// A number, reading an integer too large for an `i64` as the nearest double.
+/// A number, falling back to the nearest double for a spelling that is not one.
 ///
-/// Only comparison uses this. An operator that computes has to refuse the
-/// operand, since answering with the nearest double would be answering with a
-/// value the script never wrote; ordering has no exact answer without a bignum
-/// either way, and the nearest double orders far better than the string does —
-/// `99999999999999999999 < 200000000000000000000` is true as doubles and false
-/// as text.
+/// Only comparison uses this, and an integer of any width now parses exactly
+/// through [`parse_number`], so the fallback is reached only by a spelling
+/// `tcl_num` rejects outright. Ordering a bignum goes through [`big_cmp`]
+/// instead, which is exact — the nearest double would make distinct integers
+/// compare equal.
 fn approx_num(v: &Value) -> Option<Num> {
     if let Ok(n) = tcl_num(v) {
         return Some(n);
@@ -1084,10 +1160,13 @@ pub(crate) fn parse_number(text: &str) -> Result<Num, NotNumeric> {
         let digits = &body[2..];
         return match i64::from_str_radix(digits, radix) {
             Ok(v) => Ok(Num::Int(sign * v)),
-            // Digits of the right shape that do not fit are the bignum case; a
-            // `0x` with no valid digit at all is simply not a number.
+            // Digits of the right shape that do not fit are a bignum; a `0x`
+            // with no valid digit at all is simply not a number.
             Err(_) if !digits.is_empty() && digits.chars().all(|c| c.is_digit(radix)) => {
-                Err(NotNumeric::TooLarge)
+                match BigInt::parse_bytes(digits.as_bytes(), radix) {
+                    Some(b) => Ok(Num::Big(if sign < 0 { -b } else { b })),
+                    None => Err(NotNumeric::Unparsable),
+                }
             }
             Err(_) => Err(NotNumeric::Unparsable),
         };
@@ -1095,11 +1174,14 @@ pub(crate) fn parse_number(text: &str) -> Result<Num, NotNumeric> {
     if let Ok(i) = body.parse::<i64>() {
         return Ok(Num::Int(sign * i));
     }
-    // An integer spelling that does not fit is the bignum case, and must not
-    // fall through to the double parser — which would take it, exactly, and
-    // answer with a value the script never wrote.
+    // An integer spelling that does not fit an `i64` is a bignum, and must not
+    // fall through to the double parser — which would take it and answer with a
+    // value the script never wrote.
     if !body.is_empty() && body.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(NotNumeric::TooLarge);
+        return match BigInt::parse_bytes(body.as_bytes(), 10) {
+            Some(b) => Ok(Num::Big(if sign < 0 { -b } else { b })),
+            None => Err(NotNumeric::Unparsable),
+        };
     }
     // Tcl accepts Inf and NaN spellings that Rust's parser also takes; it does
     // not accept a bare `.` or an empty mantissa, and neither does Rust's.
@@ -1158,11 +1240,9 @@ pub(crate) fn tcl_bool(v: &Value) -> Result<bool, String> {
     match parse_number(text.trim()) {
         Ok(Num::Int(i)) => Ok(i != 0),
         Ok(Num::Float(f)) => float_bool(f),
-        // A boolean needs no bignum: an integer spelling that does not fit an
-        // `i64` has a magnitude larger than `i64::MAX`, so it is nonzero, and
-        // that is the whole question here. Refusing it would make
-        // `if {99999999999999999999}` an error where tclsh takes the branch.
-        Err(NotNumeric::TooLarge) => Ok(true),
+        // A spelling too wide for an `i64` has a magnitude larger than
+        // `i64::MAX`, so it is nonzero without consulting the digits.
+        Ok(Num::Big(_)) => Ok(true),
         Err(NotNumeric::Unparsable) => Err(format!(
             "expected boolean value but got {}",
             named(&text, 50)
@@ -1238,7 +1318,13 @@ pub(crate) fn tcl_int(v: &Value) -> Result<i64, String> {
     let text = to_tcl_string(v);
     match parse_number(text.trim()) {
         Ok(Num::Int(i)) => Ok(i),
-        Err(NotNumeric::TooLarge) => Err(too_large()),
+        // The callers here want a machine integer specifically: `format`'s
+        // integer conversions are C's, and tclsh itself narrows for them —
+        // `format %d 99999999999999999999` is 1661992959 there, the low 32
+        // bits. Narrowing silently is the one thing this frontend will not do,
+        // so the operand is refused and the divergence is recorded rather than
+        // guessed at (BUGS.md).
+        Ok(Num::Big(_)) => Err(too_large()),
         _ => Err(format!("expected integer but got {}", named(&text, 50))),
     }
 }
@@ -1256,6 +1342,15 @@ fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
     if cmp {
         let ordering = match (approx_num(a), approx_num(b)) {
             (Some(Num::Int(i)), Some(Num::Int(j))) => i.cmp(&j),
+            // A bignum on either side orders exactly, never through a double.
+            // The difference is observable: `99999999999999999999 < 1e20` is
+            // true and `== 1e20` is false, though both sides are the same
+            // double once converted — while `1e20 == 100000000000000000000` is
+            // true, because that one really is the same integer.
+            (Some(p), Some(q)) if p.is_big() || q.is_big() => match big_cmp(&p, &q) {
+                Some(ordering) => ordering,
+                None => return Ok(Value::Int(matches!(op, NumOp::Ne) as i64)),
+            },
             (Some(p), Some(q)) => match p.as_f64().partial_cmp(&q.as_f64()) {
                 Some(ordering) => ordering,
                 // A NaN operand has no ordering at all, and IEEE 754 is what
@@ -1316,25 +1411,35 @@ fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
         num_operand(b, Side::Right, sym)?
     };
 
-    let value = match (op, x, y) {
-        (NumOp::Neg, Num::Int(i), _) => i.checked_neg().map(Value::Int).ok_or_else(too_large)?,
+    let value = match (op, &x, &y) {
         (NumOp::Neg, Num::Float(f), _) => Value::Float(-f),
-        (_, Num::Int(i), Num::Int(j)) => {
-            let folded = match op {
-                NumOp::Add => i.checked_add(j),
-                NumOp::Sub => i.checked_sub(j),
-                NumOp::Mul => i.checked_mul(j),
-                _ => return Err(format!("unsupported integer operation {sym}")),
-            };
-            Value::Int(folded.ok_or_else(too_large)?)
-        }
-        (_, p, q) => {
-            let (p, q) = (p.as_f64(), q.as_f64());
+        (NumOp::Neg, _, _) => from_big(-x.as_big().expect("a non-float negates as an integer")),
+        // Either operand a double makes the result a double, bignum or not:
+        // `expr {99999999999999999999 + 0.5}` is 1e+20 in tclsh.
+        (_, Num::Float(_), _) | (_, _, Num::Float(_)) => {
+            let (p, q) = (x.as_f64(), y.as_f64());
             Value::Float(match op {
                 NumOp::Add => p + q,
                 NumOp::Sub => p - q,
                 NumOp::Mul => p * q,
                 _ => return Err(format!("unsupported operation {sym}")),
+            })
+        }
+        // Two integers, at least one of which the VM could not fold — either it
+        // overflowed `i64` or it arrived as a spelling wider than one. This is
+        // the whole bignum path: it is reached only after fusevm's checked
+        // arithmetic has already failed, so a loop that never overflows never
+        // builds a `BigInt` at all.
+        _ => {
+            let (p, q) = (
+                x.as_big().expect("an integer operand"),
+                y.as_big().expect("an integer operand"),
+            );
+            from_big(match op {
+                NumOp::Add => p + q,
+                NumOp::Sub => p - q,
+                NumOp::Mul => p * q,
+                _ => return Err(format!("unsupported integer operation {sym}")),
             })
         }
     };
@@ -1401,7 +1506,6 @@ fn non_integer(v: &Value, side: Side, op: &str) -> String {
 /// frontend documents in place of a bignum, or the non-numeric refusal.
 fn operand_error(why: NotNumeric, v: &Value, side: Side, op: &str) -> String {
     match why {
-        NotNumeric::TooLarge => too_large(),
         NotNumeric::Unparsable => non_numeric(v, side, op),
     }
 }
@@ -1422,8 +1526,9 @@ fn num_operand(v: &Value, side: Side, op: &str) -> Result<Num, String> {
     }
 }
 
-/// Tcl promotes an overflowing integer to arbitrary precision. This frontend
-/// has no bignum yet, so the operation fails rather than wrapping silently.
+/// The refusal for an integer this frontend will not build: past `i64` is a
+/// promotion now, but past [`MAX_INT_BITS`] is still an error, and so is a
+/// value handed to a command that wants a machine integer specifically.
 fn too_large() -> String {
     "integer value too large to represent".to_string()
 }
@@ -1445,36 +1550,65 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         ext::MOD => {
             let b = vm.pop();
             let a = vm.pop();
-            let x = int_operand(&a, Side::Left, "%")?;
-            let y = int_operand(&b, Side::Right, "%")?;
-            vm.push(arith(id, Num::Int(x), Num::Int(y))?);
+            let x = match big_operand(&a, Side::Left, "%")? {
+                BigOperand::Int(i) => Num::Int(i),
+                BigOperand::Big(b) => Num::Big(b),
+            };
+            let y = match big_operand(&b, Side::Right, "%")? {
+                BigOperand::Int(i) => Num::Int(i),
+                BigOperand::Big(b) => Num::Big(b),
+            };
+            vm.push(arith(id, x, y)?);
             Ok(())
         }
         ext::BIT_AND | ext::BIT_OR | ext::BIT_XOR => {
             let b = vm.pop();
             let a = vm.pop();
             let sym = sym_of(id);
-            let x = int_operand(&a, Side::Left, sym)?;
-            let y = int_operand(&b, Side::Right, sym)?;
-            vm.push(Value::Int(match id {
-                ext::BIT_AND => x & y,
-                ext::BIT_OR => x | y,
-                _ => x ^ y,
-            }));
+            let x = big_operand(&a, Side::Left, sym)?;
+            let y = big_operand(&b, Side::Right, sym)?;
+            // Two `i64`s answer as one, which is every ordinary script; a
+            // bignum on either side widens both, since `num-bigint`'s bitwise
+            // operators are two's-complement over an infinite sign extension —
+            // the same model Tcl's are (`expr {99999999999999999999 & 255}` is
+            // 255 there, and `~99999999999999999999` is negative).
+            let value = match (x, y) {
+                (BigOperand::Int(x), BigOperand::Int(y)) => Value::Int(match id {
+                    ext::BIT_AND => x & y,
+                    ext::BIT_OR => x | y,
+                    _ => x ^ y,
+                }),
+                (x, y) => {
+                    let (x, y) = (x.into_big(), y.into_big());
+                    from_big(match id {
+                        ext::BIT_AND => x & y,
+                        ext::BIT_OR => x | y,
+                        _ => x ^ y,
+                    })
+                }
+            };
+            vm.push(value);
             Ok(())
         }
         ext::SHL | ext::SHR => {
             let b = vm.pop();
             let a = vm.pop();
             let sym = sym_of(id);
-            let x = int_operand(&a, Side::Left, sym)?;
+            let x = big_operand(&a, Side::Left, sym)?;
+            // The distance is an `i64` in every case: tclsh refuses a negative
+            // one, and a positive one wide enough not to fit would ask for a
+            // value no memory holds.
             let by = int_operand(&b, Side::Right, sym)?;
-            vm.push(Value::Int(shift(id, x, by)?));
+            vm.push(shift(id, x, by)?);
             Ok(())
         }
         ext::BIT_NOT => {
             let a = vm.pop();
-            vm.push(Value::Int(!int_operand(&a, Side::Only, "~")?));
+            let value = match big_operand(&a, Side::Only, "~")? {
+                BigOperand::Int(i) => Value::Int(!i),
+                BigOperand::Big(b) => from_big(!b),
+            };
+            vm.push(value);
             Ok(())
         }
         // Tcl's boolean rule, which the VM's own truthiness is not: the value a
@@ -1499,7 +1633,9 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                         ))
                     }
                     Ok(Num::Float(f)) => !float_bool(f)?,
-                    Err(NotNumeric::TooLarge) => return Err(too_large()),
+                    // `!` of a bignum is 0: it is nonzero by construction, so
+                    // negating its truth needs none of its digits.
+                    Ok(Num::Big(_)) => false,
                     Err(NotNumeric::Unparsable) => !boolean_word(&v.as_str_cow())
                         .ok_or_else(|| non_numeric(&v, Side::Only, "!"))?,
                 }
@@ -1619,57 +1755,173 @@ fn sym_of(id: u16) -> &'static str {
 /// the compiler cannot prove both operands integral
 /// ([`crate::compiler::Compiler::yields_integer`]).
 fn int_operand(v: &Value, side: Side, op: &str) -> Result<i64, String> {
+    match big_operand(v, side, op)? {
+        BigOperand::Int(i) => Ok(i),
+        // Every caller of this either handles a bignum itself before asking, or
+        // is an operator with no bignum meaning; none can answer from a
+        // truncation, so reaching here with one is a bug rather than a script
+        // error.
+        BigOperand::Big(b) => Err(format!(
+            "integer value too large to represent: {b}"
+        )),
+    }
+}
+
+/// An integer operand that may be wider than an `i64`.
+enum BigOperand {
+    Int(i64),
+    Big(BigInt),
+}
+
+impl BigOperand {
+    fn into_big(self) -> BigInt {
+        match self {
+            BigOperand::Int(i) => BigInt::from(i),
+            BigOperand::Big(b) => b,
+        }
+    }
+}
+
+/// The same refusals as [`int_operand`], with a bignum allowed through.
+fn big_operand(v: &Value, side: Side, op: &str) -> Result<BigOperand, String> {
     match num_operand(v, side, op)? {
-        Num::Int(i) => Ok(i),
+        Num::Int(i) => Ok(BigOperand::Int(i)),
+        Num::Big(b) => Ok(BigOperand::Big(b)),
         Num::Float(_) => Err(non_integer(v, side, op)),
     }
 }
 
-/// `<<` and `>>` on an `i64`, in tclsh 9.0.4's semantics.
+/// `<<` and `>>` in tclsh 9.0.4's semantics.
 ///
-/// A negative distance is refused outright. A left shift that would move a bit
-/// past the top of an `i64` is the bignum case — tclsh answers `1 << 64` with
-/// 18446744073709551616 — and is reported as the overflow this frontend
-/// documents in place of one. A right shift is arithmetic and *saturates*
-/// rather than wrapping the distance: `1 >> 200` is 0 and `-1 >> 200` is -1,
-/// where Rust's `>>` would mask the distance to 200 % 64 = 8.
-fn shift(id: u16, value: i64, by: i64) -> Result<i64, String> {
+/// A negative distance is refused outright. A left shift grows the value rather
+/// than losing bits off the top — `1 << 64` is 18446744073709551616 — which is
+/// what makes this a bignum operation and not an `i64` one. A right shift is
+/// arithmetic and *saturates* rather than wrapping the distance: `1 >> 200` is
+/// 0 and `-1 >> 200` is -1, where Rust's `>>` would mask the distance to
+/// 200 % 64 = 8.
+fn shift(id: u16, value: BigOperand, by: i64) -> Result<Value, String> {
     if by < 0 {
         return Err("negative shift argument".to_string());
     }
     if id == ext::SHR {
-        // Every bit has left the word; only the sign remains.
-        if by >= 63 {
-            return Ok(if value < 0 { -1 } else { 0 });
+        return Ok(match value {
+            // Every bit has left the word; only the sign remains.
+            BigOperand::Int(v) if by >= 63 => Value::Int(if v < 0 { -1 } else { 0 }),
+            BigOperand::Int(v) => Value::Int(v >> by),
+            // A bignum has no word to leave, so the distance is used as given;
+            // `>>` on a `BigInt` is already arithmetic.
+            BigOperand::Big(b) => from_big(b >> shift_distance(by)?),
+        });
+    }
+    Ok(match value {
+        BigOperand::Int(0) => Value::Int(0),
+        // The `i64` fast case, kept exact: `checked_shl` bounds the distance but
+        // not the value, so the round trip is what says a bit was lost. Losing
+        // one means the answer is wider than an `i64` and the shift is redone
+        // as a bignum.
+        BigOperand::Int(v) if by < 64 => match v
+            .checked_shl(by as u32)
+            .filter(|shifted| shifted >> by == v)
+        {
+            Some(shifted) => Value::Int(shifted),
+            None => from_big(BigInt::from(v) << shift_distance(by)?),
+        },
+        BigOperand::Int(v) => from_big(BigInt::from(v) << shift_distance(by)?),
+        BigOperand::Big(b) => from_big(b << shift_distance(by)?),
+    })
+}
+
+/// How wide a promoted integer may get before this frontend refuses to build
+/// it: 2^20 bits, a little over 315,000 decimal digits.
+///
+/// The bound is this frontend's, not Tcl's, and it is the same trade
+/// `expr::MAX_EXPR_DEPTH` already makes. tclsh has no bound: `expr {10 **
+/// 123456789}` asks it for a 123-million-digit number and it will sit there
+/// trying — measured, still running after 30 seconds, where `10 ** 100000`
+/// takes 3.5. A script that asks for that has almost always made a mistake, and
+/// a Tcl error it can catch is a better answer than an allocation that ends the
+/// process. Everything tclsh computes in reasonable time is well inside this:
+/// `10 ** 100000` is 332,193 bits.
+const MAX_INT_BITS: u64 = 1 << 20;
+
+/// A shift distance as `num-bigint` takes it, bounded by [`MAX_INT_BITS`].
+fn shift_distance(by: i64) -> Result<usize, String> {
+    if by as u64 > MAX_INT_BITS {
+        return Err(int_too_wide());
+    }
+    Ok(by as usize)
+}
+
+fn int_too_wide() -> String {
+    "integer value too large to represent".to_string()
+}
+
+/// `/`, `%` and `**` where an `i64` cannot hold an operand or the answer.
+///
+/// The semantics are the same ones the `i64` arms implement, which is the point:
+/// division and remainder floor toward negative infinity rather than truncating
+/// toward zero, so `-99999999999999999999 / 7` is -14285714285714285715 and the
+/// remainder is 6, both measured against tclsh 9.0.4.
+fn big_arith(id: u16, p: BigInt, q: BigInt) -> Result<Value, String> {
+    if matches!(id, ext::DIV | ext::MOD) && q.is_zero() {
+        return Err("divide by zero".to_string());
+    }
+    match id {
+        ext::DIV | ext::MOD => {
+            // `BigInt`'s `/` and `%` truncate, as Rust's do. Floor by hand: a
+            // remainder whose sign differs from the divisor's is one step past
+            // the floor.
+            let (quotient, remainder) = (&p / &q, &p % &q);
+            let stepped = !remainder.is_zero() && (remainder.is_negative() != q.is_negative());
+            Ok(if id == ext::DIV {
+                from_big(if stepped { quotient - 1 } else { quotient })
+            } else {
+                from_big(if stepped { remainder + &q } else { remainder })
+            })
         }
-        return Ok(value >> by);
+        _ => {
+            if q.is_negative() {
+                // An integral base raised to a negative power truncates toward
+                // zero, and only ±1 survives it — the same rule the `i64` arm
+                // applies, and a bignum base is never ±1.
+                return match () {
+                    _ if p.is_zero() => {
+                        Err("exponentiation of zero by negative power".to_string())
+                    }
+                    _ => Ok(Value::Int(0)),
+                };
+            }
+            let exp = u32::try_from(&q).map_err(|_| "exponent too large".to_string())?;
+            // The width of the answer is the base's width times the exponent,
+            // and it is knowable before a single digit is computed — which is
+            // the only point at which refusing is still cheap.
+            if p.bits() * u64::from(exp) > MAX_INT_BITS {
+                return Err(int_too_wide());
+            }
+            Ok(from_big(p.pow(exp)))
+        }
     }
-    if value == 0 {
-        return Ok(0);
-    }
-    if by >= 64 {
-        return Err(too_large());
-    }
-    value
-        .checked_shl(by as u32)
-        // `checked_shl` only bounds the distance, not the value: it answers
-        // `Some` for a shift that pushed bits out of the word. The round trip
-        // is the overflow test.
-        .filter(|shifted| shifted >> by == value)
-        .ok_or_else(too_large)
 }
 
 /// Integer division and remainder floor toward negative infinity — `-57 / 10`
 /// is -6 and `-57 % 10` is 3 — and `**` keeps integral operands integral.
 fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
+    // A bignum on either side of an integer operator, before the `i64` arms
+    // below: those are the fast path and stay exactly as they were.
+    if matches!(id, ext::DIV | ext::MOD | ext::POW) && (x.is_big() || y.is_big()) {
+        if let (Some(p), Some(q)) = (x.as_big(), y.as_big()) {
+            return big_arith(id, p, q);
+        }
+    }
     match (id, x, y) {
         (ext::DIV, Num::Int(_), Num::Int(0)) | (ext::MOD, Num::Int(_), Num::Int(0)) => {
             Err("divide by zero".to_string())
         }
         // `i64::MIN / -1` is the one integer division whose true quotient does
-        // not fit. Tcl answers with a bignum; this frontend has none, so it
-        // reports the overflow rather than trapping on it.
-        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => Err(too_large()),
+        // not fit an `i64`; Tcl's answer is the bignum, and now so is this one.
+        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => {
+            Ok(from_big(-BigInt::from(i64::MIN)))
+        }
         (ext::DIV, Num::Int(i), Num::Int(j)) => Ok(Value::Int(
             i.div_euclid(j)
                 - i64::from(
@@ -1693,7 +1945,12 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
         // not the overflow the product would report.
         (ext::POW, Num::Int(i), Num::Int(j)) if j >= 0 => {
             let exp = u32::try_from(j).map_err(|_| "exponent too large".to_string())?;
-            i.checked_pow(exp).map(Value::Int).ok_or_else(too_large)
+            match i.checked_pow(exp) {
+                Some(v) => Ok(Value::Int(v)),
+                // The product left `i64`, which is a promotion and not an
+                // error: `expr {2 ** 100}` is exact in tclsh.
+                None => big_arith(id, BigInt::from(i), BigInt::from(j)),
+            }
         }
         // Integral operands keep an integral result even when the exponent is
         // negative, so the true value is truncated toward zero: `2 ** -1` is 0,
@@ -1795,6 +2052,10 @@ fn canonical_number(v: Value) -> Result<Value, String> {
     match parse_number(text.trim()) {
         Ok(Num::Int(i)) => Ok(Value::Int(i)),
         Ok(Num::Float(f)) => Ok(Value::Str(Arc::new(nan_checked(f)?))),
+        // `expr {0x1ffffffffffffffff}` is its decimal value in tclsh, as every
+        // other radix spelling is; the canonical form of a bignum is the same
+        // decimal `from_big` writes.
+        Ok(Num::Big(b)) => Ok(from_big(b)),
         Err(_) => {
             drop(text);
             Ok(v)

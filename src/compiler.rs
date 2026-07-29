@@ -380,13 +380,13 @@ fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
     } else {
         Compiler::run(script, first.seen_arrays, debug)?.b.build()
     };
-    // Tcl's integers are arbitrary-precision, and this frontend has no bignum:
-    // an `i64` that overflows is an error, raised by the numeric hook. Native
-    // codegen would wrap instead, so ask fusevm for the overflow-checked
-    // lowering — `Add`/`Sub`/`Mul` stay native registers on the common path and
-    // deopt into the hook when a result does not fit. Without this, the JIT and
-    // the AOT compiler print -9223372036854775808 where the interpreter reports
-    // "integer value too large to represent".
+    // Tcl's integers are arbitrary-precision, and so are this frontend's: an
+    // `i64` that overflows promotes, in the numeric hook. Native codegen would
+    // wrap instead, so ask fusevm for the overflow-checked lowering —
+    // `Add`/`Sub`/`Mul` stay native registers on the common path and deopt into
+    // the hook when a result does not fit. Without this, the JIT and the AOT
+    // compiler print -9223372036854775808 where the interpreter answers
+    // 9223372036854775808.
     chunk.int_overflow_deopt = true;
     Ok(chunk)
 }
@@ -1698,6 +1698,59 @@ impl Compiler {
         }
     }
 
+    /// Whether this expression's value provably fits a machine `i64`, which is
+    /// a stronger question than [`Self::yields_integer`] and the one the VM's
+    /// native bitwise ops need answered.
+    ///
+    /// Since integers promote, "is an integer" no longer means "is an
+    /// `i64`": `1 << 100` is an integer and `expr {(1 << 100) & (1 << 100)}` is
+    /// exact in tclsh, but fusevm's `Op::BitAnd` reads a promoted value through
+    /// `Value::to_int` and would answer 0. So the native op is emitted only for
+    /// operands that cannot leave the word, and everything else goes to the
+    /// extension op that carries the wide arithmetic.
+    ///
+    /// What cannot leave the word: a literal that already fits, a comparison or
+    /// a logical operator (1 or 0), `& | ^` of two such (no bit is created),
+    /// and `>>` of one (a right shift only shrinks). `+ - * **` and `<<` all
+    /// grow, `/` grows on `i64::MIN / -1`, and unary `-` grows on `i64::MIN`.
+    fn fits_machine_int(e: &Expr) -> bool {
+        match e {
+            Expr::Int(_, _) => true,
+            Expr::Float(_, _) | Expr::Subst(_) => false,
+            Expr::Unary(UnOp::Not, _) => true,
+            Expr::Unary(_, _) => false,
+            Expr::Binary(
+                BinOp::Lt
+                | BinOp::Gt
+                | BinOp::Le
+                | BinOp::Ge
+                | BinOp::Eq
+                | BinOp::Ne
+                | BinOp::StrLt
+                | BinOp::StrGt
+                | BinOp::StrLe
+                | BinOp::StrGe
+                | BinOp::StrEq
+                | BinOp::StrNe
+                | BinOp::In
+                | BinOp::Ni
+                | BinOp::And
+                | BinOp::Or,
+                _,
+                _,
+            ) => true,
+            Expr::Binary(BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor, a, b) => {
+                Self::fits_machine_int(a) && Self::fits_machine_int(b)
+            }
+            Expr::Binary(BinOp::Shr, a, _) => Self::fits_machine_int(a),
+            Expr::Binary(_, _, _) => false,
+            Expr::Ternary(_, then, other) => {
+                Self::fits_machine_int(then) && Self::fits_machine_int(other)
+            }
+            Expr::Call(_, _) => false,
+        }
+    }
+
     fn yields_integer(e: &Expr) -> bool {
         match e {
             Expr::Int(_, _) => true,
@@ -1771,7 +1824,7 @@ impl Compiler {
             // `~` wants an integer, and fusevm's `Op::BitNot` takes anything —
             // `expr {~1.5}` answered -2 where tclsh refuses the operand. Native
             // only when the operand is provably an integer.
-            Expr::Unary(UnOp::BitNot, operand) if !Self::yields_integer(operand) => {
+            Expr::Unary(UnOp::BitNot, operand) if !Self::fits_machine_int(operand) => {
                 self.expr(operand)?;
                 self.emit(Op::Extended(ext::BIT_NOT, 1), 0);
                 Ok(())
@@ -1813,7 +1866,7 @@ impl Compiler {
                 // The bitwise operators are the VM's only when both operands are
                 // provably integers; otherwise they are extension ops that hold
                 // Tcl's operand rule. See [`ext::BIT_AND`].
-                let integral = Self::yields_integer(a) && Self::yields_integer(b);
+                let integral = Self::fits_machine_int(a) && Self::fits_machine_int(b);
                 self.numeric_operand(a)?;
                 self.numeric_operand(b)?;
                 let native = match op {

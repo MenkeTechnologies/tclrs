@@ -457,6 +457,40 @@ pub fn parse_int(text: &str) -> Option<i64> {
     Some(if negative { -value } else { value })
 }
 
+/// The same grammar as [`parse_int`], refusing a value too wide for an `i64`
+/// rather than saturating to one.
+///
+/// The two callers want opposite things and both are right. An *index* saturates
+/// — `lindex {a b c} 99999999999999999999` is out of range whether the index is
+/// that number or `i64::MAX`, and tclsh answers the empty string for it. An
+/// operand of `lsort -integer` or `lsearch -integer` must not: tclsh raises
+/// `integer value too large to represent` there, and saturating would sort by a
+/// value the script never wrote.
+pub fn parse_int_exact(text: &str) -> Option<i64> {
+    let parsed = parse_int(text)?;
+    // Saturation is the only way `parse_int` reaches either bound from digits,
+    // so a value at one is either a genuine `i64::MIN`/`MAX` or an overflow;
+    // re-reading the digits tells the two apart.
+    if parsed == i64::MAX || parsed == i64::MIN {
+        let trimmed = trim_space(text);
+        let digits = trimmed.trim_start_matches(['-', '+']).replace('_', "");
+        let magnitude = digits.trim_start_matches('0');
+        let bound = if parsed == i64::MAX {
+            "9223372036854775807"
+        } else {
+            "9223372036854775808"
+        };
+        // Only a decimal spelling is compared: a radix one is re-parsed by the
+        // same accumulator and would need its own bound.
+        if !trimmed.contains(['x', 'X', 'o', 'O', 'b', 'B'])
+            && (magnitude.len() > bound.len() || (magnitude.len() == bound.len() && magnitude > bound))
+        {
+            return None;
+        }
+    }
+    Some(parsed)
+}
+
 /// Tcl's double syntax. Integers are doubles too, so the integer grammar is
 /// tried first and everything else goes through Rust's parser, which accepts
 /// the same decimal, exponent, `Inf` and `NaN` spellings.
@@ -501,7 +535,16 @@ fn int_prefix_end(text: &str) -> usize {
 
 /// An integer operand, or the interpreter's diagnostic for one that is not.
 pub fn wide(text: &str) -> Result<i64, String> {
-    parse_int(text).ok_or_else(|| number_error("integer", text))
+    match parse_int_exact(text) {
+        Some(i) => Ok(i),
+        // A spelling that is a perfectly good integer but too wide is its own
+        // diagnostic in tclsh, not `expected integer but got …`: `lsort
+        // -integer {99999999999999999999 5}` raises this rather than sorting.
+        None if parse_int(text).is_some() => {
+            Err("integer value too large to represent".to_string())
+        }
+        None => Err(number_error("integer", text)),
+    }
 }
 
 /// A double operand, or the interpreter's diagnostic for one that is not.

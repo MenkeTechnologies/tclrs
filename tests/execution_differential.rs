@@ -220,25 +220,32 @@ fn unsupported_constructs_are_refused() {
     }
 }
 
-/// Integer overflow has no bignum fallback yet, so it must fail loudly instead
-/// of wrapping.
+/// Integer overflow promotes rather than wrapping — Tcl 9's integers are
+/// arbitrary precision, and this used to be the error that stood in for one.
 #[test]
-fn integer_overflow_is_an_error_not_a_wrap() {
-    let err = tclrs::eval("puts [expr {9223372036854775807 + 1}]").expect_err("should overflow");
-    assert!(err.contains("too large"), "got {err:?}");
+fn integer_overflow_promotes_rather_than_wrapping() {
+    let outcome = tclrs::eval("puts [expr {9223372036854775807 + 1}]").expect("promotes");
+    assert_eq!(outcome.output, "9223372036854775808\n");
+    // Wrapping would have printed `-9223372036854775808`, which is the answer
+    // this test existed to forbid; it is still forbidden, now by the value
+    // rather than by an error.
+    let outcome = tclrs::eval("puts [expr {-9223372036854775807 - 2}]").expect("promotes");
+    assert_eq!(outcome.output, "-9223372036854775809\n");
 }
 
 /// `i64::MIN % -1` and `i64::MIN / -1` are the two integer operations whose
-/// hardware form traps. Tcl answers 0 and a bignum; this frontend must answer
-/// 0 and report the overflow, and must not abort the process either way.
-/// Found by the conformance run against the official suite.
+/// hardware form traps. Tcl answers 0 and a bignum, and so must this: the
+/// process must not abort either way. Found by the conformance run against the
+/// official suite.
 #[test]
 fn min_int_over_negative_one_does_not_trap() {
     let min = "set min [expr {-9223372036854775807 - 1}]\n";
     let outcome = tclrs::eval(&format!("{min}puts [expr {{$min % -1}}]")).expect("remainder");
     assert_eq!(outcome.output, "0\n", "tclsh prints 0 for this remainder");
 
-    let err = tclrs::eval(&format!("{min}puts [expr {{$min / -1}}]"))
-        .expect_err("the quotient does not fit in i64");
-    assert!(err.contains("too large"), "got {err:?}");
+    let outcome = tclrs::eval(&format!("{min}puts [expr {{$min / -1}}]")).expect("quotient");
+    assert_eq!(
+        outcome.output, "9223372036854775808\n",
+        "the quotient is one past `i64::MAX`, which is a bignum and not an error"
+    );
 }

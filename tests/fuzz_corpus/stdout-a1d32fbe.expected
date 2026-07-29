@@ -1,13 +1,13 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00171   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 22 -> 2 lines in 2 round(s), 29/400 candidates checked
-# verdict: DIVERGENCE	stdout	line tclsh=0 tclrs=m:integer value too large to represent
+# verdict: PASS	ran	
 # tclsh: 9.0.4
 # tclrs: tclrs 0.3.0
 # tclsh-status: 0
 # tclsh-stdout: 0\nm:\n\x1e
 # tclsh-stderr: 
 # tclrs-status: 0
-# tclrs-stdout: m:integer value too large to represent\n\x1e
+# tclrs-stdout: 0\nm:\n\x1e
 # tclrs-stderr: 
 #
 # The case itself is the sibling .tcl file. It is run spliced into

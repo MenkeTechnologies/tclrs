@@ -676,68 +676,72 @@ fn integer_exponentiation_stays_integral_for_a_negative_exponent() {
     }
 }
 
-/// **Fixed**, in the sense this frontend documents: an integer beyond `i64` is
-/// now the refusal the crate promises rather than a silently wrong answer.
+/// **Fixed.** An integer beyond `i64` is a value, not a refusal: Tcl 9's
+/// integers are arbitrary precision and these now are too.
 ///
-/// tclsh still differs, and will until there is a bignum — it promotes and
-/// answers exactly. What changed is that tclrs reports
-/// `integer value too large to represent` instead of switching to floating point
-/// and answering `1e+20`, so the divergence is a refusal the harness counts as a
-/// documented skip rather than a wrong value. Both halves of the cause are
-/// closed: `expr::parse_number` refuses the literal, and `runtime::parse_number`
-/// no longer hands an out-of-range integer spelling to the double parser.
+/// This finding has been through every stage. The spelling first became a
+/// double, answering `1e+20` for a value the script never wrote; then it became
+/// `integer value too large to represent`, which was honest but still not
+/// tclsh's answer; it now promotes and answers exactly. The arithmetic reaches
+/// a `BigInt` only after fusevm's checked `i64` path has already overflowed, so
+/// nothing on a hot loop's path changed to get here.
 #[test]
-fn out_of_range_integers_are_refused_rather_than_becoming_doubles() {
+fn integers_beyond_i64_promote_to_arbitrary_precision() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    let refused = || err("integer value too large to represent");
-    diverges(
-        &tclsh,
-        "puts [expr {99999999999999999999 + 1}]",
-        out("100000000000000000000\n"),
-        refused(),
-    );
-    // The operator with no floating-point meaning now reports the overflow
-    // rather than complaining about a double it was never given.
-    diverges(
-        &tclsh,
-        "puts [expr {99999999999999999999 % 3}]",
-        out("0\n"),
-        refused(),
-    );
-    // Through a variable, which is the runtime half of the same cause.
-    diverges(
-        &tclsh,
-        "set x 99999999999999999999\nputs [expr {$x + 1}]",
-        out("100000000000000000000\n"),
-        refused(),
-    );
-    // And in the radix spellings.
-    diverges(
-        &tclsh,
-        "puts [expr {0x10000000000000000}]",
-        out("18446744073709551616\n"),
-        refused(),
-    );
-    // The `i64` ends themselves are not overflow, and still agree. So does the
-    // decimal spelling *as a value*: it is exactly what tclsh prints for it, so
-    // the literal is carried through and only an operation on it is refused —
-    // a script that merely prints one, or never reaches it, still runs.
     for same in [
+        // The four shapes the earlier stages each got wrong in turn.
+        "puts [expr {99999999999999999999 + 1}]",
+        "puts [expr {99999999999999999999 % 3}]",
+        "set x 99999999999999999999\nputs [expr {$x + 1}]",
+        "puts [expr {0x10000000000000000}]",
+        // Growth, and the way back down.
+        "puts [expr {2 ** 100}]",
+        "puts [expr {9223372036854775807 * 3}]",
+        "puts [expr {(2 ** 100) / (2 ** 100)}]",
+        "puts [expr {(2 ** 100) - (2 ** 100)}]",
+        // Floored division and remainder hold at width, which truncation would
+        // get wrong in the negative cases.
+        "puts [expr {-99999999999999999999 / 7}]",
+        "puts [expr {-99999999999999999999 % 7}]",
+        "puts [expr {99999999999999999999 / -7}]",
+        "puts [expr {99999999999999999999 % -7}]",
+        // Ordering is exact rather than through a double, which is observable:
+        // these three would all be equal if either side became an `f64`.
+        "puts [expr {99999999999999999999 < 1e20}]",
+        "puts [expr {99999999999999999999 == 1e20}]",
+        "puts [expr {1e20 == 100000000000000000000}]",
+        "puts [expr {100000000000000000001 > 100000000000000000000}]",
+        // A double operand still makes the result a double.
+        "puts [expr {99999999999999999999 + 0.5}]",
+        // The bitwise operators are two's complement over an infinite sign
+        // extension, as Tcl's are.
+        "puts [expr {99999999999999999999 & 255}]",
+        "puts [expr {~99999999999999999999}]",
+        // The `i64` ends themselves are not overflow, and the literal is still
+        // spelled as the script wrote it where `eq` can see it.
         "puts [expr {9223372036854775807 - 1}]",
-        "puts [expr {-9223372036854775807 + 1}]",
         "puts [expr {0x7fffffffffffffff}]",
+        "puts [expr {0x10000000000000000 eq \"0x10000000000000000\"}]",
         "puts [expr {99999999999999999999}]",
         "puts 99999999999999999999",
-        "set x 99999999999999999999\nputs $x",
         "if {99999999999999999999} {puts T}",
-        "set x 9223372036854775808\nif {$x} {puts T}",
-        "if {0} {puts [expr {99999999999999999999 + 1}]}\nputs reached",
+        // `incr` promotes through the same path.
+        "set x 9223372036854775807\nincr x\nputs $x",
+        "set y 99999999999999999999\nputs [incr y -1]",
     ] {
         assert_eq!(reference(&tclsh, same), subject(same), "{same}");
     }
+    // What tclsh itself refuses stays refused: an operand of `-integer` must be
+    // a machine integer there, and saturating to one would sort by a value the
+    // script never wrote.
+    agrees(
+        &tclsh,
+        "puts [lsort -integer {99999999999999999999 5}]",
+        err("integer value too large to represent"),
+    );
 }
 
 /// **Fixed.** A character `expr` cannot use is named as a character, in tclsh's
@@ -1432,33 +1436,31 @@ fn bug_expr_accepts_a_quoted_nan_as_an_arithmetic_operand() {
     );
 }
 
-/// A left shift past the word width is the missing bignum, and now says so.
+/// A left shift past the word width promotes — **fixed**, and pinned so it
+/// stays that way.
 ///
-/// It used to wrap silently — `1 << 63` answered `i64::MIN` and `1 << 64`
-/// answered 1 — which was the one place a value changed instead of being
-/// refused. Both now report `integer value too large to represent`, which is
-/// the documented stance on the missing bignum (BUGS.md, "Arbitrary-precision
-/// integers") and what every other overflowing operation already said. The
-/// divergence from tclsh remains, because tclsh promotes and answers exactly;
-/// what changed is that tclrs no longer answers with a different number.
+/// This one moved twice. It wrapped silently first — `1 << 63` answered
+/// `i64::MIN` and `1 << 64` answered 1, the one place a value changed instead
+/// of being refused — then became `integer value too large to represent` while
+/// this frontend had no bignum. It now answers exactly, as tclsh does, and the
+/// shift is a `BigInt` operation rather than an `i64` one whenever a bit would
+/// leave the word.
 #[test]
-fn bug_expr_left_shift_past_the_word_width_wraps() {
+fn expr_left_shift_past_the_word_width_promotes() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
+    agrees(&tclsh, "puts [expr {1 << 63}]", out("9223372036854775808\n"));
+    agrees(&tclsh, "puts [expr {1 << 64}]", out("18446744073709551616\n"));
+    // A distance far past the word, and the round trip back down.
+    agrees(
         &tclsh,
-        "puts [expr {1 << 63}]",
-        out("9223372036854775808\n"),
-        err("integer value too large to represent"),
+        "puts [expr {(1 << 200) >> 200}]",
+        out("1\n"),
     );
-    diverges(
-        &tclsh,
-        "puts [expr {1 << 64}]",
-        out("18446744073709551616\n"),
-        err("integer value too large to represent"),
-    );
+    // A right shift still saturates rather than wrapping its distance.
+    agrees(&tclsh, "puts [expr {-1 >> 100}]", out("-1\n"));
     // The shifts that do fit still answer, and a right shift at any distance
     // does: only a left shift can leave the word.
     agrees(
