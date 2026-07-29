@@ -640,12 +640,18 @@ fn dispatch(id: u16, operands: &[Value]) -> Result<String, String> {
                 return Ok(a[0].clone());
             }
             let first = first.max(0) as usize;
-            let last = last.min(end) as usize;
+            // Where the kept tail starts. Computed signed and clamped, not cast
+            // first: an empty subject puts `end` at -1, and `string replace {}
+            // -5 3` reaches here with `last` at 3, so `last.min(end)` is -1 and
+            // casting that to `usize` made `last + 1` overflow and abort the
+            // process. tclsh answers `{}` for that, and `X` for `string replace
+            // {} -5 3 X`, which is what falls out of a tail that starts at 0.
+            let tail = (last.min(end) + 1).max(0) as usize;
             let mut out: String = s[..first].iter().collect();
             if let Some(new) = a.get(3) {
                 out.push_str(new);
             }
-            out.extend(&s[last + 1..]);
+            out.extend(&s[tail..]);
             Ok(out)
         }
         ext::REVERSE => Ok(chars(&a[0]).iter().rev().collect()),
@@ -827,8 +833,12 @@ fn valid_digits(text: &str, radix: u32) -> bool {
 
 /// An operand a command needs as an integer.
 fn want_int(text: &str) -> Result<i64, String> {
-    parse_int(text.trim_matches(is_ascii_space))
-        .ok_or_else(|| format!("expected integer but got \"{text}\""))
+    parse_int(text.trim_matches(is_ascii_space)).ok_or_else(|| {
+        format!(
+            "expected integer but got {}",
+            crate::runtime::named(text, 50)
+        )
+    })
 }
 
 // ── comparison and search ────────────────────────────────────────────────
@@ -1731,8 +1741,12 @@ fn integer(
     size: Width,
     value: &str,
 ) -> Result<Signed, String> {
-    let n = parse_int(value.trim_matches(is_ascii_space))
-        .ok_or_else(|| format!("expected integer but got \"{value}\""))?;
+    let n = parse_int(value.trim_matches(is_ascii_space)).ok_or_else(|| {
+        format!(
+            "expected integer but got {}",
+            crate::runtime::named(value, 50)
+        )
+    })?;
     let signed_conv = matches!(conv, 'd' | 'i');
     let radix = match conv {
         'o' => 8,
@@ -1821,8 +1835,12 @@ fn floating(
     precision: Option<i64>,
     value: &str,
 ) -> Result<Signed, String> {
-    let x = parse_double(value)
-        .ok_or_else(|| format!("expected floating-point number but got \"{value}\""))?;
+    let x = parse_double(value).ok_or_else(|| {
+        format!(
+            "expected floating-point number but got {}",
+            crate::runtime::named(value, 50)
+        )
+    })?;
     if x.is_nan() {
         return Err("floating point value is Not a Number".to_string());
     }

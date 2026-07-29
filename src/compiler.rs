@@ -92,6 +92,21 @@ pub mod ext {
     /// [`super::Compiler::yields_number`] is the test.
     pub const BOOL: u16 = 15;
 
+    /// `[value]` → the number that value spells, or a refusal if it spells a
+    /// NaN. `expr {$x}` is 7 when `x` is `007`, 16 when it is `0x10`, and `abc`
+    /// when it spells no number at all; `expr {0.0/0.0}` is `domain error:
+    /// argument not in valid range`.
+    ///
+    /// The op an `expr` used to end in unconditionally. It is emitted in two
+    /// places now, both of them cold: after an expression whose result could
+    /// still be a string ([`super::Compiler::yields_number`] says so — never
+    /// after arithmetic), and after arithmetic on an operand that is a literal
+    /// `inf` or `nan` ([`super::Compiler::may_be_non_finite`]), which is the
+    /// only way a script can spell a NaN into an operation that would otherwise
+    /// lower natively. A counted loop reaches neither, which is what keeps its
+    /// body free of extension ops and inside the tracing JIT.
+    pub const CANON: u16 = 47;
+
     /// `[a, b]` → 1 or 0: `expr`'s always-string comparisons — `eq ne lt gt le
     /// ge` — with `arg` naming which, in [`super::Compiler::str_cmp`]'s order.
     ///
@@ -136,6 +151,38 @@ pub mod ext {
     pub const FOREACH_MORE: u16 = 30;
     pub const FOREACH_TAKE: u16 = 31;
     pub const FOREACH_ADVANCE: u16 = 32;
+
+    /// The bitwise operators, in Tcl's semantics rather than the VM's.
+    ///
+    /// fusevm's `Op::BitAnd`/`BitOr`/`BitXor`/`BitNot`/`Shl`/`Shr` coerce their
+    /// operands through `Value::to_int`, which reads `1.5` as 1 and `"abc"` as
+    /// 0; Tcl refuses both (`cannot use floating-point value "1.5" as left
+    /// operand of "|"`). It also masks a shift distance to 6 bits, where Tcl
+    /// saturates a right shift and promotes an overflowing left shift.
+    ///
+    /// Emitted only where the compiler cannot prove both operands are integers
+    /// ([`super::Compiler::yields_integer`]), so an expression written in
+    /// literals keeps the native op — and with it the tracing JIT, which
+    /// rejects `Op::Extended`. A shift by a literal distance is the other case
+    /// that stays native; see [`super::Compiler::native_shift`].
+    ///
+    /// Numbered from 40 rather than 33: 33 and 34 are [`LAPPEND_VAR`] and
+    /// [`LAPPEND_SLOT`], and an id collision here dispatches one command's op to
+    /// another's handler with nothing to catch it.
+    pub const BIT_AND: u16 = 40;
+    pub const BIT_OR: u16 = 41;
+    pub const BIT_XOR: u16 = 42;
+    pub const SHL: u16 = 43;
+    pub const SHR: u16 = 44;
+    pub const BIT_NOT: u16 = 45;
+
+    /// Unary `+`, which is the identity on a *number* and an error on anything
+    /// else: `expr {+"a"}` is `cannot use non-numeric string "a" as operand of
+    /// "+"` in tclsh 9.0.4, where lowering it to nothing at all answered `a`.
+    /// Emitted only where the operand is not already known to be a number
+    /// ([`super::Compiler::yields_number`]), so `expr {+1}` still lowers to a
+    /// single `LoadInt`.
+    pub const UPLUS: u16 = 46;
     // Associative data (`assoc`). The operand order in each comment is the
     // order the compiler pushes them, so the handler pops them in reverse.
 
@@ -868,13 +915,22 @@ impl Compiler {
             text.push_str(piece);
         }
         let parsed = expr::parse(&text).map_err(|e| self.err(e.msg))?;
-        // Nothing normalizes the result: it stays the value the VM computed —
-        // an integer, a double, a boolean — and Tcl's string form is applied
-        // wherever one is asked for (`ext::PUTS`, `ext::STR_CMP`, the word
-        // concatenation above, `crate::runtime::tcl_str`). That is what keeps
-        // an arithmetic loop free of extension ops, which is what fusevm's JIT
-        // and its ahead-of-time compiler need in order to lower one.
+        // Arithmetic normalizes nothing: the result stays the value the VM
+        // computed — an integer, a double, a boolean — and Tcl's string form is
+        // applied wherever one is asked for (`ext::PUTS`, `ext::STR_CMP`, the
+        // word concatenation above, `crate::runtime::tcl_str`). That is what
+        // keeps a counted loop free of extension ops, which is what fusevm's
+        // JIT and its ahead-of-time compiler need in order to lower one.
+        //
+        // An expression whose result could still be a *string* is the one that
+        // pays, because `expr {$x}` answers the number `x` spells rather than
+        // the text that spelt it. `yields_number` is the same static test the
+        // boolean conversion uses, and it is false only where no arithmetic
+        // happened.
         self.expr(&parsed)?;
+        if !Self::yields_number(&parsed) {
+            self.emit(Op::Extended(ext::CANON, 0), 0);
+        }
         Ok(())
     }
 
@@ -1274,6 +1330,82 @@ impl Compiler {
         }
     }
 
+    /// Whether this expression can only ever produce an `i64`, whatever the
+    /// variables in it hold — which is what lets a bitwise operator stay a
+    /// native VM op instead of the extension op that carries Tcl's operand
+    /// rule ([`ext::BIT_AND`]).
+    ///
+    /// Deliberately conservative: `false` costs a native op, `true` costs
+    /// correctness, so anything whose value is substituted text — and any
+    /// double literal, and any operator that can widen to one — answers `false`.
+    /// A decimal literal too large for an `i64` is already an [`Expr::Subst`]
+    /// by the time it reaches here, so it answers `false` too.
+    /// Whether this expression can hand an *infinity* to the operator above it,
+    /// which is the only way `+`, `-` or `*` can make a NaN: adding, subtracting
+    /// or multiplying two finite doubles overflows to ±Inf at worst, never to a
+    /// NaN. tclsh refuses a NaN *result* (`expr {inf-inf}` is `domain error:
+    /// argument not in valid range`), so where this answers true the operation
+    /// is followed by [`ext::CANON`], which carries that refusal.
+    ///
+    /// Only a literal is counted. A script that spells `inf` or `nan` is caught;
+    /// an infinity a script *computed* earlier and stored in a variable is not,
+    /// and reusing one is the documented hole in BUGS.md. Counting substitutions
+    /// would put an extension op in every arithmetic loop, which costs the
+    /// tracing JIT the whole loop — measured, not assumed.
+    fn may_be_non_finite(e: &Expr) -> bool {
+        match e {
+            Expr::Float(f, _) => !f.is_finite(),
+            Expr::Int(_, _) | Expr::Subst(_) => false,
+            Expr::Unary(_, operand) => Self::may_be_non_finite(operand),
+            Expr::Binary(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, a, b) => {
+                Self::may_be_non_finite(a) || Self::may_be_non_finite(b)
+            }
+            // Everything else answers a number of its own — a comparison is 1 or
+            // 0, a shift and the bitwise operators are integers — or is refused.
+            Expr::Binary(_, _, _) => false,
+            Expr::Ternary(_, then, other) => {
+                Self::may_be_non_finite(then) || Self::may_be_non_finite(other)
+            }
+            Expr::Call(_, _) => false,
+        }
+    }
+
+    fn yields_integer(e: &Expr) -> bool {
+        match e {
+            Expr::Int(_, _) => true,
+            Expr::Float(_, _) | Expr::Subst(_) => false,
+            // `!` and the comparisons answer 1 or 0 whatever they are given.
+            Expr::Unary(UnOp::Not, _) => true,
+            Expr::Unary(_, operand) => Self::yields_integer(operand),
+            Expr::Binary(
+                BinOp::Lt
+                | BinOp::Gt
+                | BinOp::Le
+                | BinOp::Ge
+                | BinOp::Eq
+                | BinOp::Ne
+                | BinOp::StrLt
+                | BinOp::StrGt
+                | BinOp::StrLe
+                | BinOp::StrGe
+                | BinOp::StrEq
+                | BinOp::StrNe
+                | BinOp::In
+                | BinOp::Ni
+                | BinOp::And
+                | BinOp::Or,
+                _,
+                _,
+            ) => true,
+            Expr::Binary(_, a, b) => Self::yields_integer(a) && Self::yields_integer(b),
+            Expr::Ternary(_, then, other) => {
+                Self::yields_integer(then) && Self::yields_integer(other)
+            }
+            // Refused when lowered; the answer here does not matter.
+            Expr::Call(_, _) => false,
+        }
+    }
+
     // ── expressions ──────────────────────────────────────────────────────
 
     fn expr(&mut self, e: &Expr) -> Result<(), CompileError> {
@@ -1301,6 +1433,19 @@ impl Compiler {
                 self.emit(Op::Extended(ext::BOOL, 1), 0);
                 Ok(())
             }
+            // `~` wants an integer, and fusevm's `Op::BitNot` takes anything —
+            // `expr {~1.5}` answered -2 where tclsh refuses the operand. Native
+            // only when the operand is provably an integer.
+            Expr::Unary(UnOp::BitNot, operand) if !Self::yields_integer(operand) => {
+                self.expr(operand)?;
+                self.emit(Op::Extended(ext::BIT_NOT, 1), 0);
+                Ok(())
+            }
+            Expr::Unary(UnOp::Plus, operand) if !Self::yields_number(operand) => {
+                self.expr(operand)?;
+                self.emit(Op::Extended(ext::UPLUS, 1), 0);
+                Ok(())
+            }
             Expr::Unary(op, operand) => {
                 self.expr(operand)?;
                 match op {
@@ -1326,28 +1471,47 @@ impl Compiler {
                 Ok(())
             }
             Expr::Binary(op, a, b) => {
+                // The bitwise operators are the VM's only when both operands are
+                // provably integers; otherwise they are extension ops that hold
+                // Tcl's operand rule. See [`ext::BIT_AND`].
+                let integral = Self::yields_integer(a) && Self::yields_integer(b);
                 self.expr(a)?;
                 self.expr(b)?;
                 let native = match op {
                     BinOp::Add => Some(Op::Add),
                     BinOp::Sub => Some(Op::Sub),
                     BinOp::Mul => Some(Op::Mul),
-                    BinOp::Shl => Some(Op::Shl),
-                    BinOp::Shr => Some(Op::Shr),
+                    // No `integral` case for the shifts: fusevm masks the
+                    // distance to six bits, so `1 << 64` answered 0 where tclsh
+                    // promotes, and `1 << -1` answered 0 where tclsh reports
+                    // "negative shift argument". Neither the distance nor the
+                    // overflow is knowable from the operands' shapes, so both
+                    // shifts are always the extension op.
+                    BinOp::BitAnd if integral => Some(Op::BitAnd),
+                    BinOp::BitOr if integral => Some(Op::BitOr),
+                    BinOp::BitXor if integral => Some(Op::BitXor),
                     BinOp::Lt => Some(Op::NumLt),
                     BinOp::Gt => Some(Op::NumGt),
                     BinOp::Le => Some(Op::NumLe),
                     BinOp::Ge => Some(Op::NumGe),
                     BinOp::Eq => Some(Op::NumEq),
                     BinOp::Ne => Some(Op::NumNe),
-                    BinOp::BitAnd => Some(Op::BitAnd),
-                    BinOp::BitOr => Some(Op::BitOr),
-                    BinOp::BitXor => Some(Op::BitXor),
+                    // `StrLt` … `StrNe` are absent on purpose: the always-string
+                    // comparisons are lowered by the arm above, which compares
+                    // Tcl's string form of each operand rather than the VM's.
                     _ => None,
                 };
                 match native {
                     Some(op) => {
+                        // `inf - inf` is a NaN, and tclsh refuses one. The
+                        // native op cannot, so an operation a script spelt an
+                        // infinity into is followed by the op that does.
+                        let checks_nan = matches!(op, Op::Add | Op::Sub | Op::Mul)
+                            && (Self::may_be_non_finite(a) || Self::may_be_non_finite(b));
                         self.emit(op, -1);
+                        if checks_nan {
+                            self.emit(Op::Extended(ext::CANON, 0), 0);
+                        }
                     }
                     None => {
                         let id = match op {
@@ -1356,6 +1520,11 @@ impl Compiler {
                             BinOp::Pow => ext::POW,
                             BinOp::In => ext::IN,
                             BinOp::Ni => ext::NI,
+                            BinOp::BitAnd => ext::BIT_AND,
+                            BinOp::BitOr => ext::BIT_OR,
+                            BinOp::BitXor => ext::BIT_XOR,
+                            BinOp::Shl => ext::SHL,
+                            BinOp::Shr => ext::SHR,
                             _ => unreachable!("binary op {op:?} has no lowering"),
                         };
                         self.emit(Op::Extended(id, 2), -1);

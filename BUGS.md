@@ -253,35 +253,27 @@ T=./target/debug/tclrs
 tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
 ```
 
-- **`expr` coerces a non-numeric string to zero outside a boolean position.**
-  `expr {"b" >> 1}` answers 0, `expr {~"b"}` answers -1, and `&`, `|`, `^`, `<<`
-  likewise; tclsh raises `cannot use non-numeric string "b" as left operand of
-  ">>"`. In a boolean position the coercion is gone — see the fixed list below —
-  and `!` now refuses the operand too, only in the older wording of the next
-  entry.
-- **`expr`'s operand errors use Tcl 8's wording.** tclsh 9.0.4 names the value and
-  which side of the operator it was on — `cannot use non-numeric string "abc" as
-  right operand of "+"` — where tclrs says `can't use non-numeric string as
-  operand of "+": "abc"`. Same for `cannot use floating-point value "1.0" as left
-  operand of "%"`. `format` differs the same way: `expected integer but got a
-  list` against `expected integer but got "{a b} c"` — `format` is the one place
-  left that quotes a list-shaped value, since `incr` and the boolean rule both go
-  through `list::looks_like_a_list` now.
 - **`incr` on a non-integer *variable* reports an `expr` operand error.**
-  `set x abc; incr x` says `can't use non-numeric string as operand of "+": "abc"`
-  where tclsh says `expected integer but got "abc"`. An increment the script wrote
+  `set x abc; incr x` says `cannot use non-numeric string "abc" as left operand
+  of "+"` where tclsh says `expected integer but got "abc"`. An increment the script wrote
   out (`incr x abc`) is checked while compiling and does report `incr`'s own
   wording; the variable's value cannot be, because the check would have to be an
   extension op in the `incr` lowering and `is_trace_op_allowed_at` rejects
   `Op::Extended` — every loop that counts with `incr` would lose its compiled
   trace, which is the one thing this frontend has that reaches native code.
   Deliberately not taken.
-- **Parse errors inside `expr` are worded differently.** `missing operand at _@_`
-  against `premature end of expression`, and `invalid bareword "end"` against
-  `invalid bare word "end" in expression`. The *character* diagnostic agrees now.
+- **A double *literal* written in exponential form is quoted by its value.**
+  `expr {1e300 % 2}` names `1e+300` where tclsh names `1e300`, and `2.5e-3`
+  becomes `0.0025`. tclsh keeps an operand's original string representation and
+  quotes that; a literal here is an `Op::LoadFloat` with no spelling left by the
+  time an operator refuses it, so it is named by `runtime::format_double` — which
+  is exactly right for a *computed* double, and for every spelling that is
+  already canonical (`1.0`, `0.5`, `-0.0`, `1.0e-7`). An operand read from a
+  variable is a `Value::Str` and is quoted verbatim, so only a literal is
+  affected: 82 of the 7730 divergences in the four-run campaign.
 - **Unreachable code is still compiled**, so a script tclsh runs to completion can
   be refused outright: `if {0} {incr}` is `wrong # args`, `if {0} {puts [expr {1
-  +}]}` is `premature end of expression`, and `if {0} {nosuchcommand}` is
+  +}]}` is `missing operand at _@_`, and `if {0} {nosuchcommand}` is
   `invalid command name`, and a `switch` arm that is never selected is parsed too:
   `switch -- x {*b {puts "a}}` is `missing "` where tclsh never looks inside the
   braced body. The mechanism is documented (README [0x05], errors "at compile time
@@ -343,46 +335,105 @@ Seven more, from the 2000-program run above. Each is pinned in
 because the generator now builds `format`'s specifier matrix, draws shift counts
 with a sign, and carries `nan` / `inf` in its value pools.
 
-- **A shift by a negative count answers 0.** `expr {10 << -1}` and
-  `expr {10 >> -2}` are both 0; `expr(n)` makes a negative shift count illegal
-  and tclsh reports `negative shift argument`. 29 of the 2000 cases reach it,
-  against 2 before shift counts were drawn with a sign.
-- **A left shift past the word width wraps silently.** `expr {1 << 63}` is
-  `i64::MIN` and `expr {1 << 64}` is 1, where tclsh promotes and answers
-  `9223372036854775808` and `18446744073709551616`. Every other overflow reports
-  `integer value too large to represent` rather than wrapping — that is the
-  documented stance on the missing bignum — and `<<` is the one operator that
-  does not take part. `expr {1 << 9223372036854775807}` is
-  `-9223372036854775808` against tclsh's own `integer value too large to
-  represent`.
+- **A left shift past the word width is still the missing bignum.**
+  `expr {1 << 63}` and `expr {1 << 64}` report `integer value too large to
+  represent` where tclsh promotes and answers `9223372036854775808` and
+  `18446744073709551616`. It used to *wrap* — `i64::MIN` and 1 — which was the
+  one place a value silently changed instead of being refused; now it is the same
+  documented refusal as every other overflow, and the remaining gap is the bignum
+  itself.
 - **`format`'s `-` flag does not override `0`.** `format %-08.2f 1.5` is
   `00001.50` against tclsh's `1.50    `, and `format %-08s ab` is `000000ab`
   against `ab000000`. The integer conversions already agree — `format %-08d 5` is
   `00000005` in both — so this is the `-`-against-`0` rule for `e`, `f`, `g` and
   `s`, not the padding as a whole. Reached only because the generator builds the
   specifier from its axes rather than drawing a fixed spelling.
-- **Zero over a floating-point zero is `NaN`, not a domain error.**
-  `expr {0 / -0.0}` and `expr {0.0 / 0.0}` answer `NaN`; tclsh reports
-  `domain error: argument not in valid range`. A non-zero numerator agrees —
-  `expr {3 / -0.0}` is `-Inf` in both — so it is the indeterminate form alone.
-- **`expr`'s literal grammar has no `nan` or `inf`.** `expr {inf > 1}` is
-  `invalid bare word "inf" in expression` where tclsh answers 1, and so are
-  `nan`, `NaN` and `Inf`. The runtime's parser has them — `string is double inf`
-  is 1 — so this is the same `expr::parse_number` gap as `0d9` and `1_0` above,
-  in the two spellings that are words rather than digits. It is the largest
-  single class in the widened run: 342 of 2000 cases for `inf` and 204 for `nan`.
-- **A quoted `nan` is a usable arithmetic operand.** `expr {"nan" + 1}` is `NaN`;
-  tclsh reports `cannot use non-numeric floating-point value "nan" as left
-  operand of "+"`, because `Tcl_GetDoubleFromObj` refuses a NaN that came from a
-  string.
 - **A refusal decided at run time is catchable, so `catch` sees a message where
   tclsh saw an answer.** `catch {lsearch -sorted {a} b} m` leaves `m` as
-  `lsearch -sorted is not supported yet` and the script runs on, where tclsh
+  `lsearch -sorted -increasing is not supported yet` and the script runs on, where tclsh
   leaves `-1`; the same for `lsort -nocase`. The refusals decided while
   *compiling* — `string is punct`, `string wordstart` — are not catchable and do
   take the whole case out of comparison as a skip. The two halves are pinned
   together, because which side a refusal falls on is what decides whether the
   harness counts it as a skip or as a divergence.
+
+### Fixed by the four-run campaign
+
+Four runs of 4000 programs — seeds 1001 and 2002 at depth 4, 3003 and 4004 at
+depth 6 — produced 7730 divergences, and these came out of grouping them by
+signature. Each is pinned in `tests/parity_fuzz_findings.rs` against a live
+tclsh, with the seed and case number of the divergence it was reduced from.
+
+- **An `expr` operand refusal names the value and the side.** `cannot use
+  non-numeric string "a" as left operand of "+"`, `cannot use floating-point
+  value "1.0" as right operand of "%"`, and `as operand of` with no side for a
+  unary operator. tclrs used Tcl 8's wording, which carried neither. 494 of the
+  1420 run-time `message` divergences and 123 of the 413 `stdout` ones.
+- **An operand that could be a list is named `a list`**, in `expr` as well as in
+  `incr` and `format`: `expr {"a b c" + 1}` is `cannot use a list as left operand
+  of "+"`, and `format %X [list {a b c} {}]` is `expected integer but got a
+  list`. The screen is `list::looks_like_a_list`, so a one-element value is still
+  quoted. 233 `message` divergences and 58 `stdout` ones.
+- **The bitwise operators take integers.** `expr {1.5 | 2}` answered 3 and
+  `expr {"abc" & 1}` answered 0, because fusevm's `Op::BitAnd` and friends coerce
+  through `Value::to_int`; both are refusals now. These were wrong *answers*, not
+  wrong wording. `&`, `|` and `^` keep the native op — and with it the tracing
+  JIT — when the compiler can prove both operands integral
+  (`Compiler::yields_integer`); the shifts never can, because neither the
+  distance nor the overflow is knowable from an operand's shape.
+- **A shift distance is checked and a right shift saturates.** `1 << -1` is
+  `negative shift argument`, `1 >> 200` is 0 and `-1 >> 200` is -1, where
+  fusevm's six-bit distance mask answered 0, 1 and 1.
+
+  **What that costs, measured.** A shift is an extension op wherever it appears,
+  and an extension op in a loop body costs that loop its trace and deopts its
+  ahead-of-time compile. `bench/integer_arith.tcl`, whose body is
+  `$sum + $i * $i - ($i >> 3)`, went from 6.4 ms to 187.5 in the JIT column and
+  from 4.2 ms to 172.6 ahead-of-time — a 29× and 41× regression on that row,
+  against tclsh's 284.7. `counted_loop` and `counted_loop_expr` are unaffected
+  (5.8 and 5.4 ms JIT, 4.0 and 4.0 AOT) because neither shifts.
+
+  The correctness is not in question and the answers are tclsh's now; what is
+  missing is a lowering that keeps them without an extension op. Two candidates:
+  prove the *left* operand integral the way `yields_integer` proves a literal —
+  a variable assigned only from integer expressions in the same chunk is
+  provable, and `$i` in that loop is — or lower the check into a guard fusevm's
+  tracing tier accepts. A guard that *branches* is not one of them: a forward
+  conditional that is taken on the recorded path costs the trace outright,
+  measured on a loop whose body carried a never-entered `if`.
+- **`%` checks its left operand first**, so `expr {1.5 % "a"}` names the float
+  rather than the string, which is the order tclsh checks them in.
+- **An exponent past what can be applied** is `exponent too large`, not the
+  overflow the product would have reported.
+- **`incr` on a variable that does not exist counts from zero.** `proc p {} {incr
+  n; return $n}` was an operand refusal and is 1. `incr` keeps its native
+  `Op::Add` — an extension op there costs `bench/counted_loop_proc.tcl` its trace
+  — so the zero is read in the numeric hook, where an absent variable arrives as
+  `Value::Undef`; no assignment produces that, since `set x ""` stores
+  `Value::Str("")`, so the reading is exactly the `incr` case.
+- **`expr` answers with the number an operand spells.** `expr {007}` is 7 and
+  `expr {0x10}` is 16; the text used to pass through. An integer past `i64` still
+  passes through, because its text is the only representation there is.
+- **A NaN is reported rather than answered.** A NaN *result* is `domain error:
+  argument not in valid range`; a NaN *operand* is `cannot use non-numeric
+  floating-point value "nan" as left operand of "+"`.
+- **`inf`, `infinity` and `nan` are expression literals**, in any case, and
+  nothing that merely starts with one is: the set is what `f64::from_str` takes,
+  which is the set tclsh's lexer takes.
+- **`lsearch -increasing` and `-decreasing` are accepted.** They describe the
+  order `-sorted` and `-bisect` binary-search in and change no answer without
+  them, so refusing them turned a working search into an error. The two options
+  that *would* read the order still say so, and now name the order they would
+  have used.
+- **`expr`'s compile-time diagnostics are the reference interpreter's.** tclsh
+  lexes before it parses, so its refusals name the token: `invalid bareword "a"`,
+  `missing operand at _@_` (the marker is literal on the first line; the position
+  is on the second), `missing operator at _@_`, `missing operator ":" at _@_`,
+  `empty expression`, `unbalanced open paren`, `unbalanced close paren` and
+  `incomplete operator "="`, with `invalid character "@"` kept for a character
+  that really is no token. 227 of the compile-time `message` divergences.
+- **`#` starts a comment inside an expression**, running to the end of the line —
+  which is why `expr {#1}` is `empty expression` in tclsh.
 
 ### Fixed by the fuzzer's own findings
 
@@ -482,6 +533,15 @@ All of them are now closed, each pinned by a test in
 quoting one, and each with its reproducer in the seed corpus of the target that
 reaches it.
 
+- **`string replace` on an empty subject aborted the process.**
+  `string replace {} -5 3` was `attempt to add with overflow`. The subject's
+  `end` is -1 when it is empty, `last` clamps to that, and the cast to `usize`
+  before the `+ 1` made the tail index wrap. **Fixed** by computing the tail
+  signed and clamping it, which also brings the whole first/last matrix into
+  agreement with tclsh — including `string replace {} -5 3 X`, which is `X`.
+  Found by the four-run campaign (seed 3003 case 02453) and still reachable at
+  v0.2.0.
+
 - **`format`'s floating-point precision above 65535 panicked.** Rust's formatter
   holds precision in a `u16`, and the four sites that call it take the number
   straight from the script: `format %.65536f 1.0`, `format %.65536e 1.0`,
@@ -573,3 +633,17 @@ A fourth was not in the list above, because nothing had found it yet:
   the bignum; the fuzzer's ten-second per-process timeout ends the run and
   classifies the case as `EXCLUDED`. tclrs reports the overflow immediately. This
   is why both sides of the harness are timed, not only the subject.
+- **tclsh 9.0.4 answers two different things for the same `string replace`,**
+  depending on whether it compiled the command. `string replace {} 0 0 X` is `{}`
+  through `Tcl_StringObjCmd` — at a script's top level — and `X` through the
+  `INST_STR_REPLACE` bytecode, which is what a procedure body or a braced `catch`
+  script goes through. tclrs compiles everything, so it gives the compiled
+  answer, and agrees with tclsh wherever tclsh agrees with itself. Measured while
+  closing the `string replace` abort above; the whole first/last matrix is pinned
+  in `tests/parity_fuzz_findings.rs` against the compiled path.
+- **The same split for a NaN condition.** `if {"nan"} {puts a}` at a script's top
+  level is `domain error: argument not in valid range`, and inside a `catch` body
+  or a procedure it is `floating point value is Not a Number`. tclrs gives the
+  second everywhere. Pinned as `bug_a_nan_condition_has_two_diagnostics`, which
+  asserts both of tclsh's spellings so the disagreement cannot be mistaken for a
+  change on this side.

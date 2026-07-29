@@ -1,6 +1,6 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00392   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 21 -> 2 lines in 2 round(s), 22/400 candidates checked
-# verdict: DIVERGENCE	message	msg tclsh=expected integer but got "1a{bback\slash" tclrs=can't use non-numeric string as operand of "+": "1a{bback\slash"
+# verdict: DIVERGENCE	message	msg tclsh=expected integer but got "1a{bback\slash" tclrs=cannot use non-numeric string "1a{bback\slash" as left operand of "+"
 # tclsh: 9.0.4
 # tclrs: tclrs 0.2.0
 # tclsh-status: 1
@@ -8,7 +8,7 @@
 # tclsh-stderr: expected integer but got "1a{bback\\slash"\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: can't use non-numeric string as operand of "+": "1a{bback\\slash"\n
+# tclrs-stderr: cannot use non-numeric string "1a{bback\\slash" as left operand of "+"\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

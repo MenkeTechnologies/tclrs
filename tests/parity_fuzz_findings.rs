@@ -371,47 +371,41 @@ fn conditions_are_tcl_booleans_not_the_vms_truthiness() {
     }
 }
 
-/// The other half of the same coercion, still open: outside a boolean position
-/// `expr` takes a non-numeric string as zero. What tclsh reports there is the
-/// operand wording of `bug_expr_operand_errors_use_the_older_wording`, and `!`
-/// now joins that class — it refuses the operand rather than answering 0, in
-/// tclrs's own wording for a refused operand.
+/// The last of the same coercion, now closed: outside a boolean position `expr`
+/// used to take a non-numeric string as zero, because fusevm's bitwise ops
+/// coerce through `Value::to_int`. They are extension ops now whenever the
+/// compiler cannot prove both operands integral, and each of the five programs
+/// below is parity.
 #[test]
 fn bug_non_numeric_strings_are_coerced_outside_a_boolean_position() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
+    agrees(
         &tclsh,
         "puts [expr {\"b\" >> 1}]",
         err("cannot use non-numeric string \"b\" as left operand of \">>\""),
-        out("0\n"),
     );
-    diverges(
+    agrees(
         &tclsh,
         "puts [expr {\"b\" & 1}]",
         err("cannot use non-numeric string \"b\" as left operand of \"&\""),
-        out("0\n"),
     );
-    diverges(
+    agrees(
         &tclsh,
         "puts [expr {\"b\" | 1}]",
         err("cannot use non-numeric string \"b\" as left operand of \"|\""),
-        out("1\n"),
     );
-    diverges(
+    agrees(
         &tclsh,
         "puts [expr {~\"b\"}]",
         err("cannot use non-numeric string \"b\" as operand of \"~\""),
-        out("-1\n"),
     );
-    // `!` no longer answers 0; only the wording of the refusal differs now.
-    diverges(
+    agrees(
         &tclsh,
         "puts [expr {!\"b\"}]",
         err("cannot use non-numeric string \"b\" as operand of \"!\""),
-        err("can't use non-numeric string as operand of \"!\": \"b\""),
     );
 }
 
@@ -568,14 +562,17 @@ fn bug_incr_reports_an_expr_error_for_a_non_integer_variable() {
         &tclsh,
         "set x abc\nincr x",
         err("expected integer but got \"abc\""),
-        err("can't use non-numeric string as operand of \"+\": \"abc\""),
+        err("cannot use non-numeric string \"abc\" as left operand of \"+\""),
     );
     diverges(
         &tclsh,
         "set x 5\nset y abc\nincr x $y",
         err("expected integer but got \"abc\""),
-        err("can't use non-numeric string as operand of \"+\": \"abc\""),
+        err("cannot use non-numeric string \"abc\" as right operand of \"+\""),
     );
+    // The variable being *absent* is no longer this case: `incr` counts from
+    // zero there, as tclsh does.
+    agrees(&tclsh, "incr fresh 5\nputs $fresh", out("5\n"));
 }
 
 /// `format`'s integer conversions name a list as a list. tclrs quotes the value
@@ -586,40 +583,39 @@ fn bug_format_reports_a_list_as_a_quoted_string() {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
+    agrees(
         &tclsh,
         "puts [format %+d {{a b} c}]",
         err("expected integer but got a list"),
-        err("expected integer but got \"{a b} c\""),
     );
 }
 
-/// Where tclrs does refuse a non-numeric or floating-point operand, it words the
-/// refusal as Tcl 8 did. tclsh 9.0.4 names the offending value and which side of
-/// the operator it was on.
+/// An operand `expr` refuses is worded as tclsh 9.0.4 words it: the value named
+/// in place, and which side of the operator it was on.
+///
+/// Was Tcl 8's wording (`can't use non-numeric string as operand of "+":
+/// "abc"`), which carried no side and put the value last. Fixed; the three
+/// programs are the same three, now asserted as parity.
 #[test]
 fn bug_expr_operand_errors_use_the_older_wording() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
+    agrees(
         &tclsh,
         "puts [expr {1 + \"abc\"}]",
         err("cannot use non-numeric string \"abc\" as right operand of \"+\""),
-        err("can't use non-numeric string as operand of \"+\": \"abc\""),
     );
-    diverges(
+    agrees(
         &tclsh,
         "puts [expr {\"10\" - \"b\"}]",
         err("cannot use non-numeric string \"b\" as right operand of \"-\""),
-        err("can't use non-numeric string as operand of \"-\": \"b\""),
     );
-    diverges(
+    agrees(
         &tclsh,
         "puts [expr {1.0 % 2}]",
         err("cannot use floating-point value \"1.0\" as left operand of \"%\""),
-        err("can't use floating-point value as operand of \"%\""),
     );
 }
 
@@ -779,7 +775,7 @@ fn bug_unreachable_code_is_still_compiled() {
         &tclsh,
         "if {0} {puts [expr {1 +}]}\nputs reached",
         out("reached\n"),
-        err("premature end of expression"),
+        err("missing operand at _@_"),
     );
     // A command that does not exist, in a branch that is never taken. tclsh
     // resolves command names when it reaches them.
@@ -1344,7 +1340,7 @@ fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
         &tclsh,
         "catch {lsearch -sorted {a} b} m; puts m:$m",
         out("m:-1\n"),
-        out("m:lsearch -sorted is not supported yet\n"),
+        out("m:lsearch -sorted -increasing is not supported yet\n"),
     );
     diverges(
         &tclsh,
@@ -1372,22 +1368,22 @@ fn bug_expr_accepts_a_quoted_nan_as_an_arithmetic_operand() {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
+    agrees(
         &tclsh,
         "puts [expr {\"nan\" + 1}]",
         err("cannot use non-numeric floating-point value \"nan\" as left operand of \"+\""),
-        out("NaN\n"),
     );
 }
 
-/// A left shift past the word width wraps silently.
+/// A left shift past the word width is the missing bignum, and now says so.
 ///
-/// Everywhere else an operation that leaves `i64` reports `integer value too
-/// large to represent` rather than wrapping — that is the documented stance on
-/// the missing bignum (BUGS.md, "Arbitrary-precision integers"). `<<` does not
-/// take part: `1 << 63` answers `i64::MIN` and `1 << 64` answers 1, where tclsh
-/// promotes and answers exactly. This is the one place a value silently changes
-/// rather than being refused.
+/// It used to wrap silently — `1 << 63` answered `i64::MIN` and `1 << 64`
+/// answered 1 — which was the one place a value changed instead of being
+/// refused. Both now report `integer value too large to represent`, which is
+/// the documented stance on the missing bignum (BUGS.md, "Arbitrary-precision
+/// integers") and what every other overflowing operation already said. The
+/// divergence from tclsh remains, because tclsh promotes and answers exactly;
+/// what changed is that tclrs no longer answers with a different number.
 #[test]
 fn bug_expr_left_shift_past_the_word_width_wraps() {
     let Some(tclsh) = tclsh() else {
@@ -1398,14 +1394,22 @@ fn bug_expr_left_shift_past_the_word_width_wraps() {
         &tclsh,
         "puts [expr {1 << 63}]",
         out("9223372036854775808\n"),
-        out("-9223372036854775808\n"),
+        err("integer value too large to represent"),
     );
     diverges(
         &tclsh,
         "puts [expr {1 << 64}]",
         out("18446744073709551616\n"),
-        out("1\n"),
+        err("integer value too large to represent"),
     );
+    // The shifts that do fit still answer, and a right shift at any distance
+    // does: only a left shift can leave the word.
+    agrees(
+        &tclsh,
+        "puts [expr {1 << 62}]",
+        out("4611686018427387904\n"),
+    );
+    agrees(&tclsh, "puts [expr {-1 >> 200}]", out("-1\n"));
 }
 
 /// `nan` and `inf` are floating-point literals to `expr(n)` and barewords to
@@ -1422,44 +1426,47 @@ fn bug_expr_literal_grammar_lacks_nan_and_inf() {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
+    agrees(&tclsh, "puts [expr {inf > 1}]", out("1\n"));
+    agrees(&tclsh, "puts [expr {nan == nan}]", out("0\n"));
+    // Only these three spellings, in any case, and nothing that merely starts
+    // with one: `f64::from_str` takes exactly the set tclsh's lexer does.
+    agrees(&tclsh, "puts [expr {inFiniTy}]", out("Inf\n"));
+    agrees(&tclsh, "puts [expr {-inf}]", out("-Inf\n"));
+    agrees(
         &tclsh,
-        "puts [expr {inf > 1}]",
-        out("1\n"),
-        err("invalid bare word \"inf\" in expression"),
+        "puts [expr {infx}]",
+        err("invalid bareword \"infx\""),
     );
-    diverges(
+    agrees(
         &tclsh,
-        "puts [expr {nan == nan}]",
-        out("0\n"),
-        err("invalid bare word \"nan\" in expression"),
+        "puts [expr {nano}]",
+        err("invalid bareword \"nano\""),
     );
     // The runtime parser has both, which is what makes this `expr::parse_number`
     // rather than the number grammar as a whole.
     agrees(&tclsh, "puts [string is double inf]", out("1\n"));
 }
 
-/// A shift by a negative count answers 0 instead of raising.
+/// A shift by a negative count raises, as `expr(n)` says it must: "It is
+/// illegal to shift by a negative number of bits."
 ///
-/// `expr(n)`: "It is illegal to shift by a negative number of bits." tclsh
-/// reports `negative shift argument`; tclrs answers 0 for `<<` and for `>>`.
+/// Was 0 for both operators, because fusevm masks the distance to six bits and
+/// -1 masks to 63. Fixed; the same two programs are now parity.
 #[test]
 fn bug_expr_negative_shift_count_answers_zero() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
+    agrees(
         &tclsh,
         "puts [expr {10 << -1}]",
         err("negative shift argument"),
-        out("0\n"),
     );
-    diverges(
+    agrees(
         &tclsh,
         "puts [expr {10 >> -2}]",
         err("negative shift argument"),
-        out("0\n"),
     );
 }
 
@@ -1545,11 +1552,10 @@ fn bug_expr_zero_over_float_zero_is_nan_not_a_domain_error() {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    diverges(
+    agrees(
         &tclsh,
         "puts [expr {0 / -0.0}]",
         err("domain error: argument not in valid range"),
-        out("NaN\n"),
     );
     agrees(&tclsh, "puts [expr {3 / -0.0}]", out("-Inf\n"));
 }
@@ -1584,4 +1590,597 @@ fn bug_format_minus_flag_does_not_override_zero_padding() {
     // `0` rather than the padding as a whole.
     agrees(&tclsh, "puts [format %-08d 5]", out("00000005\n"));
     agrees(&tclsh, "puts [format %-08x 255]", out("000000ff\n"));
+}
+
+// ── fixed by the four-run campaign (seeds 1001/2002 at depth 4, 3003/4004 at
+//    depth 6; 4000 cases each) ────────────────────────────────────────────────
+//
+// Every case below cites the seed and case number of a divergence in that
+// campaign, reduced to the one statement that carried it. The expectation is a
+// live tclsh's, as everywhere else in this file.
+
+/// `expr`'s operand diagnostics name the operand and the side it is on.
+///
+/// The largest class in the campaign: 494 of the 1420 run-time `message`
+/// divergences and 123 of the 413 `stdout` ones. tclrs answered with Tcl 8's
+/// wording, `can't use non-numeric string as operand of "+": "a"`; 9.0.4 says
+/// which side the operand was on and quotes it in place.
+///
+/// Reduced from seed 1001 case 02616 (`if {"a" + 1000}`), seed 3003 case 01242
+/// (`if {-7 + "a"}`) and seed 3003 case 03520 (`if {("a") + "b"}`).
+#[test]
+fn fixed_expr_names_the_side_of_a_non_numeric_operand() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(
+        &tclsh,
+        "puts [expr {\"a\" + 1000}]",
+        err("cannot use non-numeric string \"a\" as left operand of \"+\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {-7 + \"a\"}]",
+        err("cannot use non-numeric string \"a\" as right operand of \"+\""),
+    );
+    // Every operator words it the same way, and the unary ones name no side.
+    agrees(
+        &tclsh,
+        "puts [expr {\"b\" / 8}]",
+        err("cannot use non-numeric string \"b\" as left operand of \"/\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {1 ** \"a\"}]",
+        err("cannot use non-numeric string \"a\" as right operand of \"**\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {~\"a\"}]",
+        err("cannot use non-numeric string \"a\" as operand of \"~\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {+\"a\"}]",
+        err("cannot use non-numeric string \"a\" as operand of \"+\""),
+    );
+}
+
+/// An operand that could be a list is named `a list`, never quoted.
+///
+/// The same screen `incr` and `format` already used
+/// (`crate::list::looks_like_a_list`), which `expr` was not applying at all:
+/// tclrs quoted the text. A one-element list is *not* one — `{a}` is quoted —
+/// so the screen is the element-count one and not "contains a space".
+///
+/// Reduced from seed 3003 case 01242 (`"10" ni {a b c}` in an arithmetic
+/// context) and the `expected integer but got a list` group below.
+#[test]
+fn fixed_expr_names_a_list_operand_as_a_list() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(
+        &tclsh,
+        "set x {a b c}\nputs [expr {$x + 1}]",
+        err("cannot use a list as left operand of \"+\""),
+    );
+    agrees(
+        &tclsh,
+        "set x {1 2 3}\nputs [expr {~$x}]",
+        err("cannot use a list as operand of \"~\""),
+    );
+    // One element, and zero: both are quoted rather than named as a list.
+    agrees(
+        &tclsh,
+        "set x {a}\nputs [expr {$x + 1}]",
+        err("cannot use non-numeric string \"a\" as left operand of \"+\""),
+    );
+    agrees(
+        &tclsh,
+        "set x { }\nputs [expr {$x + 1}]",
+        err("cannot use non-numeric string \" \" as left operand of \"+\""),
+    );
+}
+
+/// The bitwise operators take integers, and refuse everything else.
+///
+/// fusevm's `Op::BitAnd` and friends coerce through `Value::to_int`, which reads
+/// `1.5` as 1 and `"abc"` as 0, so tclrs *answered* where tclsh refuses. These
+/// are wrong answers rather than wrong wording — the worst class in the
+/// campaign — and account for about 30 of the 413 `stdout` divergences.
+///
+/// Reduced from seed 1001 case 02843 (`(3.14) le ...` beside `%`), seed 3003
+/// case 03520 (`-2 >> 3` under a float) and the `& | ^ << >> ~` rows of the
+/// `stdout` histogram.
+#[test]
+fn fixed_bitwise_operators_refuse_non_integers() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(
+        &tclsh,
+        "puts [expr {0.5 | 2}]",
+        err("cannot use floating-point value \"0.5\" as left operand of \"|\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {\"abc\" & 1}]",
+        err("cannot use non-numeric string \"abc\" as left operand of \"&\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {2 ^ 1.5}]",
+        err("cannot use floating-point value \"1.5\" as right operand of \"^\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {~1.5}]",
+        err("cannot use floating-point value \"1.5\" as operand of \"~\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {1.0 << 2}]",
+        err("cannot use floating-point value \"1.0\" as left operand of \"<<\""),
+    );
+    // Two integers still compute, and still through the native op when the
+    // compiler can prove both operands integral.
+    agrees(&tclsh, "puts [expr {12 & 10}]", out("8\n"));
+    agrees(&tclsh, "puts [expr {-1 & 3}]", out("3\n"));
+    agrees(&tclsh, "set a 12\nputs [expr {$a | 3}]", out("15\n"));
+}
+
+/// A shift distance is checked, and a right shift saturates.
+///
+/// fusevm masks the distance to six bits, so `1 << 64` answered 0 and `1 << -1`
+/// answered 0 as well. tclsh refuses a negative distance outright and treats a
+/// right shift as arithmetic at any distance.
+///
+/// Reduced from the `stdout` rows `tclsh=18446744073709551616 tclrs=0`,
+/// `tclsh=0 tclrs=4294967295` and `tclsh=m:negative shift argument tclrs=xyz`.
+#[test]
+fn fixed_shift_distance_is_checked_and_saturates() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(
+        &tclsh,
+        "puts [expr {1 << -1}]",
+        err("negative shift argument"),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {1 >> -1}]",
+        err("negative shift argument"),
+    );
+    agrees(&tclsh, "puts [expr {1 >> 200}]", out("0\n"));
+    agrees(&tclsh, "puts [expr {-1 >> 200}]", out("-1\n"));
+    agrees(&tclsh, "puts [expr {-1 >> 62}]", out("-1\n"));
+    agrees(
+        &tclsh,
+        "puts [expr {1 << 62}]",
+        out("4611686018427387904\n"),
+    );
+    agrees(&tclsh, "puts [expr {0 << 200}]", out("0\n"));
+}
+
+/// `%` refuses a double, names it, and checks its left operand first.
+///
+/// 168 of the run-time `message` divergences and 29 of the `stdout` ones.
+/// tclrs's wording carried neither the value nor the side, and it parsed both
+/// operands before complaining, so `expr {1.5 % "a"}` blamed the string where
+/// tclsh blames the float.
+///
+/// Reduced from seed 1001 case 00753 (`expr {1e300 % $w11}`), seed 3003 case
+/// 00876 (`$s2 % "1.0"`) and seed 3003 case 01084 (`1.0e-7 % (100)`).
+#[test]
+fn fixed_modulo_names_the_double_operand_and_checks_the_left_one_first() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(
+        &tclsh,
+        "set y 1.0e-7\nputs [expr {$y % 100}]",
+        err("cannot use floating-point value \"1.0e-7\" as left operand of \"%\""),
+    );
+    agrees(
+        &tclsh,
+        "set s2 1\nputs [expr {$s2 % \"1.0\"}]",
+        err("cannot use floating-point value \"1.0\" as right operand of \"%\""),
+    );
+    // The left operand decides even when the right one is worse.
+    agrees(
+        &tclsh,
+        "puts [expr {1.5 % \"a\"}]",
+        err("cannot use floating-point value \"1.5\" as left operand of \"%\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {\"a\" % 1.5}]",
+        err("cannot use non-numeric string \"a\" as left operand of \"%\""),
+    );
+}
+
+/// An exponent too large to apply is its own diagnostic, not the overflow.
+///
+/// Eight `stdout` divergences recorded `tclsh=m:exponent too large
+/// tclrs=m:integer value too large to represent`.
+#[test]
+fn fixed_oversized_exponent_is_reported_as_one() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(
+        &tclsh,
+        "puts [expr {2 ** 9999999999}]",
+        err("exponent too large"),
+    );
+}
+
+/// `format` and `string repeat` name a list operand as a list.
+///
+/// 233 run-time `message` divergences and 58 `stdout` ones: the wording was
+/// already right for a plain string and `crate::runtime::named` already existed
+/// for it; `src/cmd_string.rs` was formatting the text directly instead of
+/// calling it.
+///
+/// Reduced from seed 1001 case 00079 (`format %X [list {a b c} {}]`), case 00495
+/// (`format %b [list 0 "\{"]`) and case 02843 (`format %c $s2` with `s2` a
+/// three-element list).
+#[test]
+fn fixed_format_names_a_list_argument_as_a_list() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(
+        &tclsh,
+        "puts [format %X [list {a b c} {}]]",
+        err("expected integer but got a list"),
+    );
+    agrees(
+        &tclsh,
+        "set s2 {1 2 3}\nputs [format %c $s2]",
+        err("expected integer but got a list"),
+    );
+    agrees(
+        &tclsh,
+        "puts [format %f {a b c}]",
+        err("expected floating-point number but got a list"),
+    );
+    agrees(
+        &tclsh,
+        "set L {a b c}\nputs [string repeat a $L]",
+        err("expected integer but got a list"),
+    );
+    // A value that is not a list is still quoted, and still cut at 50 bytes.
+    agrees(
+        &tclsh,
+        "puts [format %d abc]",
+        err("expected integer but got \"abc\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [format %d [string repeat q 80]]",
+        err(&format!("expected integer but got \"{}\"", "q".repeat(50))),
+    );
+}
+
+/// `lsearch -increasing` and `-decreasing` are accepted.
+///
+/// 14 `stdout` divergences: they describe the order a `-sorted` or `-bisect`
+/// search would binary-search in and have no other effect, so tclsh answers the
+/// same linear search with or without them, and refusing them turned a working
+/// search into an error.
+///
+/// Reduced from seed 4004 case 03552 (`lsearch -increasing $s3 *b`) and seed
+/// 3003 case 03520 (`lsearch -increasing {x]y} a*b*c`).
+#[test]
+fn fixed_lsearch_accepts_the_sort_order_options() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(&tclsh, "puts [lsearch -increasing {a b c} *b]", out("1\n"));
+    agrees(&tclsh, "puts [lsearch -decreasing {a b c} *b]", out("1\n"));
+    agrees(
+        &tclsh,
+        "puts [lsearch -increasing {x]y} a*b*c]",
+        out("-1\n"),
+    );
+    agrees(
+        &tclsh,
+        "puts [lsearch -decreasing -all {a b a} a]",
+        out("0 2\n"),
+    );
+}
+
+/// `incr` on a variable that does not exist counts from zero.
+///
+/// tclrs read the absent variable as `Undef` and handed it to `Op::Add`, which
+/// refused it as a non-numeric operand, so `proc p {} {incr n; return $n}` was an
+/// error where tclsh answers 1. `incr` keeps its native `Op::Add` — an extension
+/// op there would cost `bench/counted_loop_proc.tcl` its trace — so the zero is
+/// read in the numeric hook, which is reached only for an operand the VM cannot
+/// compute on natively.
+///
+/// Reduced from seed 3003 case 03567 (`proc p7 {} {... incr s1 1 ...}`), seed
+/// 3003 case 03261 and seed 2002 case 02599.
+#[test]
+fn fixed_incr_on_an_absent_variable_counts_from_zero() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(&tclsh, "incr g 5\nputs $g", out("5\n"));
+    agrees(&tclsh, "incr h\nputs $h", out("1\n"));
+    agrees(
+        &tclsh,
+        "proc p {} {incr n; return $n}\nputs [p]",
+        out("1\n"),
+    );
+    // A variable that exists and holds the empty string is *not* this case: it
+    // is still refused, in the wording
+    // `bug_incr_reports_an_expr_error_for_a_non_integer_variable` pins.
+    assert_eq!(subject("set e {}\nincr e").stdout, "");
+}
+
+/// `expr` answers with the number an operand spells, not the text.
+///
+/// `expr {007}` is 7 and `expr {0x10}` is 16 in tclsh; tclrs passed the string
+/// through, so `expr {$x}` and `expr {+$x}` answered `007` and `0x10`. An
+/// integer too large for an `i64` is the one value whose text is the only
+/// representation this frontend has, and it still passes through.
+///
+/// Reduced from the `stdout` rows `tclsh=s1=a tclrs=0o5` and `tclsh=0
+/// tclrs=0o37777777777`.
+#[test]
+fn fixed_expr_answers_with_the_canonical_number() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(&tclsh, "set x 007\nputs [expr {$x}]", out("7\n"));
+    agrees(&tclsh, "set x 0x10\nputs [expr {$x}]", out("16\n"));
+    agrees(&tclsh, "set x 0o17\nputs [expr {+$x}]", out("15\n"));
+    agrees(&tclsh, "set x { 42 }\nputs [expr {$x}]", out("42\n"));
+    agrees(&tclsh, "set x abc\nputs [expr {$x}]", out("abc\n"));
+    agrees(
+        &tclsh,
+        "puts [expr {99999999999999999999}]",
+        out("99999999999999999999\n"),
+    );
+}
+
+/// A NaN result is a domain error, and a NaN operand is a refusal.
+///
+/// Four run-time `message` divergences recorded `tclsh=domain error: argument
+/// not in valid range tclrs=` — tclrs answered `NaN` where tclsh reports.
+#[test]
+fn fixed_nan_is_reported_rather_than_answered() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(
+        &tclsh,
+        "puts [expr {0.0/0.0}]",
+        err("domain error: argument not in valid range"),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {\"nan\"+0}]",
+        err("cannot use non-numeric floating-point value \"nan\" as left operand of \"+\""),
+    );
+    // A unary operator names no side, and `!` follows the operand rule here
+    // rather than the boolean rule a *condition* follows for the same value.
+    agrees(
+        &tclsh,
+        "puts [expr {!\"nan\"}]",
+        err("cannot use non-numeric floating-point value \"nan\" as operand of \"!\""),
+    );
+    agrees(
+        &tclsh,
+        "puts [expr {+\"nan\"}]",
+        err("cannot use non-numeric floating-point value \"nan\" as operand of \"+\""),
+    );
+    // A NaN in a *condition* is the boolean rule's diagnostic rather than an
+    // operand refusal — and tclsh gives two different ones for it depending on
+    // whether the condition was compiled, so what is pinned here is only that
+    // `!` does not take that path. See `bug_a_nan_condition_has_two_diagnostics`.
+    assert_eq!(
+        subject("if {\"nan\"} {puts a}").error,
+        "floating point value is Not a Number"
+    );
+}
+
+/// tclsh reports a NaN condition two different ways, and tclrs has one.
+///
+/// `if {"nan"} {puts a}` at the top level of a script is `domain error: argument
+/// not in valid range`; the same command inside a `catch` body or a procedure —
+/// which is where tclsh compiles it — is `floating point value is Not a Number`.
+/// tclrs compiles everything, so it gives the second everywhere, and only the
+/// uncompiled spelling diverges. Not a defect this branch introduced: it is the
+/// reference interpreter disagreeing with itself, recorded here because the
+/// difference decides which of the two a test may assert.
+#[test]
+fn bug_a_nan_condition_has_two_diagnostics() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    diverges(
+        &tclsh,
+        "if {\"nan\"} {puts a}",
+        err("domain error: argument not in valid range"),
+        err("floating point value is Not a Number"),
+    );
+    // Compiled by tclsh, and then the two agree.
+    agrees(
+        &tclsh,
+        "catch {if {\"nan\"} {puts a}} m\nputs $m",
+        out("floating point value is Not a Number\n"),
+    );
+}
+
+/// `expr`'s compile-time diagnostics are the reference interpreter's.
+///
+/// tclsh lexes an expression before it parses one, so its refusals name the
+/// token rather than the parser's position: `invalid bareword "a"`, `missing
+/// operand at _@_` (the marker is literal on the first line; the position is on
+/// the second), `missing operator at _@_`, and the two unbalanced-paren
+/// diagnostics. 227 of the compile-time `message` divergences are these three
+/// wordings.
+///
+/// Reduced from the compile-time histogram's top rows: `tclsh=invalid bareword
+/// "_" tclrs=invalid bare word "_" in expression` (118), `tclsh=missing operand
+/// at _@_ tclrs=premature end of expression` (55) and `tclsh=missing operand at
+/// _@_ tclrs=invalid character "_"` (54).
+#[test]
+fn fixed_expr_compile_time_diagnostics_match_the_reference() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    for (program, message) in [
+        ("puts [expr {a}]", "invalid bareword \"a\""),
+        ("puts [expr {1 + a}]", "invalid bareword \"a\""),
+        ("puts [expr {0x}]", "invalid bareword \"0x\""),
+        ("puts [expr {1 + }]", "missing operand at _@_"),
+        ("puts [expr {1 &&}]", "missing operand at _@_"),
+        // An operator where an operand belongs, which tclrs called an invalid
+        // character.
+        ("puts [expr {*1}]", "missing operand at _@_"),
+        ("puts [expr {&1}]", "missing operand at _@_"),
+        ("puts [expr {1 ? 2 : }]", "missing operand at _@_"),
+        ("puts [expr {1 2}]", "missing operator at _@_"),
+        ("puts [expr {1..2}]", "missing operator at _@_"),
+        ("puts [expr {1 ? 2}]", "missing operator \":\" at _@_"),
+        ("puts [expr {(1}]", "unbalanced open paren"),
+        ("puts [expr {1 + (}]", "unbalanced open paren"),
+        ("puts [expr {(1))}]", "unbalanced close paren"),
+        ("puts [expr {}]", "empty expression"),
+        ("puts [expr {   }]", "empty expression"),
+        // Still an invalid character when it really is no token.
+        ("puts [expr {1 @ 2}]", "invalid character \"@\""),
+        ("puts [expr {1 ; 2}]", "invalid character \";\""),
+        ("puts [expr {$}]", "invalid character \"$\""),
+        ("puts [expr {=1}]", "incomplete operator \"=\""),
+    ] {
+        agrees(&tclsh, program, err(message));
+    }
+}
+
+/// `#` starts a comment inside an expression.
+///
+/// Found while matching the diagnostics above: `expr {#1}` is `empty expression`
+/// in tclsh, which is only explicable if the `#` opened a comment. It does, and
+/// the comment runs to the end of the line.
+#[test]
+fn fixed_expr_takes_a_hash_comment() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    agrees(&tclsh, "puts [expr {1 #c}]", out("1\n"));
+    agrees(&tclsh, "puts [expr {1 + # c\n2}]", out("3\n"));
+    agrees(&tclsh, "puts [expr {#1}]", err("empty expression"));
+}
+
+/// A double *literal* written in exponential form is quoted by its value, not
+/// by its spelling.
+///
+/// tclsh keeps an operand's original string representation and quotes that:
+/// `expr {1e300 % 2}` names `1e300`. A literal in tclrs is an `Op::LoadFloat`
+/// and has no spelling left by the time the operator refuses it, so it is
+/// named by `runtime::format_double`, which is the canonical form tclsh itself
+/// prints for a *computed* double. The two agree for every spelling that is
+/// already canonical — `1.0`, `0.5`, `-0.0`, `1.0e-7` — and part for the three
+/// the campaign reached: `1e300`, `1e10` and `2.5e-3`, 82 of 7730 divergences.
+///
+/// An operand read from a *variable* is unaffected: it is a `Value::Str` and is
+/// quoted verbatim, which is why `1.0e-7` above is exact.
+#[test]
+fn bug_float_literal_is_named_by_value_not_by_spelling() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    diverges(
+        &tclsh,
+        "puts [expr {1e300 % 2}]",
+        err("cannot use floating-point value \"1e300\" as left operand of \"%\""),
+        err("cannot use floating-point value \"1e+300\" as left operand of \"%\""),
+    );
+    diverges(
+        &tclsh,
+        "puts [expr {2.5e-3 % 2}]",
+        err("cannot use floating-point value \"2.5e-3\" as left operand of \"%\""),
+        err("cannot use floating-point value \"0.0025\" as left operand of \"%\""),
+    );
+    // The same value reached through a variable keeps its spelling in both.
+    agrees(
+        &tclsh,
+        "set y 1e300\nputs [expr {$y % 2}]",
+        err("cannot use floating-point value \"1e300\" as left operand of \"%\""),
+    );
+}
+
+/// `string replace` on an empty subject aborted the process.
+///
+/// `string replace {} -5 3` reached the tail computation with `last` clamped to
+/// the empty subject's `end` of -1, cast that to `usize`, and `last + 1`
+/// overflowed: `attempt to add with overflow`, a panic no `catch` can see. It is
+/// the `panic` case of the four-run campaign (seed 3003 case 02453), and it was
+/// still reachable at the tag the campaign ran against.
+///
+/// The whole first/last matrix is checked, not just the crashing input, because
+/// the fix moves where the clamp happens and every row of it goes through that
+/// line.
+#[test]
+fn fixed_string_replace_on_an_empty_subject_does_not_abort() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    // The crash itself, both with and without a replacement.
+    agrees(&tclsh, "puts [string replace {} -5 3]", out("\n"));
+    agrees(&tclsh, "puts [string replace {} -5 3 X]", out("X\n"));
+    // The matrix around it. tclsh compiles a braced `catch` body, and `string
+    // replace` has a bytecode form whose edge cases differ from the interpreted
+    // command's, so the comparison is made where tclrs's own path is: compiled.
+    agrees(
+        &tclsh,
+        "foreach spec {{{} -5 3} {{} 0 0} {{} -1 -1} {{} 1 2} {abc -5 3} \
+         {abc -5 -1} {abc -5 0} {abc 1 10} {abc 2 1} {abc 0 2} {{} end end} \
+         {{} end 0} {{} -2 -1} {abc -1 1} {abc end end}} {\n\
+         set s [lindex $spec 0]\n\
+         set f [lindex $spec 1]\n\
+         set l [lindex $spec 2]\n\
+         catch {string replace $s $f $l} r1\n\
+         catch {string replace $s $f $l X} r2\n\
+         puts \"[list $spec] -> [list $r1] [list $r2]\"\n\
+         }",
+        out("{{} -5 3} -> {} X\n\
+             {{} 0 0} -> {} {}\n\
+             {{} -1 -1} -> {} {}\n\
+             {{} 1 2} -> {} {}\n\
+             {abc -5 3} -> {} X\n\
+             {abc -5 -1} -> abc abc\n\
+             {abc -5 0} -> bc Xbc\n\
+             {abc 1 10} -> a aX\n\
+             {abc 2 1} -> abc abc\n\
+             {abc 0 2} -> {} X\n\
+             {{} end end} -> {} {}\n\
+             {{} end 0} -> {} X\n\
+             {{} -2 -1} -> {} {}\n\
+             {abc -1 1} -> c Xc\n\
+             {abc end end} -> ab abX\n"),
+    );
 }

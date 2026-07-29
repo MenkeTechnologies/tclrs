@@ -1,13 +1,13 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00228   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 8 -> 3 lines in 2 round(s), 32/400 candidates checked
-# verdict: DIVERGENCE	stdout	line tclsh=-1 tclrs=m:lsearch -decreasing is not supported yet
+# verdict: ALLOWED	A1c-unset-variable-caught	m:can't read "s2": no such variable
 # tclsh: 9.0.4
 # tclrs: tclrs 0.2.0
 # tclsh-status: 0
 # tclsh-stdout: 5\n-1\nm:can't read "s2": no such variable\n\x1e
 # tclsh-stderr: 
 # tclrs-status: 0
-# tclrs-stdout: 5\nm:lsearch -decreasing is not supported yet\n\x1e
+# tclrs-stdout: 5\n-1\nm:can't unset "e3": no such variable\n\x1e
 # tclrs-stderr: 
 #
 # The case itself is the sibling .tcl file. It is run spliced into

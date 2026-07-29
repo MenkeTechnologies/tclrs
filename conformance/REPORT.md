@@ -2,7 +2,7 @@
 
 Reference interpreter: **tclsh 9.0.4**. Suite: `tcl9.0.4/tests` — the `tests/` directory of the matching Tcl source release, fetched and checksum-verified by `conformance/fetch-suite.sh`.
 
-**2158 of 5066 attempted cases pass — 42.6%.** Over every case the suite contains, including the ones that cannot be run here, that is 2158 of 69424 — 3.1%.
+**2248 of 5066 attempted cases pass — 44.4%.** Over every case the suite contains, including the ones that cannot be run here, that is 2248 of 69424 — 3.2%.
 
 ## How the number is produced
 
@@ -33,19 +33,18 @@ Three things about the extraction are worth stating plainly. First, suite files 
 | Extracted from the suite | 69424 | 100% |
 | Skipped — cannot be run | 64358 | 92.7% |
 | Attempted | 5066 | 7.3% |
-| ⤷ passed | 2158 | 42.6% of attempted |
-| ⤷ failed | 2908 | 57.4% of attempted |
+| ⤷ passed | 2248 | 44.4% of attempted |
+| ⤷ failed | 2818 | 55.6% of attempted |
 
-Of the 2908 failures, 1498 are a feature tclrs documents as not built yet rather than a wrong answer. Counting those as skips instead would give 2158 of 3568 — 60.5% — and that looser number is stated here only so the choice of rule is visible. The headline above uses the strict rule.
+Of the 2818 failures, 1538 are a feature tclrs documents as not built yet rather than a wrong answer. Counting those as skips instead would give 2248 of 3528 — 63.7% — and that looser number is stated here only so the choice of rule is visible. The headline above uses the strict rule.
 
 ## Why cases were skipped
 
 | Reason | Cases |
 | --- | ---: |
-| tclrs has no such command | 45943 |
+| tclrs has no such command | 45944 |
 | tcltest constraint not met | 13663 |
 | needs a command plain tclsh has not got | 4751 |
-| tclsh produced no reference outcome | 1 |
 
 ### Commands tclrs does not have, by how many cases they block
 
@@ -65,7 +64,7 @@ A case is attributed to the first command tclrs refused, so a body using several
 | `trace` | 273 |
 | `scan` | 247 |
 | `zipfs` | 220 |
-| `regexp` | 202 |
+| `regexp` | 203 |
 | `regsub` | 129 |
 | `lseq` | 121 |
 | `subst` | 111 |
@@ -99,11 +98,11 @@ A case is attributed to the first command tclrs refused, so a body using several
 
 | Cause | Cases | Share of failures | For example |
 | --- | ---: | ---: | --- |
-| tclrs raised an error, tclsh did not | 1967 | 67.6% | `append.test` append-4.19, `append.test` append-4.20, `append.test` append-9.1 |
-| both raised an error, messages differ | 789 | 27.1% | `append.test` append-3.1, `append.test` append-3.2, `append.test` append-6.1 |
-| results differ | 141 | 4.8% | `append.test` append-3.4, `append.test` append-3.5, `append.test` append-3.6 |
-| tclsh raised an error, tclrs did not | 9 | 0.3% | `encoding.test` encoding-23.1, `namespace-old.test` namespace-old-1.27, `namespace-old.test` namespace-old-5.5 |
-| tclrs was killed or crashed | 2 | 0.1% | `format.test` format-19.4.1, `obj.test` obj-32.1 |
+| tclrs raised an error, tclsh did not | 1963 | 69.7% | `append.test` append-4.19, `append.test` append-4.20, `append.test` append-9.1 |
+| both raised an error, messages differ | 787 | 27.9% | `append.test` append-3.1, `append.test` append-3.2, `append.test` append-6.1 |
+| results differ | 57 | 2.0% | `append.test` append-3.4, `append.test` append-3.5, `append.test` append-3.6 |
+| tclsh raised an error, tclrs did not | 10 | 0.4% | `compExpr.test` compExpr-2.11, `encoding.test` encoding-23.1, `namespace-old.test` namespace-old-1.27 |
+| tclrs was killed or crashed | 1 | 0.0% | `obj.test` obj-32.1 |
 
 Every failing case is written out in full — its program, the tclsh outcome and the tclrs outcome — to `conformance/work/failures.txt` by the same run that produced this table.
 
@@ -113,29 +112,27 @@ Error text with the quoted part elided and tclrs's trailing `(line N)` removed, 
 
 | Message | Cases |
 | --- | ---: |
-| math function "…" is not supported yet | 414 |
+| math function "…" is not supported yet | 447 |
 | unknown or unsupported subcommand "…": only "…" is supported | 332 |
 | command name must be a literal in this phase | 282 |
 | wrong # args: should be "…"; the options variable is not supported | 241 |
 | expression must be a literal in this phase | 145 |
-| integer value too large to represent | 134 |
-| invalid bare word "…" in expression | 108 |
+| integer value too large to represent | 142 |
 | wrong # args: should be "…" | 100 |
+| invalid bareword "…" | 78 |
 | "…" outside of a procedure is not supported | 67 |
 | identical text apart from tclrs's trailing (line N) | 59 |
-| invalid character "…" | 50 |
-| extra characters after expression: "…" | 47 |
+| missing operand at _@_ | 57 |
 | bad option "…": only -exact, -glob and -- are supported | 43 |
 | script body must be a literal in this phase | 42 |
+| lsearch -stride is not supported yet | 40 |
+| missing operator at _@_ | 34 |
 | lsort -dictionary is not supported yet | 33 |
-| lsearch -stride is not supported yet | 30 |
 | array startsearch is not supported yet | 27 |
 | lsort -index is not supported yet | 27 |
 | lsearch -index is not supported yet | 25 |
 | dict filter is not supported yet | 24 |
-| lsearch -sorted is not supported yet | 19 |
 | dict replace is not supported yet | 18 |
-| premature end of expression | 17 |
 | the "…" character class needs Unicode category tables, which are not built yet | 16 |
 | "…" of the procedure-local variable "…" is not supported yet | 15 |
 | array default is not supported yet | 15 |
@@ -143,6 +140,8 @@ Error text with the quoted part elided and tclrs's trailing `(line N)` removed, 
 | this command does not take an array element yet | 15 |
 | dict map is not supported yet | 14 |
 | wrong # args: should be "…"; the info and code arguments are not supported | 14 |
+| dict update is not supported yet | 13 |
+| dict lappend is not supported yet | 12 |
 
 ## Command coverage
 
@@ -176,8 +175,8 @@ Implemented: `append`, `array`, `break`, `catch`, `concat`, `continue`, `corouti
 | `cmdIL.test` | 168 | 54 | 114 | 29 | 85 | 25.4% |
 | `cmdInfo.test` | 12 | 12 | 0 | 0 | 0 | — |
 | `cmdMZ.test` | 97 | 51 | 46 | 9 | 37 | 19.6% |
-| `compExpr-old.test` | 184 | 3 | 181 | 92 | 89 | 50.8% |
-| `compExpr.test` | 82 | 9 | 73 | 44 | 29 | 60.3% |
+| `compExpr-old.test` | 184 | 3 | 181 | 105 | 76 | 58.0% |
+| `compExpr.test` | 82 | 9 | 73 | 47 | 26 | 64.4% |
 | `compile.test` | 171 | 145 | 26 | 4 | 22 | 15.4% |
 | `concat.test` | 9 | 0 | 9 | 9 | 0 | 100.0% |
 | `config.test` | 9 | 9 | 0 | 0 | 0 | — |
@@ -191,9 +190,9 @@ Implemented: `append`, `array`, `break`, `catch`, `concat`, `continue`, `corouti
 | `eval.test` | 12 | 0 | 12 | 9 | 3 | 75.0% |
 | `event.test` | 65 | 64 | 1 | 0 | 1 | 0.0% |
 | `exec.test` | 145 | 145 | 0 | 0 | 0 | — |
-| `execute.test` | 157 | 103 | 54 | 13 | 41 | 24.1% |
-| `expr-old.test` | 461 | 32 | 429 | 259 | 170 | 60.4% |
-| `expr.test` | 2168 | 1100 | 1068 | 405 | 663 | 37.9% |
+| `execute.test` | 157 | 103 | 54 | 15 | 39 | 27.8% |
+| `expr-old.test` | 461 | 32 | 429 | 294 | 135 | 68.5% |
+| `expr.test` | 2168 | 1100 | 1068 | 432 | 636 | 40.4% |
 | `fCmd.test` | 306 | 306 | 0 | 0 | 0 | — |
 | `fileName.test` | 306 | 306 | 0 | 0 | 0 | — |
 | `fileSystem.test` | 140 | 140 | 0 | 0 | 0 | — |
@@ -201,8 +200,8 @@ Implemented: `append`, `array`, `break`, `catch`, `concat`, `continue`, `corouti
 | `for-old.test` | 9 | 0 | 9 | 5 | 4 | 55.6% |
 | `for.test` | 88 | 41 | 47 | 12 | 35 | 25.5% |
 | `foreach.test` | 43 | 3 | 40 | 19 | 21 | 47.5% |
-| `format.test` | 269 | 1 | 268 | 255 | 13 | 95.1% |
-| `get.test` | 23 | 17 | 6 | 4 | 2 | 66.7% |
+| `format.test` | 269 | 1 | 268 | 257 | 11 | 95.9% |
+| `get.test` | 23 | 17 | 6 | 6 | 0 | 100.0% |
 | `history.test` | 62 | 57 | 5 | 5 | 0 | 100.0% |
 | `http.test` | 528 | 513 | 15 | 0 | 15 | 0.0% |
 | `http11.test` | 147 | 147 | 0 | 0 | 0 | — |
@@ -212,8 +211,8 @@ Implemented: `append`, `array`, `break`, `catch`, `concat`, `continue`, `corouti
 | `icu.test` | 58 | 58 | 0 | 0 | 0 | — |
 | `if-old.test` | 33 | 7 | 26 | 17 | 9 | 65.4% |
 | `if.test` | 73 | 5 | 68 | 1 | 67 | 1.5% |
-| `incr-old.test` | 14 | 1 | 13 | 4 | 9 | 30.8% |
-| `incr.test` | 69 | 2 | 67 | 19 | 48 | 28.4% |
+| `incr-old.test` | 14 | 1 | 13 | 5 | 8 | 38.5% |
+| `incr.test` | 69 | 2 | 67 | 21 | 46 | 31.3% |
 | `indexObj.test` | 65 | 65 | 0 | 0 | 0 | — |
 | `info.test` | 287 | 170 | 117 | 0 | 117 | 0.0% |
 | `init.test` | 10 | 10 | 0 | 0 | 0 | — |
@@ -236,7 +235,7 @@ Implemented: `append`, `array`, `break`, `catch`, `concat`, `continue`, `corouti
 | `lrange.test` | 1766 | 1735 | 31 | 27 | 4 | 87.1% |
 | `lrepeat.test` | 12 | 12 | 0 | 0 | 0 | — |
 | `lreplace.test` | 3579 | 3521 | 58 | 56 | 2 | 96.6% |
-| `lsearch.test` | 165 | 0 | 165 | 47 | 118 | 28.5% |
+| `lsearch.test` | 165 | 0 | 165 | 48 | 117 | 29.1% |
 | `lseq.test` | 136 | 133 | 3 | 0 | 3 | 0.0% |
 | `lset.test` | 89 | 89 | 0 | 0 | 0 | — |
 | `lsetComp.test` | 19 | 19 | 0 | 0 | 0 | — |
@@ -310,8 +309,8 @@ Implemented: `append`, `array`, `break`, `catch`, `concat`, `continue`, `corouti
 | `utfext.test` | 842 | 842 | 0 | 0 | 0 | — |
 | `util.test` | 462 | 340 | 122 | 122 | 0 | 100.0% |
 | `var.test` | 221 | 171 | 50 | 7 | 43 | 14.0% |
-| `while-old.test` | 15 | 0 | 15 | 9 | 6 | 60.0% |
-| `while.test` | 46 | 0 | 46 | 0 | 46 | 0.0% |
+| `while-old.test` | 15 | 0 | 15 | 10 | 5 | 66.7% |
+| `while.test` | 46 | 0 | 46 | 1 | 45 | 2.2% |
 | `winConsole.test` | 46 | 46 | 0 | 0 | 0 | — |
 | `winDde.test` | 50 | 50 | 0 | 0 | 0 | — |
 | `winFCmd.test` | 173 | 173 | 0 | 0 | 0 | — |
@@ -343,7 +342,7 @@ The recorder only sees `test` calls made in the interpreter it runs in. These fi
 
 3 files contributed no cases at all: `clock-no-tzdata.test`, `package.test`, `safe-stock86.test`. A file lands here when it is empty, when everything in it sits behind a constraint this configuration does not meet, or when it declares its tests inside a child interpreter.
 
-A stage that goes 15s without producing an outcome is killed and the case it was on is recorded as an abort, so that one pathological body cannot stall the run. Aborts on the tclrs side count as failures rather than skips, and this run had 2 of them; aborts on the reference side are the `tclsh produced no reference outcome` skips above. That timeout is the only bound in the pipeline, and nothing is dropped without landing in one of those two counts.
+A stage that goes 15s without producing an outcome is killed and the case it was on is recorded as an abort, so that one pathological body cannot stall the run. Aborts on the tclrs side count as failures rather than skips, and this run had 1 of them; aborts on the reference side are the `tclsh produced no reference outcome` skips above. That timeout is the only bound in the pipeline, and nothing is dropped without landing in one of those two counts.
 
 Some suite cases depend on the clock, the file system, the environment or the network, so a rerun can move the totals by a few cases. Nothing else in the pipeline is nondeterministic: the case set, the ordering and the comparison are fixed.
 
