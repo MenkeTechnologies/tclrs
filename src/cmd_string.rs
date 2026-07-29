@@ -714,8 +714,12 @@ fn valid_digits(text: &str, radix: u32) -> bool {
 
 /// An operand a command needs as an integer.
 fn want_int(text: &str) -> Result<i64, String> {
-    parse_int(text.trim_matches(is_ascii_space))
-        .ok_or_else(|| format!("expected integer but got \"{text}\""))
+    parse_int(text.trim_matches(is_ascii_space)).ok_or_else(|| {
+        format!(
+            "expected integer but got {}",
+            crate::runtime::named(text, 50)
+        )
+    })
 }
 
 // ── comparison and search ────────────────────────────────────────────────
@@ -1618,8 +1622,12 @@ fn integer(
     size: Width,
     value: &str,
 ) -> Result<Signed, String> {
-    let n = parse_int(value.trim_matches(is_ascii_space))
-        .ok_or_else(|| format!("expected integer but got \"{value}\""))?;
+    let n = parse_int(value.trim_matches(is_ascii_space)).ok_or_else(|| {
+        format!(
+            "expected integer but got {}",
+            crate::runtime::named(value, 50)
+        )
+    })?;
     let signed_conv = matches!(conv, 'd' | 'i');
     let radix = match conv {
         'o' => 8,
@@ -1708,8 +1716,12 @@ fn floating(
     precision: Option<i64>,
     value: &str,
 ) -> Result<Signed, String> {
-    let x = parse_double(value)
-        .ok_or_else(|| format!("expected floating-point number but got \"{value}\""))?;
+    let x = parse_double(value).ok_or_else(|| {
+        format!(
+            "expected floating-point number but got {}",
+            crate::runtime::named(value, 50)
+        )
+    })?;
     if x.is_nan() {
         return Err("floating point value is Not a Number".to_string());
     }

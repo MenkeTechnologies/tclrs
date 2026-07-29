@@ -2,7 +2,7 @@
 # seed: 1   case: 00300   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 26 -> 5 lines in 2 round(s), 49/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=expected integer but got a list tclrs=wrong # args: should be "p8 r1 ?o1?"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: expected integer but got a list\n

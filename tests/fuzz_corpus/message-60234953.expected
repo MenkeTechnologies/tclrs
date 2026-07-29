@@ -1,14 +1,14 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00166   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 14 -> 2 lines in 2 round(s), 17/400 candidates checked
-# verdict: DIVERGENCE	message	msg tclsh=cannot use non-numeric string "b" as right operand of "**" tclrs=can't use non-numeric string as operand of "**": "b"
+# verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: cannot use non-numeric string "b" as right operand of "**"\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: can't use non-numeric string as operand of "**": "b"\n
+# tclrs-stderr: cannot use non-numeric string "b" as right operand of "**"\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

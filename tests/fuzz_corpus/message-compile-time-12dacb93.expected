@@ -2,7 +2,7 @@
 # seed: 1   case: 00396   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 21 -> 5 lines in 2 round(s), 47/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=expected integer but got a list tclrs=bad option "-1": only -exact, -glob and -- are supported
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: expected integer but got a list\n

@@ -1,14 +1,14 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00178   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 17 -> 3 lines in 4 round(s), 69/400 candidates checked
-# verdict: DIVERGENCE	message	msg tclsh=cannot use floating-point value "-1.5" as left operand of "^" tclrs=can't use non-numeric string as operand of "+": "b"
+# verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: cannot use floating-point value "-1.5" as left operand of "^"\n
 # tclrs-status: 1
-# tclrs-stdout: 1\n#comment\nx\n
-# tclrs-stderr: can't use non-numeric string as operand of "+": "b"\n
+# tclrs-stdout: 
+# tclrs-stderr: cannot use floating-point value "-1.5" as left operand of "^"\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

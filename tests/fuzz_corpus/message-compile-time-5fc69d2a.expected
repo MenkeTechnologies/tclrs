@@ -1,14 +1,14 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00390   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 27 -> 5 lines in 3 round(s), 74/400 candidates checked
-# verdict: DIVERGENCE	message-compile-time	msg tclsh=cannot use non-numeric string "a" as left operand of "+" tclrs=invalid bare word "a" in expression
+# verdict: DIVERGENCE	message-compile-time	msg tclsh=cannot use non-numeric string "a" as left operand of "+" tclrs=invalid bareword "a"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: x\nx\n\n
 # tclsh-stderr: cannot use non-numeric string "a" as left operand of "+"\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: invalid bare word "a" in expression\n    (file "target/fuzz/work/record/driven.tcl" line 25)\n
+# tclrs-stderr: invalid bareword "a"\n    (file "target/fuzz/work/record/driven.tcl" line 25)\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

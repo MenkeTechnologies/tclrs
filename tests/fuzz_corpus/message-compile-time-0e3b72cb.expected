@@ -2,7 +2,7 @@
 # seed: 1   case: 00262   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 21 -> 5 lines in 4 round(s), 79/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=wrong # args: should be "p7 r1 ?o1?"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 0
 # tclsh-stdout: \x1e
 # tclsh-stderr: 

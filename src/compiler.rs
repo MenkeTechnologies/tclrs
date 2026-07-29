@@ -108,6 +108,33 @@ pub mod ext {
     pub const FOREACH_MORE: u16 = 30;
     pub const FOREACH_TAKE: u16 = 31;
     pub const FOREACH_ADVANCE: u16 = 32;
+
+    /// The bitwise operators, in Tcl's semantics rather than the VM's.
+    ///
+    /// fusevm's `Op::BitAnd`/`BitOr`/`BitXor`/`BitNot`/`Shl`/`Shr` coerce their
+    /// operands through `Value::to_int`, which reads `1.5` as 1 and `"abc"` as
+    /// 0; Tcl refuses both (`cannot use floating-point value "1.5" as left
+    /// operand of "|"`). It also masks a shift distance to 6 bits, where Tcl
+    /// saturates a right shift and promotes an overflowing left shift.
+    ///
+    /// Emitted only where the compiler cannot prove both operands are integers
+    /// ([`super::Compiler::yields_integer`]), so an expression written in
+    /// literals keeps the native op — and with it the tracing JIT, which
+    /// rejects `Op::Extended`.
+    pub const BIT_AND: u16 = 33;
+    pub const BIT_OR: u16 = 34;
+    pub const BIT_XOR: u16 = 35;
+    pub const SHL: u16 = 36;
+    pub const SHR: u16 = 37;
+    pub const BIT_NOT: u16 = 38;
+
+    /// Unary `+`, which is the identity on a *number* and an error on anything
+    /// else: `expr {+"a"}` is `cannot use non-numeric string "a" as operand of
+    /// "+"` in tclsh 9.0.4, where lowering it to nothing at all answered `a`.
+    /// Emitted only where the operand is not already known to be a number
+    /// ([`super::Compiler::yields_number`]), so `expr {+1}` still lowers to a
+    /// single `LoadInt`.
+    pub const UPLUS: u16 = 39;
     // Associative data (`assoc`). The operand order in each comment is the
     // order the compiler pushes them, so the handler pops them in reverse.
 
@@ -1138,6 +1165,52 @@ impl Compiler {
         }
     }
 
+    /// Whether this expression can only ever produce an `i64`, whatever the
+    /// variables in it hold — which is what lets a bitwise operator stay a
+    /// native VM op instead of the extension op that carries Tcl's operand
+    /// rule ([`ext::BIT_AND`]).
+    ///
+    /// Deliberately conservative: `false` costs a native op, `true` costs
+    /// correctness, so anything whose value is substituted text — and any
+    /// double literal, and any operator that can widen to one — answers `false`.
+    /// A decimal literal too large for an `i64` is already an [`Expr::Subst`]
+    /// by the time it reaches here, so it answers `false` too.
+    fn yields_integer(e: &Expr) -> bool {
+        match e {
+            Expr::Int(_) => true,
+            Expr::Float(_) | Expr::Subst(_) => false,
+            // `!` and the comparisons answer 1 or 0 whatever they are given.
+            Expr::Unary(UnOp::Not, _) => true,
+            Expr::Unary(_, operand) => Self::yields_integer(operand),
+            Expr::Binary(
+                BinOp::Lt
+                | BinOp::Gt
+                | BinOp::Le
+                | BinOp::Ge
+                | BinOp::Eq
+                | BinOp::Ne
+                | BinOp::StrLt
+                | BinOp::StrGt
+                | BinOp::StrLe
+                | BinOp::StrGe
+                | BinOp::StrEq
+                | BinOp::StrNe
+                | BinOp::In
+                | BinOp::Ni
+                | BinOp::And
+                | BinOp::Or,
+                _,
+                _,
+            ) => true,
+            Expr::Binary(_, a, b) => Self::yields_integer(a) && Self::yields_integer(b),
+            Expr::Ternary(_, then, other) => {
+                Self::yields_integer(then) && Self::yields_integer(other)
+            }
+            // Refused when lowered; the answer here does not matter.
+            Expr::Call(_, _) => false,
+        }
+    }
+
     // ── expressions ──────────────────────────────────────────────────────
 
     fn expr(&mut self, e: &Expr) -> Result<(), CompileError> {
@@ -1165,6 +1238,19 @@ impl Compiler {
                 self.emit(Op::Extended(ext::BOOL, 1), 0);
                 Ok(())
             }
+            // `~` wants an integer, and fusevm's `Op::BitNot` takes anything —
+            // `expr {~1.5}` answered -2 where tclsh refuses the operand. Native
+            // only when the operand is provably an integer.
+            Expr::Unary(UnOp::BitNot, operand) if !Self::yields_integer(operand) => {
+                self.expr(operand)?;
+                self.emit(Op::Extended(ext::BIT_NOT, 1), 0);
+                Ok(())
+            }
+            Expr::Unary(UnOp::Plus, operand) if !Self::yields_number(operand) => {
+                self.expr(operand)?;
+                self.emit(Op::Extended(ext::UPLUS, 1), 0);
+                Ok(())
+            }
             Expr::Unary(op, operand) => {
                 self.expr(operand)?;
                 match op {
@@ -1178,14 +1264,25 @@ impl Compiler {
             Expr::Binary(BinOp::And, a, b) => self.short_circuit(a, b, false),
             Expr::Binary(BinOp::Or, a, b) => self.short_circuit(a, b, true),
             Expr::Binary(op, a, b) => {
+                // The bitwise operators are the VM's only when both operands are
+                // provably integers; otherwise they are extension ops that hold
+                // Tcl's operand rule. See [`ext::BIT_AND`].
+                let integral = Self::yields_integer(a) && Self::yields_integer(b);
                 self.expr(a)?;
                 self.expr(b)?;
                 let native = match op {
                     BinOp::Add => Some(Op::Add),
                     BinOp::Sub => Some(Op::Sub),
                     BinOp::Mul => Some(Op::Mul),
-                    BinOp::Shl => Some(Op::Shl),
-                    BinOp::Shr => Some(Op::Shr),
+                    // No `integral` case for the shifts: fusevm masks the
+                    // distance to six bits, so `1 << 64` answered 0 where tclsh
+                    // promotes, and `1 << -1` answered 0 where tclsh reports
+                    // "negative shift argument". Neither the distance nor the
+                    // overflow is knowable from the operands' shapes, so both
+                    // shifts are always the extension op.
+                    BinOp::BitAnd if integral => Some(Op::BitAnd),
+                    BinOp::BitOr if integral => Some(Op::BitOr),
+                    BinOp::BitXor if integral => Some(Op::BitXor),
                     BinOp::Lt => Some(Op::NumLt),
                     BinOp::Gt => Some(Op::NumGt),
                     BinOp::Le => Some(Op::NumLe),
@@ -1198,9 +1295,6 @@ impl Compiler {
                     BinOp::StrGe => Some(Op::StrGe),
                     BinOp::StrEq => Some(Op::StrEq),
                     BinOp::StrNe => Some(Op::StrNe),
-                    BinOp::BitAnd => Some(Op::BitAnd),
-                    BinOp::BitOr => Some(Op::BitOr),
-                    BinOp::BitXor => Some(Op::BitXor),
                     _ => None,
                 };
                 match native {
@@ -1214,6 +1308,11 @@ impl Compiler {
                             BinOp::Pow => ext::POW,
                             BinOp::In => ext::IN,
                             BinOp::Ni => ext::NI,
+                            BinOp::BitAnd => ext::BIT_AND,
+                            BinOp::BitOr => ext::BIT_OR,
+                            BinOp::BitXor => ext::BIT_XOR,
+                            BinOp::Shl => ext::SHL,
+                            BinOp::Shr => ext::SHR,
                             _ => unreachable!("binary op {op:?} has no lowering"),
                         };
                         self.emit(Op::Extended(id, 2), -1);

@@ -1,14 +1,14 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00253   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 22 -> 2 lines in 4 round(s), 31/400 candidates checked
-# verdict: DIVERGENCE	message-compile-time	msg tclsh=missing operand at _@_ tclrs=invalid character "*"
+# verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: missing operand at _@_\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: invalid character "*"\n    (file "target/fuzz/work/record/driven.tcl" line 22)\n
+# tclrs-stderr: missing operand at _@_\n    (file "target/fuzz/work/record/driven.tcl" line 22)\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

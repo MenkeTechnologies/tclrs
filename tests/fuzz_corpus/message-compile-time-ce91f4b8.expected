@@ -1,14 +1,14 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00188   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 19 -> 2 lines in 4 round(s), 37/400 candidates checked
-# verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=extra characters after expression: "d9"
+# verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=missing operator at _@_
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 0
 # tclsh-stdout: \x1e
 # tclsh-stderr: 
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: extra characters after expression: "d9"\n    (file "target/fuzz/work/record/driven.tcl" line 22)\n
+# tclrs-stderr: missing operator at _@_\n    (file "target/fuzz/work/record/driven.tcl" line 22)\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

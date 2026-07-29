@@ -2,7 +2,7 @@
 # seed: 1   case: 00052   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 20 -> 2 lines in 3 round(s), 31/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh= tclrs=bad option "-1": only -exact, -glob and -- are supported
 # tclsh: 9.0.4
-# tclrs: tclrs 0.1.0
+# tclrs: tclrs 0.2.0
 # tclsh-status: 0
 # tclsh-stdout: \n\x1e
 # tclsh-stderr: 
