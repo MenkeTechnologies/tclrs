@@ -464,7 +464,10 @@ fn describe(which: u8) -> Result<String, String> {
 fn hostname() -> String {
     // `gethostname` through libc, which is already a dependency: no crate for
     // one call, and `hostname(1)` would be a process per invocation.
-    let mut buf = [0i8; 256];
+    // `c_char` rather than a fixed `i8`: it is signed on x86_64/aarch64-darwin
+    // but unsigned on aarch64-linux, so a hardcoded `i8` fails to match
+    // `gethostname`'s `*mut c_char` there.
+    let mut buf = [0 as libc::c_char; 256];
     // SAFETY: `buf` is 256 bytes and the length passed matches it; the call
     // writes a NUL-terminated name or fails, and a failure leaves `buf` as it
     // was, which is all zeroes.
