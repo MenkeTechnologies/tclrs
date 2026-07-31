@@ -352,18 +352,23 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Introspection | `info` — `args`, `commands`, `complete`, `coroutine`, `default`, `exists`, `globals`, `hostname`, `library`, `nameofexecutable`, `patchlevel`, `procs`, `script`, `sharedlibextension`, `tclversion`, `vars` |
 | Run-time evaluation | `eval`, `uplevel` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
-| Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
+| Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `incr`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
 | Regular expressions | `regexp`, `regsub` — with `-nocase`, `-all`, `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`, `-start` and `--`; `switch -regexp` and `lsearch -regexp` take one too |
-| Strings | `format`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright` |
+| Strings | `format`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright`, `wordend`, `wordstart` |
 
 Command substitution works on any of them.
 
 `docs/reference.html` is the same surface as a page, generated rather than
-written: `cargo run --bin gen-docs` renders every command from the compiler's
-own tables (`src/names.rs`), asks the compiler about each ensemble subcommand
-and the runtime about each `format` conversion, and prints the `expr` ladder
-from the table the parser binds with. A command it lists exists; one it does not
-is `invalid command name`.
+written: `cargo run --bin gen-docs` renders every command, ensemble subcommand,
+operator, operand shape, `string is` class and `format` conversion as its own
+entry — an anchored heading, the signature the compiler reports, and a
+description — from the corpora in `src/names.rs`, each of which a test pins to
+the table it documents. Whether a name is *implemented* is not written down
+anywhere: the generator **runs** each ensemble subcommand and each `format`
+conversion and reads the answer. Running rather than compiling is what makes
+that honest, because a refusal here is lowered as code that raises when reached,
+so a compile-time probe finds every subcommand acceptable. A command the page
+lists exists; one it does not is `invalid command name`.
 
 ### `expr`
 
@@ -515,12 +520,11 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | Every `expr` math function | `math function "sin" is not supported yet` |
 | A variable or body word that is not literal (`set $name …`) | the word is refused where a literal is required |
 | An array variable in a `foreach` variable list | `array variables are not supported yet` |
-| `array` / `dict` on a procedure-local variable | `… of the procedure-local variable "x" is not supported yet` |
 | `array startsearch` and the other search subcommands | `array startsearch is not supported yet` |
 | `dict` subcommands outside the implemented set; `dict set` into an array element | `dict append is not supported yet` |
-| `string` subcommands outside the implemented set; `string is -failindex` | `"string wordend" is not supported yet` |
-| `format` conversions outside the implemented set | `the "%n" conversion is not supported yet` |
-| `lsearch -regexp` / `-sorted` / `-dictionary` / `-nocase` / `-index` / `-stride` / `-subindices` / `-bisect`; `lsort -command` / `-dictionary` / `-index` / `-nocase` / `-stride`. `-increasing` and `-decreasing` *are* taken: they only describe the order `-sorted` and `-bisect` search in, so the two that read it name it — `lsearch -sorted -increasing is not supported yet` | `lsearch -regexp is not supported yet` |
+| `string wordend` / `wordstart` past ASCII | `string wordend/wordstart: characters beyond ASCII need Unicode category tables, which are not built yet` |
+| `format %a` / `%A`; any other letter is `bad field specifier "n"` instead | `the "%a" conversion is not supported yet` |
+| `lsearch -sorted` / `-dictionary` / `-nocase` / `-index` / `-subindices` / `-bisect`; `lsort -command` / `-dictionary` / `-index` / `-nocase`. `-regexp` and `-stride` are built for both. `-increasing` and `-decreasing` *are* taken: they only describe the order `-sorted` and `-bisect` search in, so the two that read it name it — `lsearch -sorted -increasing is not supported yet` | `lsearch -dictionary is not supported yet` |
 | `proc` anywhere but a script's top level; redefining a built-in; redefining a procedure; a procedure and a coroutine of the same name | `"proc" is only supported at the top level of a script` |
 | `return` outside a procedure; `return` or `break` or `continue` out of a `catch` script; `return -code` other than `ok` or `error`; `return`'s other options | `"return" outside of a procedure is not supported` |
 | `catch`'s third (options-variable) argument; `error`'s `info` and `code` arguments | `… the options variable is not supported` |

@@ -101,8 +101,10 @@ pub mod ext {
 }
 
 /// Every subcommand the ensemble knows, in the order the interpreter lists them
-/// when it rejects one. `wordend` and `wordstart` are listed because their
-/// presence decides whether an abbreviation is ambiguous, but they are refused.
+/// when it rejects one. All 23 are implemented — `wordend` and `wordstart`
+/// were the last two to land, and they refuse only the characters outside ASCII
+/// whose word classes need Unicode tables at the reference interpreter's
+/// revision.
 pub(crate) const SUBCOMMANDS: &[&str] = &[
     "cat",
     "compare",
@@ -1695,6 +1697,18 @@ const BEYOND_UNICODE_16: [(u32, u32); 48] = [
     (0x2cea2, 0x2cead),
     (0x323b0, 0x33479),
 ];
+
+/// How many code points [`beyond_our_tables`] answers for, summed from the
+/// ranges rather than written down beside them.
+///
+/// Public because the reference page states the figure, and a page that states
+/// it from a literal would keep printing 4804 after the table changed.
+pub fn beyond_our_tables_count() -> usize {
+    BEYOND_UNICODE_16
+        .iter()
+        .map(|&(lo, hi)| (hi - lo + 1) as usize)
+        .sum()
+}
 
 fn beyond_our_tables(c: char) -> bool {
     const RANGES: &[(u32, u32)] = &BEYOND_UNICODE_16;

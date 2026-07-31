@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. The 50 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. Every one of the 228 names the current tclrs build implements: 52 commands, 87 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -27,6 +27,70 @@
     .docs-build-line { margin:0.35rem 0 0;font-family:'Share Tech Mono',ui-monospace,monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;max-width:42rem;opacity:0.75; }
     .state-yes { color:var(--green,#39ff14);font-weight:600; }
     .state-no { color:var(--accent,#ff2a6d);font-weight:600; }
+
+    .chapter-index {
+      list-style: none; padding: 0; margin: 0;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+      gap: 0.3rem;
+    }
+    .chapter-index li {
+      border: 1px solid var(--border); padding: 0.45rem 0.65rem; border-radius: 2px;
+      background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+      display: flex; justify-content: space-between; align-items: baseline;
+    }
+    .chapter-index li a {
+      color: var(--cyan); text-decoration: none; font-size: 13px;
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+    }
+    .chapter-index li a:hover { color: var(--accent-light); }
+    .chapter-count {
+      font-size: 10px; color: var(--text-muted);
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+    }
+    .chapter-meta {
+      font-size: 11px; color: var(--text-muted); margin: -0.3rem 0 0.8rem;
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+    }
+
+    .doc-entry {
+      margin: 1rem 0 1.4rem;
+      padding: 0.75rem 0.9rem 0.5rem;
+      border-left: 2px solid var(--cyan);
+      background: color-mix(in srgb, var(--bg) 94%, transparent);
+      border-radius: 2px;
+    }
+    .doc-entry h3 {
+      margin: 0 0 0.45rem;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 13px; font-weight: 700; letter-spacing: 1.5px;
+      text-transform: uppercase; color: var(--cyan);
+    }
+    .doc-entry h3 code {
+      color: var(--accent-light); background: transparent; border: none;
+      padding: 0; font-size: 1em; letter-spacing: 0.5px;
+    }
+    .doc-entry .doc-anchor {
+      color: var(--text-muted); font-size: 0.85em; margin-right: 0.25rem;
+      text-decoration: none;
+    }
+    .doc-entry .doc-anchor:hover { color: var(--accent); }
+    .doc-entry p {
+      font-size: 13px; line-height: 1.6; color: var(--text-dim);
+      margin: 0.35rem 0;
+    }
+    .doc-entry p code { color: var(--accent-light); font-size: 12px; }
+    .doc-entry pre {
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+      font-size: 12px;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 2px;
+      padding: 0.7rem 0.9rem; overflow-x: auto;
+      color: var(--text); margin: 0.5rem 0;
+      box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.35);
+    }
+    .doc-entry pre code { color: var(--text); background: transparent; border: none; padding: 0; }
+    [data-theme="light"] .doc-entry pre { box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.05); }
+    .doc-state { font-size: 12px; }
   </style>
 </head>
 <body>
@@ -61,18 +125,41 @@
     </header>
 
     <main class="tutorial-main">
-      <section id="commands">
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>LANGUAGE REFERENCE</h2>
+      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 52 commands,
+      87 ensemble subcommands, the <code>expr</code> ladder, the
+      <code>string is</code> classes and the <code>format</code> conversions &mdash; each with the
+      signature the compiler reports and a description written from what the code does.
+      228 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
+      <section class="tutorial-section">
+        <h2>Chapters</h2>
+        <ul class="chapter-index">
+          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">52</span></li>
+          <li><a href="#ch-string">The <code>string</code> ensemble</a> <span class="chapter-count">23</span></li>
+          <li><a href="#ch-array">The <code>array</code> ensemble</a> <span class="chapter-count">13</span></li>
+          <li><a href="#ch-dict">The <code>dict</code> ensemble</a> <span class="chapter-count">22</span></li>
+          <li><a href="#ch-info">The <code>info</code> ensemble</a> <span class="chapter-count">29</span></li>
+          <li><a href="#ch-expr"><code>expr</code> operators and operands</a> <span class="chapter-count">42</span></li>
+          <li><a href="#ch-classes"><code>string is</code> classes</a> <span class="chapter-count">22</span></li>
+          <li><a href="#ch-format"><code>format</code> conversions</a> <span class="chapter-count">25</span></li>
+        </ul>
+      </section>
+
+      <section class="tutorial-section" id="ch-commands">
         <h2>Commands</h2>
+        <p class="chapter-meta">52 entries</p>
         <p>Every command the current build compiles. A name absent from this
-        table is <code>invalid command name "&hellip;"</code> at <em>compile</em>
-        time, not a runtime lookup that fails — resolving the name while
+        chapter is <code>invalid command name "&hellip;"</code> at <em>compile</em>
+        time, not a runtime lookup that fails &mdash; resolving the name while
         compiling is what turns a call into a <code>Op::Call</code> to a known
         entry. The list is the compiler's own: the names it matches itself, plus
-        the list commands it forwards.</p>
+        the list commands it forwards. Each signature is the wording of the
+        <code>wrong # args</code> message at that command's compile site, so a
+        reader who provokes the error sees this text.</p>
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">50</div>
+            <div class="stat-val">52</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
@@ -89,198 +176,908 @@
           </div>
         </div>
 
-        <table class="file-table">
-          <colgroup><col style="width:14%"><col style="width:29%"><col style="width:57%"></colgroup>
-          <thead><tr><th>command</th><th>synopsis</th><th>what it does</th></tr></thead>
-          <tbody>
-        <tr><td><code>append</code></td><td><code>append varName ?value ...?</code></td><td>Append every value to the variable's string; yields the new value.</td></tr>
-        <tr><td><code>array</code></td><td><code>array subcommand ?arg ...?</code></td><td>The array ensemble, over a variable rather than a value: an array is never itself a value.</td></tr>
-        <tr><td><code>break</code></td><td><code>break</code></td><td>Leave the innermost loop. The stack is unwound by a count the compiler knows statically.</td></tr>
-        <tr><td><code>catch</code></td><td><code>catch script ?resultVarName?</code></td><td>Run the script and trap an error from it, including one raised inside a procedure it called; yields the completion code.</td></tr>
-        <tr><td><code>concat</code></td><td><code>concat ?arg ...?</code></td><td>Trim each argument of surrounding whitespace and join them with single spaces into one list.</td></tr>
-        <tr><td><code>continue</code></td><td><code>continue</code></td><td>Begin the innermost loop's next iteration; in a `for`, its step still runs first.</td></tr>
-        <tr><td><code>coroutine</code></td><td><code>coroutine name cmd ?arg ...?</code></td><td>Create a coroutine context — a second VM over the same chunk — running one of the script's procedures, and enter it.</td></tr>
-        <tr><td><code>dict</code></td><td><code>dict subcommand ?arg ...?</code></td><td>The dict ensemble, over a value: a dict is a list of alternating keys and values, so it can be passed and printed like any string.</td></tr>
-        <tr><td><code>error</code></td><td><code>error message</code></td><td>Raise an error carrying the message.</td></tr>
-        <tr><td><code>eval</code></td><td><code>eval arg ?arg ...?</code></td><td>Concatenate the arguments and run the result as a script against the interpreter's own variables. The chunk is cached by source text.</td></tr>
-        <tr><td><code>expr</code></td><td><code>expr arg ?arg ...?</code></td><td>Evaluate the arguments as an expression. A braced argument is compiled once, not re-parsed per evaluation.</td></tr>
-        <tr><td><code>for</code></td><td><code>for start test next body</code></td><td>Run start, then the body while test holds, running next after each iteration. Emitted rotated, like every loop here.</td></tr>
-        <tr><td><code>foreach</code></td><td><code>foreach varList list ?varList list ...? command</code></td><td>Iterate over one or more lists in parallel; the longest fixes the count and shorter ones supply empty values.</td></tr>
-        <tr><td><code>format</code></td><td><code>format formatString ?arg ...?</code></td><td>Format the arguments the way `sprintf` does, with Tcl's conversion set.</td></tr>
-        <tr><td><code>global</code></td><td><code>global ?varName ...?</code></td><td>Address the named variables in the global table rather than the procedure's frame slots. Outside a procedure it does nothing.</td></tr>
-        <tr><td><code>if</code></td><td><code>if test ?then? body ?elseif test ?then? body ...? ?else? ?body?</code></td><td>The first branch whose test is a true Tcl boolean; a test that is not a boolean is an error, not a false branch.</td></tr>
-        <tr><td><code>incr</code></td><td><code>incr varName ?increment?</code></td><td>Add the increment (1 by default) to the variable; yields the new value.</td></tr>
-        <tr><td><code>info</code></td><td><code>info subcommand ?arg ...?</code></td><td>Interpreter introspection. Variables, procedure signatures, command names, whether text is a complete command, and the versions; the subcommands reporting on the running call frame, on TclOO and on loadable extensions are refused by name.</td></tr>
-        <tr><td><code>join</code></td><td><code>join list ?joinString?</code></td><td>Concatenate the list's elements, separated by joinString (a space by default).</td></tr>
-        <tr><td><code>lappend</code></td><td><code>lappend varName ?value ...?</code></td><td>Append each value to the list held in the variable; yields the new list.</td></tr>
-        <tr><td><code>lassign</code></td><td><code>lassign list ?varName ...?</code></td><td>Assign the elements to the variables in order; yields the unassigned remainder.</td></tr>
-        <tr><td><code>ledit</code></td><td><code>ledit listVar first last ?element ...?</code></td><td>Replace the range in the variable's list with the elements; yields the new list.</td></tr>
-        <tr><td><code>lindex</code></td><td><code>lindex list ?index ...?</code></td><td>The element at an index path, or the list itself when no index is given.</td></tr>
-        <tr><td><code>linsert</code></td><td><code>linsert list index ?element ...?</code></td><td>A copy of the list with the elements inserted before the index.</td></tr>
-        <tr><td><code>list</code></td><td><code>list ?arg ...?</code></td><td>A list of the arguments, quoted by the reference algorithm so it reads back as the same elements.</td></tr>
-        <tr><td><code>llength</code></td><td><code>llength list</code></td><td>How many elements the list has.</td></tr>
-        <tr><td><code>lmap</code></td><td><code>lmap varList list ?varList list ...? command</code></td><td>`foreach` that collects each iteration's value into a list; `continue` contributes nothing.</td></tr>
-        <tr><td><code>lpop</code></td><td><code>lpop listvar ?index ...?</code></td><td>Remove the element at an index path from the variable's list and yield it.</td></tr>
-        <tr><td><code>lrange</code></td><td><code>lrange list first last</code></td><td>The sublist between two indices, inclusive.</td></tr>
-        <tr><td><code>lremove</code></td><td><code>lremove list ?index ...?</code></td><td>A copy of the list without the indexed elements; an index outside it is ignored.</td></tr>
-        <tr><td><code>lrepeat</code></td><td><code>lrepeat count ?value ...?</code></td><td>The values repeated count times, as one list.</td></tr>
-        <tr><td><code>lreplace</code></td><td><code>lreplace list first last ?element ...?</code></td><td>A copy of the list with the range replaced by the elements.</td></tr>
-        <tr><td><code>lreverse</code></td><td><code>lreverse list</code></td><td>The list, reversed.</td></tr>
-        <tr><td><code>lsearch</code></td><td><code>lsearch ?-option value ...? list pattern</code></td><td>The index of the first matching element, or -1. Option parsing is the reference one, abbreviation included.</td></tr>
-        <tr><td><code>lseq</code></td><td><code>lseq n ??op? n ??by? n??</code></td><td>An arithmetic sequence; a zero step yields one element and a step pointing away from the end yields none.</td></tr>
-        <tr><td><code>lset</code></td><td><code>lset listVar ?index? ?index ...? value</code></td><td>Replace the element at an index path in the variable's list; the end grows by one element only.</td></tr>
-        <tr><td><code>lsort</code></td><td><code>lsort ?-option value ...? list</code></td><td>The list sorted by the reference merge sort — the algorithm, not just the ordering, because `-unique` observes it.</td></tr>
-        <tr><td><code>proc</code></td><td><code>proc name args body</code></td><td>Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.</td></tr>
-        <tr><td><code>puts</code></td><td><code>puts ?-nonewline? string</code></td><td>Write the string to stdout.</td></tr>
-        <tr><td><code>regexp</code></td><td><code>regexp ?-option ...? exp string ?matchVar? ?subMatchVar ...?</code></td><td>Match a regular expression, setting the match variables; the count under -all, the text under -inline.</td></tr>
-        <tr><td><code>regsub</code></td><td><code>regsub ?-option ...? exp string subSpec ?varName?</code></td><td>Substitute for a regular expression's matches; the new string, or the count when a variable is named.</td></tr>
-        <tr><td><code>return</code></td><td><code>return ?-code code? ?result?</code></td><td>Return from the enclosing procedure with the result. `-code ok` and `-code error` are the codes implemented.</td></tr>
-        <tr><td><code>set</code></td><td><code>set varName ?newValue?</code></td><td>Read or write a variable; yields its value. A procedure's variables are slots, a script's are VM globals.</td></tr>
-        <tr><td><code>split</code></td><td><code>split string ?splitChars?</code></td><td>Split the string at any of the characters into a list.</td></tr>
-        <tr><td><code>string</code></td><td><code>string subcommand ?arg ...?</code></td><td>The string ensemble. Subcommands, options and the `string is` class are resolved while compiling.</td></tr>
-        <tr><td><code>switch</code></td><td><code>switch ?options? string {pattern body ...}</code></td><td>Run the body of the first pattern that matches, `-exact` or `-glob`.</td></tr>
-        <tr><td><code>unset</code></td><td><code>unset ?-nocomplain? ?--? ?name ...?</code></td><td>Remove variables or array elements.</td></tr>
-        <tr><td><code>while</code></td><td><code>while test command</code></td><td>Run the body while the test holds. Inside a procedure this is the loop that reaches a compiled trace.</td></tr>
-        <tr><td><code>yield</code></td><td><code>yield ?value?</code></td><td>Suspend the running coroutine and hand the value to whoever resumed it.</td></tr>
-        <tr><td><code>yieldto</code></td><td><code>yieldto command ?arg ...?</code></td><td>Suspend and donate the resumer to another coroutine of the script, which is what makes the transfer symmetric rather than a queue.</td></tr>
-          </tbody>
-        </table>
+        <article class="doc-entry" id="doc-cmd-append">
+          <h3><a class="doc-anchor" href="#doc-cmd-append">#</a> <code>append</code></h3>
+          <pre><code class="lang-tcl">append varName ?value ...?
+</code></pre>
+          <p>Append every value to the variable's string; yields the new value.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-apply">
+          <h3><a class="doc-anchor" href="#doc-cmd-apply">#</a> <code>apply</code></h3>
+          <pre><code class="lang-tcl">apply lambdaExpr ?arg ...?
+</code></pre>
+          <p>Run a lambda — a list of parameters, a body and an optional namespace — as what it is: a procedure body with a frame of its own. A wrong argument count is reported against the lambda, which has no name to report.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-array">
+          <h3><a class="doc-anchor" href="#doc-cmd-array">#</a> <code>array</code></h3>
+          <pre><code class="lang-tcl">array subcommand ?arg ...?
+</code></pre>
+          <p>The array ensemble, over a variable rather than a value: an array is never itself a value.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-break">
+          <h3><a class="doc-anchor" href="#doc-cmd-break">#</a> <code>break</code></h3>
+          <pre><code class="lang-tcl">break
+</code></pre>
+          <p>Leave the innermost loop. The stack is unwound by a count the compiler knows statically.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-catch">
+          <h3><a class="doc-anchor" href="#doc-cmd-catch">#</a> <code>catch</code></h3>
+          <pre><code class="lang-tcl">catch script ?resultVarName?
+</code></pre>
+          <p>Run the script and trap an error from it, including one raised inside a procedure it called; yields the completion code.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-concat">
+          <h3><a class="doc-anchor" href="#doc-cmd-concat">#</a> <code>concat</code></h3>
+          <pre><code class="lang-tcl">concat ?arg ...?
+</code></pre>
+          <p>Trim each argument of surrounding whitespace and join them with single spaces into one list.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-continue">
+          <h3><a class="doc-anchor" href="#doc-cmd-continue">#</a> <code>continue</code></h3>
+          <pre><code class="lang-tcl">continue
+</code></pre>
+          <p>Begin the innermost loop's next iteration; in a <code>for</code>, its step still runs first.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-coroutine">
+          <h3><a class="doc-anchor" href="#doc-cmd-coroutine">#</a> <code>coroutine</code></h3>
+          <pre><code class="lang-tcl">coroutine name cmd ?arg ...?
+</code></pre>
+          <p>Create a coroutine context — a second VM over the same chunk — running one of the script's procedures, and enter it.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-dict">
+          <h3><a class="doc-anchor" href="#doc-cmd-dict">#</a> <code>dict</code></h3>
+          <pre><code class="lang-tcl">dict subcommand ?arg ...?
+</code></pre>
+          <p>The dict ensemble, over a value: a dict is a list of alternating keys and values, so it can be passed and printed like any string.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-error">
+          <h3><a class="doc-anchor" href="#doc-cmd-error">#</a> <code>error</code></h3>
+          <pre><code class="lang-tcl">error message
+</code></pre>
+          <p>Raise an error carrying the message.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-eval">
+          <h3><a class="doc-anchor" href="#doc-cmd-eval">#</a> <code>eval</code></h3>
+          <pre><code class="lang-tcl">eval arg ?arg ...?
+</code></pre>
+          <p>Concatenate the arguments and run the result as a script against the interpreter's own variables. The chunk is cached by source text.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-expr">
+          <h3><a class="doc-anchor" href="#doc-cmd-expr">#</a> <code>expr</code></h3>
+          <pre><code class="lang-tcl">expr arg ?arg ...?
+</code></pre>
+          <p>Evaluate the arguments as an expression. A braced argument is compiled once, not re-parsed per evaluation.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-for">
+          <h3><a class="doc-anchor" href="#doc-cmd-for">#</a> <code>for</code></h3>
+          <pre><code class="lang-tcl">for start test next body
+</code></pre>
+          <p>Run start, then the body while test holds, running next after each iteration. Emitted rotated, like every loop here.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-foreach">
+          <h3><a class="doc-anchor" href="#doc-cmd-foreach">#</a> <code>foreach</code></h3>
+          <pre><code class="lang-tcl">foreach varList list ?varList list ...? command
+</code></pre>
+          <p>Iterate over one or more lists in parallel; the longest fixes the count and shorter ones supply empty values.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-format">
+          <h3><a class="doc-anchor" href="#doc-cmd-format">#</a> <code>format</code></h3>
+          <pre><code class="lang-tcl">format formatString ?arg ...?
+</code></pre>
+          <p>Format the arguments the way <code>sprintf</code> does, with Tcl's conversion set.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-global">
+          <h3><a class="doc-anchor" href="#doc-cmd-global">#</a> <code>global</code></h3>
+          <pre><code class="lang-tcl">global ?varName ...?
+</code></pre>
+          <p>Address the named variables in the global table rather than the procedure's frame slots. Outside a procedure it does nothing.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-if">
+          <h3><a class="doc-anchor" href="#doc-cmd-if">#</a> <code>if</code></h3>
+          <pre><code class="lang-tcl">if test ?then? body ?elseif test ?then? body ...? ?else? ?body?
+</code></pre>
+          <p>The first branch whose test is a true Tcl boolean; a test that is not a boolean is an error, not a false branch.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-incr">
+          <h3><a class="doc-anchor" href="#doc-cmd-incr">#</a> <code>incr</code></h3>
+          <pre><code class="lang-tcl">incr varName ?increment?
+</code></pre>
+          <p>Add the increment (1 by default) to the variable; yields the new value.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-info">
+          <h3><a class="doc-anchor" href="#doc-cmd-info">#</a> <code>info</code></h3>
+          <pre><code class="lang-tcl">info subcommand ?arg ...?
+</code></pre>
+          <p>Interpreter introspection. Variables, procedure signatures, command names, whether text is a complete command, and the versions; the subcommands reporting on the running call frame, on TclOO and on loadable extensions are refused by name.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-join">
+          <h3><a class="doc-anchor" href="#doc-cmd-join">#</a> <code>join</code></h3>
+          <pre><code class="lang-tcl">join list ?joinString?
+</code></pre>
+          <p>Concatenate the list's elements, separated by joinString (a space by default).</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lappend">
+          <h3><a class="doc-anchor" href="#doc-cmd-lappend">#</a> <code>lappend</code></h3>
+          <pre><code class="lang-tcl">lappend varName ?value ...?
+</code></pre>
+          <p>Append each value to the list held in the variable; yields the new list.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lassign">
+          <h3><a class="doc-anchor" href="#doc-cmd-lassign">#</a> <code>lassign</code></h3>
+          <pre><code class="lang-tcl">lassign list ?varName ...?
+</code></pre>
+          <p>Assign the elements to the variables in order; yields the unassigned remainder.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-ledit">
+          <h3><a class="doc-anchor" href="#doc-cmd-ledit">#</a> <code>ledit</code></h3>
+          <pre><code class="lang-tcl">ledit listVar first last ?element ...?
+</code></pre>
+          <p>Replace the range in the variable's list with the elements; yields the new list.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lindex">
+          <h3><a class="doc-anchor" href="#doc-cmd-lindex">#</a> <code>lindex</code></h3>
+          <pre><code class="lang-tcl">lindex list ?index ...?
+</code></pre>
+          <p>The element at an index path, or the list itself when no index is given.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-linsert">
+          <h3><a class="doc-anchor" href="#doc-cmd-linsert">#</a> <code>linsert</code></h3>
+          <pre><code class="lang-tcl">linsert list index ?element ...?
+</code></pre>
+          <p>A copy of the list with the elements inserted before the index.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-list">
+          <h3><a class="doc-anchor" href="#doc-cmd-list">#</a> <code>list</code></h3>
+          <pre><code class="lang-tcl">list ?arg ...?
+</code></pre>
+          <p>A list of the arguments, quoted by the reference algorithm so it reads back as the same elements.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-llength">
+          <h3><a class="doc-anchor" href="#doc-cmd-llength">#</a> <code>llength</code></h3>
+          <pre><code class="lang-tcl">llength list
+</code></pre>
+          <p>How many elements the list has.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lmap">
+          <h3><a class="doc-anchor" href="#doc-cmd-lmap">#</a> <code>lmap</code></h3>
+          <pre><code class="lang-tcl">lmap varList list ?varList list ...? command
+</code></pre>
+          <p><code>foreach</code> that collects each iteration's value into a list; <code>continue</code> contributes nothing.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lpop">
+          <h3><a class="doc-anchor" href="#doc-cmd-lpop">#</a> <code>lpop</code></h3>
+          <pre><code class="lang-tcl">lpop listvar ?index ...?
+</code></pre>
+          <p>Remove the element at an index path from the variable's list and yield it.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lrange">
+          <h3><a class="doc-anchor" href="#doc-cmd-lrange">#</a> <code>lrange</code></h3>
+          <pre><code class="lang-tcl">lrange list first last
+</code></pre>
+          <p>The sublist between two indices, inclusive.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lremove">
+          <h3><a class="doc-anchor" href="#doc-cmd-lremove">#</a> <code>lremove</code></h3>
+          <pre><code class="lang-tcl">lremove list ?index ...?
+</code></pre>
+          <p>A copy of the list without the indexed elements; an index outside it is ignored.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lrepeat">
+          <h3><a class="doc-anchor" href="#doc-cmd-lrepeat">#</a> <code>lrepeat</code></h3>
+          <pre><code class="lang-tcl">lrepeat count ?value ...?
+</code></pre>
+          <p>The values repeated count times, as one list.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lreplace">
+          <h3><a class="doc-anchor" href="#doc-cmd-lreplace">#</a> <code>lreplace</code></h3>
+          <pre><code class="lang-tcl">lreplace list first last ?element ...?
+</code></pre>
+          <p>A copy of the list with the range replaced by the elements.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lreverse">
+          <h3><a class="doc-anchor" href="#doc-cmd-lreverse">#</a> <code>lreverse</code></h3>
+          <pre><code class="lang-tcl">lreverse list
+</code></pre>
+          <p>The list, reversed.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lsearch">
+          <h3><a class="doc-anchor" href="#doc-cmd-lsearch">#</a> <code>lsearch</code></h3>
+          <pre><code class="lang-tcl">lsearch ?-option value ...? list pattern
+</code></pre>
+          <p>The index of the first matching element, or -1. Option parsing is the reference one, abbreviation included.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lseq">
+          <h3><a class="doc-anchor" href="#doc-cmd-lseq">#</a> <code>lseq</code></h3>
+          <pre><code class="lang-tcl">lseq n ??op? n ??by? n??
+</code></pre>
+          <p>An arithmetic sequence; a zero step yields one element and a step pointing away from the end yields none.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lset">
+          <h3><a class="doc-anchor" href="#doc-cmd-lset">#</a> <code>lset</code></h3>
+          <pre><code class="lang-tcl">lset listVar ?index? ?index ...? value
+</code></pre>
+          <p>Replace the element at an index path in the variable's list; the end grows by one element only.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-lsort">
+          <h3><a class="doc-anchor" href="#doc-cmd-lsort">#</a> <code>lsort</code></h3>
+          <pre><code class="lang-tcl">lsort ?-option value ...? list
+</code></pre>
+          <p>The list sorted by the reference merge sort — the algorithm, not just the ordering, because <code>-unique</code> observes it.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-proc">
+          <h3><a class="doc-anchor" href="#doc-cmd-proc">#</a> <code>proc</code></h3>
+          <pre><code class="lang-tcl">proc name args body
+</code></pre>
+          <p>Define a procedure. Parameters and locals are frame slots; defaults and a trailing <code>args</code> are resolved at the call site.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-puts">
+          <h3><a class="doc-anchor" href="#doc-cmd-puts">#</a> <code>puts</code></h3>
+          <pre><code class="lang-tcl">puts ?-nonewline? string
+</code></pre>
+          <p>Write the string to stdout.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-regexp">
+          <h3><a class="doc-anchor" href="#doc-cmd-regexp">#</a> <code>regexp</code></h3>
+          <pre><code class="lang-tcl">regexp ?-option ...? exp string ?matchVar? ?subMatchVar ...?
+</code></pre>
+          <p>Match a regular expression, setting the match variables; the count under -all, the text under -inline.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-regsub">
+          <h3><a class="doc-anchor" href="#doc-cmd-regsub">#</a> <code>regsub</code></h3>
+          <pre><code class="lang-tcl">regsub ?-option ...? exp string subSpec ?varName?
+</code></pre>
+          <p>Substitute for a regular expression's matches; the new string, or the count when a variable is named.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-return">
+          <h3><a class="doc-anchor" href="#doc-cmd-return">#</a> <code>return</code></h3>
+          <pre><code class="lang-tcl">return ?-code code? ?result?
+</code></pre>
+          <p>Return from the enclosing procedure with the result. <code>-code ok</code> and <code>-code error</code> are the codes implemented.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-set">
+          <h3><a class="doc-anchor" href="#doc-cmd-set">#</a> <code>set</code></h3>
+          <pre><code class="lang-tcl">set varName ?newValue?
+</code></pre>
+          <p>Read or write a variable; yields its value. A procedure's variables are slots, a script's are VM globals.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-split">
+          <h3><a class="doc-anchor" href="#doc-cmd-split">#</a> <code>split</code></h3>
+          <pre><code class="lang-tcl">split string ?splitChars?
+</code></pre>
+          <p>Split the string at any of the characters into a list.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-string">
+          <h3><a class="doc-anchor" href="#doc-cmd-string">#</a> <code>string</code></h3>
+          <pre><code class="lang-tcl">string subcommand ?arg ...?
+</code></pre>
+          <p>The string ensemble. Subcommands, options and the <code>string is</code> class are resolved while compiling.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-switch">
+          <h3><a class="doc-anchor" href="#doc-cmd-switch">#</a> <code>switch</code></h3>
+          <pre><code class="lang-tcl">switch ?options? string {pattern body ...}
+</code></pre>
+          <p>Run the body of the first pattern that matches, <code>-exact</code> or <code>-glob</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-unset">
+          <h3><a class="doc-anchor" href="#doc-cmd-unset">#</a> <code>unset</code></h3>
+          <pre><code class="lang-tcl">unset ?-nocomplain? ?--? ?name ...?
+</code></pre>
+          <p>Remove variables or array elements.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-uplevel">
+          <h3><a class="doc-anchor" href="#doc-cmd-uplevel">#</a> <code>uplevel</code></h3>
+          <pre><code class="lang-tcl">uplevel ?level? arg ?arg ...?
+</code></pre>
+          <p>Concatenate the arguments and run the result as a script in the frame of a caller: #0 is the global level, a bare number counts calls outwards from this one. Only a procedure call is a level, so uplevel 1 at a script's top level is a bad level.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-while">
+          <h3><a class="doc-anchor" href="#doc-cmd-while">#</a> <code>while</code></h3>
+          <pre><code class="lang-tcl">while test command
+</code></pre>
+          <p>Run the body while the test holds. Inside a procedure this is the loop that reaches a compiled trace.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-yield">
+          <h3><a class="doc-anchor" href="#doc-cmd-yield">#</a> <code>yield</code></h3>
+          <pre><code class="lang-tcl">yield ?value?
+</code></pre>
+          <p>Suspend the running coroutine and hand the value to whoever resumed it.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-yieldto">
+          <h3><a class="doc-anchor" href="#doc-cmd-yieldto">#</a> <code>yieldto</code></h3>
+          <pre><code class="lang-tcl">yieldto command ?arg ...?
+</code></pre>
+          <p>Suspend and donate the resumer to another coroutine of the script, which is what makes the transfer symmetric rather than a queue.</p>
+        </article>
       </section>
 
-      <section id="ensembles">
-        <h2>Ensemble subcommands</h2>
-        <p>An ensemble resolves its subcommand the way
-        <code>Tcl_GetIndexFromObj</code> does — an exact match, else a prefix
-        that fits exactly one entry — so the tables below carry the names the
-        frontend <em>recognises</em>, which is what decides whether an
-        abbreviation is ambiguous. Recognising a name is not implementing it:
-        the second column is the answer the compiler actually gives when the
-        subcommand is put through it.</p>
-        <h3><code>string</code> &mdash; 23 of 23 implemented</h3>
-        <table class="file-table">
-          <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
-          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
-          <tbody>
-        <tr><td><code>string cat</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string compare</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string equal</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string first</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string index</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string insert</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string is</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string last</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string length</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string map</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string match</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string range</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string repeat</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string replace</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string reverse</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string tolower</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string totitle</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string toupper</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string trim</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string trimleft</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string trimright</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string wordend</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>string wordstart</code></td><td><span class="state-yes">implemented</span></td></tr>
-          </tbody>
-        </table>
-        <h3><code>array</code> &mdash; 6 of 13 implemented</h3>
-        <table class="file-table">
-          <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
-          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
-          <tbody>
-        <tr><td><code>array anymore</code></td><td><span class="state-no">array anymore is not supported yet</span></td></tr>
-        <tr><td><code>array default</code></td><td><span class="state-no">array default is not supported yet</span></td></tr>
-        <tr><td><code>array donesearch</code></td><td><span class="state-no">array donesearch is not supported yet</span></td></tr>
-        <tr><td><code>array exists</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>array for</code></td><td><span class="state-no">array for is not supported yet</span></td></tr>
-        <tr><td><code>array get</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>array names</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>array nextelement</code></td><td><span class="state-no">array nextelement is not supported yet</span></td></tr>
-        <tr><td><code>array set</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>array size</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>array startsearch</code></td><td><span class="state-no">array startsearch is not supported yet</span></td></tr>
-        <tr><td><code>array statistics</code></td><td><span class="state-no">array statistics is not supported yet</span></td></tr>
-        <tr><td><code>array unset</code></td><td><span class="state-yes">implemented</span></td></tr>
-          </tbody>
-        </table>
-        <h3><code>dict</code> &mdash; 11 of 22 implemented</h3>
-        <table class="file-table">
-          <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
-          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
-          <tbody>
-        <tr><td><code>dict append</code></td><td><span class="state-no">dict append is not supported yet</span></td></tr>
-        <tr><td><code>dict create</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>dict exists</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>dict filter</code></td><td><span class="state-no">dict filter is not supported yet</span></td></tr>
-        <tr><td><code>dict for</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>dict get</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>dict getdef</code></td><td><span class="state-no">dict getdef is not supported yet</span></td></tr>
-        <tr><td><code>dict getwithdefault</code></td><td><span class="state-no">dict getwithdefault is not supported yet</span></td></tr>
-        <tr><td><code>dict incr</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>dict info</code></td><td><span class="state-no">dict info is not supported yet</span></td></tr>
-        <tr><td><code>dict keys</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>dict lappend</code></td><td><span class="state-no">dict lappend is not supported yet</span></td></tr>
-        <tr><td><code>dict map</code></td><td><span class="state-no">dict map is not supported yet</span></td></tr>
-        <tr><td><code>dict merge</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>dict remove</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>dict replace</code></td><td><span class="state-no">dict replace is not supported yet</span></td></tr>
-        <tr><td><code>dict set</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>dict size</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>dict unset</code></td><td><span class="state-no">dict unset is not supported yet</span></td></tr>
-        <tr><td><code>dict update</code></td><td><span class="state-no">dict update is not supported yet</span></td></tr>
-        <tr><td><code>dict values</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>dict with</code></td><td><span class="state-no">dict with is not supported yet</span></td></tr>
-          </tbody>
-        </table>
-        <h3><code>info</code> &mdash; 16 of 29 implemented</h3>
-        <table class="file-table">
-          <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
-          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
-          <tbody>
-        <tr><td><code>info args</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info body</code></td><td><span class="state-no">info body is not supported yet: a procedure's body is compiled into the enclosing chunk and its source text is not kept</span></td></tr>
-        <tr><td><code>info class</code></td><td><span class="state-no">info class is not supported yet: TclOO is not implemented</span></td></tr>
-        <tr><td><code>info cmdcount</code></td><td><span class="state-no">info cmdcount is not supported yet: the interpreter does not keep it</span></td></tr>
-        <tr><td><code>info cmdtype</code></td><td><span class="state-no">info cmdtype is not supported yet: the interpreter does not keep it</span></td></tr>
-        <tr><td><code>info commands</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info complete</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info constant</code></td><td><span class="state-no">info constant is not supported yet: constant variables are not implemented</span></td></tr>
-        <tr><td><code>info consts</code></td><td><span class="state-no">info consts is not supported yet: constant variables are not implemented</span></td></tr>
-        <tr><td><code>info coroutine</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info default</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info errorstack</code></td><td><span class="state-no">info errorstack is not supported yet: the interpreter does not keep it</span></td></tr>
-        <tr><td><code>info exists</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info frame</code></td><td><span class="state-no">info frame is not supported yet: it reports on the running call frame, which this frontend does not expose yet</span></td></tr>
-        <tr><td><code>info functions</code></td><td><span class="state-no">info functions is not supported yet: math functions are not implemented</span></td></tr>
-        <tr><td><code>info globals</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info hostname</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info level</code></td><td><span class="state-no">info level is not supported yet: it reports on the running call frame, which this frontend does not expose yet</span></td></tr>
-        <tr><td><code>info library</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info loaded</code></td><td><span class="state-no">info loaded is not supported yet: loadable extensions are not implemented</span></td></tr>
-        <tr><td><code>info locals</code></td><td><span class="state-no">info locals is not supported yet: it reports on the running call frame, which this frontend does not expose yet</span></td></tr>
-        <tr><td><code>info nameofexecutable</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info object</code></td><td><span class="state-no">info object is not supported yet: TclOO is not implemented</span></td></tr>
-        <tr><td><code>info patchlevel</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info procs</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info script</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info sharedlibextension</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info tclversion</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>info vars</code></td><td><span class="state-yes">implemented</span></td></tr>
-          </tbody>
-        </table>
+      <section class="tutorial-section" id="ch-string">
+        <h2>The <code>string</code> ensemble</h2>
+        <p class="chapter-meta">23 subcommands recognised &middot; 23 implemented &middot; 0 refused</p>
+        <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
+        <article class="doc-entry" id="doc-string-cat">
+          <h3><a class="doc-anchor" href="#doc-string-cat">#</a> <code>string cat</code></h3>
+          <pre><code class="lang-tcl">string cat ?string ...?
+</code></pre>
+          <p>Concatenate the arguments; no arguments yields the empty string.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-compare">
+          <h3><a class="doc-anchor" href="#doc-string-compare">#</a> <code>string compare</code></h3>
+          <pre><code class="lang-tcl">string compare ?-nocase? ?-length int? string1 string2
+</code></pre>
+          <p>-1, 0 or 1 for the ordering of the two strings.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-equal">
+          <h3><a class="doc-anchor" href="#doc-string-equal">#</a> <code>string equal</code></h3>
+          <pre><code class="lang-tcl">string equal ?-nocase? ?-length int? string1 string2
+</code></pre>
+          <p>1 when the two strings are the same, 0 otherwise.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-first">
+          <h3><a class="doc-anchor" href="#doc-string-first">#</a> <code>string first</code></h3>
+          <pre><code class="lang-tcl">string first needleString haystackString ?startIndex?
+</code></pre>
+          <p>The index of the first occurrence of the needle, or -1.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-index">
+          <h3><a class="doc-anchor" href="#doc-string-index">#</a> <code>string index</code></h3>
+          <pre><code class="lang-tcl">string index string charIndex
+</code></pre>
+          <p>The character at the index, or the empty string when out of range.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-insert">
+          <h3><a class="doc-anchor" href="#doc-string-insert">#</a> <code>string insert</code></h3>
+          <pre><code class="lang-tcl">string insert string index insertString
+</code></pre>
+          <p>The string with insertString placed before the index.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-is">
+          <h3><a class="doc-anchor" href="#doc-string-is">#</a> <code>string is</code></h3>
+          <pre><code class="lang-tcl">string is class ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Whether the string belongs to a character class. The class is resolved while compiling.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-last">
+          <h3><a class="doc-anchor" href="#doc-string-last">#</a> <code>string last</code></h3>
+          <pre><code class="lang-tcl">string last needleString haystackString ?lastIndex?
+</code></pre>
+          <p>The index of the last occurrence of the needle, or -1.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-length">
+          <h3><a class="doc-anchor" href="#doc-string-length">#</a> <code>string length</code></h3>
+          <pre><code class="lang-tcl">string length string
+</code></pre>
+          <p>How many characters the string has.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-map">
+          <h3><a class="doc-anchor" href="#doc-string-map">#</a> <code>string map</code></h3>
+          <pre><code class="lang-tcl">string map ?-nocase? mapping string
+</code></pre>
+          <p>Replace every key of the mapping list with its value, scanning left to right.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-match">
+          <h3><a class="doc-anchor" href="#doc-string-match">#</a> <code>string match</code></h3>
+          <pre><code class="lang-tcl">string match ?-nocase? pattern string
+</code></pre>
+          <p>Whether the glob pattern matches the whole string.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-range">
+          <h3><a class="doc-anchor" href="#doc-string-range">#</a> <code>string range</code></h3>
+          <pre><code class="lang-tcl">string range string first last
+</code></pre>
+          <p>The characters between two indices, inclusive.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-repeat">
+          <h3><a class="doc-anchor" href="#doc-string-repeat">#</a> <code>string repeat</code></h3>
+          <pre><code class="lang-tcl">string repeat string count
+</code></pre>
+          <p>The string repeated count times.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-replace">
+          <h3><a class="doc-anchor" href="#doc-string-replace">#</a> <code>string replace</code></h3>
+          <pre><code class="lang-tcl">string replace string first last ?string?
+</code></pre>
+          <p>The string with the range replaced by the fourth argument, or removed.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-reverse">
+          <h3><a class="doc-anchor" href="#doc-string-reverse">#</a> <code>string reverse</code></h3>
+          <pre><code class="lang-tcl">string reverse string
+</code></pre>
+          <p>The string, reversed by character.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-tolower">
+          <h3><a class="doc-anchor" href="#doc-string-tolower">#</a> <code>string tolower</code></h3>
+          <pre><code class="lang-tcl">string tolower string ?first? ?last?
+</code></pre>
+          <p>The string in lower case, or only the range given.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-totitle">
+          <h3><a class="doc-anchor" href="#doc-string-totitle">#</a> <code>string totitle</code></h3>
+          <pre><code class="lang-tcl">string totitle string ?first? ?last?
+</code></pre>
+          <p>The string with its first character in title case and the rest lowered.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-toupper">
+          <h3><a class="doc-anchor" href="#doc-string-toupper">#</a> <code>string toupper</code></h3>
+          <pre><code class="lang-tcl">string toupper string ?first? ?last?
+</code></pre>
+          <p>The string in upper case, or only the range given.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-trim">
+          <h3><a class="doc-anchor" href="#doc-string-trim">#</a> <code>string trim</code></h3>
+          <pre><code class="lang-tcl">string trim string ?chars?
+</code></pre>
+          <p>The string without leading and trailing characters from the set (whitespace by default).</p>
+        </article>
+        <article class="doc-entry" id="doc-string-trimleft">
+          <h3><a class="doc-anchor" href="#doc-string-trimleft">#</a> <code>string trimleft</code></h3>
+          <pre><code class="lang-tcl">string trimleft string ?chars?
+</code></pre>
+          <p>The string without leading characters from the set.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-trimright">
+          <h3><a class="doc-anchor" href="#doc-string-trimright">#</a> <code>string trimright</code></h3>
+          <pre><code class="lang-tcl">string trimright string ?chars?
+</code></pre>
+          <p>The string without trailing characters from the set.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-wordend">
+          <h3><a class="doc-anchor" href="#doc-string-wordend">#</a> <code>string wordend</code></h3>
+          <pre><code class="lang-tcl">string wordend string charIndex
+</code></pre>
+          <p>The index just past the last character of the word containing charIndex — a word being a run of letters, digits and underscores, or a single other character. The index is clamped rather than refused: a negative one is read as 0 and one past the end as the length. Characters outside ASCII raise instead of answering, because the word classes rest on Unicode tables this build carries at a different revision than the reference interpreter's.</p>
+        </article>
+        <article class="doc-entry" id="doc-string-wordstart">
+          <h3><a class="doc-anchor" href="#doc-string-wordstart">#</a> <code>string wordstart</code></h3>
+          <pre><code class="lang-tcl">string wordstart string charIndex
+</code></pre>
+          <p>The index of the first character of the word containing charIndex, with the same clamping and the same refusal beyond ASCII as <code>string wordend</code>.</p>
+        </article>
       </section>
 
-      <section id="expr">
-        <h2>The <code>expr</code> operator ladder</h2>
-        <p>Precedence levels, tightest last, printed from the table the parser
+      <section class="tutorial-section" id="ch-array">
+        <h2>The <code>array</code> ensemble</h2>
+        <p class="chapter-meta">13 subcommands recognised &middot; 6 implemented &middot; 7 refused</p>
+        <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
+        <article class="doc-entry" id="doc-array-anymore">
+          <h3><a class="doc-anchor" href="#doc-array-anymore">#</a> <code>array anymore</code></h3>
+          <pre><code class="lang-tcl">array anymore arrayName searchId
+</code></pre>
+          <p>Whether a search opened by <code>array startsearch</code> has elements left to hand out — 1 or 0. The four search-token subcommands need a cursor held across commands and keyed by the token <code>startsearch</code> returned, which is state this frontend does not keep, so all four are refused together.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>array anymore is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-array-default">
+          <h3><a class="doc-anchor" href="#doc-array-default">#</a> <code>array default</code></h3>
+          <pre><code class="lang-tcl">array default subcommand arrayName ?value?
+</code></pre>
+          <p>Tcl 9's per-array default: <code>array default set a 0</code> makes every unset element of <code>a</code> read as 0, and <code>get</code>, <code>exists</code> and <code>unset</code> inspect and clear that. It is a property of the variable rather than of a value, and nothing in this frontend's array storage carries one.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>array default is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-array-donesearch">
+          <h3><a class="doc-anchor" href="#doc-array-donesearch">#</a> <code>array donesearch</code></h3>
+          <pre><code class="lang-tcl">array donesearch arrayName searchId
+</code></pre>
+          <p>Close a search and release its token, returning the empty string. Refused with the rest of the search-token family.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>array donesearch is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-array-exists">
+          <h3><a class="doc-anchor" href="#doc-array-exists">#</a> <code>array exists</code></h3>
+          <pre><code class="lang-tcl">array exists arrayName
+</code></pre>
+          <p>Whether the variable exists and holds an array — 1 or 0. A peek, not a read: asking does not create the variable, which is what lets it be asked about an unset name without raising.</p>
+        </article>
+        <article class="doc-entry" id="doc-array-for">
+          <h3><a class="doc-anchor" href="#doc-array-for">#</a> <code>array for</code></h3>
+          <pre><code class="lang-tcl">array for {keyVar valueVar} arrayName script
+</code></pre>
+          <p>Run the script once per element with the two variables bound, the way <code>dict for</code> does, yielding the empty string. <code>dict for</code> is built here and this is not: iterating an array needs a snapshot of a <em>variable's</em> elements taken before the body can modify them, which is a different lowering from walking a value.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>array for is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-array-get">
+          <h3><a class="doc-anchor" href="#doc-array-get">#</a> <code>array get</code></h3>
+          <pre><code class="lang-tcl">array get arrayName ?pattern?
+</code></pre>
+          <p>The array as a flat list of alternating names and values, restricted to the names matching a glob pattern when one is given. The order is the storage's, not sorted.</p>
+        </article>
+        <article class="doc-entry" id="doc-array-names">
+          <h3><a class="doc-anchor" href="#doc-array-names">#</a> <code>array names</code></h3>
+          <pre><code class="lang-tcl">array names arrayName ?mode? ?pattern?
+</code></pre>
+          <p>The element names, filtered by a glob pattern by default. <code>-exact</code> and <code>-glob</code> are accepted as the mode; <code>-regexp</code> is recognised and refused, because the filter runs where the regular-expression engine is not reachable.</p>
+        </article>
+        <article class="doc-entry" id="doc-array-nextelement">
+          <h3><a class="doc-anchor" href="#doc-array-nextelement">#</a> <code>array nextelement</code></h3>
+          <pre><code class="lang-tcl">array nextelement arrayName searchId
+</code></pre>
+          <p>The next element name a search has to give, or the empty string when it is exhausted. Refused with the rest of the search-token family.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>array nextelement is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-array-set">
+          <h3><a class="doc-anchor" href="#doc-array-set">#</a> <code>array set</code></h3>
+          <pre><code class="lang-tcl">array set arrayName list
+</code></pre>
+          <p>Set elements from a flat list of alternating names and values; an odd-length list is an error. Which name the error quotes follows the <em>command's</em> scope rather than the variable's — inside a procedure body tclsh names the variable, at the top level it names the first element it was about to write, and this reproduces that.</p>
+        </article>
+        <article class="doc-entry" id="doc-array-size">
+          <h3><a class="doc-anchor" href="#doc-array-size">#</a> <code>array size</code></h3>
+          <pre><code class="lang-tcl">array size arrayName
+</code></pre>
+          <p>How many elements the array has; 0 for a variable that is unset or is not an array.</p>
+        </article>
+        <article class="doc-entry" id="doc-array-startsearch">
+          <h3><a class="doc-anchor" href="#doc-array-startsearch">#</a> <code>array startsearch</code></h3>
+          <pre><code class="lang-tcl">array startsearch arrayName
+</code></pre>
+          <p>Open a traversal of the array and return a token naming it, such as <code>s-1-a</code>. The token identifies a cursor the interpreter holds until <code>array donesearch</code>, which is the state this frontend does not have.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>array startsearch is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-array-statistics">
+          <h3><a class="doc-anchor" href="#doc-array-statistics">#</a> <code>array statistics</code></h3>
+          <pre><code class="lang-tcl">array statistics arrayName
+</code></pre>
+          <p>A multi-line report on the hash table behind the array — entries, buckets, the bucket-occupancy histogram and the average search distance. Every number in it describes the reference interpreter's own <code>Tcl_HashTable</code>, which is not the structure this frontend stores an array in, so there is nothing truthful to answer.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>array statistics is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-array-unset">
+          <h3><a class="doc-anchor" href="#doc-array-unset">#</a> <code>array unset</code></h3>
+          <pre><code class="lang-tcl">array unset arrayName ?pattern?
+</code></pre>
+          <p>Remove the elements whose names match the glob pattern, or the whole array when no pattern is given.</p>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-dict">
+        <h2>The <code>dict</code> ensemble</h2>
+        <p class="chapter-meta">22 subcommands recognised &middot; 11 implemented &middot; 11 refused</p>
+        <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
+        <article class="doc-entry" id="doc-dict-append">
+          <h3><a class="doc-anchor" href="#doc-dict-append">#</a> <code>dict append</code></h3>
+          <pre><code class="lang-tcl">dict append dictVarName key ?string ...?
+</code></pre>
+          <p>Append the strings to the value already at the key in the dict the variable holds, creating the key when it is absent, and yield the new dict. Not built here.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict append is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-dict-create">
+          <h3><a class="doc-anchor" href="#doc-dict-create">#</a> <code>dict create</code></h3>
+          <pre><code class="lang-tcl">dict create ?key value ...?
+</code></pre>
+          <p>A dict of the given pairs; an odd number of arguments is an error. With no arguments it is the empty dict, which is the empty string.</p>
+        </article>
+        <article class="doc-entry" id="doc-dict-exists">
+          <h3><a class="doc-anchor" href="#doc-dict-exists">#</a> <code>dict exists</code></h3>
+          <pre><code class="lang-tcl">dict exists dictionary key ?key ...?
+</code></pre>
+          <p>Whether the whole key path resolves — 1 or 0. A path that runs into a value which is not itself a dict answers 0 rather than raising, which is what separates it from <code>dict get</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-dict-filter">
+          <h3><a class="doc-anchor" href="#doc-dict-filter">#</a> <code>dict filter</code></h3>
+          <pre><code class="lang-tcl">dict filter dictionary filterType arg ?arg ...?
+</code></pre>
+          <p>The pairs kept by one of three filters: <code>key</code> and <code>value</code> take glob patterns, and <code>script {k v} body</code> keeps a pair when the body's expression is true. The script form needs a body run per pair against caller variables, which is the same machinery <code>dict map</code> wants. Not built here.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict filter is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-dict-for">
+          <h3><a class="doc-anchor" href="#doc-dict-for">#</a> <code>dict for</code></h3>
+          <pre><code class="lang-tcl">dict for {keyVarName valueVarName} dictionary script
+</code></pre>
+          <p>Run the script for each pair with the two variables bound, in insertion order, and yield the empty string. Lowered as a cursor over a flattened pair list, so the dict is snapshotted before the first iteration.</p>
+        </article>
+        <article class="doc-entry" id="doc-dict-get">
+          <h3><a class="doc-anchor" href="#doc-dict-get">#</a> <code>dict get</code></h3>
+          <pre><code class="lang-tcl">dict get dictionary ?key ...?
+</code></pre>
+          <p>The value at the key path; the whole dict when no key is given. A key that is absent raises, unlike <code>dict exists</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-dict-getdef">
+          <h3><a class="doc-anchor" href="#doc-dict-getdef">#</a> <code>dict getdef</code></h3>
+          <pre><code class="lang-tcl">dict getdef dictionary ?key ...? key default
+</code></pre>
+          <p>The value at the key path, or the trailing default argument when any step of the path is missing — the total-function form of <code>dict get</code>. Not built here.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict getdef is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-dict-getwithdefault">
+          <h3><a class="doc-anchor" href="#doc-dict-getwithdefault">#</a> <code>dict getwithdefault</code></h3>
+          <pre><code class="lang-tcl">dict getwithdefault dictionary ?key ...? key default
+</code></pre>
+          <p>The long spelling of <code>dict getdef</code>, identical in behaviour. Both are listed because either one being present is what makes <code>dict get</code> an unambiguous abbreviation of nothing else.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict getwithdefault is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-dict-incr">
+          <h3><a class="doc-anchor" href="#doc-dict-incr">#</a> <code>dict incr</code></h3>
+          <pre><code class="lang-tcl">dict incr dictVarName key ?increment?
+</code></pre>
+          <p>Add the increment (1 by default) to the value at the key in the dict the variable holds, treating an absent key as 0, and yield the new dict. The variable may be a frame slot or a global; a <em>variable</em> naming an array element — <code>dict incr a(k) …</code> — is refused instead.</p>
+        </article>
+        <article class="doc-entry" id="doc-dict-info">
+          <h3><a class="doc-anchor" href="#doc-dict-info">#</a> <code>dict info</code></h3>
+          <pre><code class="lang-tcl">dict info dictionary
+</code></pre>
+          <p>A multi-line report on the hash table behind the dict: entries, buckets, the bucket-occupancy histogram and the average search distance. Every number in it describes the reference interpreter's <code>Tcl_HashTable</code>, which is not what stores a dict here.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict info is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-dict-keys">
+          <h3><a class="doc-anchor" href="#doc-dict-keys">#</a> <code>dict keys</code></h3>
+          <pre><code class="lang-tcl">dict keys dictionary ?pattern?
+</code></pre>
+          <p>The keys in insertion order, restricted to those matching a glob pattern when one is given.</p>
+        </article>
+        <article class="doc-entry" id="doc-dict-lappend">
+          <h3><a class="doc-anchor" href="#doc-dict-lappend">#</a> <code>dict lappend</code></h3>
+          <pre><code class="lang-tcl">dict lappend dictVarName key ?value ...?
+</code></pre>
+          <p>Append the values as list elements to the value at the key in the dict the variable holds, and yield the new dict. Not built here.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict lappend is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-dict-map">
+          <h3><a class="doc-anchor" href="#doc-dict-map">#</a> <code>dict map</code></h3>
+          <pre><code class="lang-tcl">dict map {keyVarName valueVarName} dictionary script
+</code></pre>
+          <p><code>dict for</code> that collects each iteration's result as the new value for that key, yielding a dict of the same keys. Not built here — it wants the per-iteration result plumbing <code>lmap</code> has and the pair cursor <code>dict for</code> has, together.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict map is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-dict-merge">
+          <h3><a class="doc-anchor" href="#doc-dict-merge">#</a> <code>dict merge</code></h3>
+          <pre><code class="lang-tcl">dict merge ?dictionary ...?
+</code></pre>
+          <p>One dict of all the arguments, a later occurrence of a key winning. With no arguments it is the empty dict.</p>
+        </article>
+        <article class="doc-entry" id="doc-dict-remove">
+          <h3><a class="doc-anchor" href="#doc-dict-remove">#</a> <code>dict remove</code></h3>
+          <pre><code class="lang-tcl">dict remove dictionary ?key ...?
+</code></pre>
+          <p>The dict without the named keys; a key that is not present is not an error. Only top-level keys — there is no path form.</p>
+        </article>
+        <article class="doc-entry" id="doc-dict-replace">
+          <h3><a class="doc-anchor" href="#doc-dict-replace">#</a> <code>dict replace</code></h3>
+          <pre><code class="lang-tcl">dict replace dictionary ?key value ...?
+</code></pre>
+          <p>The dict with the given pairs set, as a value rather than through a variable — <code>dict set</code> without the assignment. Not built here.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict replace is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-dict-set">
+          <h3><a class="doc-anchor" href="#doc-dict-set">#</a> <code>dict set</code></h3>
+          <pre><code class="lang-tcl">dict set dictVarName key ?key ...? value
+</code></pre>
+          <p>Set the value at a key path in the dict the variable holds, creating the variable and any intermediate dicts, and yield the new dict. The read of the current value tolerates an unset variable where a bare <code>$d</code> would refuse it; a variable naming an array element is refused.</p>
+        </article>
+        <article class="doc-entry" id="doc-dict-size">
+          <h3><a class="doc-anchor" href="#doc-dict-size">#</a> <code>dict size</code></h3>
+          <pre><code class="lang-tcl">dict size dictionary
+</code></pre>
+          <p>How many pairs the dict has.</p>
+        </article>
+        <article class="doc-entry" id="doc-dict-unset">
+          <h3><a class="doc-anchor" href="#doc-dict-unset">#</a> <code>dict unset</code></h3>
+          <pre><code class="lang-tcl">dict unset dictVarName key ?key ...?
+</code></pre>
+          <p>Remove the key path from the dict the variable holds and yield the new dict. Not built here.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict unset is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-dict-update">
+          <h3><a class="doc-anchor" href="#doc-dict-update">#</a> <code>dict update</code></h3>
+          <pre><code class="lang-tcl">dict update dictVarName key varName ?key varName ...? script
+</code></pre>
+          <p>Bind each named key's value to a variable, run the script, then write the variables back into the dict — and yield the script's own result. Not built here: it needs writes to caller variables to survive the body and be copied back afterwards.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict update is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-dict-values">
+          <h3><a class="doc-anchor" href="#doc-dict-values">#</a> <code>dict values</code></h3>
+          <pre><code class="lang-tcl">dict values dictionary ?pattern?
+</code></pre>
+          <p>The values in insertion order, restricted to those whose string form matches a glob pattern when one is given.</p>
+        </article>
+        <article class="doc-entry" id="doc-dict-with">
+          <h3><a class="doc-anchor" href="#doc-dict-with">#</a> <code>dict with</code></h3>
+          <pre><code class="lang-tcl">dict with dictVarName ?key ...? script
+</code></pre>
+          <p><code>dict update</code> over <em>every</em> key at once: each key becomes a variable of that name for the duration of the script, and the variables are written back after. Not built here, for the same reason.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict with is not supported yet</code></p>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-info">
+        <h2>The <code>info</code> ensemble</h2>
+        <p class="chapter-meta">29 subcommands recognised &middot; 16 implemented &middot; 13 refused</p>
+        <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
+        <article class="doc-entry" id="doc-info-args">
+          <h3><a class="doc-anchor" href="#doc-info-args">#</a> <code>info args</code></h3>
+          <pre><code class="lang-tcl">info args procname
+</code></pre>
+          <p>The parameter names of a procedure, in order, as a list. Answered from the signature table the compiler already builds to check call arity, so a computed procedure name works as well as a literal one.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-body">
+          <h3><a class="doc-anchor" href="#doc-info-body">#</a> <code>info body</code></h3>
+          <pre><code class="lang-tcl">info body procname
+</code></pre>
+          <p>The source text of a procedure's body. Refused here: a body is lowered into the enclosing chunk while compiling and its text is not kept, so there is nothing to hand back — the bytecode is the only surviving form.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info body is not supported yet: a procedure's body is compiled into the enclosing chunk and its source text is not kept</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-class">
+          <h3><a class="doc-anchor" href="#doc-info-class">#</a> <code>info class</code></h3>
+          <pre><code class="lang-tcl">info class subcommand class ?arg ...?
+</code></pre>
+          <p>Introspection on a TclOO class — its instances, methods, superclasses and mixins, selected by a second subcommand word. TclOO is not implemented here, so the whole family is refused by name.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info class is not supported yet: TclOO is not implemented</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-cmdcount">
+          <h3><a class="doc-anchor" href="#doc-info-cmdcount">#</a> <code>info cmdcount</code></h3>
+          <pre><code class="lang-tcl">info cmdcount
+</code></pre>
+          <p>How many commands the interpreter has evaluated. Refused: nothing counts them. A compiled frontend does not execute commands one at a time — a loop body becomes bytecode and, above the first tier, native code — so there is no place the count could be kept without slowing down what it measures.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info cmdcount is not supported yet: the interpreter does not keep it</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-cmdtype">
+          <h3><a class="doc-anchor" href="#doc-info-cmdtype">#</a> <code>info cmdtype</code></h3>
+          <pre><code class="lang-tcl">info cmdtype commandName
+</code></pre>
+          <p>What kind of command a name is — <code>native</code>, <code>proc</code>, <code>alias</code>, <code>ensemble</code>, <code>import</code> or <code>object</code> in the reference interpreter. Refused: commands are resolved while compiling and no per-name kind survives into the run.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info cmdtype is not supported yet: the interpreter does not keep it</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-commands">
+          <h3><a class="doc-anchor" href="#doc-info-commands">#</a> <code>info commands</code></h3>
+          <pre><code class="lang-tcl">info commands ?pattern?
+</code></pre>
+          <p>The command names matching the glob pattern — builtins and script-defined procedures alike — sorted. With no pattern, every name.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-complete">
+          <h3><a class="doc-anchor" href="#doc-info-complete">#</a> <code>info complete</code></h3>
+          <pre><code class="lang-tcl">info complete command
+</code></pre>
+          <p>1 when the text is a whole command, 0 when more input could finish it. Only genuinely unterminated input answers 0 — an open brace, bracket or quote. Text that is closed but malformed is complete: <code>puts }extra</code>, <code>{a}x</code>, <code>set x "a"b</code> and a trailing backslash are all 1, matching tclsh. This is what a REPL asks to decide whether to keep reading.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-constant">
+          <h3><a class="doc-anchor" href="#doc-info-constant">#</a> <code>info constant</code></h3>
+          <pre><code class="lang-tcl">info constant varName
+</code></pre>
+          <p>Whether a variable was made read-only by Tcl 9's <code>const</code>. Refused: constant variables are not implemented, so no variable can answer 1 and answering 0 for all of them would be a claim rather than a report.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info constant is not supported yet: constant variables are not implemented</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-consts">
+          <h3><a class="doc-anchor" href="#doc-info-consts">#</a> <code>info consts</code></h3>
+          <pre><code class="lang-tcl">info consts ?pattern?
+</code></pre>
+          <p>The constant variable names matching the pattern. Refused for the same reason as <code>info constant</code>.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info consts is not supported yet: constant variables are not implemented</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-coroutine">
+          <h3><a class="doc-anchor" href="#doc-info-coroutine">#</a> <code>info coroutine</code></h3>
+          <pre><code class="lang-tcl">info coroutine
+</code></pre>
+          <p>The name of the coroutine whose context is running, or the empty string outside one. The one <code>info</code> subcommand answered from the coroutine machinery rather than from the interpreter's tables.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-default">
+          <h3><a class="doc-anchor" href="#doc-info-default">#</a> <code>info default</code></h3>
+          <pre><code class="lang-tcl">info default procname arg varname
+</code></pre>
+          <p>1 when the named parameter has a default, writing the default into varname; 0 otherwise, writing the empty string. The third argument may itself be an array element, which is what a script reading a whole signature into an array writes.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-errorstack">
+          <h3><a class="doc-anchor" href="#doc-info-errorstack">#</a> <code>info errorstack</code></h3>
+          <pre><code class="lang-tcl">info errorstack ?interp?
+</code></pre>
+          <p>The <code>CALL</code>/<code>INNER</code> trace of the most recent error, as a list. Refused: errors here carry a message and a line, not a captured call chain.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info errorstack is not supported yet: the interpreter does not keep it</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-exists">
+          <h3><a class="doc-anchor" href="#doc-info-exists">#</a> <code>info exists</code></h3>
+          <pre><code class="lang-tcl">info exists varName
+</code></pre>
+          <p>1 when the variable or array element is set, 0 otherwise. A peek rather than a read — reaching the variable's place without growing storage — because an unset read raises here and asking whether a variable is set must not create it.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-frame">
+          <h3><a class="doc-anchor" href="#doc-info-frame">#</a> <code>info frame</code></h3>
+          <pre><code class="lang-tcl">info frame ?number?
+</code></pre>
+          <p>The depth of the call stack, or a dictionary describing one frame — its type, the file and line it came from, and the command being run. Refused: this frontend does not expose the running call frame.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info frame is not supported yet: it reports on the running call frame, which this frontend does not expose yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-functions">
+          <h3><a class="doc-anchor" href="#doc-info-functions">#</a> <code>info functions</code></h3>
+          <pre><code class="lang-tcl">info functions ?pattern?
+</code></pre>
+          <p>The <code>expr</code> math function names matching the pattern — <code>abs</code>, <code>sin</code>, <code>pow</code> and the rest. Refused: math functions parse and are then refused individually, so there is no set to list.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info functions is not supported yet: math functions are not implemented</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-globals">
+          <h3><a class="doc-anchor" href="#doc-info-globals">#</a> <code>info globals</code></h3>
+          <pre><code class="lang-tcl">info globals ?pattern?
+</code></pre>
+          <p>The global variable names matching the glob pattern, sorted. Global here means the VM's own global table, which is where a script's top-level variables live.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-hostname">
+          <h3><a class="doc-anchor" href="#doc-info-hostname">#</a> <code>info hostname</code></h3>
+          <pre><code class="lang-tcl">info hostname
+</code></pre>
+          <p>This host's name, from <code>gethostname</code>; the empty string when the call fails. Read at run time rather than compiled in, so an AOT-built binary reports the machine it runs on and not the one that built it.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-level">
+          <h3><a class="doc-anchor" href="#doc-info-level">#</a> <code>info level</code></h3>
+          <pre><code class="lang-tcl">info level ?number?
+</code></pre>
+          <p>With no argument, how deep the current procedure call is (0 at the top level); with one, the command and arguments that entered that level. Refused: this frontend does not expose the running call frame.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info level is not supported yet: it reports on the running call frame, which this frontend does not expose yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-library">
+          <h3><a class="doc-anchor" href="#doc-info-library">#</a> <code>info library</code></h3>
+          <pre><code class="lang-tcl">info library
+</code></pre>
+          <p>The directory of Tcl's script library. Compiles and runs, then raises <code>no library has been specified for Tcl</code> — tclsh's own message for an interpreter whose <code>tcl_library</code> is gone, which is the state this frontend is permanently in because nothing here reads an <code>init.tcl</code>. A raise, not a refusal, so a <code>catch</code> around it behaves as it does under tclsh.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-loaded">
+          <h3><a class="doc-anchor" href="#doc-info-loaded">#</a> <code>info loaded</code></h3>
+          <pre><code class="lang-tcl">info loaded ?interp? ?prefix?
+</code></pre>
+          <p>The binary extension packages loaded into an interpreter. Refused: <code>load</code> is not implemented, so the list would be empty by construction rather than by observation.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info loaded is not supported yet: loadable extensions are not implemented</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-locals">
+          <h3><a class="doc-anchor" href="#doc-info-locals">#</a> <code>info locals</code></h3>
+          <pre><code class="lang-tcl">info locals ?pattern?
+</code></pre>
+          <p>The local variable names of the running procedure, matching the pattern. Refused: locals are frame <em>slots</em> here, addressed by index, and the names they were compiled from are not carried into the frame.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info locals is not supported yet: it reports on the running call frame, which this frontend does not expose yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-nameofexecutable">
+          <h3><a class="doc-anchor" href="#doc-info-nameofexecutable">#</a> <code>info nameofexecutable</code></h3>
+          <pre><code class="lang-tcl">info nameofexecutable
+</code></pre>
+          <p>The full path of the running binary, from the operating system. For an AOT-compiled script this is the standalone executable, not the tclrs that built it.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-object">
+          <h3><a class="doc-anchor" href="#doc-info-object">#</a> <code>info object</code></h3>
+          <pre><code class="lang-tcl">info object subcommand object ?arg ...?
+</code></pre>
+          <p>Introspection on a TclOO object — its class, methods, variables and mixins, selected by a second subcommand word. Refused with <code>info class</code>, because TclOO is not implemented.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info object is not supported yet: TclOO is not implemented</code></p>
+        </article>
+        <article class="doc-entry" id="doc-info-patchlevel">
+          <h3><a class="doc-anchor" href="#doc-info-patchlevel">#</a> <code>info patchlevel</code></h3>
+          <pre><code class="lang-tcl">info patchlevel
+</code></pre>
+          <p>The full <code>major.minor.patch</code> version of the <em>Tcl language</em> this frontend implements — 9.0.4 — not the crate's own version, which <code>tclrs --version</code> reports. A script branching on it is asking about the language.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-procs">
+          <h3><a class="doc-anchor" href="#doc-info-procs">#</a> <code>info procs</code></h3>
+          <pre><code class="lang-tcl">info procs ?pattern?
+</code></pre>
+          <p>The script-defined procedure names matching the glob pattern, sorted; builtins are excluded, which is the difference from <code>info commands</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-script">
+          <h3><a class="doc-anchor" href="#doc-info-script">#</a> <code>info script</code></h3>
+          <pre><code class="lang-tcl">info script ?filename?
+</code></pre>
+          <p>The file being evaluated, or the empty string when the script came from <code>-c</code> or stdin. With an argument it sets the name and returns that same new name — tclsh answers identically, so the one-line save-and-restore idiom does not work in either.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-sharedlibextension">
+          <h3><a class="doc-anchor" href="#doc-info-sharedlibextension">#</a> <code>info sharedlibextension</code></h3>
+          <pre><code class="lang-tcl">info sharedlibextension
+</code></pre>
+          <p>The suffix a loadable library has on this platform — <code>.dylib</code>, <code>.dll</code> or <code>.so</code>. Decided by the build target, so it is the platform's answer and not a probe of the filesystem.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-tclversion">
+          <h3><a class="doc-anchor" href="#doc-info-tclversion">#</a> <code>info tclversion</code></h3>
+          <pre><code class="lang-tcl">info tclversion
+</code></pre>
+          <p>The <code>major.minor</code> version of the Tcl language implemented — 9.0. As with <code>info patchlevel</code>, the language's version and not the crate's.</p>
+        </article>
+        <article class="doc-entry" id="doc-info-vars">
+          <h3><a class="doc-anchor" href="#doc-info-vars">#</a> <code>info vars</code></h3>
+          <pre><code class="lang-tcl">info vars ?pattern?
+</code></pre>
+          <p>The visible variable names matching the glob pattern, sorted — including the <code>argc</code>, <code>argv</code> and <code>argv0</code> the interpreter sets up. Diverges inside a procedure: tclsh answers with the frame's locals, and this answers with the globals, because a local is an unnamed frame slot here.</p>
+        </article>
+      </section>
+
+
+      <section class="tutorial-section" id="ch-expr">
+        <h2>The <code>expr</code> operators and operands</h2>
+        <p class="chapter-meta">27 binary operators &middot; 5 unary and ternary &middot; 10 operand shapes</p>
+        <p>Precedence levels, loosest first, printed from the table the parser
         binds with. Unary <code>+ - ~ !</code> bind tighter than every level
         below, and the ternary <code>?:</code> looser; <code>**</code> is the
         one right-associative level. The string comparisons share a level with
-        their numeric counterparts, as <code>expr(n)</code> specifies — so
-        <code>"a" eq "a" == 1</code> is 1.</p>
+        their numeric counterparts, as <code>expr(n)</code> specifies &mdash; so
+        <code>"a" eq "a" == 1</code> is 1. Tcl's integer arithmetic is its own
+        rather than C's in most of these operators, and each entry says where.</p>
         <table class="file-table">
           <colgroup><col style="width:10%"><col style="width:60%"><col style="width:30%"></colgroup>
           <thead><tr><th>level</th><th>operators</th><th>associativity</th></tr></thead>
@@ -298,52 +1095,575 @@
         <tr><td>1</td><td><code>**</code></td><td>right</td></tr>
           </tbody>
         </table>
+
+        <article class="doc-entry" id="doc-expr-op-pipepipe">
+          <h3><a class="doc-anchor" href="#doc-expr-op-pipepipe">#</a> <code>||</code></h3>
+          <pre><code class="lang-tcl">a || b
+</code></pre>
+          <p>Logical or over Tcl booleans, yielding 1 or 0. Short-circuits: a true left operand means the right is never evaluated, so <code>1 || [error x]</code> is 1.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-ampamp">
+          <h3><a class="doc-anchor" href="#doc-expr-op-ampamp">#</a> <code>&amp;&amp;</code></h3>
+          <pre><code class="lang-tcl">a &amp;&amp; b
+</code></pre>
+          <p>Logical and over Tcl booleans, yielding 1 or 0. Short-circuits the same way — <code>0 &amp;&amp; [error x]</code> is 0.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-pipe">
+          <h3><a class="doc-anchor" href="#doc-expr-op-pipe">#</a> <code>|</code></h3>
+          <pre><code class="lang-tcl">a | b
+</code></pre>
+          <p>Bitwise or. Integers are not a fixed width here: when either side has been promoted past 64 bits the operation is performed over an infinite two's-complement sign extension, so the sign of an arbitrarily large operand is respected rather than truncated.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-caret">
+          <h3><a class="doc-anchor" href="#doc-expr-op-caret">#</a> <code>^</code></h3>
+          <pre><code class="lang-tcl">a ^ b
+</code></pre>
+          <p>Bitwise exclusive or, over the same infinite sign extension as <code>|</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-amp">
+          <h3><a class="doc-anchor" href="#doc-expr-op-amp">#</a> <code>&amp;</code></h3>
+          <pre><code class="lang-tcl">a &amp; b
+</code></pre>
+          <p>Bitwise and, over the same infinite sign extension as <code>|</code>. <code>-1 &amp; 3</code> is 3, because -1 is all ones however far it is extended.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-eqeq">
+          <h3><a class="doc-anchor" href="#doc-expr-op-eqeq">#</a> <code>==</code></h3>
+          <pre><code class="lang-tcl">a == b
+</code></pre>
+          <p>Equality that prefers a numeric reading and falls back to string comparison when either operand is not a number. <code>10 == "10.0"</code> is 1 — both are numbers and both are ten — while <code>"abc" == "abc"</code> is 1 by string.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-bangeq">
+          <h3><a class="doc-anchor" href="#doc-expr-op-bangeq">#</a> <code>!=</code></h3>
+          <pre><code class="lang-tcl">a != b
+</code></pre>
+          <p>The negation of <code>==</code>, with the same numeric-preferring rule. A NaN operand makes both false, so <code>nan != nan</code> is 1.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-kw-eq">
+          <h3><a class="doc-anchor" href="#doc-expr-kw-eq">#</a> <code>eq</code></h3>
+          <pre><code class="lang-tcl">a eq b
+</code></pre>
+          <p>String equality on the operands <strong>as written</strong>. No numeric reading is attempted, so <code>1.0 eq 1</code> is 0 where <code>1.0 == 1</code> is 1. A numeric literal carries its own spelling for exactly this comparison.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-kw-ne">
+          <h3><a class="doc-anchor" href="#doc-expr-kw-ne">#</a> <code>ne</code></h3>
+          <pre><code class="lang-tcl">a ne b
+</code></pre>
+          <p>String inequality — the negation of <code>eq</code>, and equally blind to numeric value.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-kw-in">
+          <h3><a class="doc-anchor" href="#doc-expr-kw-in">#</a> <code>in</code></h3>
+          <pre><code class="lang-tcl">a in b
+</code></pre>
+          <p>Whether the left operand equals one of the right operand's list elements, compared as strings. String equality is the whole rule, so <code>1 in {01}</code> is 0.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-kw-ni">
+          <h3><a class="doc-anchor" href="#doc-expr-kw-ni">#</a> <code>ni</code></h3>
+          <pre><code class="lang-tcl">a ni b
+</code></pre>
+          <p>Whether the left operand is <em>not</em> one of the right's list elements — the negation of <code>in</code>, with the same string rule.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-lteq">
+          <h3><a class="doc-anchor" href="#doc-expr-op-lteq">#</a> <code>&lt;=</code></h3>
+          <pre><code class="lang-tcl">a &lt;= b
+</code></pre>
+          <p>Less-or-equal, preferring a numeric reading and falling back to string order, like <code>==</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-gteq">
+          <h3><a class="doc-anchor" href="#doc-expr-op-gteq">#</a> <code>&gt;=</code></h3>
+          <pre><code class="lang-tcl">a &gt;= b
+</code></pre>
+          <p>Greater-or-equal, with the same numeric-preferring rule.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-lt">
+          <h3><a class="doc-anchor" href="#doc-expr-op-lt">#</a> <code>&lt;</code></h3>
+          <pre><code class="lang-tcl">a &lt; b
+</code></pre>
+          <p>Less-than, with the same numeric-preferring rule.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-gt">
+          <h3><a class="doc-anchor" href="#doc-expr-op-gt">#</a> <code>&gt;</code></h3>
+          <pre><code class="lang-tcl">a &gt; b
+</code></pre>
+          <p>Greater-than, with the same numeric-preferring rule. <code>"abc" &gt; "abd"</code> is 0 by string order; <code>inf &gt; 1</code> is 1, because <code>inf</code> is a floating-point literal here and not a word.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-kw-lt">
+          <h3><a class="doc-anchor" href="#doc-expr-kw-lt">#</a> <code>lt</code></h3>
+          <pre><code class="lang-tcl">a lt b
+</code></pre>
+          <p>String less-than, never numeric: <code>"10" lt "9"</code> is 1 because <code>1</code> sorts before <code>9</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-kw-gt">
+          <h3><a class="doc-anchor" href="#doc-expr-kw-gt">#</a> <code>gt</code></h3>
+          <pre><code class="lang-tcl">a gt b
+</code></pre>
+          <p>String greater-than, never numeric.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-kw-le">
+          <h3><a class="doc-anchor" href="#doc-expr-kw-le">#</a> <code>le</code></h3>
+          <pre><code class="lang-tcl">a le b
+</code></pre>
+          <p>String less-or-equal, never numeric.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-kw-ge">
+          <h3><a class="doc-anchor" href="#doc-expr-kw-ge">#</a> <code>ge</code></h3>
+          <pre><code class="lang-tcl">a ge b
+</code></pre>
+          <p>String greater-or-equal, never numeric.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-ltlt">
+          <h3><a class="doc-anchor" href="#doc-expr-op-ltlt">#</a> <code>&lt;&lt;</code></h3>
+          <pre><code class="lang-tcl">a &lt;&lt; b
+</code></pre>
+          <p>Left shift that <strong>grows</strong> rather than dropping the bits that leave a word: <code>1 &lt;&lt; 64</code> is 18446744073709551616, not 0. A negative shift count is an error.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-gtgt">
+          <h3><a class="doc-anchor" href="#doc-expr-op-gtgt">#</a> <code>&gt;&gt;</code></h3>
+          <pre><code class="lang-tcl">a &gt;&gt; b
+</code></pre>
+          <p>Arithmetic right shift, and saturating rather than wrapping: <code>1 &gt;&gt; 200</code> is 0 and <code>-1 &gt;&gt; 200</code> is -1, because the sign bit is what is left after every value bit has been shifted out.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-plus">
+          <h3><a class="doc-anchor" href="#doc-expr-op-plus">#</a> <code>+</code></h3>
+          <pre><code class="lang-tcl">a + b
+</code></pre>
+          <p>Addition. Integer operands promote past 64 bits rather than wrapping, up to <code>MAX_INT_BITS</code>; a floating-point operand makes the result floating-point.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-minus">
+          <h3><a class="doc-anchor" href="#doc-expr-op-minus">#</a> <code>-</code></h3>
+          <pre><code class="lang-tcl">a - b
+</code></pre>
+          <p>Subtraction, with the same promotion rule as <code>+</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-star">
+          <h3><a class="doc-anchor" href="#doc-expr-op-star">#</a> <code>*</code></h3>
+          <pre><code class="lang-tcl">a * b
+</code></pre>
+          <p>Multiplication, with the same promotion rule as <code>+</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-slash">
+          <h3><a class="doc-anchor" href="#doc-expr-op-slash">#</a> <code>/</code></h3>
+          <pre><code class="lang-tcl">a / b
+</code></pre>
+          <p>Integer division <strong>flooring toward negative infinity</strong>, not truncating toward zero as C does: <code>-57 / 10</code> is -6 and <code>7 / -2</code> is -4. Division by zero is an error.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-pct">
+          <h3><a class="doc-anchor" href="#doc-expr-op-pct">#</a> <code>%</code></h3>
+          <pre><code class="lang-tcl">a % b
+</code></pre>
+          <p>The remainder that pairs with Tcl's flooring division, so it takes the sign of the <em>divisor</em>: <code>-57 % 10</code> is 3, <code>5 % -3</code> is -1 and <code>-5 % 3</code> is 1.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-op-starstar">
+          <h3><a class="doc-anchor" href="#doc-expr-op-starstar">#</a> <code>**</code></h3>
+          <pre><code class="lang-tcl">a ** b
+</code></pre>
+          <p>Exponentiation — the one right-associative level, so <code>2 ** 3 ** 2</code> is 512. Integral for integral operands including a negative exponent, which floors: <code>2 ** -1</code> is 0. <code>0 ** -1</code> is <code>exponentiation of zero by negative power</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-un-minus">
+          <h3><a class="doc-anchor" href="#doc-expr-un-minus">#</a> <code>-</code></h3>
+          <pre><code class="lang-tcl">- a
+</code></pre>
+          <p>Arithmetic negation. Unary operators bind tighter than every binary level and are parsed right to left, so <code>- - 1</code> is 1.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-un-plus">
+          <h3><a class="doc-anchor" href="#doc-expr-un-plus">#</a> <code>+</code></h3>
+          <pre><code class="lang-tcl">+ a
+</code></pre>
+          <p>Unary plus. It asserts that the operand is a number — a non-numeric operand is an error — and otherwise changes nothing.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-un-tilde">
+          <h3><a class="doc-anchor" href="#doc-expr-un-tilde">#</a> <code>~</code></h3>
+          <pre><code class="lang-tcl">~ a
+</code></pre>
+          <p>Bitwise complement over the infinite two's-complement sign extension, so <code>~5</code> is -6. A floating-point operand is an error.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-un-bang">
+          <h3><a class="doc-anchor" href="#doc-expr-un-bang">#</a> <code>!</code></h3>
+          <pre><code class="lang-tcl">! a
+</code></pre>
+          <p>Logical not over a Tcl boolean, yielding 1 or 0 — <code>!yes</code> is 0. Matched only when the next character is not <code>=</code>, so <code>!=</code> is still the inequality operator.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-un-qcolon">
+          <h3><a class="doc-anchor" href="#doc-expr-un-qcolon">#</a> <code>?:</code></h3>
+          <pre><code class="lang-tcl">test ? a : b
+</code></pre>
+          <p>The conditional. It binds looser than every binary operator, is right-associative, and evaluates only the arm it takes — the other arm's command substitutions never run.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-val-integer-literal">
+          <h3><a class="doc-anchor" href="#doc-expr-val-integer-literal">#</a> <code>integer literal</code></h3>
+          <pre><code class="lang-tcl">123   0xff   0o17   0b101   0d19   1_000_000
+</code></pre>
+          <p>An integer, in decimal or with a <code>0x</code>, <code>0o</code>, <code>0b</code> or <code>0d</code> radix prefix. <code>_</code> may separate digits but must have one on each side, so <code>1_000_000</code> is a million while <code>0x_10</code> and <code>1_</code> are not numbers at all and are read as barewords.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-val-floatingminuspoint-literal">
+          <h3><a class="doc-anchor" href="#doc-expr-val-floatingminuspoint-literal">#</a> <code>floating-point literal</code></h3>
+          <pre><code class="lang-tcl">1.5   1.5e3   .5
+</code></pre>
+          <p>A double, in the usual C spellings. A literal carries the text the script wrote as well as its value, so <code>expr {007.0}</code> prints <code>007.0</code> rather than <code>7.0</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-val-inf-slash-nan">
+          <h3><a class="doc-anchor" href="#doc-expr-val-inf-slash-nan">#</a> <code>inf / nan</code></h3>
+          <pre><code class="lang-tcl">inf   infinity   nan
+</code></pre>
+          <p>Floating-point literals in any case, not function names — <code>expr {inf &gt; 1}</code> is 1 and <code>expr {nan == nan}</code> is 0. Exactly these three words and no others, and each keeps its spelling, so <code>inf eq "Inf"</code> is 0.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-val-boolean-word">
+          <h3><a class="doc-anchor" href="#doc-expr-val-boolean-word">#</a> <code>boolean word</code></h3>
+          <pre><code class="lang-tcl">true   false   yes   no   on   off
+</code></pre>
+          <p>A unique, case-insensitive prefix of one of the six words. <code>t</code>, <code>fals</code>, <code>y</code>, <code>n</code> and <code>of</code> are booleans; <code>o</code> is not, because <code>on</code> and <code>off</code> both begin with it. The word is an operand carrying its own spelling — <code>expr {ON}</code> is <code>ON</code> — so <code>eq</code> compares text and arithmetic refuses it with tclsh's non-numeric wording.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-val-variable">
+          <h3><a class="doc-anchor" href="#doc-expr-val-variable">#</a> <code>variable</code></h3>
+          <pre><code class="lang-tcl">$name   $arr(index)
+</code></pre>
+          <p>The variable's value, or an array element's. The index is itself substituted, so <code>$arr($i)</code> works.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-val-command-substitution">
+          <h3><a class="doc-anchor" href="#doc-expr-val-command-substitution">#</a> <code>command substitution</code></h3>
+          <pre><code class="lang-tcl">[script]
+</code></pre>
+          <p>The result of running the script, as an operand. Inside a short-circuited <code>&amp;&amp;</code>, <code>||</code> or <code>?:</code> arm it is never run.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-val-quoted-string">
+          <h3><a class="doc-anchor" href="#doc-expr-val-quoted-string">#</a> <code>quoted string</code></h3>
+          <pre><code class="lang-tcl">"text"
+</code></pre>
+          <p>A double-quoted operand with the usual substitutions performed inside it — variables, command substitutions and backslash escapes.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-val-braced-string">
+          <h3><a class="doc-anchor" href="#doc-expr-val-braced-string">#</a> <code>braced string</code></h3>
+          <pre><code class="lang-tcl">{text}
+</code></pre>
+          <p>A braced operand taken literally: nothing inside it is substituted. <code>"a" eq {a}</code> is 1 because both produce the one character.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-val-grouping">
+          <h3><a class="doc-anchor" href="#doc-expr-val-grouping">#</a> <code>grouping</code></h3>
+          <pre><code class="lang-tcl">( expression )
+</code></pre>
+          <p>Parentheses override precedence. Nesting is bounded by <code>MAX_EXPR_DEPTH</code>, past which the expression is refused rather than overflowing the stack.</p>
+        </article>
+        <article class="doc-entry" id="doc-expr-val-function-call">
+          <h3><a class="doc-anchor" href="#doc-expr-val-function-call">#</a> <code>function call</code></h3>
+          <pre><code class="lang-tcl">name(arg, ...)
+</code></pre>
+          <p>Parsed as a call and then refused: <code>math function "sin" is not supported yet</code>. The refusal is deferred, so an unevaluated call — in a short-circuited arm, or an untaken branch — costs nothing and a <code>catch</code> can trap it.</p>
+        </article>
       </section>
 
-      <section id="classes">
+      <section class="tutorial-section" id="ch-classes">
         <h2><code>string is</code> classes</h2>
-        <p>Resolved while compiling, in the interpreter's own listing order. The
-        classes that need Tcl's Unicode general-category tables accept ASCII and
-        report an error otherwise, rather than answering from a different
-        Unicode revision than the reference interpreter's.</p>
-        <p><code>alnum</code> · <code>alpha</code> · <code>ascii</code> · <code>control</code> · <code>boolean</code> · <code>dict</code> · <code>digit</code> · <code>double</code> · <code>entier</code> · <code>false</code> · <code>graph</code> · <code>integer</code> · <code>list</code> · <code>lower</code> · <code>print</code> · <code>punct</code> · <code>space</code> · <code>true</code> · <code>upper</code> · <code>wideinteger</code> · <code>wordchar</code> · <code>xdigit</code></p>
+        <p class="chapter-meta">22 entries</p>
+        <p>Resolved while compiling, in the interpreter's own listing order, and
+        checked left to right so a decision reached early is still a decision.
+        The classes that rest on Unicode general-category tables accept ASCII
+        &mdash; where the two implementations were verified to agree exactly &mdash; and
+        raise on the 4804 code points tclsh 9.0.4 categorises and Unicode 16.0
+        does not, rather than answering from a different Unicode revision than
+        the reference interpreter's. Every class but <code>list</code> and
+        <code>dict</code> answers 1 for the empty string unless
+        <code>-strict</code> is given.</p>
+        <article class="doc-entry" id="doc-class-alnum">
+          <h3><a class="doc-anchor" href="#doc-class-alnum">#</a> <code>alnum</code></h3>
+          <pre><code class="lang-tcl">string is alnum ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Every character is a letter or a decimal digit — the Unicode letter categories plus <code>Nd</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-alpha">
+          <h3><a class="doc-anchor" href="#doc-class-alpha">#</a> <code>alpha</code></h3>
+          <pre><code class="lang-tcl">string is alpha ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Every character is a letter: <code>Lu</code>, <code>Ll</code>, <code>Lt</code>, <code>Lm</code> or <code>Lo</code>. This is the <em>general category</em> union Tcl uses, not Rust's <code>char::is_alphabetic</code>, which is the wider Alphabetic property.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-ascii">
+          <h3><a class="doc-anchor" href="#doc-class-ascii">#</a> <code>ascii</code></h3>
+          <pre><code class="lang-tcl">string is ascii ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Every character is below U+0080. Answered arithmetically, so it never needs the Unicode tables and never refuses.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-control">
+          <h3><a class="doc-anchor" href="#doc-class-control">#</a> <code>control</code></h3>
+          <pre><code class="lang-tcl">string is control ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Every character is in category <code>Cc</code> or <code>Cf</code> — the C0/C1 controls and the format characters.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-boolean">
+          <h3><a class="doc-anchor" href="#doc-class-boolean">#</a> <code>boolean</code></h3>
+          <pre><code class="lang-tcl">string is boolean ?-strict? ?-failindex var? str
+</code></pre>
+          <p>The whole string is a Tcl boolean: a number in any radix, or a unique case-insensitive prefix of <code>true</code>/<code>false</code>/<code>yes</code>/<code>no</code>/<code>on</code>/<code>off</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-dict">
+          <h3><a class="doc-anchor" href="#doc-class-dict">#</a> <code>dict</code></h3>
+          <pre><code class="lang-tcl">string is dict ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Structural rather than a character class: the string is a well-formed list with an even number of elements. <code>{a 1 b}</code> is 0 and <code>{}</code> is 1. <code>-strict</code> is ignored, as it is for <code>list</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-digit">
+          <h3><a class="doc-anchor" href="#doc-class-digit">#</a> <code>digit</code></h3>
+          <pre><code class="lang-tcl">string is digit ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Every character is in category <code>Nd</code>. This is any Unicode decimal digit, not only <code>0</code>–<code>9</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-double">
+          <h3><a class="doc-anchor" href="#doc-class-double">#</a> <code>double</code></h3>
+          <pre><code class="lang-tcl">string is double ?-strict? ?-failindex var? str
+</code></pre>
+          <p>The string, less surrounding ASCII whitespace, reads as a floating-point number — integers included, since every integer is a valid double.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-entier">
+          <h3><a class="doc-anchor" href="#doc-class-entier">#</a> <code>entier</code></h3>
+          <pre><code class="lang-tcl">string is entier ?-strict? ?-failindex var? str
+</code></pre>
+          <p>The string reads as an integer of any size, with no upper bound: <code>99999999999999999999</code> is 1. Identical to <code>integer</code> here, which is also unbounded.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-false">
+          <h3><a class="doc-anchor" href="#doc-class-false">#</a> <code>false</code></h3>
+          <pre><code class="lang-tcl">string is false ?-strict? ?-failindex var? str
+</code></pre>
+          <p>The string is a Tcl boolean <em>and</em> that boolean is false — <code>0</code>, <code>no</code>, <code>off</code>, <code>false</code> and their prefixes.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-graph">
+          <h3><a class="doc-anchor" href="#doc-class-graph">#</a> <code>graph</code></h3>
+          <pre><code class="lang-tcl">string is graph ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Every character is printable and not a space: word characters, punctuation, marks, the non-decimal numbers and the symbol categories. <code>string is graph "€"</code> is 1 where <code>string is punct "€"</code> is 0, because the currency symbols are here and not there.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-integer">
+          <h3><a class="doc-anchor" href="#doc-class-integer">#</a> <code>integer</code></h3>
+          <pre><code class="lang-tcl">string is integer ?-strict? ?-failindex var? str
+</code></pre>
+          <p>The string, less surrounding ASCII whitespace, reads as an integer in any radix — <code>0xff</code> is 1. Unbounded, so it does not narrow to 32 bits the way the reference interpreter's documentation describes.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-list">
+          <h3><a class="doc-anchor" href="#doc-class-list">#</a> <code>list</code></h3>
+          <pre><code class="lang-tcl">string is list ?-strict? ?-failindex var? str
+</code></pre>
+          <p>The string parses as a well-formed Tcl list — the test is whether the list splitter accepts it, so unbalanced braces are 0. <code>-strict</code> is ignored: the empty string is a well-formed list.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-lower">
+          <h3><a class="doc-anchor" href="#doc-class-lower">#</a> <code>lower</code></h3>
+          <pre><code class="lang-tcl">string is lower ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Every character is in category <code>Ll</code>. Title-case letters are not lower case.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-print">
+          <h3><a class="doc-anchor" href="#doc-class-print">#</a> <code>print</code></h3>
+          <pre><code class="lang-tcl">string is print ?-strict? ?-failindex var? str
+</code></pre>
+          <p><code>graph</code> plus the three Unicode separator categories — and <em>not</em> plus the ASCII control whitespace, so <code>string is print \t</code> is 0 while <code>string is space \t</code> is 1.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-punct">
+          <h3><a class="doc-anchor" href="#doc-class-punct">#</a> <code>punct</code></h3>
+          <pre><code class="lang-tcl">string is punct ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Every character is in one of the seven punctuation categories. The symbol categories are deliberately excluded; they belong to <code>graph</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-space">
+          <h3><a class="doc-anchor" href="#doc-class-space">#</a> <code>space</code></h3>
+          <pre><code class="lang-tcl">string is space ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Every character is Tcl whitespace: the six ASCII space characters below U+0080, then the Unicode whitespace plus U+180E, U+200B, U+2060 and U+FEFF. Verified equal to the reference interpreter over every code point up to U+2FFFF, and answered without the general-category tables so it never refuses.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-true">
+          <h3><a class="doc-anchor" href="#doc-class-true">#</a> <code>true</code></h3>
+          <pre><code class="lang-tcl">string is true ?-strict? ?-failindex var? str
+</code></pre>
+          <p>The string is a Tcl boolean <em>and</em> that boolean is true — <code>1</code>, <code>yes</code>, <code>on</code>, <code>true</code> and their prefixes.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-upper">
+          <h3><a class="doc-anchor" href="#doc-class-upper">#</a> <code>upper</code></h3>
+          <pre><code class="lang-tcl">string is upper ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Every character is in category <code>Lu</code>. Title-case letters are not upper case.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-wideinteger">
+          <h3><a class="doc-anchor" href="#doc-class-wideinteger">#</a> <code>wideinteger</code></h3>
+          <pre><code class="lang-tcl">string is wideinteger ?-strict? ?-failindex var? str
+</code></pre>
+          <p>The string reads as an integer <em>and</em> fits in 64 bits. This is the one integer class with a bound, so <code>99999999999999999999</code> is 0 here and 1 for <code>integer</code> and <code>entier</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-wordchar">
+          <h3><a class="doc-anchor" href="#doc-class-wordchar">#</a> <code>wordchar</code></h3>
+          <pre><code class="lang-tcl">string is wordchar ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Every character is a letter, a decimal digit, or connector punctuation — which is what makes <code>_</code> a word character.</p>
+        </article>
+        <article class="doc-entry" id="doc-class-xdigit">
+          <h3><a class="doc-anchor" href="#doc-class-xdigit">#</a> <code>xdigit</code></h3>
+          <pre><code class="lang-tcl">string is xdigit ?-strict? ?-failindex var? str
+</code></pre>
+          <p>Every character is an ASCII hexadecimal digit, either case. Answered without the general-category tables, so it never refuses.</p>
+        </article>
       </section>
 
-      <section id="format">
+      <section class="tutorial-section" id="ch-format">
         <h2><code>format</code> conversions</h2>
-        <p>22 conversions, established by running one of each
-        through the runtime and reading the answer. A conversion missing from
-        this table is <code>bad field specifier</code>.</p>
-        <table class="file-table">
-          <colgroup><col style="width:20%"><col style="width:80%"></colgroup>
-          <thead><tr><th>conversion</th><th>state</th></tr></thead>
-          <tbody>
-        <tr><td><code>%a</code></td><td><span class="state-no">the "%a" conversion is not supported yet</span></td></tr>
-        <tr><td><code>%b</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%c</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%d</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%e</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%f</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%g</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%h</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%i</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%j</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%l</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%o</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%p</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%q</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%s</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%t</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%u</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%x</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%z</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%A</code></td><td><span class="state-no">the "%A" conversion is not supported yet</span></td></tr>
-        <tr><td><code>%E</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%G</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%L</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%X</code></td><td><span class="state-yes">implemented</span></td></tr>
-          </tbody>
-        </table>
+        <p class="chapter-meta">17 conversions &middot; 15 implemented &middot; 8 size modifiers</p>
+        <p>Each conversion below was established by running one of it through
+        the runtime and reading the answer. A letter missing from this chapter
+        is <code>bad field specifier</code>. Width and precision both accept
+        <code>*</code>, consuming an argument; a negative width sets <code>-</code>
+        and negates. Justification follows tclsh 9.0.4 rather than C99, which
+        means <code>-</code> does not override <code>0</code> for an integer
+        (<code>%-08d 42</code> is <code>00000042</code>) but does for everything
+        else (<code>%-08.2f 42</code> is <code>42.00&nbsp;&nbsp;&nbsp;</code>).</p>
+        <article class="doc-entry" id="doc-format-conv-pcts">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pcts">#</a> <code>%s</code></h3>
+          <pre><code class="lang-tcl">format %s value
+</code></pre>
+          <p>The argument as a string. A precision truncates it to that many <em>characters</em>, not bytes — <code>format %.3s abcdef</code> is <code>abc</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pctc">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pctc">#</a> <code>%c</code></h3>
+          <pre><code class="lang-tcl">format %c codepoint
+</code></pre>
+          <p>The character with that code point — <code>format %c 65</code> is <code>A</code>. A number that is not a code point yields U+FFFD rather than an error.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pctd">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pctd">#</a> <code>%d</code></h3>
+          <pre><code class="lang-tcl">format %d integer
+</code></pre>
+          <p>A signed decimal integer, truncated to the size modifier's width (32 bits by default). <code>#</code> prefixes <code>0d</code>, which is Tcl's spelling and not C's.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pcti">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pcti">#</a> <code>%i</code></h3>
+          <pre><code class="lang-tcl">format %i integer
+</code></pre>
+          <p>Identical to <code>%d</code> in every respect; both are signed decimal.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pctu">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pctu">#</a> <code>%u</code></h3>
+          <pre><code class="lang-tcl">format %u integer
+</code></pre>
+          <p>An unsigned decimal integer. The value is reinterpreted at the size modifier's width, so <code>format %u -1</code> is 4294967295 at the default 32 bits. An untruncated width (<code>ll</code> or <code>L</code>) is <code>unsigned bignum format is invalid</code>, because there is no width to reinterpret at.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pcto">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pcto">#</a> <code>%o</code></h3>
+          <pre><code class="lang-tcl">format %o integer
+</code></pre>
+          <p>Unsigned octal. <code>#</code> prefixes <code>0o</code> — Tcl 9's spelling, where C writes a bare leading <code>0</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pctx">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pctx">#</a> <code>%x</code></h3>
+          <pre><code class="lang-tcl">format %x integer
+</code></pre>
+          <p>Unsigned hexadecimal in lower case. <code>#</code> prefixes <code>0x</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pctX">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pctX">#</a> <code>%X</code></h3>
+          <pre><code class="lang-tcl">format %X integer
+</code></pre>
+          <p>Unsigned hexadecimal in upper case. The <code>#</code> prefix stays lower-case <code>0x</code>, matching the reference interpreter rather than C's <code>0X</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pctb">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pctb">#</a> <code>%b</code></h3>
+          <pre><code class="lang-tcl">format %b integer
+</code></pre>
+          <p>Unsigned binary. <code>#</code> prefixes <code>0b</code>. Tcl has this conversion and C does not.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pctp">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pctp">#</a> <code>%p</code></h3>
+          <pre><code class="lang-tcl">format %p integer
+</code></pre>
+          <p>Hexadecimal over the whole 64-bit word, always prefixed: <code>format %p -1</code> is <code>0xffffffffffffffff</code> where <code>%#x -1</code> is <code>0xffffffff</code>, and <code>format %p 0</code> is <code>0x0</code> where <code>%#x 0</code> is <code>0</code>. Those two differences are the whole of it.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pcte">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pcte">#</a> <code>%e</code></h3>
+          <pre><code class="lang-tcl">format %e double
+</code></pre>
+          <p>Scientific notation with a lower-case <code>e</code> and a two-digit exponent; six digits of precision by default.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pctE">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pctE">#</a> <code>%E</code></h3>
+          <pre><code class="lang-tcl">format %E double
+</code></pre>
+          <p><code>%e</code> with an upper-case <code>E</code> in the exponent.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pctf">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pctf">#</a> <code>%f</code></h3>
+          <pre><code class="lang-tcl">format %f double
+</code></pre>
+          <p>Fixed-point notation, six digits after the point by default. <code>%.f</code> with no digits is precision 0.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pctg">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pctg">#</a> <code>%g</code></h3>
+          <pre><code class="lang-tcl">format %g double
+</code></pre>
+          <p>The shorter of <code>%e</code> and <code>%f</code> for the value, with trailing zeroes removed.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pctG">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pctG">#</a> <code>%G</code></h3>
+          <pre><code class="lang-tcl">format %G double
+</code></pre>
+          <p><code>%g</code> with an upper-case <code>E</code> when it chooses the exponential form.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pcta">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pcta">#</a> <code>%a</code></h3>
+          <pre><code class="lang-tcl">format %a double
+</code></pre>
+          <p>C99's hexadecimal floating-point form. Recognised and refused — <code>the "%a" conversion is not supported yet</code> — rather than being reported as a bad field specifier, so the message distinguishes a conversion that exists from one that does not.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>the "%a" conversion is not supported yet</code></p>
+        </article>
+        <article class="doc-entry" id="doc-format-conv-pctA">
+          <h3><a class="doc-anchor" href="#doc-format-conv-pctA">#</a> <code>%A</code></h3>
+          <pre><code class="lang-tcl">format %A double
+</code></pre>
+          <p>The upper-case spelling of <code>%a</code>, refused with the same message.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>the "%A" conversion is not supported yet</code></p>
+        </article>
+
+        <h3>Size modifiers</h3>
+        <p>Consumed between the field and the conversion character. Only the
+        integer conversions read the width; a modifier with nothing after it is
+        <code>format string ended in middle of field specifier</code>.</p>
+        <article class="doc-entry" id="doc-format-size-ll">
+          <h3><a class="doc-anchor" href="#doc-format-size-ll">#</a> <code>ll</code></h3>
+          <pre><code class="lang-tcl">format %lld integer
+</code></pre>
+          <p>No truncation and no reinterpretation: even the unsigned conversions keep the value's sign, so <code>format %llx -1</code> is <code>-1</code> where <code>%lx -1</code> is <code>ffffffffffffffff</code>. Tested before the single-letter modifiers, so <code>ll</code> never reads as two <code>l</code>s.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-size-h">
+          <h3><a class="doc-anchor" href="#doc-format-size-h">#</a> <code>h</code></h3>
+          <pre><code class="lang-tcl">format %hd integer
+</code></pre>
+          <p>Truncate to 16 bits before converting.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-size-l">
+          <h3><a class="doc-anchor" href="#doc-format-size-l">#</a> <code>l</code></h3>
+          <pre><code class="lang-tcl">format %ld integer
+</code></pre>
+          <p>Truncate to 64 bits before converting, and reinterpret rather than keep the sign for an unsigned conversion: <code>format %lx -1</code> is <code>ffffffffffffffff</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-size-j">
+          <h3><a class="doc-anchor" href="#doc-format-size-j">#</a> <code>j</code></h3>
+          <pre><code class="lang-tcl">format %jd integer
+</code></pre>
+          <p>C's <code>intmax_t</code> width — 64 bits here, the same as <code>l</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-size-q">
+          <h3><a class="doc-anchor" href="#doc-format-size-q">#</a> <code>q</code></h3>
+          <pre><code class="lang-tcl">format %qd integer
+</code></pre>
+          <p>The BSD quad width — 64 bits, the same as <code>l</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-size-z">
+          <h3><a class="doc-anchor" href="#doc-format-size-z">#</a> <code>z</code></h3>
+          <pre><code class="lang-tcl">format %zd integer
+</code></pre>
+          <p>C's <code>size_t</code> width. 64 bits on every target this crate builds for.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-size-t">
+          <h3><a class="doc-anchor" href="#doc-format-size-t">#</a> <code>t</code></h3>
+          <pre><code class="lang-tcl">format %td integer
+</code></pre>
+          <p>C's <code>ptrdiff_t</code> width. 64 bits, like <code>z</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-format-size-L">
+          <h3><a class="doc-anchor" href="#doc-format-size-L">#</a> <code>L</code></h3>
+          <pre><code class="lang-tcl">format %Ld integer
+</code></pre>
+          <p>No truncation, identical to <code>ll</code>. With <code>%u</code> it is an error — <code>unsigned bignum format is invalid</code> — because an unsigned conversion has no width to reinterpret at.</p>
+        </article>
       </section>
     </main>
   </div>
