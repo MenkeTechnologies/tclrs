@@ -119,16 +119,67 @@
 //!
 //! # What the hosting table reaches
 //!
-//! `cargo run --features tk --bin tk-host` against the same library: **692
-//! calls over 51 distinct slots**, stopping at slot 675 `Tcl_GetBoolFromObj`.
+//! `cargo run --features tk --bin tk-host` against the same library, with the
+//! object layer, the evaluator and the notifier all behind the table: **2726
+//! calls over 71 distinct slots**, and `Tk_Init` *returns* — it does not stop
+//! on a missing slot at any point. 142 of the 691 `TclStubs` slots have bodies.
+//!
 //! On the way it evaluates `file tildeexpand ~/.Xdefaults` in a second
 //! interpreter created and deleted for the purpose
 //! (`tk9.0.4/generic/tkOption.c:1496-1499`), builds every `::tk::…` ensemble
-//! subcommand name through the trampoline, and registers the main window
-//! command `.` along with the rest of Tk's command set. `Tk_Init` does not
-//! return: what it wants next is the value-conversion family — `GetBool`,
-//! `GetInt`, `GetDouble`, `GetWideInt`, then `Tcl_GetIndexFromObjStruct` — none
-//! of which is an evaluator question.
+//! subcommand name through the trampoline, registers 106 commands including the
+//! main window command `.` and the whole widget set, creates the main window,
+//! runs `TkpInit` — which instantiates `NSApplication` and opens the connection
+//! to the window server — and initialises Ttk.
+//!
+//! It returns `TCL_ERROR`, and the reason is not on the Tk side of the
+//! boundary. `Tk_Init`'s last statement evaluates a script that defines a
+//! procedure inside an `if`:
+//!
+//! ```text
+//! if {[namespace which -command tkInit] eq ""} {
+//!   proc tkInit {} { ... tcl_findLibrary tk ... }
+//! }
+//! tkInit
+//! ```
+//!
+//! (`tk9.0.4/generic/tkWindow.c:3508-3516`), and `Tk_Init` returns whatever
+//! that evaluation returns (`:3518`, `:3536`). This crate's compiler refuses a
+//! `proc` that is not at the top level of a script — `src/procs.rs:166-171`, a
+//! deliberate decision pinned by `tests/proc_differential.rs`, because a
+//! procedure this compiler registers at compile time would exist whether or not
+//! the branch defining it is ever reached. So the script does not compile, the
+//! evaluation fails, and the failure is `Tk_Init`'s answer.
+//!
+//! Three more of the script's commands are also absent from this frontend —
+//! `namespace`, `rename` and `tcl_findLibrary` — and behind them is `tk.tcl`
+//! itself, which is what `tkInit` exists to `source`. That library is where
+//! Tk's class bindings live, so `bind Button` is empty in this host and a mouse
+//! click on a button reaches nothing. The gap between here and a `TCL_OK` is
+//! that much more of the Tcl language, not more of the Tk ABI.
+//!
+//! # What works anyway
+//!
+//! Everything `Tk_Init` built before that last statement is live, and a script
+//! this crate compiles can drive it through [`dispatch`]. Measured with
+//! `tk-host`, whose remaining arguments are scripts:
+//!
+//! * `winfo exists .` → `1`, `winfo class .` → `Tk`, `wm geometry .` →
+//!   `200x200+5+38`.
+//! * `button .b -text hello` → `.b`; `pack .b`; then `winfo ismapped .b` → `1`,
+//!   `winfo viewable .b` → `1`, `wm state .` → `normal`, and `wm geometry .`
+//!   → `65x28+5+38` — the toplevel resized to its content.
+//! * `--events 200` spins `Tcl_DoOneEvent` 200 times through the ported
+//!   notifier; 17 of those passes service an event and the process survives all
+//!   of them.
+//! * A window appears on screen. `CGWindowListCopyWindowInfo` with
+//!   `kCGWindowListOptionOnScreenOnly` reports one window owned by the
+//!   `tk-host` process, which is the window server's own account of what is
+//!   being displayed.
+//! * `button .b -command {puts CALLBACK-FIRED}` followed by `.b invoke` prints
+//!   `CALLBACK-FIRED`: Tk evaluated the callback back through
+//!   `Tcl_EvalObjEx`, this crate compiled it, and fusevm ran it. A *click* does
+//!   not reach it, for the `bind Button` reason above.
 
 pub mod abi;
 pub mod dispatch;

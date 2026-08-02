@@ -67,10 +67,31 @@ fn main() {
 
     // The point of the exercise: a Tcl script this crate compiled, calling a
     // command that did not exist when the compiler started.
-    for script in std::env::args().skip(1) {
-        match tclrs::runtime::Interp::new().eval(&script) {
-            Ok(value) => println!("tkhost eval {script:?} -> {value:?}"),
-            Err(e) => println!("tkhost eval {script:?} !! {e}"),
+    //
+    // `--events N` is not a script: it spins the ported notifier N times, so a
+    // window that was just created gets the passes it needs to be laid out and
+    // painted. Anything else is compiled and run as Tcl.
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--events" {
+            let n: usize = args
+                .next()
+                .and_then(|s| s.parse().ok())
+                .expect("--events needs a count");
+            let mut serviced = 0usize;
+            for _ in 0..n {
+                serviced += (unsafe {
+                    tclrs::tk::notifier::do_one_event_slot(
+                        tclrs::tk::notifier::TCL_ALL_EVENTS | tclrs::tk::notifier::TCL_DONT_WAIT,
+                    )
+                } != 0) as usize;
+            }
+            println!("tkhost events {n} passes, {serviced} serviced, process alive");
+            continue;
+        }
+        match tclrs::runtime::Interp::new().eval(&arg) {
+            Ok(value) => println!("tkhost eval {arg:?} -> {value:?}"),
+            Err(e) => println!("tkhost eval {arg:?} !! {e}"),
         }
     }
 }

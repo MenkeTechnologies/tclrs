@@ -272,7 +272,10 @@ pub unsafe extern "C" fn tclrs_tk_panic(text: *const c_char) -> ! {
 /// # Safety
 /// Called only from that function, with `length` readable bytes at `text`.
 #[no_mangle]
-pub unsafe extern "C" fn tclrs_tk_new_string_obj(text: *const c_char, length: usize) -> *mut TclObj {
+pub unsafe extern "C" fn tclrs_tk_new_string_obj(
+    text: *const c_char,
+    length: usize,
+) -> *mut TclObj {
     super::trace::record(super::trace::Table::Tcl, host::slot_index("tcl_ObjPrintf"));
     let bytes = std::slice::from_raw_parts(text as *const u8, length);
     super::trace::note("ObjPrintf", &String::from_utf8_lossy(bytes));

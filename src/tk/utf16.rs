@@ -344,7 +344,8 @@ pub unsafe extern "C" fn utf_at_index_cp(src: *const c_char, index: isize) -> *c
     let mut ch: i32 = 0;
     let mut remaining = index;
     while remaining > 0 {
-        let rest = std::slice::from_raw_parts(src.add(at) as *const u8, libc::strlen(src.add(at)) + 1);
+        let rest =
+            std::slice::from_raw_parts(src.add(at) as *const u8, libc::strlen(src.add(at)) + 1);
         at += utf_to_uni_char(rest, &mut ch);
         remaining -= 1;
     }

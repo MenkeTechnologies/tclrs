@@ -86,6 +86,18 @@ pub fn client_data(name: &str) -> *mut c_void {
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// The version ordering `Tcl_PkgProvideEx` decides "same version" with:
+/// normalise both, then compare. `None` means one of them is not a version
+/// number at all, which is the C's `TCL_ERROR` from
+/// `CheckVersionAndConvert`.
+///
+/// Exposed because it is the whole of the slot's interesting behaviour and the
+/// slot itself cannot be called without an interpreter.
+pub fn compare(a: &str, b: &str) -> Option<c_int> {
+    let (a, b) = (check_version_and_convert(a)?, check_version_and_convert(b)?);
+    Some(compare_versions(&a, &b).0)
+}
+
 /// Slot 0: `int Tcl_PkgProvideEx(Tcl_Interp *, const char *, const char *,
 /// const void *)` (`generic/tclPkg.c:154-200`).
 ///
@@ -105,7 +117,11 @@ pub unsafe extern "C" fn pkg_provide_ex(
     // `FindPackage` (`generic/tclPkg.c:1571-1594`): create on first mention.
     let existing = {
         let table = PACKAGES.lock().expect("package table poisoned");
-        table.0.iter().find(|p| p.name == name).map(|p| p.version.clone())
+        table
+            .0
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| p.version.clone())
     };
 
     let Some(previous) = existing else {
@@ -261,8 +277,16 @@ fn compare_versions(v1: &str, v2: &str) -> (c_int, bool) {
             s2 += 1;
         }
 
-        let e1 = s1 + a[s1..].iter().position(|c| *c == b' ').unwrap_or(a.len() - s1);
-        let e2 = s2 + b[s2..].iter().position(|c| *c == b' ').unwrap_or(b.len() - s2);
+        let e1 = s1
+            + a[s1..]
+                .iter()
+                .position(|c| *c == b' ')
+                .unwrap_or(a.len() - s1);
+        let e2 = s2
+            + b[s2..]
+                .iter()
+                .position(|c| *c == b' ')
+                .unwrap_or(b.len() - s2);
 
         let mut r: c_int = if e1 - s1 < e2 - s2 {
             -1
