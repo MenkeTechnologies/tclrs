@@ -402,3 +402,46 @@ pub struct TclDString {
     pub space_avl: isize,
     pub static_space: [c_char; TCL_DSTRING_STATIC_SIZE],
 }
+
+/// `Tcl_ArgvInfo` (`generic/tcl.h:2178-2189`), one entry of the option table a
+/// caller hands `Tcl_ParseArgsObjv`.
+///
+/// The table is Tk's own storage — a `const Tcl_ArgvInfo table[]` on
+/// `Initialize`'s stack (`tk9.0.4/generic/tkWindow.c:3196-3212`) — so only the
+/// shape is shared, as with [`TclDString`]. It ends at the entry whose `type_`
+/// is [`TCL_ARGV_END`]; there is no count.
+#[repr(C)]
+pub struct ArgvInfo {
+    /// One of the `TCL_ARGV_*` type constants below.
+    pub type_: c_int,
+    /// The option's spelling, `NULL` for an entry that matches nothing.
+    pub key: *const c_char,
+    /// Type-dependent: the constant to store, or the handler to call.
+    pub src: *mut c_void,
+    /// Where the parsed value goes. `NULL` is legal for `TCL_ARGV_REST`.
+    pub dst: *mut c_void,
+    /// The line `-help` prints for this option.
+    pub help: *const c_char,
+    /// Passed through to a `TCL_ARGV_FUNC` or `TCL_ARGV_GENFUNC` handler.
+    pub client_data: *mut c_void,
+}
+
+/// `Tcl_ArgvFuncProc` (`generic/tcl.h:2211-2212`). A non-zero answer means the
+/// handler consumed the object it was given.
+pub type ArgvFuncProc = unsafe extern "C" fn(*mut c_void, *mut TclObj, *mut c_void) -> c_int;
+
+/// `Tcl_ArgvGenFuncProc` (`generic/tcl.h:2213-2214`). The answer is how many
+/// arguments were consumed, or negative for a failure.
+pub type ArgvGenFuncProc =
+    unsafe extern "C" fn(*mut c_void, *mut c_void, isize, *const *mut TclObj, *mut c_void) -> isize;
+
+// The option types (`generic/tcl.h:2196-2204`).
+pub const TCL_ARGV_CONSTANT: c_int = 15;
+pub const TCL_ARGV_INT: c_int = 16;
+pub const TCL_ARGV_STRING: c_int = 17;
+pub const TCL_ARGV_REST: c_int = 18;
+pub const TCL_ARGV_FLOAT: c_int = 19;
+pub const TCL_ARGV_FUNC: c_int = 20;
+pub const TCL_ARGV_GENFUNC: c_int = 21;
+pub const TCL_ARGV_HELP: c_int = 22;
+pub const TCL_ARGV_END: c_int = 23;

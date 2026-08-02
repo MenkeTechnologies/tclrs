@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. The 70 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. The 71 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -72,11 +72,11 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">70</div>
+            <div class="stat-val">71</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">72/94</div>
+            <div class="stat-val">84/106</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -139,6 +139,7 @@
         <tr><td><code>lsort</code></td><td><code>lsort ?-option value ...? list</code></td><td>The list sorted by the reference merge sort — the algorithm, not just the ordering, because `-unique` observes it.</td></tr>
         <tr><td><code>namespace</code></td><td><code>namespace subcommand ?arg ...?</code></td><td>The namespace ensemble. A namespace is resolved while compiling, so its variables and procedures take qualified names; the queries are answered from interpreter state.</td></tr>
         <tr><td><code>open</code></td><td><code>open fileName ?access? ?permissions?</code></td><td>Open a file and return the channel's name. The command-pipeline form is refused.</td></tr>
+        <tr><td><code>package</code></td><td><code>package option ?arg ...?</code></td><td>The package ensemble: what a name is provided at, what would load it, and TIP 268's version arithmetic over both.</td></tr>
         <tr><td><code>proc</code></td><td><code>proc name args body</code></td><td>Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.</td></tr>
         <tr><td><code>puts</code></td><td><code>puts ?-nonewline? ?channel? string</code></td><td>Write the string to a channel, or to stdout when none is named.</td></tr>
         <tr><td><code>read</code></td><td><code>read channel ?numChars?</code></td><td>Read the whole channel, or that many characters; -nonewline drops the trailing newlines.</td></tr>
@@ -303,6 +304,25 @@
         <tr><td><code>namespace unknown</code></td><td><span class="state-no">"namespace unknown" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out</span></td></tr>
         <tr><td><code>namespace upvar</code></td><td><span class="state-no">"namespace upvar" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out</span></td></tr>
         <tr><td><code>namespace which</code></td><td><span class="state-yes">implemented</span></td></tr>
+          </tbody>
+        </table>
+        <h3><code>package</code> &mdash; 12 of 12 implemented</h3>
+        <table class="file-table">
+          <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
+          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
+          <tbody>
+        <tr><td><code>package files</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package forget</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package ifneeded</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package names</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package prefer</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package present</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package provide</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package require</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package unknown</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package vcompare</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package versions</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package vsatisfies</code></td><td><span class="state-yes">implemented</span></td></tr>
           </tbody>
         </table>
       </section>

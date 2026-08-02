@@ -17,10 +17,15 @@
 //! `tkslot` is a call that was served; `tktrap` is the call that ended the run.
 //! stderr rather than a buffered writer because the process aborts immediately
 //! afterwards and a buffer would not survive it.
+//!
+//! The served-call half is a *probe's* instrument, and a session opened by
+//! `tclrs --tk` turns it off ([`set_logging`]) because an application's stderr
+//! is for the application's errors. `TCLRS_TK_TRACE` keeps it, so the same
+//! measurement can be taken through the product binary.
 
 use std::collections::BTreeSet;
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// Which of the four stub tables a slot belongs to.
@@ -63,6 +68,24 @@ impl Table {
 /// log is long.
 static SERVED: AtomicU64 = AtomicU64::new(0);
 
+/// Whether a served call prints a line.
+///
+/// On, because the log is the instrument this whole subtree was built to read
+/// and every binary and test that existed before this switch is a measurement.
+/// The one caller that turns it off is [`super::session::open`]: `tclrs --tk`
+/// is an application session rather than a probe, and 2726 lines of call log on
+/// its stderr would be output the script did not ask for. `TCLRS_TK_TRACE`
+/// takes the measurement through the product binary anyway.
+///
+/// A trap is never silenced. It is the only account of why the process is about
+/// to stop.
+static LOGGING: AtomicBool = AtomicBool::new(true);
+
+/// Turn the served-call log off, or back on.
+pub fn set_logging(on: bool) {
+    LOGGING.store(on, Ordering::Relaxed);
+}
+
 /// Distinct slots reached, as `(table, slot)`. The headline number of the whole
 /// exercise is "how much of a 691-slot table does Tk actually touch", so it is
 /// counted as the run goes rather than reconstructed from the log afterwards.
@@ -81,6 +104,9 @@ fn touch(table: Table, slot: usize) -> usize {
 pub fn record(table: Table, slot: usize) {
     let n = SERVED.fetch_add(1, Ordering::Relaxed);
     touch(table, slot);
+    if !LOGGING.load(Ordering::Relaxed) {
+        return;
+    }
     let mut err = std::io::stderr().lock();
     let _ = writeln!(
         err,

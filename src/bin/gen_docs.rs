@@ -16,7 +16,9 @@ use tclrs::names::{self, Entry};
 
 fn main() {
     let commands = names::commands();
-    let ensembles: Vec<Ensemble> = ["string", "array", "dict", "info", "namespace"]
+    // Appended rather than sorted, so that adding one to this list adds a
+    // section to the page instead of reordering the ones already there.
+    let ensembles: Vec<Ensemble> = ["string", "array", "dict", "info", "namespace", "package"]
         .iter()
         .map(|name| Ensemble::probe(name))
         .collect();

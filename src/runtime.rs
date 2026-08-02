@@ -328,6 +328,14 @@ impl Interp {
         self.shared
     }
 
+    /// The same handle, without giving up ownership: a Tk session hands it to
+    /// the host it builds and then goes on running scripts through this
+    /// interpreter, which is the point — the two are one interpreter.
+    #[cfg(feature = "tk")]
+    pub(crate) fn shared_handle(&self) -> Shared {
+        Arc::clone(&self.shared)
+    }
+
     /// Take everything captured so far, leaving the buffer empty. Always empty
     /// for an interpreter built by [`Interp::new`], which does not capture.
     pub fn take_output(&mut self) -> String {
@@ -998,6 +1006,10 @@ impl Hooks {
                 id if (ext::CHANNEL_BASE..ext::CHANNEL_END).contains(&id) => {
                     crate::cmd_channel::run(vm, id, arg, &out).map_err(TclError::plain)
                 }
+                // Its own arm because `package require` may run a script — the
+                // `ifneeded` one, or `package unknown` — and a script needs
+                // the interpreter, which only this closure holds.
+                ext::PACKAGE => package_op(&interp, vm, arg),
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
             if let Err(e) = outcome {
@@ -1247,6 +1259,46 @@ pub(crate) fn place_of_encoded(vm: &mut VM) -> Result<Place, String> {
         Value::Int(raw) if raw < 0 => Ok(Place::Slot((-raw - 1) as u16)),
         Value::Int(raw) => Ok(Place::Global(raw as u16)),
         other => Err(format!("not a variable place: {other:?}")),
+    }
+}
+
+/// The evaluator [`crate::cmd_package`] runs an `ifneeded` or `package unknown`
+/// script through: [`eval_op`]'s write-back and re-read, with the concatenation
+/// left out because a package script is one string.
+struct VmScriptHost<'a> {
+    interp: &'a Shared,
+    vm: &'a mut VM,
+}
+
+impl crate::cmd_package::ScriptHost for VmScriptHost<'_> {
+    fn eval(&mut self, src: &str) -> Result<String, TclError> {
+        flush(&self.vm.chunk, self.interp, &self.vm.globals);
+        let result = run_source(self.interp, src);
+        self.vm.globals = seed(&self.vm.chunk, self.interp);
+        result.map(|v| to_tcl_string(&v))
+    }
+}
+
+/// The `package` command. The arguments come off the stack before the script
+/// host is built, because the host borrows the VM for as long as it lives.
+fn package_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
+    let (line, argv) = crate::cmd_package::take_args(vm, argc);
+    let outcome = {
+        let mut host = VmScriptHost { interp, vm };
+        crate::cmd_package::run(&argv, &mut host)
+    };
+    match outcome {
+        Ok(result) => {
+            vm.push(Value::Str(Arc::new(result)));
+            Ok(())
+        }
+        // A failure raised by a script this command ran already carries the
+        // line it happened on; only a failure of `package` itself takes the
+        // line of the `package` command.
+        Err(e) => Err(TclError {
+            msg: e.msg,
+            line: e.line.or(Some(line)),
+        }),
     }
 }
 

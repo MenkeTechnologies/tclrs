@@ -41,6 +41,9 @@
 //! * [`notifier`] — the event loop: Tcl's event queue, timers, idle handlers
 //!   and file handlers, ported from Tcl 9.0.4 onto a CFRunLoop.
 //! * [`load`] — `dlopen` of the real libtk and the `Tk_Init` call.
+//! * [`session`] — the product binary's entry points: what `tclrs --tk` opens
+//!   before the script is compiled, what `package require Tk` does inside it,
+//!   and the Tk main loop the application sits in afterwards.
 //!
 //! Everything here is behind the `tk` cargo feature, and a build without that
 //! feature never compiles a line of it, so a machine with no Tk installed is
@@ -130,7 +133,7 @@
 //! `cargo run --features tk --bin tk-host` against the same library, with the
 //! object layer, the evaluator and the notifier all behind the table: **2726
 //! calls over 71 distinct slots**, and `Tk_Init` *returns* — it does not stop
-//! on a missing slot at any point. 188 of the 691 `TclStubs` slots have bodies.
+//! on a missing slot at any point. 189 of the 691 `TclStubs` slots have bodies.
 //!
 //! That measurement is of the run whose **stdin is a pipe**, and stdin decides
 //! which of two branches `TkpInit` takes. With stdin on `/dev/null` — a
@@ -166,27 +169,34 @@
 //! (`tk9.0.4/generic/tkWindow.c:3508-3516`), and `Tk_Init` returns whatever
 //! that evaluation returns (`:3518`, `:3536`).
 //!
-//! That script *compiles* now. This crate used to refuse a `proc` that is not
-//! at the top level of a script, because a procedure registered while compiling
-//! would exist whether or not the branch defining it is ever reached; the
-//! run-time command table in [`crate::procs`] removed the reason for the
-//! refusal, so the `proc tkInit` is lowered like any other and binds its name
-//! when the branch runs.
+//! That script *runs* now, to its last statement. Four separate refusals stood
+//! in its way and each has gone:
 //!
-//! What stops the evaluation now is the *first command the script runs*:
-//! `namespace`, in the condition of that same `if`. Three of the script's
-//! commands are absent from this frontend — `namespace`, `rename` and
-//! `tcl_findLibrary` — and behind them is `tk.tcl` itself, which is what
-//! `tkInit` exists to `source`. That library is where Tk's class bindings live,
-//! so `bind Button` is empty in this host and a mouse click on a button reaches
-//! nothing. The gap between here and a `TCL_OK` is that much more of the Tcl
-//! language, not more of the Tk ABI. Measured: with those three commands
-//! supplied as procedures, the script above runs to completion and its output
-//! matches tclsh 9.0.4 byte for byte.
+//! * a `proc` that is not at a script's top level, which
+//!   [`crate::procs`]' run-time command table made lowerable;
+//! * `namespace`, in the condition of that same `if`
+//!   ([`crate::cmd_namespace`]);
+//! * `rename`, which the same module supplies;
+//! * `tk_version` and `tk_patchLevel`, which `global` reads inside `tkInit` —
+//!   Tk writes them through `Tcl_SetVar2` (`:1066-1067`) and [`linkvar`]
+//!   bridges the host's table to the interpreter's globals.
 //!
-//! The call and slot counts did not move when the refusal did. The whole
-//! failure is on this side of the stub table, so Tk asked for exactly what it
-//! asked for before — 2726 calls over 71 slots, either way.
+//! What stops it now is the statement those four were in the way of:
+//! `tcl_findLibrary tk $tk_version $tk_patchLevel tk.tcl TK_LIBRARY tk_library`
+//! (`:3513`). The search runs, and with `TK_LIBRARY` pointing at an installed
+//! Tk it finds `tk.tcl` and reads it — and then cannot compile it. `tk.tcl`
+//! uses `{*}` argument expansion in eleven places, and this frontend refuses
+//! one (`crate::compiler`, `{*} argument expansion is not supported yet`),
+//! because an expanded word decides an argument count when the command runs
+//! and every call site here is resolved while the script is read.
+//!
+//! `tk.tcl` is where Tk's class bindings live, so `bind Button` is empty in
+//! this host and a mouse click on a button reaches nothing. The gap between
+//! here and a `TCL_OK` is one Tcl language feature, not more of the Tk ABI.
+//!
+//! The call and slot counts did not move as the refusal walked forward. The
+//! whole failure is on this side of the stub table, so Tk asked for exactly
+//! what it asked for before — 2726 calls over 71 slots, every time.
 //!
 //! # What works anyway
 //!
@@ -223,10 +233,51 @@
 //!
 //! Those three need a terminal. `TkpInit` opens a console window when stdin is
 //! not a tty and there is no startup script
-//! (`tk9.0.4/macosx/tkMacOSXInit.c:583-606`), and the console needs
-//! `Tcl_CreateChannel`, which this host has not got — so a `tk-host` run with a
-//! redirected stdin stops there after 2639 calls instead. Run it under a pty
+//! (`tk9.0.4/macosx/tkMacOSXInit.c:583-606`); with [`channel`] behind it that
+//! branch now reaches `Tcl_Init` on the console interpreter rather than
+//! stopping at `Tcl_CreateChannel`. Run `tk-host` under a pty
 //! (`script -q /dev/null …`) for the numbers above.
+//!
+//! # The same thing, from the product binary
+//!
+//! [`session`] is the sequence above with the script in charge of it, and
+//! `tclrs --tk app.tcl` is where it runs. Measured on this tree, against the
+//! same library:
+//!
+//! ```text
+//! package require Tk            → 9.0.4
+//! button .b -text hello         → .b
+//! pack .b
+//! .b invoke                     → the -command body runs, in the script's
+//!                                 own interpreter
+//! ```
+//!
+//! `Tk_Init` still returns `TCL_ERROR` there, for the reason above and after
+//! the same 2726 served calls, and `package require Tk` still answers `9.0.4`,
+//! because Tk provided itself as a package (`:3461-3469`) several hundred calls
+//! before it reached the statement that failed. What decides whether the
+//! package is present is the registry, not the completion code.
+//!
+//! One thing does differ between the two hosts, and it is the variable bridge
+//! showing through. `tk-host` sets no `argv0`, so `TkpGetAppName` falls back to
+//! its literal `"tk"` (`tk9.0.4/macosx/tkMacOSXInit.c:789-797`) and
+//! `winfo class .` is `Tk`. `tclrs --tk app.tcl` sets `argv0` the way `tclsh`
+//! does, so the name is the script's file name and the class is
+//! `Tcl_UtfToTitle` of it (`generic/tkWindow.c:3363-3375`) — `App.tcl`. The
+//! reference interpreter answers the same way for the same input; it is Tk's
+//! rule, not this host's.
+//!
+//! The same `argv0` is why `Tcl_ParseArgsObjv` (slot 667) has a body at all:
+//! `Tk_Init` skips its whole argument block when `argv` cannot be read
+//! (`:3312-3341`), and once the bridge makes it readable, that block runs.
+//!
+//! The window is the window server's account and not Tk's: with the script
+//! sitting in `Tk_MainLoop`, `CGWindowListCopyWindowInfo` reports
+//! `pid=43113 owner="tclrs" bounds=67x60+5+38` against that live process — a
+//! toplevel resized to the button it contains, which is layout the main loop
+//! ran. The same process had just evaluated 999 levels of nested `eval`
+//! (226 MB resident), so the borrowed 256 MiB stack in `src/main_thread.rs` and
+//! Tk's main-thread requirement hold at the same time and in the same process.
 
 pub mod abi;
 pub mod channel;
@@ -245,6 +296,7 @@ pub mod obj;
 pub mod objtype;
 pub mod pkg;
 pub mod preserve;
+pub mod session;
 pub mod trace;
 pub mod utf16;
 
