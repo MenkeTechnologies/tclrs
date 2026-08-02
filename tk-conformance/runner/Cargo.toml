@@ -1,0 +1,17 @@
+[package]
+name = "tclrs-tk-conformance"
+version = "0.1.0"
+edition = "2021"
+description = "Runs the official Tk test suite against tclrs hosting the real Tk, and reports what fraction of it passes"
+license = "MIT"
+publish = false
+
+# A workspace of its own, so `cargo build` in the crate root never drags the
+# measurement tool into the library's build.
+[workspace]
+
+[dependencies]
+# The `tk` feature is the whole point: the candidate side loads libtk against
+# this crate's stub table.
+tclrs = { path = "../..", features = ["tk"] }
+libc = "0.2"
