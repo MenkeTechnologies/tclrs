@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. The 50 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. The 55 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -72,11 +72,11 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">50</div>
+            <div class="stat-val">55</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">40/59</div>
+            <div class="stat-val">56/78</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -130,16 +130,21 @@
         <tr><td><code>lseq</code></td><td><code>lseq n ??op? n ??by? n??</code></td><td>An arithmetic sequence; a zero step yields one element and a step pointing away from the end yields none.</td></tr>
         <tr><td><code>lset</code></td><td><code>lset listVar ?index? ?index ...? value</code></td><td>Replace the element at an index path in the variable's list; the end grows by one element only.</td></tr>
         <tr><td><code>lsort</code></td><td><code>lsort ?-option value ...? list</code></td><td>The list sorted by the reference merge sort — the algorithm, not just the ordering, because `-unique` observes it.</td></tr>
+        <tr><td><code>namespace</code></td><td><code>namespace subcommand ?arg ...?</code></td><td>The namespace ensemble. A namespace is resolved while compiling, so its variables and procedures take qualified names; the queries are answered from interpreter state.</td></tr>
         <tr><td><code>proc</code></td><td><code>proc name args body</code></td><td>Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.</td></tr>
         <tr><td><code>puts</code></td><td><code>puts ?-nonewline? string</code></td><td>Write the string to stdout.</td></tr>
         <tr><td><code>regexp</code></td><td><code>regexp ?-option ...? exp string ?matchVar? ?subMatchVar ...?</code></td><td>Match a regular expression, setting the match variables; the count under -all, the text under -inline.</td></tr>
         <tr><td><code>regsub</code></td><td><code>regsub ?-option ...? exp string subSpec ?varName?</code></td><td>Substitute for a regular expression's matches; the new string, or the count when a variable is named.</td></tr>
+        <tr><td><code>rename</code></td><td><code>rename oldName newName</code></td><td>Rename a command, or delete it when the new name is empty. A call the same chunk compiled is guarded so a deleted command still refuses.</td></tr>
         <tr><td><code>return</code></td><td><code>return ?-code code? ?result?</code></td><td>Return from the enclosing procedure with the result. `-code ok` and `-code error` are the codes implemented.</td></tr>
         <tr><td><code>set</code></td><td><code>set varName ?newValue?</code></td><td>Read or write a variable; yields its value. A procedure's variables are slots, a script's are VM globals.</td></tr>
+        <tr><td><code>source</code></td><td><code>source ?-encoding encoding? fileName</code></td><td>Read a file and evaluate it against this interpreter; yields the value of its last command.</td></tr>
         <tr><td><code>split</code></td><td><code>split string ?splitChars?</code></td><td>Split the string at any of the characters into a list.</td></tr>
         <tr><td><code>string</code></td><td><code>string subcommand ?arg ...?</code></td><td>The string ensemble. Subcommands, options and the `string is` class are resolved while compiling.</td></tr>
         <tr><td><code>switch</code></td><td><code>switch ?options? string {pattern body ...}</code></td><td>Run the body of the first pattern that matches, `-exact` or `-glob`.</td></tr>
+        <tr><td><code>tcl_findLibrary</code></td><td><code>tcl_findLibrary basename version patch initScript enVarName varName</code></td><td>Tcl's own library-directory search, ported from `library/auto.tcl`: find the initialisation script, set the library variable and source it.</td></tr>
         <tr><td><code>unset</code></td><td><code>unset ?-nocomplain? ?--? ?name ...?</code></td><td>Remove variables or array elements.</td></tr>
+        <tr><td><code>variable</code></td><td><code>variable ?name value ...? name ?value?</code></td><td>Declare a namespace variable. In a procedure body it links the local name to the namespace's variable rather than creating one.</td></tr>
         <tr><td><code>while</code></td><td><code>while test command</code></td><td>Run the body while the test holds. Inside a procedure this is the loop that reaches a compiled trace.</td></tr>
         <tr><td><code>yield</code></td><td><code>yield ?value?</code></td><td>Suspend the running coroutine and hand the value to whoever resumed it.</td></tr>
         <tr><td><code>yieldto</code></td><td><code>yieldto command ?arg ...?</code></td><td>Suspend and donate the resumer to another coroutine of the script, which is what makes the transfer symmetric rather than a queue.</td></tr>
@@ -243,6 +248,32 @@
         <tr><td><code>info coroutine</code></td><td><span class="state-yes">implemented</span></td></tr>
           </tbody>
         </table>
+        <h3><code>namespace</code> &mdash; 16 of 19 implemented</h3>
+        <table class="file-table">
+          <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
+          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
+          <tbody>
+        <tr><td><code>namespace children</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace code</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace current</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace delete</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace ensemble</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace eval</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace exists</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace export</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace forget</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace import</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace inscope</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace origin</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace parent</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace path</code></td><td><span class="state-no">"namespace path" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out</span></td></tr>
+        <tr><td><code>namespace qualifiers</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace tail</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>namespace unknown</code></td><td><span class="state-no">"namespace unknown" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out</span></td></tr>
+        <tr><td><code>namespace upvar</code></td><td><span class="state-no">"namespace upvar" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out</span></td></tr>
+        <tr><td><code>namespace which</code></td><td><span class="state-yes">implemented</span></td></tr>
+          </tbody>
+        </table>
       </section>
 
       <section id="expr">
@@ -283,7 +314,7 @@
 
       <section id="format">
         <h2><code>format</code> conversions</h2>
-        <p>21 conversions, established by running one of each
+        <p>22 conversions, established by running one of each
         through the runtime and reading the answer. A conversion missing from
         this table is <code>bad field specifier</code>.</p>
         <table class="file-table">
@@ -302,7 +333,7 @@
         <tr><td><code>%j</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%l</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%o</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%p</code></td><td><span class="state-no">the "%p" conversion is not supported yet</span></td></tr>
+        <tr><td><code>%p</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%q</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%s</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%t</code></td><td><span class="state-yes">implemented</span></td></tr>

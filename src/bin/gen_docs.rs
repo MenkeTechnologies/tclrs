@@ -16,7 +16,7 @@ use tclrs::names::{self, Entry};
 
 fn main() {
     let commands = names::commands();
-    let ensembles: Vec<Ensemble> = ["string", "array", "dict", "info"]
+    let ensembles: Vec<Ensemble> = ["string", "array", "dict", "info", "namespace"]
         .iter()
         .map(|name| Ensemble::probe(name))
         .collect();

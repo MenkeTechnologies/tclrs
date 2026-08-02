@@ -35,6 +35,29 @@ approximated, and nothing is silently mis-run.
   first compilation pass records which names a conditional `proc` defines and
   only those become dynamic, so `bench/counted_loop_proc.tcl` still lowers to 28
   ops with one `Op::Call` and still reports `traced=true`.
+- **Namespaces.** `namespace` — `eval`, `current`, `qualifiers`, `tail`,
+  `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`,
+  `import`, `forget`, `origin`, `which` and `ensemble exists` / `create` /
+  `configure` — plus `variable` and `rename` (`src/cmd_namespace.rs`). A
+  namespace is resolved where everything else in this frontend is resolved,
+  while compiling: a variable of `::foo` is the interpreter variable `foo::v`, a
+  procedure of `::foo` is registered as `foo::p`, and an unqualified name
+  written inside `::foo` reaches the namespace's before the root's — the
+  two-step search of `TclGetNamespaceForQualName`. `namespace qualifiers` and
+  `namespace tail` are ports of `NamespaceQualifiersCmd` and `NamespaceTailCmd`
+  and are folded when their argument is written out. The queries — `exists`,
+  `children`, `which`, `origin`, `parent` — read a registry the interpreter
+  holds and the compiled code fills in as it runs. 55 programs are compared
+  against tclsh byte for byte in `tests/namespace_differential.rs`.
+- **`source` and `tcl_findLibrary`.** `source` reads a file and evaluates it
+  against the interpreter that asked for it, through the same chunk cache every
+  other script goes through, with `Tcl_PosixError`'s wording for a file it
+  cannot read (`src/cmd_source.rs`). `tcl_findLibrary` is a port of the Tcl
+  procedure of the same name (`library/auto.tcl:55-218`), so an installed Tk is
+  found where tclsh finds one; `crate::cmd_source::seed_library_environment`
+  sets the `tcl_library`, `tcl_libPath` and `auto_path` that Tcl's own
+  `init.tcl` sets from C state. 15 programs against tclsh in
+  `tests/source_differential.rs`.
 - **Errors.** `catch` and `error`. A `catch` region is an extension-wide op whose
   payload is its handler's op index; the driver in `src/runtime.rs` unwinds the
   value stack and the call frames to the region's entry state and resumes at the
@@ -254,10 +277,38 @@ approximated, and nothing is silently mis-run.
   op sits at that index. `eval {if {1} {proc f {} {…}}}` followed by `f` is
   therefore `invalid command name "f"` as well. Carrying the callee's *chunk*
   through the call — not just its entry — is the fix.
+- **`namespace path`, `namespace unknown` and `namespace upvar`.** All three
+  change how a name resolves *after* the point this frontend resolved it, so
+  honouring them would mean re-resolving names at run time. Refused where they
+  are written.
+- **A computed `namespace eval` name or body.** `namespace eval $n {…}` and
+  `namespace eval foo $body` are refused: the namespace decides which variable
+  every `$v` in the body reads and which procedure every call reaches, and both
+  are decided while compiling. The same rule refuses a computed `namespace
+  import` pattern.
+- **Dispatching through an ensemble.** `namespace ensemble create` records that
+  the namespace is one, so `namespace ensemble exists` and `configure` answer,
+  but calling the ensemble command resolves a subcommand when it runs and this
+  frontend resolves a call while compiling. The call is `invalid command name`
+  rather than a guess.
+- **Procedures across a `source`, as across an `eval`.** A sourced file's
+  variables — including its namespace variables — are the interpreter's, and
+  survive; its procedures are its own chunk's and do not, for exactly the reason
+  the `eval` entry above gives. So `source` of a library file that defines
+  procedures leaves them unreachable from the script that sourced it. The same
+  runtime command table fixes both. This is why `tcl_findLibrary tk … tk.tcl`
+  finds and reads the real `tk.tcl` but the procedures it defines are not yet
+  callable.
+- **`return` at the top level of a sourced file.** `return` is refused outside a
+  procedure body, so a library file that ends early with a bare `return` — a
+  common shape — fails rather than answering. This is `return`'s own gap, not
+  `source`'s.
 - **`coroprobe` and `coroinject`.** Inspecting or injecting a command into a
   suspended coroutine is not implemented; both are `invalid command name`.
-  Deleting a coroutine by destroying its command needs `rename`, which is not
-  implemented either — a coroutine goes away when its body ends.
+  Deleting a coroutine by destroying its command is not either: `rename` is
+  implemented now, but a coroutine's command is not in the registry `rename`
+  operates on, so `rename c {}` for a coroutine `c` is `can't rename "c":
+  command doesn't exist`. A coroutine goes away when its body ends.
 - **Coroutines of anything but a procedure of the script.** `coroutine`'s name
   and command are literals, its command is one of the script's own procedures,
   and the command appears at the top level of a script or in a command
@@ -372,6 +423,7 @@ since a mutant that failed to terminate would be a timeout in one bucket or the
 other.
 
 Each entry below is a **reproduced** divergence with the reducer's own
+
 one-statement case; every one is pinned in `tests/parity_fuzz_findings.rs` against
 a live tclsh, and the committed corpus of minimised cases is `tests/fuzz_corpus/`.
 The divergences that *were* here and are now parity are listed under "Fixed by the
@@ -383,6 +435,26 @@ Repro helper:
 T=./target/debug/tclrs
 tref() { printf '%s\n' "$1" >/tmp/c.tcl; tclsh /tmp/c.tcl; }   # ground truth
 ```
+
+### `rename` reaches a call the same chunk had already compiled
+
+`rename` updates the interpreter's command registry, which is what every
+`namespace which`, `namespace origin` and `info`-shaped query then answers from,
+and the compiler records a literal `rename` so that
+
+* a call written **after** `rename f g` under the new name `g` reaches `f`'s
+  body, and
+* a call under the old name `f` is guarded — one op, emitted only at a call site
+  whose name the same chunk renames — and refuses with `invalid command name
+  "f"`, which is what `rename tkInit {}` inside `tkInit`'s own body needs.
+
+What is not modelled is a call written **before** the `rename` runs but reached
+after it: `proc f {} {…}; proc g {} {f}; rename f {}; g` refuses in tclsh at the
+call inside `g` and reaches the body here, because the guard is placed by
+position in the source and `g`'s body was lowered before the `rename` was read.
+The same runtime command table that would fix "procedures across an `eval`"
+fixes this.
+
 
 - **`incr` on a non-integer *variable* reports an `expr` operand error.**
   `set x abc; incr x` says `cannot use non-numeric string "abc" as left operand
