@@ -18,6 +18,8 @@
 //!   directly, so it cannot live behind the table.
 //! * [`trace`] — the recorder that turns a call into a line of output.
 //! * [`host`] — the stand-in interpreter and the slots implemented so far.
+//! * [`notifier`] — the event loop: Tcl's event queue, timers, idle handlers
+//!   and file handlers, ported from Tcl 9.0.4 onto a CFRunLoop.
 //! * [`load`] — `dlopen` of the real libtk and the `Tk_Init` call.
 //!
 //! Everything here is behind the `tk` cargo feature, and a build without that
@@ -79,6 +81,7 @@ pub mod generated;
 pub mod hash;
 pub mod host;
 pub mod load;
+pub mod notifier;
 pub mod trace;
 
 pub use abi::RawStub;

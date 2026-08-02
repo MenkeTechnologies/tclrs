@@ -35,6 +35,8 @@ use std::process::ExitCode;
 
 use tclrs::Interp;
 
+#[cfg(feature = "tk")]
+mod main_thread;
 mod repl;
 mod repl_line;
 
@@ -56,17 +58,73 @@ options:
   -h, --help      this message
   --version, -V   version";
 
+/// The extra line `--help` prints in a build that can host Tk.
+#[cfg(feature = "tk")]
+const TK_USAGE: &str =
+    "\n  --tk            run on the main thread, with the Tk event loop available";
+#[cfg(not(feature = "tk"))]
+const TK_USAGE: &str = "";
+
 fn main() -> ExitCode {
-    // Nested `eval` costs native stack: each level runs a VM of its own. The
-    // interpreter refuses to nest deeper than `tclsh` does, and this thread is
-    // sized so that limit is reached before the stack is — the process reports
-    // a script error rather than dying on a signal.
-    std::thread::Builder::new()
-        .stack_size(tclrs::runtime::RECOMMENDED_STACK)
-        .spawn(drive)
-        .expect("spawn interpreter thread")
-        .join()
-        .unwrap_or(ExitCode::FAILURE)
+    // Two ways to run the interpreter, and which one is chosen is the whole of
+    // this binary's Tk restructuring.
+    //
+    // Ordinarily it runs on a thread of its own. Nested `eval` costs native
+    // stack — each level runs a VM of its own — and the interpreter refuses to
+    // nest deeper than `tclsh` does, so the thread is sized to reach that limit
+    // before the stack runs out and the process reports a script error rather
+    // than dying on a signal. Measured against this tree: 1000 levels of nested
+    // `eval` need 99 MiB unoptimized and 14 MiB optimized, and
+    // `RECOMMENDED_STACK` is 256 MiB.
+    //
+    // Hosting Tk on macOS makes that impossible as it stands, because Tk has to
+    // be initialised on the *main* thread: `Tk_MacOSXSetupTkNotifier` installs
+    // the Aqua event source only when the current run loop is the main run loop
+    // (`tk9.0.4/macosx/tkMacOSXNotify.c:258-272`), and panics outright if that
+    // holds on a thread AppKit does not consider the main one (`:259-266`). A
+    // Tk session therefore runs on the main thread, and gets its stack from
+    // [`main_thread`] instead of from a thread builder.
+    //
+    // Nothing else changes. Without `--tk`, and in a build without the `tk`
+    // feature at all, this is the same spawn it has always been.
+    match tk_session() {
+        false => std::thread::Builder::new()
+            .stack_size(tclrs::runtime::RECOMMENDED_STACK)
+            .spawn(drive)
+            .expect("spawn interpreter thread")
+            .join()
+            .unwrap_or(ExitCode::FAILURE),
+        #[cfg(feature = "tk")]
+        true => main_thread::run(drive),
+        #[cfg(not(feature = "tk"))]
+        true => unreachable!("--tk is not a recognized option in this build"),
+    }
+}
+
+/// Whether the command line asked for a Tk session.
+///
+/// Scanned here rather than in [`drive`] because it decides which thread
+/// [`drive`] runs on. A build without the `tk` feature never says yes, and
+/// `--tk` falls through to the unknown-option error the same as any other
+/// unrecognized flag.
+#[cfg(feature = "tk")]
+fn tk_session() -> bool {
+    // Only before the script: everything after a file name or `-c` belongs to
+    // the script, which is the same rule the option loop in `drive` follows.
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--tk" => return true,
+            "-c" => return false,
+            a if a.starts_with('-') => continue,
+            _ => return false,
+        }
+    }
+    false
+}
+
+#[cfg(not(feature = "tk"))]
+fn tk_session() -> bool {
+    false
 }
 
 /// What the command line asked for, once the options are read.
@@ -107,9 +165,13 @@ fn drive() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             "-h" | "--help" => {
-                println!("{USAGE}");
+                println!("{USAGE}{TK_USAGE}");
                 return ExitCode::SUCCESS;
             }
+            // Read by `tk_session` before this loop ever runs; it decides which
+            // thread this function is running on, not what it does.
+            #[cfg(feature = "tk")]
+            "--tk" => {}
             "--lsp" => return ExitCode::from(!tclrs::lsp::run_stdio() as u8),
             "--dap" => return ExitCode::from(tclrs::dap::run_stdio() as u8),
             "--tiers" => action = Action::Tiers,
