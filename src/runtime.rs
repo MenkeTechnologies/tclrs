@@ -49,6 +49,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fusevm::{Chunk, Frame, NumOp, VMResult, Value, VM};
@@ -364,18 +365,52 @@ pub(crate) fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> 
 /// to the next. The interpreter's map is the authority; a chunk's slots are a
 /// projection of it, built here on entry and read back by `flush` on exit.
 fn seed(chunk: &Chunk, shared: &Shared) -> Vec<Value> {
-    let state = shared.lock().expect("interpreter lock");
-    chunk
-        .names
-        .iter()
-        .map(|name| state.globals.get(name).cloned().unwrap_or(Value::Undef))
-        .collect()
+    let traced = TracedIn::of(chunk);
+    // A read trace exists to let its owner put the current value in place
+    // before anything reads it, so it runs before the projection is taken
+    // rather than after.
+    let mut values: Vec<Value> = {
+        let state = shared.lock().expect("interpreter lock");
+        chunk
+            .names
+            .iter()
+            .map(|name| state.globals.get(name).cloned().unwrap_or(Value::Undef))
+            .collect()
+    };
+    traced.blank_reads(&mut values);
+    values
 }
 
 /// Write a finished chunk's slots back into the interpreter's variables. A slot
 /// left `Undef` — never assigned, or unset — removes the variable rather than
 /// storing an empty value, so `unset` survives into the next evaluation.
 fn flush(chunk: &Chunk, shared: &Shared, globals: &[Value]) {
+    let traced = TracedIn::of(chunk);
+    let fired = write_back(chunk, shared, globals, &traced, Boundary::End);
+    // Whatever a trace on the way out wants to do it does after the value is
+    // stored, exactly as `TclCallVarTraces` runs a write trace after the write
+    // (`generic/tclTrace.c:2616-2655`). Its refusal has nowhere to go here —
+    // the command that wrote is already over — so it is dropped; the sync
+    // points inside a run report it, see [`sync_traced`].
+    for (name, op) in fired {
+        let _ = TracedIn::fire_one(&name, op);
+    }
+}
+
+/// Store a chunk's slots into the interpreter's variables, and say which traces
+/// that write should fire.
+///
+/// Split out from [`flush`] because a trace runs foreign code that can write
+/// variables of its own, and this holds the interpreter lock. Nothing is called
+/// back into while it is held.
+fn write_back(
+    chunk: &Chunk,
+    shared: &Shared,
+    globals: &[Value],
+    traced: &TracedIn,
+    boundary: Boundary,
+) -> Vec<(String, TraceOp)> {
+    let mut fired = Vec::new();
     let mut state = shared.lock().expect("interpreter lock");
     for (slot, name) in chunk.names.iter().enumerate() {
         // The compiler's own loop state is named with a leading NUL so that no
@@ -384,15 +419,342 @@ fn flush(chunk: &Chunk, shared: &Shared, globals: &[Value]) {
         if name.starts_with('\u{0}') {
             continue;
         }
-        match globals.get(slot) {
-            Some(Value::Undef) | None => {
-                state.globals.remove(name);
+        let value = globals.get(slot).unwrap_or(&Value::Undef);
+        let watched = traced.at(slot);
+        match value {
+            // A slot [`TracedIn::blank_reads`] emptied so that reads of it
+            // would reach the hook is not an `unset`, and neither is a slot a
+            // partly-run chunk has not written yet — see [`Boundary`]. The
+            // interpreter's copy stands in both cases.
+            Value::Undef if watched.reads || boundary == Boundary::Sync => {}
+            Value::Undef => {
+                if state.globals.remove(name).is_some() && watched.unsets {
+                    fired.push((name.clone(), TraceOp::Unset));
+                }
             }
-            Some(value) => {
+            value => {
+                let changed = state.globals.get(name) != Some(value);
                 state.globals.insert(name.clone(), value.clone());
+                if changed && watched.writes {
+                    fired.push((name.clone(), TraceOp::Write));
+                }
             }
         }
     }
+    fired
+}
+
+/// Which kind of write-back this is, which is the whole of what an empty slot
+/// means.
+///
+/// At the **end** of a chunk every global it names has been through `seed`, so
+/// an empty slot is a variable the chunk unset — that is the rule `flush` has
+/// always had, and removing the entry is what makes `unset` survive into the
+/// next evaluation.
+///
+/// **Part-way through** a chunk it is not. A global the chunk has not reached
+/// yet is empty too, and so is one whose value only arrived while a Tk command
+/// was running: a widget created with `-textvariable v` sets `v` from C, and
+/// the slot for `v` in the calling chunk is still empty because nothing has
+/// assigned it. Treating that as an unset fired an unset trace at the widget
+/// that had just been told about the variable, which is how this distinction
+/// was found. An unset the chunk really did make is seen at the end instead —
+/// later than Tcl would, never lost.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Boundary {
+    Sync,
+    End,
+}
+
+// ── variable traces ──────────────────────────────────────────────────────────
+
+/// Which operations on a variable something is watching for.
+///
+/// Tcl keeps this as bits on the variable itself (`VAR_TRACED_READ` and its
+/// neighbours, `generic/tclInt.h`), consulted before the trace list is walked
+/// at all (`generic/tclTrace.c:2624`). The same shape, for the same reason: the
+/// common answer is "nothing", and it has to be cheap.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Traced {
+    pub reads: bool,
+    pub writes: bool,
+    pub unsets: bool,
+}
+
+impl Traced {
+    pub fn any(self) -> bool {
+        self.reads || self.writes || self.unsets
+    }
+}
+
+/// What happened to a variable, in the three kinds Tcl's `Tcl_VarTraceProc`
+/// distinguishes: `TCL_TRACE_READS`, `TCL_TRACE_WRITES` and `TCL_TRACE_UNSETS`
+/// (`generic/tcl.h`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TraceOp {
+    Read,
+    Write,
+    Unset,
+}
+
+/// Where a variable trace registered outside this module is answered.
+///
+/// tclrs has no `trace` command of its own, so the only implementation is
+/// [`crate::tk::linkvar`], which holds the traces `Tcl_TraceVar2` created and
+/// calls the C procedures behind them. Keeping the interface here rather than
+/// reaching into `crate::tk` is what lets the whole mechanism compile away in a
+/// build without the feature: nothing ever installs a sink, so
+/// [`traces_armed`] is false and every call site below is one relaxed atomic
+/// load.
+pub trait VarTraceSink: Send + Sync {
+    /// Which operations on `name` are traced. Called for every global a chunk
+    /// names, so it must be cheap for the overwhelmingly common "none".
+    fn traced(&self, name: &str) -> Traced;
+
+    /// Run the traces on `name` for `op`. The error is the message a trace
+    /// procedure returned, which Tcl turns into the failure of the access
+    /// (`generic/tclTrace.c:2663-2700`).
+    fn fire(&self, name: &str, op: TraceOp) -> Result<(), String>;
+}
+
+/// False until something installs a sink *and* that sink holds at least one
+/// trace, so the cost of the whole mechanism on a script that traces nothing is
+/// this load.
+static TRACES_ARMED: AtomicBool = AtomicBool::new(false);
+static TRACE_SINK: Mutex<Option<Arc<dyn VarTraceSink>>> = Mutex::new(None);
+
+/// Install the sink variable traces are answered through. Replacing one is
+/// allowed and is what a test does; there is one per process, as there is one
+/// Tk host per process.
+pub fn set_var_trace_sink(sink: Arc<dyn VarTraceSink>) {
+    *TRACE_SINK.lock().expect("trace sink lock") = Some(sink);
+}
+
+/// Tell the runtime whether the sink currently holds any trace at all. The sink
+/// calls this as its registry fills and empties, so a script that runs after
+/// every trace has been removed pays nothing.
+pub fn arm_var_traces(armed: bool) {
+    TRACES_ARMED.store(armed, Ordering::Relaxed);
+}
+
+/// Whether any variable in this process is traced.
+pub fn traces_armed() -> bool {
+    TRACES_ARMED.load(Ordering::Relaxed)
+}
+
+fn trace_sink() -> Option<Arc<dyn VarTraceSink>> {
+    if !traces_armed() {
+        return None;
+    }
+    TRACE_SINK.lock().expect("trace sink lock").clone()
+}
+
+/// The traced globals of one chunk: which of its name-table entries carry a
+/// trace, and which operations that trace watches.
+///
+/// Recomputed wherever it is needed rather than carried, because the trace list
+/// changes while a chunk runs — a Tk command that creates a widget with a
+/// `-textvariable` adds one — and a copy taken at entry would miss it. The
+/// recomputation is skipped entirely when nothing is traced.
+struct TracedIn {
+    entries: Vec<(usize, String, Traced)>,
+}
+
+impl TracedIn {
+    fn of(chunk: &Chunk) -> TracedIn {
+        let Some(sink) = trace_sink() else {
+            return TracedIn {
+                entries: Vec::new(),
+            };
+        };
+        let entries = chunk
+            .names
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| !name.starts_with('\u{0}'))
+            .filter_map(|(slot, name)| {
+                let watched = sink.traced(name);
+                watched.any().then(|| (slot, name.clone(), watched))
+            })
+            .collect();
+        TracedIn { entries }
+    }
+
+    #[cfg(feature = "tk")]
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// What is watched at a chunk name-table index.
+    fn at(&self, slot: usize) -> Traced {
+        self.entries
+            .iter()
+            .find(|(i, _, _)| *i == slot)
+            .map_or(Traced::default(), |(_, _, w)| *w)
+    }
+
+    fn fire_one(name: &str, op: TraceOp) -> Result<(), String> {
+        match trace_sink() {
+            Some(sink) => sink.fire(name, op),
+            None => Ok(()),
+        }
+    }
+
+    /// Empty the slot of every read-traced global, so that each read of one
+    /// reaches the undef hook and fires its trace there.
+    ///
+    /// fusevm calls the hook for a `GetVar` that finds `Undef` and pushes what
+    /// the hook answers *without storing it*
+    /// (`fusevm-0.16.0/src/vm.rs:1749-1768`), so the slot stays empty and every
+    /// read goes the same way. That is what makes a read trace fire at the read
+    /// rather than at a boundary near it.
+    ///
+    /// The cost is that the slot no longer distinguishes "blanked" from
+    /// "unset", which [`write_back`] resolves by leaving the interpreter's copy
+    /// alone. An `unset` of a read-traced variable inside a chunk that never
+    /// otherwise touches it is therefore not seen as an unset — the one place
+    /// this projection is lossy, and the reason `Tcl_UnsetVar2` fires its
+    /// traces itself.
+    fn blank_reads(&self, values: &mut [Value]) {
+        for (slot, _, watched) in &self.entries {
+            if watched.reads {
+                if let Some(cell) = values.get_mut(*slot) {
+                    *cell = Value::Undef;
+                }
+            }
+        }
+    }
+}
+
+/// Store what the running chunk has written into traced variables, and fire the
+/// traces that costs. Called *before* control leaves the chunk.
+///
+/// This is the boundary a Tk command crosses. Tcl fires a trace at the access
+/// itself; a chunk here reaches its globals through native `GetVar`/`SetVar`
+/// ops that fusevm gives no hook for, so a write inside a chunk is seen when
+/// the chunk next hands control to something that could observe it. Calling a
+/// registered Tk command is that moment, and it is the only one: no C code runs
+/// between two ops of a chunk otherwise, so nothing can tell the difference.
+///
+/// The chunk's copy is read back afterwards, because a trace may have rewritten
+/// the variable it was told about — a read-only linked variable does exactly
+/// that — and the command about to run must see one value, not two.
+#[cfg(feature = "tk")]
+pub(crate) fn sync_out(shared: &Shared, vm: &mut VM) -> Result<(), String> {
+    if !traces_armed() {
+        return Ok(());
+    }
+    let traced = TracedIn::of(&vm.chunk);
+    if traced.is_empty() {
+        return Ok(());
+    }
+    let fired = write_back(&vm.chunk, shared, &vm.globals, &traced, Boundary::Sync);
+    for (name, op) in fired {
+        TracedIn::fire_one(&name, op)?;
+    }
+    project(shared, vm, &traced);
+    Ok(())
+}
+
+/// Take up whatever the interpreter's variables now hold. Called *after*
+/// control comes back.
+///
+/// Strictly one-way: the chunk's slot for a variable a Tk command just wrote is
+/// stale by definition, and writing it back would undo the write. `.c select`
+/// on a checkbutton sets its `-variable` from C, and a two-way sync here put the
+/// slot's older value back over it — which is how the direction was found.
+#[cfg(feature = "tk")]
+pub(crate) fn sync_in(shared: &Shared, vm: &mut VM) {
+    if !traces_armed() {
+        return;
+    }
+    let traced = TracedIn::of(&vm.chunk);
+    if traced.is_empty() {
+        return;
+    }
+    project(shared, vm, &traced);
+}
+
+/// Copy every traced variable from the interpreter into the chunk's slots, and
+/// re-empty the read-traced ones so the next read of one fires its trace.
+#[cfg(feature = "tk")]
+fn project(shared: &Shared, vm: &mut VM, traced: &TracedIn) {
+    let state = shared.lock().expect("interpreter lock");
+    for (slot, name, _) in &traced.entries {
+        if let Some(cell) = vm.globals.get_mut(*slot) {
+            *cell = state.globals.get(name).cloned().unwrap_or(Value::Undef);
+        }
+    }
+    drop(state);
+    traced.blank_reads(&mut vm.globals);
+}
+
+// ── reaching the variables through a handle ──────────────────────────────────
+//
+// [`Interp`] takes `&mut self` to set a variable and `&self` to read one, which
+// a C stub re-entering through the host cannot produce: the same interpreter
+// may already be part-way through an evaluation further down the stack. These
+// take the handle instead, which is the same thing `eval` and the Tk evaluator
+// already do. The lock is taken and released inside each, so nothing is held
+// while a trace runs.
+
+/// A global's value, or `None` when it is unset. Read traces are *not* fired:
+/// the caller says whether this read is one a script made.
+#[cfg(feature = "tk")]
+pub(crate) fn global_of(shared: &Shared, name: &str) -> Option<Value> {
+    shared
+        .lock()
+        .expect("interpreter lock")
+        .globals
+        .get(name)
+        .cloned()
+}
+
+/// Store a global and fire its write traces. Returns the trace's refusal, which
+/// is what `Tcl_ObjSetVar2` reports by answering NULL.
+#[cfg(feature = "tk")]
+pub(crate) fn set_global_of(shared: &Shared, name: &str, value: Value) -> Result<(), String> {
+    let changed = {
+        let mut state = shared.lock().expect("interpreter lock");
+        let changed = state.globals.get(name) != Some(&value);
+        state.globals.insert(name.to_string(), value);
+        changed
+    };
+    if changed && traces_armed() {
+        TracedIn::fire_one(name, TraceOp::Write)?;
+    }
+    Ok(())
+}
+
+/// Remove a global and fire its unset traces. Answers whether it was set.
+///
+/// This is the one unset the projection in [`TracedIn::blank_reads`] cannot
+/// see, so it fires its own traces rather than waiting for a boundary.
+#[cfg(feature = "tk")]
+pub(crate) fn unset_global_of(shared: &Shared, name: &str) -> bool {
+    let had = shared
+        .lock()
+        .expect("interpreter lock")
+        .globals
+        .remove(name)
+        .is_some();
+    if had && traces_armed() {
+        let _ = TracedIn::fire_one(name, TraceOp::Unset);
+    }
+    had
+}
+
+/// The value a read of `name` should answer with, after its read traces have
+/// run. `None` when the variable is genuinely unset, which is the error the
+/// undef hook reports.
+fn traced_read(shared: &Shared, name: &str) -> Option<Value> {
+    let sink = trace_sink()?;
+    if !sink.traced(name).reads {
+        return None;
+    }
+    sink.fire(name, TraceOp::Read).ok()?;
+    let state = shared.lock().expect("interpreter lock");
+    state.globals.get(name).cloned()
 }
 
 // ── the hooks ────────────────────────────────────────────────────────────
@@ -491,7 +853,20 @@ impl Hooks {
         // through a frontend op is what keeps the read a native op, and a
         // counted loop traced — an extension op in a loop body costs that loop
         // its JIT trace.
-        vm.set_undef_hook(Arc::new(|read: fusevm::UndefRead<'_>| {
+        let undef_interp = Arc::clone(&self.interp);
+        vm.set_undef_hook(Arc::new(move |read: fusevm::UndefRead<'_>| {
+            // A read-traced global is left empty by `TracedIn::blank_reads` so
+            // that every read of it arrives here; its traces run and the value
+            // they leave is the answer. Checked before the tolerant-site rule
+            // below, because such a variable is not absent — it was emptied on
+            // purpose, and `incr` on one must see what the trace put there.
+            if traces_armed() {
+                if let Some(name) = read.name {
+                    if let Some(value) = traced_read(&undef_interp, name) {
+                        return Ok(value);
+                    }
+                }
+            }
             if tolerates_undef(read.chunk, read.ip) {
                 // `incr x` on a variable that does not exist creates it at
                 // zero. It is the same read op on the same name as `$x`, so
@@ -552,8 +927,23 @@ impl Hooks {
                 // error it raises is located: it stands in for a refusal the
                 // compiler would otherwise have deferred with the command's
                 // line attached.
+                // A registered Tk command is the only thing a chunk hands
+                // control to that can read or write the interpreter's
+                // variables behind its back, so it is where the running slot
+                // vector and the interpreter's map are brought into agreement
+                // and the traces that costs are fired. See [`sync_traced`];
+                // when nothing is traced this is one atomic load either side.
                 #[cfg(feature = "tk")]
-                ext::TK_DISPATCH => crate::tk::dispatch::extension(vm, arg),
+                ext::TK_DISPATCH => {
+                    let outcome = sync_out(&interp, vm)
+                        .map_err(TclError::plain)
+                        .and_then(|()| crate::tk::dispatch::extension(vm, arg));
+                    // Even a command that failed may have written a variable
+                    // before it failed, exactly as a failing script's `set`
+                    // still counts, so this is not on the success path only.
+                    sync_in(&interp, vm);
+                    outcome
+                }
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
             if let Err(e) = outcome {
@@ -1808,9 +2198,7 @@ fn int_operand(v: &Value, side: Side, op: &str) -> Result<i64, String> {
         // is an operator with no bignum meaning; none can answer from a
         // truncation, so reaching here with one is a bug rather than a script
         // error.
-        BigOperand::Big(b) => Err(format!(
-            "integer value too large to represent: {b}"
-        )),
+        BigOperand::Big(b) => Err(format!("integer value too large to represent: {b}")),
     }
 }
 
@@ -1932,9 +2320,7 @@ fn big_arith(id: u16, p: BigInt, q: BigInt) -> Result<Value, String> {
                 // zero, and only ±1 survives it — the same rule the `i64` arm
                 // applies, and a bignum base is never ±1.
                 return match () {
-                    _ if p.is_zero() => {
-                        Err("exponentiation of zero by negative power".to_string())
-                    }
+                    _ if p.is_zero() => Err("exponentiation of zero by negative power".to_string()),
                     _ => Ok(Value::Int(0)),
                 };
             }
@@ -1966,9 +2352,7 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
         }
         // `i64::MIN / -1` is the one integer division whose true quotient does
         // not fit an `i64`; Tcl's answer is the bignum, and now so is this one.
-        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => {
-            Ok(from_big(-BigInt::from(i64::MIN)))
-        }
+        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => Ok(from_big(-BigInt::from(i64::MIN))),
         (ext::DIV, Num::Int(i), Num::Int(j)) => Ok(Value::Int(
             i.div_euclid(j)
                 - i64::from(

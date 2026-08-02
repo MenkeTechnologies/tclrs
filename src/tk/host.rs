@@ -798,7 +798,11 @@ unsafe fn install_impls(t: &mut TclStubs, degraded: bool, level: Level) -> Vec<u
 /// As [`install_impls`]: each erased signature is the one `tclDecls.h` gives
 /// the slot, quoted on the line above it.
 unsafe fn install_hosting(t: &mut TclStubs) -> Vec<usize> {
-    vec![
+    // The variable bridge is a module of its own: variable traces and linked
+    // variables are one mechanism, and both need an interpreter to write into,
+    // which only this level has.
+    let mut slots = super::linkvar::install_impls(t);
+    slots.extend([
         // void (*tcl_AppendStringsToObj)(Tcl_Obj *objPtr, ...) /* 15 */
         //
         // The C trampoline, not a Rust body: stable rustc cannot define a
@@ -830,7 +834,8 @@ unsafe fn install_hosting(t: &mut TclStubs) -> Vec<usize> {
             "tcl_ObjPrintf",
             super::eval::tclrs_tk_obj_printf as *const (),
         ),
-    ]
+    ]);
+    slots
 }
 
 macro_rules! entered {
@@ -1680,25 +1685,30 @@ unsafe extern "C" fn get_obj_result(interp: *mut c_void) -> *mut TclObj {
     h.result
 }
 
-/// Slot 187. Tcl would attach a variable trace that keeps the named Tcl
-/// variable and the C storage at `addr` in step. Nothing reads either during
-/// `Tk_Init` — the five links Tk makes are read later, from scripts
-/// (`tk9.0.4/generic/tkWindow.c:900,907`,
-/// `tk9.0.4/macosx/tkMacOSXDraw.c:89,99,103`) — so the link is recorded and
-/// `TCL_OK` returned. This is a placeholder, and the first script that touches
-/// one of those variables is where it stops being adequate.
+/// Slot 187. `Tcl_LinkVar` (`generic/tclLink.c:152-209`): the named Tcl
+/// variable and the C storage at `addr` are kept in step by a variable trace.
+///
+/// The link itself is [`super::linkvar::link_var`]; the entry appended here is
+/// the probe's record of what Tk asked for, which is what makes the five links
+/// Tk makes while it starts (`tk9.0.4/generic/tkWindow.c:900,907`,
+/// `tk9.0.4/macosx/tkMacOSXDraw.c:89,99,103`,
+/// `tk9.0.4/macosx/tkMacOSXFont.c:1538`) a measurement rather than a claim.
+///
+/// This slot stays at [`Level::Probe`] because `Tk_Init` calls it, and at that
+/// level there is no evaluator behind the interpreter yet; `link_var` records
+/// the link and skips the initial write when there is no interpreter to write
+/// into.
 unsafe extern "C" fn link_var(
     interp: *mut c_void,
     name: *const c_char,
-    _addr: *mut c_void,
+    addr: *mut c_void,
     ty: c_int,
 ) -> c_int {
     entered!("tcl_LinkVar");
     let text = String::from_utf8_lossy(CStr::from_ptr(name).to_bytes()).into_owned();
-    note("LinkVar", &text);
     let h = &mut *(*(interp as *mut HostInterp)).host;
     h.linked_vars.push((text, ty));
-    TCL_OK
+    super::linkvar::link_var(interp, name, addr, ty)
 }
 
 /// Slot 145.
@@ -1943,13 +1953,28 @@ unsafe extern "C" fn get_thread_data(key: *mut c_void, size: isize) -> *mut c_vo
     p
 }
 
-/// Look up a variable in the flat store.
+/// Look up a variable.
+///
+/// A scalar is read from the interpreter's own variables, so that a value Tk
+/// stores and a value a script's `set` stores are the same value — which is the
+/// whole of the variable bridge. The `Tcl_Obj` handed back is the one
+/// [`super::linkvar::cached_obj`] keeps under the variable's name, because these
+/// slots answer with a pointer that has to outlive the call.
+///
+/// An array element still comes from the flat table: nothing in this host makes
+/// a `fusevm::Value::Hash` out of a two-part name yet, and reading one out of
+/// the interpreter would be inventing a mapping.
 unsafe fn var_of(
     interp: *mut c_void,
     part1: *const c_char,
     part2: *const c_char,
 ) -> Option<*mut TclObj> {
     let (n, i) = var_key(part1, part2);
+    if i.is_empty() {
+        let shared = super::linkvar::shared_of(interp)?;
+        let value = crate::runtime::global_of(&shared, &n)?;
+        return Some(super::linkvar::cached_obj(interp, &n, &value));
+    }
     let h = &mut *(*(interp as *mut HostInterp)).host;
     h.vars
         .iter()
@@ -1992,27 +2017,37 @@ unsafe extern "C" fn get_var2(
     }
 }
 
-/// Slot 238.
+/// Slot 238. `Tcl_SetVar2`.
 ///
-/// The store behind this is flat: a `(name, index)` pair to a value, with no
-/// namespaces, no variable traces, no `upvar` links and no distinction between
-/// a scalar and an array. That is enough for the handful of variables Tk sets
-/// while initialising and is not enough for anything a script does, which is
-/// where this stops being a placeholder and starts being wrong.
+/// A scalar goes into the interpreter's own variables and fires that variable's
+/// write traces, so a `-textvariable` Tk sets from C reaches the widget the same
+/// way one a script sets does. An array element still goes into the flat table:
+/// a two-part name has no representation in the interpreter yet, and there is
+/// no namespace resolution and no `upvar` on either path.
 ///
 /// The returned pointer is the value's string rep, which stays alive because
-/// the old value is retained rather than freed on overwrite. Tcl has the same
-/// aliasing hazard and solves it the same way.
+/// the object it belongs to is retained until the variable is next written. Tcl
+/// has the same aliasing hazard and solves it the same way.
 unsafe extern "C" fn set_var2(
     interp: *mut c_void,
     part1: *const c_char,
     part2: *const c_char,
     value: *const c_char,
-    _flags: c_int,
+    flags: c_int,
 ) -> *const c_char {
     entered!("tcl_SetVar2");
     let (n, i) = var_key(part1, part2);
     note("SetVar2", &n);
+    if i.is_empty() {
+        let text = String::from_utf8_lossy(CStr::from_ptr(value).to_bytes()).into_owned();
+        let value = fusevm::Value::Str(std::sync::Arc::new(text));
+        let o = super::linkvar::set_scalar(interp, &n, value, flags);
+        if o.is_null() {
+            return ptr::null();
+        }
+        obj::string_of(o);
+        return (*o).bytes;
+    }
     let o = retain(obj::new_string(CStr::from_ptr(value).to_bytes()));
     let h = &mut *(*(interp as *mut HostInterp)).host;
     match h.vars.iter_mut().find(|(vn, vi, _)| *vn == n && *vi == i) {

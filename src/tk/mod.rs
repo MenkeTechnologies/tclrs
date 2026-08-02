@@ -122,7 +122,7 @@
 //! `cargo run --features tk --bin tk-host` against the same library, with the
 //! object layer, the evaluator and the notifier all behind the table: **2726
 //! calls over 71 distinct slots**, and `Tk_Init` *returns* — it does not stop
-//! on a missing slot at any point. 142 of the 691 `TclStubs` slots have bodies.
+//! on a missing slot at any point. 151 of the 691 `TclStubs` slots have bodies.
 //!
 //! On the way it evaluates `file tildeexpand ~/.Xdefaults` in a second
 //! interpreter created and deleted for the purpose
@@ -180,6 +180,23 @@
 //!   `CALLBACK-FIRED`: Tk evaluated the callback back through
 //!   `Tcl_EvalObjEx`, this crate compiled it, and fusevm ran it. A *click* does
 //!   not reach it, for the `bind Button` reason above.
+//! * `label .l -textvariable v -text initial`, then `set v hello`, then
+//!   `.l cget -text` → `hello`. The widget option is a variable trace
+//!   ([`linkvar`]); the answer is read back out of the widget by a real Tk
+//!   command rather than assumed.
+//! * `checkbutton .c -variable cv` creates `cv` at `0`; `.c select` makes it
+//!   `1` and `.c deselect` makes it `0` again, so the variable follows the
+//!   widget as well as the widget following the variable.
+//! * `set tk_strictMotif 1` writes the C `int` behind it
+//!   (`tk9.0.4/generic/tkWindow.c:900`), and reading the variable back reads
+//!   the C storage through the link's read trace.
+//!
+//! Those three need a terminal. `TkpInit` opens a console window when stdin is
+//! not a tty and there is no startup script
+//! (`tk9.0.4/macosx/tkMacOSXInit.c:583-606`), and the console needs
+//! `Tcl_CreateChannel`, which this host has not got — so a `tk-host` run with a
+//! redirected stdin stops there after 2639 calls instead. Run it under a pty
+//! (`script -q /dev/null …`) for the numbers above.
 
 pub mod abi;
 pub mod dispatch;
@@ -190,6 +207,7 @@ pub mod hash;
 pub mod host;
 pub mod index;
 pub mod interp;
+pub mod linkvar;
 pub mod load;
 pub mod notifier;
 pub mod obj;

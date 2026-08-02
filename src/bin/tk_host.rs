@@ -89,9 +89,21 @@ fn main() {
             println!("tkhost events {n} passes, {serviced} serviced, process alive");
             continue;
         }
-        match tclrs::runtime::Interp::new().eval(&arg) {
-            Ok(value) => println!("tkhost eval {arg:?} -> {value:?}"),
-            Err(e) => println!("tkhost eval {arg:?} !! {e}"),
+        // Through the host's own evaluator rather than a fresh `Interp`, so
+        // every argument runs against the same variables Tk reads and writes.
+        // A `-textvariable` cannot be demonstrated any other way: the widget
+        // watches a variable of *this* interpreter, and a script evaluated
+        // against a different one would set something nothing is watching.
+        let code =
+            unsafe { tclrs::tk::eval::eval_script(tk_interp as *mut std::ffi::c_void, &arg) };
+        let result = unsafe { host::result_bytes(tk_interp as *mut std::ffi::c_void) };
+        let text = String::from_utf8_lossy(&result);
+        if code == tclrs::tk::abi::TCL_OK {
+            println!("tkhost eval {arg:?} -> {text:?}");
+        } else {
+            println!("tkhost eval {arg:?} !! {text}");
         }
     }
+    let (traces, links) = tclrs::tk::linkvar::counts();
+    println!("tkhost variable traces {traces}, linked variables {links}");
 }
