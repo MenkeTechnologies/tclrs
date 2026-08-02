@@ -119,10 +119,15 @@ pub fn normalize_message(message: &str) -> String {
 
 pub fn judge(case: &Case, reference: Option<&Outcome>, candidate: Option<&Outcome>) -> Judgement {
     if case.constraint_skipped {
-        let detail = if case.constraints.is_empty() {
+        // The suite writes a constraint list as a braced word, a bare word, or
+        // one spread over several lines, so the same constraint arrives spelt
+        // several ways. Collapsing the whitespace makes the histogram below
+        // count them once; it changes no verdict and no total.
+        let names: Vec<&str> = case.constraints.split_whitespace().collect();
+        let detail = if names.is_empty() {
             "unnamed".to_string()
         } else {
-            case.constraints.clone()
+            names.join(" ")
         };
         return Judgement::of(Verdict::Skip, SKIP_CONSTRAINT, detail);
     }
@@ -252,6 +257,17 @@ mod tests {
         assert_eq!(judged.verdict, Verdict::Skip);
         assert_eq!(judged.bucket, SKIP_NEEDS_COMMAND);
         assert_eq!(judged.detail, "testmetrics");
+    }
+
+    /// The same constraint reaches this spelt several ways, and a histogram
+    /// that counted `win` and `win\n` as two different reasons said so in the
+    /// report.
+    #[test]
+    fn a_constraint_is_named_the_same_way_however_the_suite_spelt_it() {
+        let mut spaced = case();
+        spaced.constraint_skipped = true;
+        spaced.constraints = "  unix   notAqua\n".to_string();
+        assert_eq!(judge(&spaced, None, None).detail, "unix notAqua");
     }
 
     #[test]

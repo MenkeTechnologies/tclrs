@@ -97,11 +97,16 @@ fn main() {
     }
     if args.get(1).map(String::as_str) == Some("demo") {
         let start = args[5].parse().unwrap_or(0);
+        let skip: Vec<usize> = args
+            .get(6)
+            .map(|s| s.split(',').filter_map(|n| n.parse().ok()).collect())
+            .unwrap_or_default();
         if let Err(e) = demo_worker(
             Path::new(&args[2]),
             Path::new(&args[3]),
             Path::new(&args[4]),
             start,
+            &skip,
         ) {
             eprintln!("demo: {e}");
             std::process::exit(2);
@@ -634,18 +639,13 @@ fn io(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
 }
 
 fn tk_patchlevel(cfg: &Config) -> Result<String, String> {
-    let script = cfg.work.join("patchlevel.tcl");
-    fs::write(
-        &script,
-        "package require Tk\nputs [package require Tk]\nexit 0\n",
-    )
-    .map_err(io(&script))?;
-    let out = Command::new(&cfg.tclsh)
-        .arg(&script)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("cannot run {}: {e}", cfg.tclsh))?;
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    ask_tk(cfg, "patchlevel", "[package require Tk]").ok_or_else(|| {
+        format!(
+            "{} could not `package require Tk` — this measurement needs a Tk the reference \
+             can load, and a window server for it to talk to",
+            cfg.tclsh
+        )
+    })
 }
 
 // ── aggregation helpers shared with the report ───────────────────────────────
@@ -735,19 +735,43 @@ impl Demo {
 /// that was measured against and not a path that happened to be right on one
 /// machine.
 fn demo_path(cfg: &Config) -> Option<PathBuf> {
-    let script = cfg.work.join("demopath.tcl");
+    let answer = ask_tk(cfg, "demopath", "[file join $tk_library demos widget]")?;
+    let path = PathBuf::from(answer);
+    path.is_file().then_some(path)
+}
+
+/// Ask the reference interpreter one question, with Tk loaded.
+///
+/// The answer comes back through a file rather than through stdout, because
+/// `TkpInit` points stdout at `/dev/null` when stdin is not a terminal
+/// (`tk9.0.4/macosx/tkMacOSXInit.c:607-618`) and a supervised child's stdin
+/// never is. A `puts` here reached nobody, and the first report generated this
+/// way said the reference was "tclsh  with the real Tk  loaded".
+fn ask_tk(cfg: &Config, name: &str, expr: &str) -> Option<String> {
+    let script = cfg.work.join(format!("{name}.tcl"));
+    let answer = cfg.work.join(format!("{name}.txt"));
     fs::write(
         &script,
-        "package require Tk\nputs [file join $tk_library demos widget]\nexit 0\n",
+        format!(
+            "package require Tk\nset f [open {{{}}} w]\nputs $f {expr}\nclose $f\nexit 0\n",
+            answer.display()
+        ),
     )
     .ok()?;
-    let out = Command::new(&cfg.tclsh)
+    let ok = Command::new(&cfg.tclsh)
         .arg(&script)
         .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    let path = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-    path.is_file().then_some(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        return None;
+    }
+    let text = fs::read_to_string(&answer).ok()?;
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
 }
 
 /// Run the demo one statement at a time and record what each one did.
@@ -779,13 +803,27 @@ fn widget_demo(cfg: &Config) -> Option<Demo> {
 
     let out_path = cfg.work.join("demo.out");
     let trap_path = cfg.work.join("trap").join("demo.log");
+    // A statement that ended the process would end it again during the replay
+    // the next restart does, and every statement after it would be recorded as
+    // an abort it had nothing to do with. So each restart is told which
+    // statements are already known to be fatal, and steps over them.
+    let mut fatal: Vec<usize> = Vec::new();
     let outcomes = supervise(bounds.len(), &out_path, cfg.stall, |start| {
+        if start > 0 {
+            fatal = known_fatal(&out_path);
+        }
+        let list = fatal
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
         let mut cmd = Command::new(std::env::current_exe().unwrap_or_else(|_| "runner".into()));
         cmd.arg("demo")
             .arg(&path)
             .arg(&bounds_path)
             .arg(&out_path)
-            .arg(start.to_string());
+            .arg(start.to_string())
+            .arg(list);
         cmd.stdin(Stdio::null()).stdout(Stdio::null());
         match fs::OpenOptions::new()
             .create(true)
@@ -826,6 +864,18 @@ fn widget_demo(cfg: &Config) -> Option<Demo> {
     })
 }
 
+/// The statements already recorded as having ended a worker process.
+fn known_fatal(out_path: &Path) -> Vec<usize> {
+    let Ok(text) = fs::read_to_string(out_path) else {
+        return Vec::new();
+    };
+    parse_outcomes(&text)
+        .into_iter()
+        .filter(|(_, o)| o.is_abort())
+        .map(|(i, _)| i)
+        .collect()
+}
+
 fn read_bounds(path: &Path) -> Option<Vec<(usize, usize)>> {
     let text = fs::read_to_string(path).ok()?;
     let bounds: Vec<(usize, usize)> = text
@@ -845,6 +895,7 @@ fn demo_worker(
     bounds_path: &Path,
     out_path: &Path,
     start: usize,
+    skip: &[usize],
 ) -> Result<(), String> {
     let text = fs::read_to_string(script).map_err(io(script))?;
     let lines: Vec<&str> = text.lines().collect();
@@ -880,6 +931,9 @@ fn demo_worker(
     // so the state the next statement expects — the variables and widgets its
     // predecessors created — is the state it would have had in one run.
     for (i, (first, last)) in bounds.iter().enumerate() {
+        if skip.contains(&i) {
+            continue;
+        }
         let program = lines[first - 1..*last].join("\n");
         if i < start {
             unsafe { tclrs::tk::eval::eval_script(interp_ptr, &program) };

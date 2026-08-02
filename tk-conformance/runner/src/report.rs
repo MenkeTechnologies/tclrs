@@ -390,7 +390,8 @@ fn widget_demo(out: &mut String, input: &Inputs) {
          blank lines and comments are not counted as statements). It is run here one \
          statement at a time against one host, in order, the way `wish` runs it — and every \
          statement is attempted, including the ones after the first refusal, so the answer \
-         is more than one bit.\n",
+         is more than one bit. A statement that ends the process is stepped over when the \
+         run is restarted, so one fatal statement does not take its successors with it.\n",
         demo.lines,
         demo.statements.len()
     );

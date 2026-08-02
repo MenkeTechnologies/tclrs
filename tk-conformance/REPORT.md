@@ -1,6 +1,6 @@
 # tclrs conformance against the official Tk test suite
 
-Reference: **tclsh  with the real Tk  loaded**. Suite: `tk9.0.4/tests` — the `tests/` directory of the matching Tk source release, fetched and checksum-verified by `tk-conformance/fetch-suite.sh`.
+Reference: **tclsh 9.0.4 with the real Tk 9.0.4 loaded**. Suite: `tk9.0.4/tests` — the `tests/` directory of the matching Tk source release, fetched and checksum-verified by `tk-conformance/fetch-suite.sh`.
 
 The candidate is not a reimplementation of Tk. It is the same `libtcl9tk9.0.dylib` the reference uses, loaded against tclrs's own Tcl stub table: 151 of the 691 `TclStubs` slots have bodies, and Tk reaches this frontend through them.
 
@@ -53,47 +53,47 @@ Two things about the extraction are worth stating plainly, and both are inherite
 
 | Name | Cases |
 | --- | ---: |
-| `win` | 160 |
-| `win` | 116 |
-| `testobjconfig` | 113 |
-| `testobjconfig` | 100 |
-| `testImageType` | 86 |
-| `x11` | 70 |
+| `win` | 283 |
+| `testobjconfig` | 214 |
+| `testImageType` | 135 |
+| `fonts` | 121 |
+| `nonUnixUserInteraction` | 97 |
+| `x11` | 93 |
 | `winSend` | 51 |
 | `secureserver testsend` | 50 |
-| `nonUnixUserInteraction` | 47 |
-| `fonts` | 46 |
-| `nonUnixUserInteraction` | 46 |
-| `fonts` | 45 |
-| `testImageType` | 44 |
+| `unix testwrapper` | 44 |
 | `nt testwinevent` | 38 |
+| `nonPortable` | 37 |
 | `testtext` | 31 |
-| `fonts` | 30 |
-| `nonPortable` | 26 |
-| `unix nonPortable` | 25 |
-| `x11` | 23 |
-| `unix testwrapper` | 23 |
+| `unix nonPortable` | 27 |
+| `unix notAqua` | 24 |
 | `testutils` | 21 |
+| `notAqua` | 19 |
+| `win getwindowinfo` | 19 |
 | `win userInteraction` | 18 |
-| `notAqua` | 17 |
-| `unix notAqua` | 14 |
-| `colorsFree` | 14 |
-| `win getwindowinfo` | 14 |
-| `unix  testwrapper` | 13 |
-| `unix testmenubar` | 13 |
+| `unix testmenubar` | 16 |
+| `colorsFree` | 15 |
 | `nt` | 12 |
 | `defaultPseudocolor8 nonPortable` | 11 |
-| `unix testembed` | 10 |
 | `aquaKnownBug` | 10 |
 | `testmetrics win` | 10 |
+| `unix testembed` | 10 |
 | `scriptImpl` | 9 |
-| `unix notAqua` | 8 |
-| `unix testwrapper` | 8 |
+| `knownBug` | 8 |
 | `secureserver notAqua` | 8 |
-| `nonPortable` | 7 |
-| `win` | 7 |
+| `x11 failsOnCILinux` | 8 |
+| `altDisplay` | 7 |
+| `testmakeexist` | 7 |
 | `testwinevent` | 7 |
-| *104 further* | 252 |
+| `unix nonPortable testwrapper` | 7 |
+| `unix testembed notAqua` | 7 |
+| `win nonPortable` | 7 |
+| `win testclipboard` | 7 |
+| `testImageType nonPortable` | 6 |
+| `testwrapper` | 6 |
+| `testbitmap` | 5 |
+| `testcursor` | 5 |
+| *70 further* | 143 |
 
 ### Commands tclrs does not have, by how many cases they block
 
@@ -205,6 +205,30 @@ Two things about the extraction are worth stating plainly, and both are inherite
 | `tcl_AppendResult` | 3 |
 | `tcl_ScanElement` | 3 |
 | `tcl_InterpDeleted` | 1 |
+
+## Tk's own widget demonstration
+
+`demos/widget` is the sample application `wish` ships with: 713 lines, which `info complete` divides into 65 statements (`tk-conformance/boundaries.tcl`; runs of blank lines and comments are not counted as statements). It is run here one statement at a time against one host, in order, the way `wish` runs it — and every statement is attempted, including the ones after the first refusal, so the answer is more than one bit. A statement that ends the process is stepped over when the run is restarted, so one fatal statement does not take its successors with it.
+
+**It gets 1 of 65 statements in, and stops at line 13 of the file.** That statement was refused:
+
+```text
+invalid command name "package"
+```
+
+Attempted individually, 25 of the 65 statements complete and 40 do not. The refusals, ranked:
+
+| Refusal | Statements |
+| --- | ---: |
+| `invalid command name "…"` | 18 |
+| `command "…" is an ensemble, which this host does not dispatch yet` | 7 |
+| `{*} argument expansion is not supported yet` | 4 |
+| `command name must be a literal in this phase` | 3 |
+| `called the stub slot tcl_GetDouble, which has no body` | 2 |
+| `called the stub slot tcl_SplitList, which has no body` | 2 |
+| `can't read "…": no such variable` | 2 |
+| `bad window path name "…"` | 1 |
+| `unknown or unsupported subcommand "…": only "…" is supported` | 1 |
 
 ## By suite file
 

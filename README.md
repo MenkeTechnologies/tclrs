@@ -1139,6 +1139,36 @@ everything *else* it uses. Passes went 1404 → 2248; the denominator went 2941 
 5066 faster. A number that only ever rises is a number measuring the wrong
 thing.
 
+### The Tk suite
+
+`tk-conformance/` is the same measurement pointed at Tk. The candidate is not a
+reimplementation: it is the same `libtcl9tk9.0.dylib` the reference loads,
+running against tclrs's own Tcl stub table, so what is being measured is how
+much of the real toolkit this frontend can host.
+
+**1580 of 5040 attempted cases pass — 31.3%.** Over every case the suite
+contains that is 1580 of 10046.
+[`tk-conformance/REPORT.md`](tk-conformance/REPORT.md) has the breakdown,
+including a ranked list of the stub slots that ended a run — `Tcl_SplitList`
+alone stops 1845 cases — which is what the number is waiting on.
+
+One classification rule differs from the Tcl harness, and it is the stricter
+one: a call to a stub slot with no body ends the process, and that counts as a
+failure rather than a skip. `invalid command name` is tclrs declining and
+saying so; a trap is the process dying, and a process that died measured
+nothing.
+
+The report also runs Tk's own `demos/widget` — the sample application `wish`
+ships with — one statement at a time. It gets one statement in before
+`package require` stops it; attempted individually, 25 of its 65 statements
+complete.
+
+```sh
+tk-conformance/run.sh
+```
+
+That needs a window server: both sides open real windows, which is the point.
+
 ---
 
 ## [0x0C] TESTING
