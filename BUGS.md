@@ -395,7 +395,7 @@ approximated, and nothing is silently mis-run.
 - **The `info` subcommands that name machinery this frontend has none of.**
   `frame`, `errorstack` and `cmdcount` need a record of each active call;
   `class`, `object`, `consts`, `constant` and `cmdtype` need an object system;
-  `functions` needs the `expr` math functions, which are refused; `library`,
+  `library`,
   `loaded` and `sharedlibextension` need Tcl's script library and package
   loader. Each is `info frame is not supported yet` rather than mis-answered.
   `info level N` is refused separately: the *value* of a level is the command
@@ -404,11 +404,17 @@ approximated, and nothing is silently mis-run.
 - **`uplevel` to a level that is a procedure activation, and `upvar` at any
   level but `#0`.** See the entry under "What the differential fuzzer cannot
   reach" below for what that costs and what the two real fixes are.
-- **Every command outside those above.** `open` / `read` / `close`, `clock`,
-  `file`, `glob`, `encoding`, `binary`, … An unknown command name is `invalid
-  command name "…"`, raised when the command runs — `puts [catch {nosuchcmd} m]`
-  is `1` — because the compiler lowers that refusal as code rather than deciding
-  it (see `Compiler::defer`).
+- **Every command outside those above.** `encoding`, `binary`, `interp`,
+  `socket`, `exec`, `trace`, … An unknown command name is `invalid command name
+  "…"`, raised when the command runs — `puts [catch {nosuchcmd} m]` is `1` —
+  because the compiler lowers that refusal as code rather than deciding it (see
+  `Compiler::defer`).
+- **`{*}` argument expansion.** A word written `{*}$list` supplies a number of
+  arguments only the running script knows, and every call site here is resolved
+  while the script is read — the argument count is an inline operand of the op
+  the call lowers to. `{*} argument expansion is not supported yet`, where the
+  word stands. This is the one thing between the merged tree and Tk's own
+  `tk.tcl`, which uses it in eleven places; see `src/tk/mod.rs`.
 - **An array element as the variable a list command names.** `lappend a(x) v`,
   `lassign {1 2} a(x) a(y)`, `lset a(x) 0 v`, `lpop a(x)` and `ledit a(x) 0 0 v`
   are all `this command does not take an array element yet`, from the one
@@ -452,8 +458,47 @@ approximated, and nothing is silently mis-run.
   precision and truncates; tclrs saturates at the `i64` ends instead. Both
   produce an index far outside any list, so no case is known where the two
   differ, but the mechanism is not the same one.
-- **Math functions.** `sin(x)`, `sqrt(x)`, `int(x)`, `rand()` and the rest parse
-  into an `Expr::Call` that the compiler refuses.
+- **Math functions a script defines.** The built-in set is complete —
+  `src/expr_math.rs` carries every name tclsh 9.0.4 registers under
+  `::tcl::mathfunc::` — but `expr` consults only that table. tclsh resolves
+  `triple(2)` to the *command* `tcl::mathfunc::triple`, so a procedure of that
+  name extends `expr`; here the name resolves to nothing and the call is
+  `invalid command name "tcl::mathfunc::triple"`.
+- **Two answers a math function gives that this build cannot reproduce
+  exactly.** `sin`, `cos` and `tan` of a large argument differ from tclsh in the
+  last unit in the last place, because the reference interpreter on this machine
+  is an x86-64 binary and the C library it calls reduces the argument
+  differently from the aarch64 one this crate links. It is a difference between
+  two `libm`s rather than between two implementations of Tcl, and it moves with
+  the platform rather than with the code. Separately, `expr {pow(2,64)}` prints
+  `1.8446744073709552e+19` here and `1.844674407370955e+19` in tclsh; the
+  shorter spelling does *not* read back as 2^64 (`expr {1.844674407370955e19 ==
+  2.0**64}` is 0 in tclsh itself), so the divergence is in the reference
+  interpreter's shortest-representation formatter, and `expr {2.0**64}` showed
+  it before any math function existed.
+- **`clock` before the Gregorian changeover.** tclsh reckons a date earlier than
+  its locale's `GREGORIAN_CHANGE_DATE` in the Julian calendar, and that date
+  differs per locale — 2299161 for the root catalogue, 2361222 for `en`, later
+  still for `ru`, `ro` and `el`. This frontend has one calendar, proleptic
+  Gregorian, so an instant before 1752-09-14T00:00:00Z is refused rather than
+  answered from a calendar the reference interpreter may not be using.
+- **`clock scan` without `-format`.** tclsh's free-form parser is a grammar over
+  relative words, month names, ISO forms and zone abbreviations; it is refused
+  by name. `-base` is refused with it, and so is reading a time zone by
+  abbreviation inside a `%Z` field, which would need the table tclsh builds from
+  the whole zone database.
+- **`clock`'s `-locale` outside the root catalogue.** The month and day names,
+  the AM/PM words and the `%x` / `%X` / `%c` expansions come from `msgcat`;
+  only the root catalogue is built in, so `-locale fr` is refused rather than
+  answered in English. `%E` and `%O` are refused for the same reason.
+- **A POSIX `TZ` rule string with no zone file.** `-timezone :America/New_York`
+  and `-timezone +0530` both work — the first through the same `TZif` reader
+  tclsh's `LoadZoneinfoFile` implements in Tcl — but `EST5EDT,M3.2.0,M11.1.0`
+  spelled out as a rule is refused when no file of that name exists.
+- **`file attributes`, `link`, `stat`, `lstat`, `channels`, `system`,
+  `tempfile`, `tempdir` and `volumes`.** Each is recognised, so an abbreviation
+  resolves as tclsh resolves it, and then refused by name. `glob -types` in its
+  two-element attribute form is refused the same way.
 - **Non-literal variable and body words.** A variable name or a body that is
   itself the result of substitution (`set $name 1`, `while $cond $body`) is
   refused.

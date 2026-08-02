@@ -435,9 +435,20 @@ pub mod ext {
     /// and a `package require` may run an `ifneeded` script, so the op is
     /// handed the same evaluator [`EVAL`] gets. See [`crate::cmd_package`].
     pub const PACKAGE: u16 = PKG_BASE;
-    /// `expr`'s math functions, `clock`, `file` and `glob`
-    /// ([`crate::expr_math`], [`crate::cmd_clock`], [`crate::cmd_file`]).
+    /// `expr`'s math functions, dispatched to [`crate::expr_math`]. The id past
+    /// this base is the function's index in that module's table and the inline
+    /// operand is the actual argument count, which is what lets arity be
+    /// reported when the call runs rather than while it compiles.
+    ///
+    /// This block and the two below it are dispatched by
+    /// `crate::runtime::extension`'s range chain rather than from the closure,
+    /// because none of them needs the interpreter — which is why the chain
+    /// tests them ahead of [`REGEXP_BASE`].
     pub const MATH_BASE: u16 = SUBSYSTEM_BASE + 4 * BLOCK;
+    /// The `clock` ensemble, dispatched to [`crate::cmd_clock`].
+    pub const CLOCK_BASE: u16 = SUBSYSTEM_BASE + 5 * BLOCK;
+    /// `file`, `glob`, `pwd` and `cd`, dispatched to [`crate::cmd_file`].
+    pub const FILE_BASE: u16 = SUBSYSTEM_BASE + 6 * BLOCK;
 }
 
 /// Wide extension opcode ids, whose payload is a `usize` rather than a byte.
@@ -1283,6 +1294,15 @@ impl Compiler {
             name if crate::cmd_channel::COMMANDS.contains(&name) => {
                 crate::cmd_channel::compile(self, name, args)
             }
+            // ── clock and the filesystem commands ────────────────────────
+            // One block, as `regexp` above is: the name is claimed here and
+            // the whole of the lowering lives in the module named. Absent
+            // from `BUILTINS` for the same reason `regexp` is — these are not
+            // names `proc` refuses. Ahead of the namespace block below, like
+            // every other builtin.
+            "clock" => crate::cmd_clock::compile(self, args),
+            "file" | "glob" | "pwd" | "cd" => crate::cmd_file::compile(self, name, args),
+            // ── end of the clock/file block ──────────────────────────────
             // ── namespaces, `rename` and `source` ────────────────────────
             // One block, so that the module owning them merges as one hunk.
             // It sits here — after every builtin, before the procedures —
@@ -1988,7 +2008,8 @@ impl Compiler {
             Expr::Ternary(_, then, other) => {
                 Self::yields_number(then) && Self::yields_number(other)
             }
-            // Refused when lowered; the answer here does not matter.
+            // Every math function answers with a number — an integer of some
+            // width, a double, or the 1/0 of a classification.
             Expr::Call(_, _) => true,
         }
     }
@@ -2029,7 +2050,11 @@ impl Compiler {
             Expr::Ternary(_, then, other) => {
                 Self::may_be_non_finite(then) || Self::may_be_non_finite(other)
             }
-            Expr::Call(_, _) => false,
+            // A math function answers with whatever the C library did, and an
+            // infinity is one of the answers: `expr {pow(10,400) * 0}` is
+            // `domain error: argument not in valid range` in tclsh 9.0.4,
+            // which is [`ext::CANON`]'s refusal and needs this to be true.
+            Expr::Call(_, _) => true,
         }
     }
 
@@ -2124,7 +2149,7 @@ impl Compiler {
 
     // ── expressions ──────────────────────────────────────────────────────
 
-    fn expr(&mut self, e: &Expr) -> Result<(), CompileError> {
+    pub(crate) fn expr(&mut self, e: &Expr) -> Result<(), CompileError> {
         match e {
             Expr::Int(v, _) => {
                 self.emit(Op::LoadInt(*v), 1);
@@ -2273,9 +2298,7 @@ impl Compiler {
                 self.b.patch_jump(to_end, end);
                 Ok(())
             }
-            Expr::Call(name, _) => {
-                self.error(format!("math function \"{name}\" is not supported yet"))
-            }
+            Expr::Call(name, args) => crate::expr_math::compile(self, name, args),
         }
     }
 

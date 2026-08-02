@@ -136,13 +136,27 @@ fn a_failing_script_is_an_error_with_the_message_as_the_result() {
     let _serial = serial();
     unsafe {
         let i = interp();
-        // `file` is not a command this frontend compiles, and this is the exact
-        // script Tk asks for at `tk9.0.4/generic/tkOption.c:1592`. Tk reads only
-        // the completion code there and skips the .Xdefaults read when it is not
-        // TCL_OK, so this is the answer that keeps `Tk_Init` going.
-        let (code, result) = eval_ex(i, "file tildeexpand ~/.Xdefaults");
+        // The script here was `file tildeexpand ~/.Xdefaults` — the exact one
+        // Tk asks for at `tk9.0.4/generic/tkOption.c:1592` — until
+        // `src/cmd_file.rs` landed `file`, and that script now succeeds. What
+        // this test is about is the error path, not that particular script, so
+        // it moved to a command the frontend has no implementation of.
+        //
+        // It was `uplevel` next, and `src/cmd_scope.rs` landed that too: it
+        // still fails here, but with `bad level "1"` — a command that exists
+        // refusing a level, not the unknown-name path this measures. Now
+        // `interp`, which is the same stand-in
+        // `tests/execution_differential.rs` uses, so the two move together
+        // when it is built.
+        //
+        // The Tk call site is checked below: it reads only the completion code
+        // and skips the `.Xdefaults` read when it is not TCL_OK, so either
+        // answer keeps `Tk_Init` going, and it is TCL_OK now.
+        let (code, result) = eval_ex(i, "interp create i");
         assert_eq!(code, TCL_ERROR);
         assert!(result.contains("invalid command name"), "{result:?}");
+        let (code, _) = eval_ex(i, "file tildeexpand ~/.Xdefaults");
+        assert_eq!(code, TCL_OK);
     }
 }
 

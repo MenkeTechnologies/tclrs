@@ -11,6 +11,8 @@
 //! offered at the prompt is a name the compiler knows.
 
 use crate::assoc::{ARRAY_SUBCOMMANDS, DICT_SUBCOMMANDS};
+use crate::cmd_clock;
+use crate::cmd_file;
 use crate::cmd_list;
 use crate::cmd_string;
 use crate::compiler::Compiler;
@@ -25,6 +27,8 @@ pub fn commands() -> Vec<&'static str> {
         .chain(cmd_list::COMMANDS.iter().copied())
         .chain(crate::cmd_channel::COMMANDS.iter().copied())
         .chain(crate::regexp::COMMANDS.iter().copied())
+        .chain(cmd_clock::COMMANDS.iter().copied())
+        .chain(cmd_file::COMMANDS.iter().copied())
         .collect();
     all.sort_unstable();
     all.dedup();
@@ -81,6 +85,16 @@ pub const CORPUS: &[Entry] = &[
         summary: "Run the script and trap an error from it, including one raised inside a procedure it called; yields the completion code.",
     },
     Entry {
+        name: "cd",
+        synopsis: "cd ?dirName?",
+        summary: "Change the working directory; no argument means the home directory.",
+    },
+    Entry {
+        name: "clock",
+        synopsis: "clock subcommand ?arg ...?",
+        summary: "The time ensemble: read the clock, and convert between an instant and a calendar.",
+    },
+    Entry {
         name: "close",
         synopsis: "close channel ?direction?",
         summary: "Drop a reference to a channel and close it once none is left; ?direction? half-closes a read-write channel.",
@@ -131,6 +145,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "Read or set a channel's generic options: -translation, -encoding, -buffering, -buffersize, -blocking.",
     },
     Entry {
+        name: "file",
+        synopsis: "file subcommand ?arg ...?",
+        summary: "The path and filesystem ensemble; the path halves need nothing on disk.",
+    },
+    Entry {
         name: "flush",
         synopsis: "flush channel",
         summary: "Hand everything buffered for the channel to its device.",
@@ -154,6 +173,11 @@ pub const CORPUS: &[Entry] = &[
         name: "gets",
         synopsis: "gets channel ?varName?",
         summary: "The next line without its terminator; with a variable, the line goes there and the count is the result.",
+    },
+    Entry {
+        name: "glob",
+        synopsis: "glob ?switches? ?pattern ...?",
+        summary: "Every existing name a pattern matches, walked one path component at a time.",
     },
     Entry {
         name: "global",
@@ -296,6 +320,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "Write the string to a channel, or to stdout when none is named.",
     },
     Entry {
+        name: "pwd",
+        synopsis: "pwd",
+        summary: "The working directory, as the last cd was told it rather than as getcwd reports it.",
+    },
+    Entry {
         name: "read",
         synopsis: "read channel ?numChars?",
         summary: "Read the whole channel, or that many characters; -nonewline drops the trailing newlines.",
@@ -419,6 +448,8 @@ pub fn subcommands(command: &str) -> &'static [&'static str] {
         "info" => INFO_SUBCOMMANDS,
         "namespace" => crate::cmd_namespace::SUBCOMMANDS,
         "package" => crate::cmd_package::SUBCOMMANDS,
+        "clock" => cmd_clock::SUBCOMMANDS,
+        "file" => cmd_file::SUBCOMMANDS,
         _ => &[],
     }
 }
@@ -436,12 +467,246 @@ pub fn subcommand_corpus(command: &str) -> &'static [Entry] {
         "string" => STRING_CORPUS,
         "array" => ARRAY_CORPUS,
         "dict" => DICT_CORPUS,
+        "clock" => CLOCK_CORPUS,
+        "file" => FILE_CORPUS,
         "info" => INFO_CORPUS,
         "namespace" => NAMESPACE_CORPUS,
         "package" => PACKAGE_CORPUS,
         _ => &[],
     }
 }
+
+/// The `clock` subcommands, in the order [`subcommands`] lists them.
+const CLOCK_CORPUS: &[Entry] = &[
+    Entry {
+        name: "add",
+        synopsis: "clock add clockval ?number units?... ?-option value?",
+        summary: "Move an instant by calendar or fixed units; a day past the end of a month is clamped to it.",
+    },
+    Entry {
+        name: "clicks",
+        synopsis: "clock clicks ?-switch?",
+        summary: "A high-resolution counter, in microseconds unless -milliseconds is given.",
+    },
+    Entry {
+        name: "format",
+        synopsis: "clock format clockval ?-format string? ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE?",
+        summary: "An instant as text, in the root locale's catalogue.",
+    },
+    Entry {
+        name: "microseconds",
+        synopsis: "clock microseconds",
+        summary: "The current time in microseconds since the epoch.",
+    },
+    Entry {
+        name: "milliseconds",
+        synopsis: "clock milliseconds",
+        summary: "The current time in milliseconds since the epoch.",
+    },
+    Entry {
+        name: "scan",
+        synopsis: "clock scan string ?-format string? ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE?",
+        summary: "Text as an instant. The -format form only; the free-form parser is refused.",
+    },
+    Entry {
+        name: "seconds",
+        synopsis: "clock seconds",
+        summary: "The current time in seconds since the epoch.",
+    },
+];
+
+/// The `file` subcommands, in the order [`subcommands`] lists them. The ones
+/// this frontend refuses are listed for the same reason the `string` ensemble's
+/// are: their presence is what makes an abbreviation ambiguous.
+const FILE_CORPUS: &[Entry] = &[
+    Entry {
+        name: "atime",
+        synopsis: "file atime name",
+        summary: "The last access time, in seconds since the epoch.",
+    },
+    Entry {
+        name: "attributes",
+        synopsis: "file attributes name",
+        summary: "Refused: the platform attribute set is not built.",
+    },
+    Entry {
+        name: "channels",
+        synopsis: "file channels",
+        summary: "Refused: this frontend has no channels.",
+    },
+    Entry {
+        name: "copy",
+        synopsis: "file copy ?-force? ?--? source ?source ...? target",
+        summary: "Copy files or whole directories; an existing target is an error without -force.",
+    },
+    Entry {
+        name: "delete",
+        synopsis: "file delete ?-force? ?--? ?name ...?",
+        summary: "Remove names; one that does not exist is not an error.",
+    },
+    Entry {
+        name: "dirname",
+        synopsis: "file dirname name",
+        summary: "Everything but the last path component.",
+    },
+    Entry {
+        name: "executable",
+        synopsis: "file executable name",
+        summary: "1 when the name can be executed by this process.",
+    },
+    Entry {
+        name: "exists",
+        synopsis: "file exists name",
+        summary: "1 when the name resolves to something.",
+    },
+    Entry {
+        name: "extension",
+        synopsis: "file extension name",
+        summary: "From the last dot at or after the last separator to the end.",
+    },
+    Entry {
+        name: "home",
+        synopsis: "file home ?user?",
+        summary: "A home directory, this process's own when no user is named.",
+    },
+    Entry {
+        name: "isdirectory",
+        synopsis: "file isdirectory name",
+        summary: "1 when the name resolves to a directory.",
+    },
+    Entry {
+        name: "isfile",
+        synopsis: "file isfile name",
+        summary: "1 when the name resolves to an ordinary file.",
+    },
+    Entry {
+        name: "join",
+        synopsis: "file join name ?name ...?",
+        summary:
+            "Join path elements; an element that is itself absolute discards the ones before it.",
+    },
+    Entry {
+        name: "link",
+        synopsis: "file link ?-linktype? linkName ?target?",
+        summary: "Refused: creating links is not built.",
+    },
+    Entry {
+        name: "lstat",
+        synopsis: "file lstat name varName",
+        summary: "Refused: it writes an array this frontend does not build for it.",
+    },
+    Entry {
+        name: "mkdir",
+        synopsis: "file mkdir ?dir ...?",
+        summary:
+            "Create directories and every missing parent; an existing directory is not an error.",
+    },
+    Entry {
+        name: "mtime",
+        synopsis: "file mtime name",
+        summary: "The last modification time, in seconds since the epoch.",
+    },
+    Entry {
+        name: "nativename",
+        synopsis: "file nativename name",
+        summary: "The path in the platform's own form, which on unix drops duplicate separators.",
+    },
+    Entry {
+        name: "normalize",
+        synopsis: "file normalize name",
+        summary: "The absolute path with links resolved, except in the last component.",
+    },
+    Entry {
+        name: "owned",
+        synopsis: "file owned name",
+        summary: "1 when this process's effective user owns the name.",
+    },
+    Entry {
+        name: "pathtype",
+        synopsis: "file pathtype name",
+        summary: "absolute or relative; unix has no volume-relative paths.",
+    },
+    Entry {
+        name: "readable",
+        synopsis: "file readable name",
+        summary: "1 when the name can be read by this process.",
+    },
+    Entry {
+        name: "readlink",
+        synopsis: "file readlink name",
+        summary: "What a symbolic link points at, as it was written.",
+    },
+    Entry {
+        name: "rename",
+        synopsis: "file rename ?-force? ?--? source ?source ...? target",
+        summary: "Move names; an existing target is an error without -force.",
+    },
+    Entry {
+        name: "rootname",
+        synopsis: "file rootname name",
+        summary: "The path with its extension cut off.",
+    },
+    Entry {
+        name: "separator",
+        synopsis: "file separator ?name?",
+        summary: "The path separator, which on unix is always a slash.",
+    },
+    Entry {
+        name: "size",
+        synopsis: "file size name",
+        summary: "The size in bytes.",
+    },
+    Entry {
+        name: "split",
+        synopsis: "file split name",
+        summary: "The path's elements as a list; the root, when there is one, is a single element.",
+    },
+    Entry {
+        name: "stat",
+        synopsis: "file stat name varName",
+        summary: "Refused: it writes an array this frontend does not build for it.",
+    },
+    Entry {
+        name: "system",
+        synopsis: "file system name",
+        summary: "Refused: there is one filesystem here and no way to name another.",
+    },
+    Entry {
+        name: "tail",
+        synopsis: "file tail name",
+        summary: "The last path component.",
+    },
+    Entry {
+        name: "tempdir",
+        synopsis: "file tempdir ?template?",
+        summary: "Refused: it is built on the channel layer.",
+    },
+    Entry {
+        name: "tempfile",
+        synopsis: "file tempfile ?nameVar? ?template?",
+        summary: "Refused: it returns an open channel.",
+    },
+    Entry {
+        name: "tildeexpand",
+        synopsis: "file tildeexpand name",
+        summary: "The one command in Tcl 9 that expands a leading ~ or ~user.",
+    },
+    Entry {
+        name: "type",
+        synopsis: "file type name",
+        summary: "file, directory, link, fifo, socket, blockSpecial or characterSpecial.",
+    },
+    Entry {
+        name: "volumes",
+        synopsis: "file volumes",
+        summary: "Refused: there is no volume table here.",
+    },
+    Entry {
+        name: "writable",
+        synopsis: "file writable name",
+        summary: "1 when the name can be written by this process.",
+    },
+];
 
 const STRING_CORPUS: &[Entry] = &[
     Entry {

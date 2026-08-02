@@ -149,6 +149,18 @@ fn host(args: &[&str]) -> Option<(String, String)> {
 /// The number is pinned because it is the measurement: a slot that stops being
 /// reached, or one that starts being reached twice, is a change in what Tk was
 /// told, and this is where that shows up.
+///
+/// It moved once, from 2726 calls over 71 slots to 2737 over 75, when
+/// `src/cmd_file.rs` landed the `file` command. `tkOption.c:1592` evaluates
+/// `file tildeexpand ~/.Xdefaults` and reads only the completion code: while
+/// `file` was not a command this frontend compiled that script failed, and Tk
+/// skipped the option-file read entirely. It succeeds now, so Tk_Init walks
+/// the path it walks under a real Tcl — `Tcl_TranslateFileName`, then
+/// `Tcl_OpenFileChannel`, then `Tcl_PosixError` for the reason the open
+/// failed — and those three slots had to be filled before it could return at
+/// all. The count is still deterministic: this host has no channels, so the
+/// open always fails and the option file is never read, whatever the machine
+/// has in its home directory.
 #[test]
 fn tk_init_returns_rather_than_stopping_on_a_missing_slot() {
     let Some((out, err)) = host(&[]) else { return };
@@ -197,13 +209,13 @@ fn tk_init_returns_rather_than_stopping_on_a_missing_slot() {
         "the failure moved: {out:?}"
     );
     let calls = err.lines().filter(|l| l.starts_with("tkslot ")).count();
-    assert_eq!(calls, 2726, "the call count moved");
+    assert_eq!(calls, 2737, "the call count moved");
     let distinct: std::collections::BTreeSet<&str> = err
         .lines()
         .filter(|l| l.starts_with("tkslot "))
         .filter_map(|l| l.split_whitespace().nth(3))
         .collect();
-    assert_eq!(distinct.len(), 71, "the distinct-slot count moved");
+    assert_eq!(distinct.len(), 75, "the distinct-slot count moved");
     assert!(
         out.contains("tkhost commands 106"),
         "the command count moved: {out:?}"

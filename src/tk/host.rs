@@ -542,6 +542,16 @@ unsafe fn install_impls(t: &mut TclStubs, degraded: bool, level: Level) -> Vec<u
         install(t, "tcl_DStringFree", dstring_free as *const ()),
         // void (*tcl_DStringInit)(Tcl_DString *dsPtr) /* 122 */
         install(t, "tcl_DStringInit", dstring_init as *const ()),
+        // char *(*tcl_TranslateFileName)(Tcl_Interp *, const char *,
+        //     Tcl_DString *) /* 249 */
+        install(t, "tcl_TranslateFileName", translate_file_name as *const ()),
+        // Slot 198, Tcl_OpenFileChannel, is `crate::tk::channel`'s: the channel
+        // subsystem opens the file for real, where this module's placeholder
+        // answered NULL for every path. Tk asks for it from
+        // `Tk_ReadOptionFile`, so the two differ in whether `~/.Xdefaults` is
+        // actually read.
+        // const char *(*tcl_PosixError)(Tcl_Interp *interp) /* 204 */
+        install(t, "tcl_PosixError", posix_error as *const ()),
         // int (*tcl_GetCommandInfo)(Tcl_Interp *, const char *, Tcl_CmdInfo *) /* 159 */
         install(t, "tcl_GetCommandInfo", get_command_info as *const ()),
         // void *(*tcl_GetAssocData)(Tcl_Interp *, const char *,
@@ -1831,6 +1841,66 @@ unsafe extern "C" fn dstring_free(ds: *mut TclDString) {
 unsafe extern "C" fn dstring_init(ds: *mut TclDString) {
     entered!("tcl_DStringInit");
     dstring::init(ds);
+}
+
+/// `Tcl_PosixError` (`generic/tclPosixStr.c`): the C library's message for the
+/// current `errno`, which the caller appends to its own diagnostic.
+///
+/// The returned pointer is `strerror`'s own static string, as the C function's
+/// is — nothing here owns it and nothing frees it. Tk reaches this from
+/// `Tk_ReadOptionFile`, to say why the option file could not be opened.
+///
+/// # Safety
+/// `interp` is one this host handed to Tk; nothing is written through it.
+unsafe extern "C" fn posix_error(_interp: *mut c_void) -> *const c_char {
+    entered!("tcl_PosixError");
+    let text = libc::strerror(*libc::__error());
+    if text.is_null() {
+        c"unknown error".as_ptr()
+    } else {
+        text
+    }
+}
+
+/// `Tcl_TranslateFileName` (`generic/tclFileName.c`): the path with its `~` or
+/// `~user` prefix expanded, written into the caller's `Tcl_DString` and
+/// returned as a pointer into it.
+///
+/// Tk reaches this from `tkOption.c`, right after the
+/// `file tildeexpand ~/.Xdefaults` script it evaluates: while `file` was not a
+/// command this frontend compiled, the script failed and Tk skipped the read,
+/// so the slot was never asked for. It is now, and the expansion is the same
+/// one `crate::cmd_file` performs for `file tildeexpand`, so the two cannot
+/// answer differently.
+///
+/// A name that cannot be expanded — an unknown user — is a NULL return with
+/// the message left in the interpreter, which is what the C function does.
+///
+/// # Safety
+/// `name` is a NUL-terminated string from Tk and `ds` is `Tcl_DString`-shaped
+/// memory Tk owns.
+unsafe extern "C" fn translate_file_name(
+    interp: *mut c_void,
+    name: *const c_char,
+    ds: *mut TclDString,
+) -> *mut c_char {
+    entered!("tcl_TranslateFileName");
+    let given = std::ffi::CStr::from_ptr(name)
+        .to_string_lossy()
+        .into_owned();
+    let Ok(expanded) = crate::cmd_file::expand_tilde(&given) else {
+        install_result(
+            interp,
+            obj::new_string(format!("couldn't expand \"{given}\"").as_bytes()),
+        );
+        return ptr::null_mut();
+    };
+    dstring::init(ds);
+    dstring::append(
+        ds,
+        expanded.as_ptr() as *const c_char,
+        expanded.len() as isize,
+    )
 }
 
 /// `TCL_DOUBLE_SPACE` (`generic/tcl.h:901-902`: `TCL_MAX_PREC + 10`, so 27):
