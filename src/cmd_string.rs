@@ -159,7 +159,7 @@ pub const CLASSES: &[&str] = &[
 
 /// Resolve a name against a table the way `Tcl_GetIndexFromObj` does: an exact
 /// match wins, otherwise a prefix that fits exactly one entry.
-fn resolve<'t>(name: &str, table: &[&'t str]) -> Option<&'t str> {
+pub(crate) fn resolve<'t>(name: &str, table: &[&'t str]) -> Option<&'t str> {
     if let Some(exact) = table.iter().find(|c| **c == name) {
         return Some(exact);
     }
@@ -176,7 +176,7 @@ fn resolve<'t>(name: &str, table: &[&'t str]) -> Option<&'t str> {
 }
 
 /// The interpreter's rendering of a table in an error message.
-fn listing(table: &[&str]) -> String {
+pub(crate) fn listing(table: &[&str]) -> String {
     let mut out = String::new();
     for (i, name) in table.iter().enumerate() {
         if i > 0 {

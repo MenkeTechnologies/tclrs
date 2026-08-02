@@ -50,9 +50,19 @@ pub struct Entry {
 /// it accepts. Nothing in the compile path reads it; `gen-docs` renders it.
 pub const CORPUS: &[Entry] = &[
     Entry {
+        name: "after",
+        synopsis: "after ms|cancel|idle|info ?arg ...?",
+        summary: "Register a script to run after a delay or when nothing else is pending, cancel one, or list what is registered. See the module note in src/cmd_after.rs for which event sources a build has.",
+    },
+    Entry {
         name: "append",
         synopsis: "append varName ?value ...?",
         summary: "Append every value to the variable's string; yields the new value.",
+    },
+    Entry {
+        name: "apply",
+        synopsis: "apply lambdaExpr ?arg ...?",
+        summary: "Call an anonymous procedure. The lambda has to be written out, because its body is compiled with the script that contains it.",
     },
     Entry {
         name: "array",
@@ -305,9 +315,29 @@ pub const CORPUS: &[Entry] = &[
         summary: "Remove variables or array elements.",
     },
     Entry {
+        name: "update",
+        synopsis: "update ?idletasks?",
+        summary: "Service everything that is pending and return; idletasks services only the idle handlers.",
+    },
+    Entry {
+        name: "uplevel",
+        synopsis: "uplevel ?level? command ?arg ...?",
+        summary: "Run a script at another level. The level is resolved when the command runs, and one that is a procedure activation is refused rather than served against the wrong variables.",
+    },
+    Entry {
+        name: "upvar",
+        synopsis: "upvar ?level? otherVar localVar ?otherVar localVar ...?",
+        summary: "Bind a local name to a global. Only level #0 can be bound, because the binding is made while the script is read.",
+    },
+    Entry {
         name: "variable",
         synopsis: "variable ?name value ...? name ?value?",
         summary: "Declare a namespace variable. In a procedure body it links the local name to the namespace's variable rather than creating one.",
+    },
+    Entry {
+        name: "vwait",
+        synopsis: "vwait ?varName?",
+        summary: "Service events until the named global is written. With no name it is update.",
     },
     Entry {
         name: "while",
@@ -335,7 +365,7 @@ pub fn subcommands(command: &str) -> &'static [&'static str] {
         "string" => cmd_string::SUBCOMMANDS,
         "array" => ARRAY_SUBCOMMANDS,
         "dict" => DICT_SUBCOMMANDS,
-        "info" => &["coroutine"],
+        "info" => INFO_SUBCOMMANDS,
         "namespace" => crate::cmd_namespace::SUBCOMMANDS,
         _ => &[],
     }
@@ -659,11 +689,117 @@ const DICT_CORPUS: &[Entry] = &[
     },
 ];
 
-const INFO_CORPUS: &[Entry] = &[Entry {
-    name: "coroutine",
-    synopsis: "info coroutine",
-    summary: "The name of the running coroutine, or the empty string outside one.",
-}];
+/// The `info` subcommands this frontend answers, in the order the corpus below
+/// documents them. Not the whole of tclsh's table: the ones outside this set are
+/// resolved by `crate::cmd_info` so that an abbreviation of one can still be
+/// found ambiguous, and then refused by name.
+const INFO_SUBCOMMANDS: &[&str] = &[
+    "args",
+    "body",
+    "commands",
+    "complete",
+    "coroutine",
+    "default",
+    "exists",
+    "globals",
+    "hostname",
+    "level",
+    "locals",
+    "nameofexecutable",
+    "patchlevel",
+    "procs",
+    "script",
+    "tclversion",
+    "vars",
+];
+
+const INFO_CORPUS: &[Entry] = &[
+    Entry {
+        name: "args",
+        synopsis: "info args procname",
+        summary: "The formal parameter names of a procedure the script defines.",
+    },
+    Entry {
+        name: "body",
+        synopsis: "info body procname",
+        summary: "The body text a procedure was defined with.",
+    },
+    Entry {
+        name: "commands",
+        synopsis: "info commands ?pattern?",
+        summary: "Every command name the compiler answers to, including the script's own procedures.",
+    },
+    Entry {
+        name: "complete",
+        synopsis: "info complete command",
+        summary: "Whether the text is a whole script, or has a construct still open at its end.",
+    },
+    Entry {
+        name: "coroutine",
+        synopsis: "info coroutine",
+        summary: "The name of the running coroutine, or the empty string outside one.",
+    },
+    Entry {
+        name: "default",
+        synopsis: "info default procname arg varname",
+        summary: "Whether a formal parameter has a default, storing it in the named variable.",
+    },
+    Entry {
+        name: "exists",
+        synopsis: "info exists varName",
+        summary: "Whether the variable is set right now.",
+    },
+    Entry {
+        name: "globals",
+        synopsis: "info globals ?pattern?",
+        summary: "Every variable the interpreter holds.",
+    },
+    Entry {
+        name: "hostname",
+        synopsis: "info hostname",
+        summary: "The name the host answers to, as gethostname reports it.",
+    },
+    Entry {
+        name: "level",
+        synopsis: "info level",
+        summary: "How many procedure activations are on the stack. The form taking a level number is refused.",
+    },
+    Entry {
+        name: "locals",
+        synopsis: "info locals ?pattern?",
+        summary: "The procedure locals that are set, as far as the body has been read.",
+    },
+    Entry {
+        name: "nameofexecutable",
+        synopsis: "info nameofexecutable",
+        summary: "The path of the running binary.",
+    },
+    Entry {
+        name: "patchlevel",
+        synopsis: "info patchlevel",
+        summary: "The Tcl patch level this frontend implements.",
+    },
+    Entry {
+        name: "procs",
+        synopsis: "info procs ?pattern?",
+        summary: "The procedures the script defines.",
+    },
+    Entry {
+        name: "script",
+        synopsis: "info script",
+        summary: "The file the running script came from, or the empty string for a script given as text.",
+    },
+    Entry {
+        name: "tclversion",
+        synopsis: "info tclversion",
+        summary: "The Tcl version this frontend implements.",
+    },
+    Entry {
+        name: "vars",
+        synopsis: "info vars ?pattern?",
+        summary: "Every variable visible where the command runs.",
+    },
+];
 
 /// `namespace`'s subcommands, in the order `cmd_namespace::SUBCOMMANDS` lists
 /// them — which is the order tclsh's own `unknown or ambiguous subcommand`

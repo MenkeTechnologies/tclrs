@@ -859,7 +859,9 @@ fn lsearch(args: &[String]) -> Result<String, String> {
             // is "stride length must be at least 2".
             "-stride" => {
                 if i + 2 > args.len() - 2 {
-                    return Err("\"-stride\" option must be followed by a stride length".to_string());
+                    return Err(
+                        "\"-stride\" option must be followed by a stride length".to_string()
+                    );
                 }
                 i += 1;
                 let n = list::wide(&args[i])?;
@@ -1075,7 +1077,9 @@ fn lsort(args: &[String]) -> Result<String, String> {
             // element, and both refusals are the interpreter's own wording.
             "-stride" => {
                 let Some(value) = args.get(i + 1) else {
-                    return Err("\"-stride\" option must be followed by a stride length".to_string());
+                    return Err(
+                        "\"-stride\" option must be followed by a stride length".to_string()
+                    );
                 };
                 let n = list::wide(value)?;
                 if n < 2 {

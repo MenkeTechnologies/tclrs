@@ -71,10 +71,7 @@ const PROGRAMS: &[&str] = &[
 
 /// Programs whose *failure* must survive AOT: an error raised by the frontend
 /// mid-run has to reach the caller the same way it does interpreted.
-const FAILING: &[&str] = &[
-    "puts [expr {1 / 0}]",
-    "puts [expr {\"abc\" + 1}]",
-];
+const FAILING: &[&str] = &["puts [expr {1 / 0}]", "puts [expr {\"abc\" + 1}]"];
 
 #[test]
 fn aot_codegen_matches_the_interpreter() {

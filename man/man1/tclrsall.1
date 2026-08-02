@@ -66,7 +66,7 @@ instead of being re-parsed on every evaluation.
 .SH COMMANDS
 .TP
 .B Variables
-.BR set ", " unset ", " incr ", " append ", " global .
+.BR set ", " unset ", " incr ", " append ", " global ", " variable .
 A procedure's variables are frame slots; a script's are VM globals.
 .TP
 .B Control flow
@@ -83,9 +83,34 @@ Parameters and locals are frame slots; defaults and a trailing
 are resolved at the call site.
 .TP
 .B Coroutines
-.BR coroutine ", " yield ", " yieldto ", " "info coroutine" .
+.BR coroutine ", " yield ", " yieldto .
 A coroutine is a second VM over the same chunk, with the transfer owned by the
 driver.
+.TP
+.B "The event loop"
+.BR after ", " update ", " vwait .
+The registry of pending scripts belongs to the interpreter, as Tcl's does. A
+default build's only event sources are those scripts; a
+.B \-\-features\ tk
+build also pumps the ported notifier, where Tk's window and file events arrive.
+.TP
+.B Scope
+.BR uplevel ", " upvar ", " apply .
+.B uplevel
+resolves its level when the command runs and serves a target that is the global
+level;
+.B upvar
+binds
+.B #0
+while the script is read; a written-out lambda is compiled as an anonymous
+procedure with its own frame slots. A level that is another procedure's
+activation is refused rather than served against the wrong variables.
+.TP
+.B Introspection
+.BR info .
+Most subcommands are answered while compiling, because most of what
+.B info
+asks has a compile-time answer here.
 .TP
 .B Lists
 .BR list ", " llength ", " lindex ", " lappend ", " lrange ", " lreverse ", "

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. The 55 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. The 61 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -72,11 +72,11 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">55</div>
+            <div class="stat-val">61</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">56/78</div>
+            <div class="stat-val">72/94</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -93,7 +93,9 @@
           <colgroup><col style="width:14%"><col style="width:29%"><col style="width:57%"></colgroup>
           <thead><tr><th>command</th><th>synopsis</th><th>what it does</th></tr></thead>
           <tbody>
+        <tr><td><code>after</code></td><td><code>after ms|cancel|idle|info ?arg ...?</code></td><td>Register a script to run after a delay or when nothing else is pending, cancel one, or list what is registered. See the module note in src/cmd_after.rs for which event sources a build has.</td></tr>
         <tr><td><code>append</code></td><td><code>append varName ?value ...?</code></td><td>Append every value to the variable's string; yields the new value.</td></tr>
+        <tr><td><code>apply</code></td><td><code>apply lambdaExpr ?arg ...?</code></td><td>Call an anonymous procedure. The lambda has to be written out, because its body is compiled with the script that contains it.</td></tr>
         <tr><td><code>array</code></td><td><code>array subcommand ?arg ...?</code></td><td>The array ensemble, over a variable rather than a value: an array is never itself a value.</td></tr>
         <tr><td><code>break</code></td><td><code>break</code></td><td>Leave the innermost loop. The stack is unwound by a count the compiler knows statically.</td></tr>
         <tr><td><code>catch</code></td><td><code>catch script ?resultVarName?</code></td><td>Run the script and trap an error from it, including one raised inside a procedure it called; yields the completion code.</td></tr>
@@ -144,7 +146,11 @@
         <tr><td><code>switch</code></td><td><code>switch ?options? string {pattern body ...}</code></td><td>Run the body of the first pattern that matches, `-exact` or `-glob`.</td></tr>
         <tr><td><code>tcl_findLibrary</code></td><td><code>tcl_findLibrary basename version patch initScript enVarName varName</code></td><td>Tcl's own library-directory search, ported from `library/auto.tcl`: find the initialisation script, set the library variable and source it.</td></tr>
         <tr><td><code>unset</code></td><td><code>unset ?-nocomplain? ?--? ?name ...?</code></td><td>Remove variables or array elements.</td></tr>
+        <tr><td><code>update</code></td><td><code>update ?idletasks?</code></td><td>Service everything that is pending and return; idletasks services only the idle handlers.</td></tr>
+        <tr><td><code>uplevel</code></td><td><code>uplevel ?level? command ?arg ...?</code></td><td>Run a script at another level. The level is resolved when the command runs, and one that is a procedure activation is refused rather than served against the wrong variables.</td></tr>
+        <tr><td><code>upvar</code></td><td><code>upvar ?level? otherVar localVar ?otherVar localVar ...?</code></td><td>Bind a local name to a global. Only level #0 can be bound, because the binding is made while the script is read.</td></tr>
         <tr><td><code>variable</code></td><td><code>variable ?name value ...? name ?value?</code></td><td>Declare a namespace variable. In a procedure body it links the local name to the namespace's variable rather than creating one.</td></tr>
+        <tr><td><code>vwait</code></td><td><code>vwait ?varName?</code></td><td>Service events until the named global is written. With no name it is update.</td></tr>
         <tr><td><code>while</code></td><td><code>while test command</code></td><td>Run the body while the test holds. Inside a procedure this is the loop that reaches a compiled trace.</td></tr>
         <tr><td><code>yield</code></td><td><code>yield ?value?</code></td><td>Suspend the running coroutine and hand the value to whoever resumed it.</td></tr>
         <tr><td><code>yieldto</code></td><td><code>yieldto command ?arg ...?</code></td><td>Suspend and donate the resumer to another coroutine of the script, which is what makes the transfer symmetric rather than a queue.</td></tr>
@@ -240,12 +246,28 @@
         <tr><td><code>dict with</code></td><td><span class="state-no">dict with is not supported yet</span></td></tr>
           </tbody>
         </table>
-        <h3><code>info</code> &mdash; 1 of 1 implemented</h3>
+        <h3><code>info</code> &mdash; 17 of 17 implemented</h3>
         <table class="file-table">
           <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
           <thead><tr><th>subcommand</th><th>state</th></tr></thead>
           <tbody>
+        <tr><td><code>info args</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info body</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info commands</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info complete</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>info coroutine</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info default</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info exists</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info globals</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info hostname</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info level</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info locals</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info nameofexecutable</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info patchlevel</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info procs</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info script</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info tclversion</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>info vars</code></td><td><span class="state-yes">implemented</span></td></tr>
           </tbody>
         </table>
         <h3><code>namespace</code> &mdash; 16 of 19 implemented</h3>
