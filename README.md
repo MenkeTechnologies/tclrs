@@ -347,7 +347,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Group | Commands |
 | --- | --- |
 | Variables | `set`, `incr`, `unset`, `append`, array variables (`a(k)`), `global`, `variable`, `upvar #0` |
-| Output | `puts`, with `-nonewline` |
+| Output | `puts`, with `-nonewline` and an optional channel |
 | Expressions | `expr` |
 | Control flow | `if` / `elseif` / `else`, `while`, `for`, `foreach`, `switch` (`-exact`, `-glob`), `break`, `continue` |
 | Procedures | `proc`, `return` (with `-code ok` / `-code error`) |
@@ -362,6 +362,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
 | Regular expressions | `regexp`, `regsub` — with `-nocase`, `-all`, `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`, `-start` and `--`; `switch -regexp` and `lsearch -regexp` take one too |
 | Strings | `format`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright` |
+| Channels | `open`, `close`, `gets`, `read`, `flush`, `eof`, `seek`, `tell`, `fconfigure`, and `puts` to a channel; `stdin`, `stdout` and `stderr` |
 
 Command substitution works on any of them.
 
@@ -580,12 +581,13 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | Calling a command `namespace ensemble create` made; `variable` naming a qualified name inside a procedure | `bad variable name "a::b": can't create a local variable with a namespace separator` |
 | `source -encoding` for anything but UTF-8 | `"source -encoding" is only supported for utf-8: this frontend reads a script as UTF-8` |
 | `namespace eval` inside a procedure body, where an unqualified name in its body would take a frame slot rather than the namespace's variable | `"namespace eval" inside a procedure is not supported yet: an unqualified name in its body would take a frame slot rather than the namespace's variable` |
-=======
 | `info` subcommands that need machinery this frontend has none of: `frame`, `errorstack`, `cmdcount`, `cmdtype`, `class`, `object`, `consts`, `constant`, `functions`, `library`, `loaded`, `sharedlibextension`; and `info level N`, which needs a record of the command that entered a level | `info frame is not supported yet` |
 | `uplevel` to a level that is a procedure activation. The level is resolved when the command runs, so `uplevel #0` and an `uplevel 1` that reaches the script's own level both work and only the unreachable case is refused | `"uplevel" to level 1 is not supported: that level is a procedure activation, and a procedure's variables are frame slots no name reaches once the chunk is built` |
 | `upvar` at any level but `#0`, `upvar` outside a procedure, and `upvar` whose names are not literals. The link is made while the script is read — see `src/cmd_scope.rs` | `"upvar 1" is not supported: only "#0" — a link to a global — can be bound while the script is read` |
 | `apply` of a lambda that is a value rather than written out, and a lambda naming a namespace other than `::` | `"apply" of a computed lambda is not supported: the body would be compiled as a chunk of its own, which cannot reach frame slots` |
 | `vwait` on more than one variable, and its `-timeout` / `-readable` / `-writable` / `-all` options | `"vwait" takes at most one variable name in this phase` |
+| `open \|command` — the pipeline form — and the POSIX list form of an access mode (`{WRONLY CREAT}`) | `opening a command pipeline is not implemented in this frontend; …` |
+| A channel encoding other than `utf-8` and `iso8859-1`; `fconfigure -blocking 0`; `fconfigure -eofchar` and `-profile` when set; half-closing a read-write channel | `encoding "shiftjis" is not implemented in this frontend; utf-8 and iso8859-1 are` |
 | Arbitrary-precision integers. An `i64` that overflows is an error, and so is the one integer division whose true quotient does not fit (`i64::MIN / -1`) and an integer *literal* or operand that does not fit at all (`expr {99999999999999999999 + 1}`) | `integer value too large to represent` |
 | Input nesting past `parser::MAX_NESTING_DEPTH` — 64_000 command substitutions or array indices deep, well past anything the reference interpreter survives | `too many nested substitutions (infinite loop?)` |
 | Ahead-of-time compilation of a script using `catch` or a coroutine | `ahead-of-time compilation of a script using "catch" is not supported: it needs the driver that only the interpreter has` |
@@ -655,9 +657,13 @@ Tcl script → parser (Script/Command/Word) → fusevm bytecode → Interp → M
 Extension op ids are laid out so `runtime`'s dispatch can test ranges from the
 highest base down: the arithmetic ops and `puts` at 0–5, `eval` at 6,
 control flow at 7–9, the coroutine ops at 10–14, the boolean conversion at 15,
-the list commands from 16, the associative ones from 64, and the string ones
-from 128. `catch` is the one op
-whose payload is an op index, so it is an extension-*wide* op.
+the list commands from 16, the associative ones from 64, the string ones
+from 128, the regular-expression ones from 192 and the channel commands from
+256. `catch` is the one op
+whose payload is an op index, so it is an extension-*wide* op. The channel ops
+are the one family dispatched from the hook closure rather than from
+`runtime::extension`, because they need the running interpreter's output sink:
+`puts stdout` has to reach wherever `puts` reaches, including a capture.
 
 Static stack tracking is what keeps the lowering cheap: each command leaves its
 result on the stack and the compiler tracks that depth as it goes, so `break`

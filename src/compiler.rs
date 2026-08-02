@@ -387,12 +387,36 @@ pub mod ext {
     pub const BLOCK: u16 = 64;
 
     /// Channels — `open`, `close`, `gets`, `read`, `puts` to a channel, and the
-    /// rest of the ensemble ([`crate::cmd_channel`]).
+    /// rest of the ensemble ([`crate::cmd_channel`]). Dispatched from the
+    /// extension *closure* rather than from `runtime::extension`, because these
+    /// are the ops that need the running interpreter's output sink.
     pub const CHANNEL_BASE: u16 = SUBSYSTEM_BASE;
     /// One past the channel block, so the dispatcher can test a bounded range
     /// rather than `id >= CHANNEL_BASE` — which would swallow every block
     /// below.
     pub const CHANNEL_END: u16 = CHANNEL_BASE + BLOCK;
+    /// `open fileName ?access?` → the channel's name.
+    pub const OPEN: u16 = CHANNEL_BASE;
+    /// `close channelId ?direction?`.
+    pub const CLOSE: u16 = CHANNEL_BASE + 1;
+    /// `gets channel ?varName?`. With a variable the operand is where it lives,
+    /// as `regexp`'s match variables are, and the result is the count.
+    pub const GETS: u16 = CHANNEL_BASE + 2;
+    /// `read channel ?numChars?` and `read ?-nonewline? channel`.
+    pub const READ: u16 = CHANNEL_BASE + 3;
+    /// `puts ?-nonewline? channelId string`. [`PUTS`] stays the lowering for
+    /// the form with no channel, so a script that never names one pays nothing.
+    pub const CH_PUTS: u16 = CHANNEL_BASE + 4;
+    /// `flush channelId`.
+    pub const FLUSH: u16 = CHANNEL_BASE + 5;
+    /// `eof channelId`.
+    pub const EOF: u16 = CHANNEL_BASE + 6;
+    /// `seek channelId offset ?origin?`.
+    pub const SEEK: u16 = CHANNEL_BASE + 7;
+    /// `tell channelId`.
+    pub const TELL: u16 = CHANNEL_BASE + 8;
+    /// `fconfigure channelId ?-option value ...?`.
+    pub const FCONFIGURE: u16 = CHANNEL_BASE + 9;
     /// `namespace`, `variable` and `rename` ([`crate::cmd_namespace`]), and
     /// `source` and `tcl_findLibrary` ([`crate::cmd_source`]), which share a
     /// block because they are one feature: a namespace-aware `source`.
@@ -893,6 +917,20 @@ impl Compiler {
         }
     }
 
+    /// Where a variable lives, as one integer operand: the index shifted up by
+    /// one with the frame-slot bit at the bottom.
+    ///
+    /// An op that *assigns* to a variable named by the script takes it this
+    /// way rather than as a value, so the operand count stays the arity —
+    /// `regexp`'s match variables and `gets`'s line variable are the two.
+    /// [`crate::runtime::place_at`] reads it back.
+    pub(crate) fn place_operand(&mut self, name: &str) -> i64 {
+        match self.var_place(name) {
+            Place::Slot(slot) => (i64::from(slot) << 1) | 1,
+            Place::Global(idx) => i64::from(idx) << 1,
+        }
+    }
+
     /// Read a variable onto the stack.
     pub(crate) fn emit_get_var(&mut self, name: &str) {
         match self.var_place(name) {
@@ -1225,6 +1263,12 @@ impl Compiler {
             "apply" => self.cmd_apply(args),
             // ── end of the block ────────────────────────────────────────
             "regexp" | "regsub" => crate::regexp::compile(self, name, args),
+            // The channel ensemble. Ahead of the namespace block below for the
+            // same reason every other builtin above is: a builtin name wins
+            // over a namespace procedure of that name in this frontend.
+            name if crate::cmd_channel::COMMANDS.contains(&name) => {
+                crate::cmd_channel::compile(self, name, args)
+            }
             // ── namespaces, `rename` and `source` ────────────────────────
             // One block, so that the module owning them merges as one hunk.
             // It sits here — after every builtin, before the procedures —
@@ -1336,10 +1380,20 @@ impl Compiler {
     }
 
     fn cmd_puts(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        // The channel forms go to `cmd_channel`; the two without one keep the
+        // lowering they had, so a script that never names a channel is
+        // unchanged. tclsh 9 has no third form: `puts stdout hi nonewline` is
+        // `wrong # args` there, not the 8.x legacy spelling.
         let (newline, value) = match args {
             [v] => (true, v),
             [flag, v] if flag.as_literal() == Some("-nonewline") => (false, v),
-            _ => return self.error("wrong # args: should be \"puts ?-nonewline? string\""),
+            [chan, v] => return crate::cmd_channel::compile_puts(self, chan, v, true),
+            [flag, chan, v] if flag.as_literal() == Some("-nonewline") => {
+                return crate::cmd_channel::compile_puts(self, chan, v, false)
+            }
+            _ => {
+                return self.error("wrong # args: should be \"puts ?-nonewline? ?channel? string\"")
+            }
         };
         self.word(value)?;
         // The op writes and leaves `puts`'s own empty result, so the stack is

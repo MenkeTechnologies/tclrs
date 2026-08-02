@@ -162,7 +162,7 @@ pub const RECOMMENDED_STACK: usize = 256 * 1024 * 1024;
 /// they were produced. The stdout form buffers: a script that prints in a loop
 /// should not be measuring one syscall per line.
 #[derive(Clone)]
-enum Output {
+pub(crate) enum Output {
     Capture(Arc<Mutex<String>>),
     Stdout(Arc<Mutex<std::io::BufWriter<std::io::Stdout>>>),
 }
@@ -174,7 +174,7 @@ impl Output {
         ))))
     }
 
-    fn write(&self, s: &str) {
+    pub(crate) fn write(&self, s: &str) {
         match self {
             Output::Capture(buf) => buf.lock().expect("output lock").push_str(s),
             Output::Stdout(out) => {
@@ -186,7 +186,7 @@ impl Output {
     /// Push what is buffered out to the operating system. Called at the end of
     /// every evaluation, so an error the caller prints afterwards cannot
     /// overtake the output of the script that raised it.
-    fn flush(&self) {
+    pub(crate) fn flush(&self) {
         if let Output::Stdout(out) = self {
             let _ = out.lock().expect("output lock").flush();
         }
@@ -607,6 +607,22 @@ impl Hooks {
                     crate::cmd_info::names_op(&interp, vm, arg).map_err(TclError::plain)
                 }
                 // ── end of the event block ───────────────────────────────
+                // The channel ops write through the running interpreter's own
+                // output, so that `puts stdout x` reaches wherever `puts x`
+                // does — including an `Output::Capture`. That sink is only in
+                // scope here, which is why they are dispatched from the closure
+                // rather than from `extension` below.
+                //
+                // A bounded range rather than `id >= CHANNEL_BASE`: the blocks
+                // above it — namespaces, the event loop, `package` — are all
+                // higher ids, and an open-ended test here would claim every one
+                // of them. Their arms happen to stand earlier, but that would
+                // make arm order the only thing keeping `after` out of the
+                // channel handler, and arm order is not what the block map
+                // promises.
+                id if (ext::CHANNEL_BASE..ext::CHANNEL_END).contains(&id) => {
+                    crate::cmd_channel::run(vm, id, arg, &out).map_err(TclError::plain)
+                }
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
             if let Err(e) = outcome {

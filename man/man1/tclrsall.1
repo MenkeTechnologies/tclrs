@@ -133,6 +133,16 @@ The
 ensemble (over a variable) and the
 .B dict
 ensemble (over a value).
+.TP
+.B Channels
+.BR open ", " close ", " gets ", " read ", " flush ", " eof ", " seek ", "
+.BR tell " and " fconfigure ,
+over the generic layer of Tcl's own
+.BR tclIO.c ,
+with
+.BR stdin ", " stdout " and " stderr .
+.B puts
+takes a channel too.
 .PP
 .BR eval ", " puts " and " expr
 complete the set. The generated reference at

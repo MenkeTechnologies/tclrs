@@ -150,7 +150,11 @@ fn a_session_initializes_answers_and_shuts_down() {
     let value = hover["result"]["contents"]["value"]
         .as_str()
         .unwrap_or_default();
-    assert!(value.contains("puts ?-nonewline? string"), "{hover}");
+    // tclsh 9.0.4's own wording, which names the channel argument.
+    assert!(
+        value.contains("puts ?-nonewline? ?channel? string"),
+        "{hover}"
+    );
 
     // The document's own procedure is a symbol.
     client.send(serde_json::json!({
