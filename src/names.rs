@@ -23,6 +23,7 @@ pub fn commands() -> Vec<&'static str> {
         .iter()
         .copied()
         .chain(cmd_list::COMMANDS.iter().copied())
+        .chain(crate::cmd_channel::COMMANDS.iter().copied())
         .chain(crate::regexp::COMMANDS.iter().copied())
         .collect();
     all.sort_unstable();
@@ -70,6 +71,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "Run the script and trap an error from it, including one raised inside a procedure it called; yields the completion code.",
     },
     Entry {
+        name: "close",
+        synopsis: "close channel ?direction?",
+        summary: "Drop a reference to a channel and close it once none is left; ?direction? half-closes a read-write channel.",
+    },
+    Entry {
         name: "concat",
         synopsis: "concat ?arg ...?",
         summary: "Trim each argument of surrounding whitespace and join them with single spaces into one list.",
@@ -90,6 +96,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "The dict ensemble, over a value: a dict is a list of alternating keys and values, so it can be passed and printed like any string.",
     },
     Entry {
+        name: "eof",
+        synopsis: "eof channel",
+        summary: "Whether the channel's device reported end of file and nothing decoded is still buffered.",
+    },
+    Entry {
         name: "error",
         synopsis: "error message",
         summary: "Raise an error carrying the message.",
@@ -105,6 +116,16 @@ pub const CORPUS: &[Entry] = &[
         summary: "Evaluate the arguments as an expression. A braced argument is compiled once, not re-parsed per evaluation.",
     },
     Entry {
+        name: "fconfigure",
+        synopsis: "fconfigure channel ?-option value ...?",
+        summary: "Read or set a channel's generic options: -translation, -encoding, -buffering, -buffersize, -blocking.",
+    },
+    Entry {
+        name: "flush",
+        synopsis: "flush channel",
+        summary: "Hand everything buffered for the channel to its device.",
+    },
+    Entry {
         name: "for",
         synopsis: "for start test next body",
         summary: "Run start, then the body while test holds, running next after each iteration. Emitted rotated, like every loop here.",
@@ -118,6 +139,11 @@ pub const CORPUS: &[Entry] = &[
         name: "format",
         synopsis: "format formatString ?arg ...?",
         summary: "Format the arguments the way `sprintf` does, with Tcl's conversion set.",
+    },
+    Entry {
+        name: "gets",
+        synopsis: "gets channel ?varName?",
+        summary: "The next line without its terminator; with a variable, the line goes there and the count is the result.",
     },
     Entry {
         name: "global",
@@ -235,14 +261,24 @@ pub const CORPUS: &[Entry] = &[
         summary: "The list sorted by the reference merge sort — the algorithm, not just the ordering, because `-unique` observes it.",
     },
     Entry {
+        name: "open",
+        synopsis: "open fileName ?access? ?permissions?",
+        summary: "Open a file and return the channel's name. The command-pipeline form is refused.",
+    },
+    Entry {
         name: "proc",
         synopsis: "proc name args body",
         summary: "Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.",
     },
     Entry {
         name: "puts",
-        synopsis: "puts ?-nonewline? string",
-        summary: "Write the string to stdout.",
+        synopsis: "puts ?-nonewline? ?channel? string",
+        summary: "Write the string to a channel, or to stdout when none is named.",
+    },
+    Entry {
+        name: "read",
+        synopsis: "read channel ?numChars?",
+        summary: "Read the whole channel, or that many characters; -nonewline drops the trailing newlines.",
     },
     Entry {
         name: "regexp",
@@ -258,6 +294,11 @@ pub const CORPUS: &[Entry] = &[
         name: "return",
         synopsis: "return ?-code code? ?result?",
         summary: "Return from the enclosing procedure with the result. `-code ok` and `-code error` are the codes implemented.",
+    },
+    Entry {
+        name: "seek",
+        synopsis: "seek channel offset ?origin?",
+        summary: "Move the device's position, discarding what was buffered and clearing end of file.",
     },
     Entry {
         name: "set",
@@ -278,6 +319,11 @@ pub const CORPUS: &[Entry] = &[
         name: "switch",
         synopsis: "switch ?options? string {pattern body ...}",
         summary: "Run the body of the first pattern that matches, `-exact` or `-glob`.",
+    },
+    Entry {
+        name: "tell",
+        synopsis: "tell channel",
+        summary: "The device's position, less whatever was read ahead of the script.",
     },
     Entry {
         name: "unset",

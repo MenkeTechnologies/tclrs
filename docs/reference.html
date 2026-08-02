@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. The 50 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. The 59 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -72,7 +72,7 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">50</div>
+            <div class="stat-val">59</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
@@ -97,16 +97,21 @@
         <tr><td><code>array</code></td><td><code>array subcommand ?arg ...?</code></td><td>The array ensemble, over a variable rather than a value: an array is never itself a value.</td></tr>
         <tr><td><code>break</code></td><td><code>break</code></td><td>Leave the innermost loop. The stack is unwound by a count the compiler knows statically.</td></tr>
         <tr><td><code>catch</code></td><td><code>catch script ?resultVarName?</code></td><td>Run the script and trap an error from it, including one raised inside a procedure it called; yields the completion code.</td></tr>
+        <tr><td><code>close</code></td><td><code>close channel ?direction?</code></td><td>Drop a reference to a channel and close it once none is left; ?direction? half-closes a read-write channel.</td></tr>
         <tr><td><code>concat</code></td><td><code>concat ?arg ...?</code></td><td>Trim each argument of surrounding whitespace and join them with single spaces into one list.</td></tr>
         <tr><td><code>continue</code></td><td><code>continue</code></td><td>Begin the innermost loop's next iteration; in a `for`, its step still runs first.</td></tr>
         <tr><td><code>coroutine</code></td><td><code>coroutine name cmd ?arg ...?</code></td><td>Create a coroutine context — a second VM over the same chunk — running one of the script's procedures, and enter it.</td></tr>
         <tr><td><code>dict</code></td><td><code>dict subcommand ?arg ...?</code></td><td>The dict ensemble, over a value: a dict is a list of alternating keys and values, so it can be passed and printed like any string.</td></tr>
+        <tr><td><code>eof</code></td><td><code>eof channel</code></td><td>Whether the channel's device reported end of file and nothing decoded is still buffered.</td></tr>
         <tr><td><code>error</code></td><td><code>error message</code></td><td>Raise an error carrying the message.</td></tr>
         <tr><td><code>eval</code></td><td><code>eval arg ?arg ...?</code></td><td>Concatenate the arguments and run the result as a script against the interpreter's own variables. The chunk is cached by source text.</td></tr>
         <tr><td><code>expr</code></td><td><code>expr arg ?arg ...?</code></td><td>Evaluate the arguments as an expression. A braced argument is compiled once, not re-parsed per evaluation.</td></tr>
+        <tr><td><code>fconfigure</code></td><td><code>fconfigure channel ?-option value ...?</code></td><td>Read or set a channel's generic options: -translation, -encoding, -buffering, -buffersize, -blocking.</td></tr>
+        <tr><td><code>flush</code></td><td><code>flush channel</code></td><td>Hand everything buffered for the channel to its device.</td></tr>
         <tr><td><code>for</code></td><td><code>for start test next body</code></td><td>Run start, then the body while test holds, running next after each iteration. Emitted rotated, like every loop here.</td></tr>
         <tr><td><code>foreach</code></td><td><code>foreach varList list ?varList list ...? command</code></td><td>Iterate over one or more lists in parallel; the longest fixes the count and shorter ones supply empty values.</td></tr>
         <tr><td><code>format</code></td><td><code>format formatString ?arg ...?</code></td><td>Format the arguments the way `sprintf` does, with Tcl's conversion set.</td></tr>
+        <tr><td><code>gets</code></td><td><code>gets channel ?varName?</code></td><td>The next line without its terminator; with a variable, the line goes there and the count is the result.</td></tr>
         <tr><td><code>global</code></td><td><code>global ?varName ...?</code></td><td>Address the named variables in the global table rather than the procedure's frame slots. Outside a procedure it does nothing.</td></tr>
         <tr><td><code>if</code></td><td><code>if test ?then? body ?elseif test ?then? body ...? ?else? ?body?</code></td><td>The first branch whose test is a true Tcl boolean; a test that is not a boolean is an error, not a false branch.</td></tr>
         <tr><td><code>incr</code></td><td><code>incr varName ?increment?</code></td><td>Add the increment (1 by default) to the variable; yields the new value.</td></tr>
@@ -130,15 +135,19 @@
         <tr><td><code>lseq</code></td><td><code>lseq n ??op? n ??by? n??</code></td><td>An arithmetic sequence; a zero step yields one element and a step pointing away from the end yields none.</td></tr>
         <tr><td><code>lset</code></td><td><code>lset listVar ?index? ?index ...? value</code></td><td>Replace the element at an index path in the variable's list; the end grows by one element only.</td></tr>
         <tr><td><code>lsort</code></td><td><code>lsort ?-option value ...? list</code></td><td>The list sorted by the reference merge sort — the algorithm, not just the ordering, because `-unique` observes it.</td></tr>
+        <tr><td><code>open</code></td><td><code>open fileName ?access? ?permissions?</code></td><td>Open a file and return the channel's name. The command-pipeline form is refused.</td></tr>
         <tr><td><code>proc</code></td><td><code>proc name args body</code></td><td>Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.</td></tr>
-        <tr><td><code>puts</code></td><td><code>puts ?-nonewline? string</code></td><td>Write the string to stdout.</td></tr>
+        <tr><td><code>puts</code></td><td><code>puts ?-nonewline? ?channel? string</code></td><td>Write the string to a channel, or to stdout when none is named.</td></tr>
+        <tr><td><code>read</code></td><td><code>read channel ?numChars?</code></td><td>Read the whole channel, or that many characters; -nonewline drops the trailing newlines.</td></tr>
         <tr><td><code>regexp</code></td><td><code>regexp ?-option ...? exp string ?matchVar? ?subMatchVar ...?</code></td><td>Match a regular expression, setting the match variables; the count under -all, the text under -inline.</td></tr>
         <tr><td><code>regsub</code></td><td><code>regsub ?-option ...? exp string subSpec ?varName?</code></td><td>Substitute for a regular expression's matches; the new string, or the count when a variable is named.</td></tr>
         <tr><td><code>return</code></td><td><code>return ?-code code? ?result?</code></td><td>Return from the enclosing procedure with the result. `-code ok` and `-code error` are the codes implemented.</td></tr>
+        <tr><td><code>seek</code></td><td><code>seek channel offset ?origin?</code></td><td>Move the device's position, discarding what was buffered and clearing end of file.</td></tr>
         <tr><td><code>set</code></td><td><code>set varName ?newValue?</code></td><td>Read or write a variable; yields its value. A procedure's variables are slots, a script's are VM globals.</td></tr>
         <tr><td><code>split</code></td><td><code>split string ?splitChars?</code></td><td>Split the string at any of the characters into a list.</td></tr>
         <tr><td><code>string</code></td><td><code>string subcommand ?arg ...?</code></td><td>The string ensemble. Subcommands, options and the `string is` class are resolved while compiling.</td></tr>
         <tr><td><code>switch</code></td><td><code>switch ?options? string {pattern body ...}</code></td><td>Run the body of the first pattern that matches, `-exact` or `-glob`.</td></tr>
+        <tr><td><code>tell</code></td><td><code>tell channel</code></td><td>The device's position, less whatever was read ahead of the script.</td></tr>
         <tr><td><code>unset</code></td><td><code>unset ?-nocomplain? ?--? ?name ...?</code></td><td>Remove variables or array elements.</td></tr>
         <tr><td><code>while</code></td><td><code>while test command</code></td><td>Run the body while the test holds. Inside a procedure this is the loop that reaches a compiled trace.</td></tr>
         <tr><td><code>yield</code></td><td><code>yield ?value?</code></td><td>Suspend the running coroutine and hand the value to whoever resumed it.</td></tr>
@@ -283,7 +292,7 @@
 
       <section id="format">
         <h2><code>format</code> conversions</h2>
-        <p>21 conversions, established by running one of each
+        <p>22 conversions, established by running one of each
         through the runtime and reading the answer. A conversion missing from
         this table is <code>bad field specifier</code>.</p>
         <table class="file-table">
@@ -302,7 +311,7 @@
         <tr><td><code>%j</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%l</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%o</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%p</code></td><td><span class="state-no">the "%p" conversion is not supported yet</span></td></tr>
+        <tr><td><code>%p</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%q</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%s</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%t</code></td><td><span class="state-yes">implemented</span></td></tr>

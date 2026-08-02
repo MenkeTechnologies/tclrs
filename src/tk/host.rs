@@ -769,6 +769,11 @@ unsafe fn install_impls(t: &mut TclStubs, degraded: bool, level: Level) -> Vec<u
     // The two index-lookup slots carry a `Tcl_ObjType` of their own, so like
     // the event loop they are a module rather than two more bodies here.
     slots.extend(super::index::install_impls(t));
+    // The channel subsystem is a module for the same reason `Tcl_HashTable`
+    // is: `Tcl_ChannelType` is a caller-supplied table of function pointers,
+    // and serving `Tcl_CreateChannel` means calling into Tk's own driver
+    // procs rather than answering a question about them.
+    slots.extend(super::channel::install_impls(t));
     // The event loop is a module of its own — twenty-four slots ported from
     // `generic/tclNotify.c`, `generic/tclTimer.c` and `macosx/tclMacOSXNotify.c`
     // — so it installs itself rather than listing its bodies here.

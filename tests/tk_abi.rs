@@ -177,3 +177,50 @@ fn committed_slot_names_match_the_header() {
         );
     }
 }
+
+#[test]
+fn channel_type_matches_the_c_layout() {
+    // generic/tcl.h:1445-1494, measured with offsetof against the 9.0.4
+    // headers. This one is the reverse of every other struct here: Tk defines
+    // the table (tk9.0.4/generic/tkConsole.c:66-84) and the host calls the
+    // function pointers inside it, so a wrong offset is a jump through
+    // whatever Tk happened to put at that position rather than a bad answer.
+    assert_eq!(size_of::<TclChannelType>(), 136);
+    assert_eq!(offset_of!(TclChannelType, type_name), 0);
+    assert_eq!(offset_of!(TclChannelType, version), 8);
+    // Both "not used any more" fields are still part of the layout, and Tk
+    // still writes the first of them (generic/tcl.h:1451, :1456).
+    assert_eq!(offset_of!(TclChannelType, close_proc), 16);
+    assert_eq!(offset_of!(TclChannelType, input_proc), 24);
+    assert_eq!(offset_of!(TclChannelType, output_proc), 32);
+    assert_eq!(offset_of!(TclChannelType, seek_proc), 40);
+    assert_eq!(offset_of!(TclChannelType, set_option_proc), 48);
+    assert_eq!(offset_of!(TclChannelType, get_option_proc), 56);
+    assert_eq!(offset_of!(TclChannelType, watch_proc), 64);
+    assert_eq!(offset_of!(TclChannelType, get_handle_proc), 72);
+    assert_eq!(offset_of!(TclChannelType, close2_proc), 80);
+    assert_eq!(offset_of!(TclChannelType, block_mode_proc), 88);
+    assert_eq!(offset_of!(TclChannelType, flush_proc), 96);
+    assert_eq!(offset_of!(TclChannelType, handler_proc), 104);
+    assert_eq!(offset_of!(TclChannelType, wide_seek_proc), 112);
+    assert_eq!(offset_of!(TclChannelType, thread_action_proc), 120);
+    assert_eq!(offset_of!(TclChannelType, truncate_proc), 128);
+    // generic/tcl.h:1387. Tcl_CreateChannel panics on any other value
+    // (generic/tclIO.c:1612-1614), so the constant is the version handshake.
+    assert_eq!(TCL_CHANNEL_VERSION_5, 5);
+}
+
+#[test]
+fn the_channel_mode_and_standard_channel_constants_are_the_measured_ones() {
+    // generic/tcl.h:1349-1351 and :1359-1361. TCL_STDIN and TCL_READABLE are
+    // both (1<<1) and are passed to different slots; a swap between the two
+    // families would be invisible until a stdout channel answered as readable.
+    assert_eq!(tclrs::cmd_channel::TCL_READABLE, 2);
+    assert_eq!(tclrs::cmd_channel::TCL_WRITABLE, 4);
+    assert_eq!(tclrs::cmd_channel::TCL_EXCEPTION, 8);
+    assert_eq!(tclrs::cmd_channel::TCL_STDIN, 2);
+    assert_eq!(tclrs::cmd_channel::TCL_STDOUT, 4);
+    assert_eq!(tclrs::cmd_channel::TCL_STDERR, 8);
+    // generic/tclIO.h:67, and what fconfigure -buffersize reports.
+    assert_eq!(tclrs::cmd_channel::DEFAULT_BUFFER_SIZE, 4096);
+}

@@ -343,7 +343,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Group | Commands |
 | --- | --- |
 | Variables | `set`, `incr`, `unset`, `append`, array variables (`a(k)`), `global` |
-| Output | `puts`, with `-nonewline` |
+| Output | `puts`, with `-nonewline` and an optional channel |
 | Expressions | `expr` |
 | Control flow | `if` / `elseif` / `else`, `while`, `for`, `foreach`, `switch` (`-exact`, `-glob`), `break`, `continue` |
 | Procedures | `proc`, `return` (with `-code ok` / `-code error`) |
@@ -354,6 +354,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
 | Regular expressions | `regexp`, `regsub` — with `-nocase`, `-all`, `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`, `-start` and `--`; `switch -regexp` and `lsearch -regexp` take one too |
 | Strings | `format`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright` |
+| Channels | `open`, `close`, `gets`, `read`, `flush`, `eof`, `seek`, `tell`, `fconfigure`, and `puts` to a channel; `stdin`, `stdout` and `stderr` |
 
 Command substitution works on any of them.
 
@@ -503,6 +504,8 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `eval` inside a procedure body | `"eval" inside a procedure is not supported: the script it builds cannot reach the procedure's local variables` |
 | `coroutine` anywhere but a script's top level or a command substitution in one; a coroutine of a built-in or of anything but one of the script's procedures; `yieldto` at a command that is not a coroutine of the script | `"coroutine" is only supported at the top level of a script, or in a command substitution in one` |
 | `info`, apart from `info coroutine` | `unknown or unsupported subcommand "exists": only "info coroutine" is supported` |
+| `open \|command` — the pipeline form — and the POSIX list form of an access mode (`{WRONLY CREAT}`) | `opening a command pipeline is not implemented in this frontend; …` |
+| A channel encoding other than `utf-8` and `iso8859-1`; `fconfigure -blocking 0`; `fconfigure -eofchar` and `-profile` when set; half-closing a read-write channel | `encoding "shiftjis" is not implemented in this frontend; utf-8 and iso8859-1 are` |
 | Arbitrary-precision integers. An `i64` that overflows is an error, and so is the one integer division whose true quotient does not fit (`i64::MIN / -1`) and an integer *literal* or operand that does not fit at all (`expr {99999999999999999999 + 1}`) | `integer value too large to represent` |
 | Input nesting past `parser::MAX_NESTING_DEPTH` — 64_000 command substitutions or array indices deep, well past anything the reference interpreter survives | `too many nested substitutions (infinite loop?)` |
 | Ahead-of-time compilation of a script using `catch` or a coroutine | `ahead-of-time compilation of a script using "catch" is not supported: it needs the driver that only the interpreter has` |
@@ -572,9 +575,13 @@ Tcl script → parser (Script/Command/Word) → fusevm bytecode → Interp → M
 Extension op ids are laid out so `runtime`'s dispatch can test ranges from the
 highest base down: the arithmetic ops and `puts` at 0–5, `eval` at 6,
 control flow at 7–9, the coroutine ops at 10–14, the boolean conversion at 15,
-the list commands from 16, the associative ones from 64, and the string ones
-from 128. `catch` is the one op
-whose payload is an op index, so it is an extension-*wide* op.
+the list commands from 16, the associative ones from 64, the string ones
+from 128, the regular-expression ones from 192 and the channel commands from
+256. `catch` is the one op
+whose payload is an op index, so it is an extension-*wide* op. The channel ops
+are the one family dispatched from the hook closure rather than from
+`runtime::extension`, because they need the running interpreter's output sink:
+`puts stdout` has to reach wherever `puts` reaches, including a capture.
 
 Static stack tracking is what keeps the lowering cheap: each command leaves its
 result on the stack and the compiler tracks that depth as it goes, so `break`

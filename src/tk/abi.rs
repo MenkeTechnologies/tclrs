@@ -244,6 +244,76 @@ pub struct TclTime {
     pub usec: std::ffi::c_long,
 }
 
+/// `Tcl_ChannelType` (`generic/tcl.h:1445-1494`), the third caller-supplied
+/// struct after `Tcl_HashTable` and `Tcl_ObjType` — and the one that puts the
+/// call in the other direction.
+///
+/// Measured against the 9.0.4 headers: `sizeof` 136, seventeen fields at
+/// eight-byte strides — `typeName` 0, `version` 8, `closeProc` 16, `inputProc`
+/// 24, `outputProc` 32, `seekProc` 40, `setOptionProc` 48, `getOptionProc` 56,
+/// `watchProc` 64, `getHandleProc` 72, `close2Proc` 80, `blockModeProc` 88,
+/// `flushProc` 96, `handlerProc` 104, `wideSeekProc` 112, `threadActionProc`
+/// 120, `truncateProc` 128.
+///
+/// Everything else in this file describes memory Tk hands over for *this* side
+/// to fill in or read. This one is the reverse: Tk defines one
+/// (`tk9.0.4/generic/tkConsole.c:66-84`) and passes a pointer to
+/// `Tcl_CreateChannel`, and the host then calls the procs inside it every time
+/// the channel reads, writes or closes. Getting a field's position wrong here
+/// is a call through whatever Tk happened to put at that offset.
+///
+/// Two of the fields are dead and must still be present, which is exactly why
+/// the layout cannot be shortened to the useful ones: `closeProc` (16) and
+/// `seekProc` (40) are `void *` marked "Not used any more"
+/// (`generic/tcl.h:1451`, `:1456`) and Tk still stores a function pointer in
+/// the first of them.
+///
+/// `version` is not a pointer despite its type: `TCL_CHANNEL_VERSION_5` is the
+/// integer 5 cast to `Tcl_ChannelTypeVersion` (`generic/tcl.h:1387`), and
+/// `Tcl_CreateChannel` panics on any other value (`generic/tclIO.c:1612-1614`).
+#[repr(C)]
+pub struct TclChannelType {
+    pub type_name: *const c_char,
+    /// `TCL_CHANNEL_VERSION_5` — the literal 5, not a pointer.
+    pub version: usize,
+    /// "Not used any more" (`generic/tcl.h:1451`), and still written by Tk.
+    pub close_proc: *const c_void,
+    /// `int (*)(void *instanceData, char *buf, int toRead, int *errorCodePtr)`.
+    pub input_proc: *const c_void,
+    /// `int (*)(void *instanceData, const char *buf, int toWrite, int *errorCodePtr)`.
+    pub output_proc: *const c_void,
+    /// "Not used any more" (`generic/tcl.h:1456`).
+    pub seek_proc: *const c_void,
+    /// `int (*)(void *, Tcl_Interp *, const char *optionName, const char *value)`.
+    pub set_option_proc: *const c_void,
+    /// `int (*)(void *, Tcl_Interp *, const char *optionName, Tcl_DString *)`.
+    pub get_option_proc: *const c_void,
+    /// `void (*)(void *instanceData, int mask)`. Required: `Tcl_CreateChannel`
+    /// panics without it (`generic/tclIO.c:1624-1626`).
+    pub watch_proc: *const c_void,
+    /// `int (*)(void *instanceData, int direction, void **handlePtr)`.
+    pub get_handle_proc: *const c_void,
+    /// `int (*)(void *instanceData, Tcl_Interp *, int flags)`. Required
+    /// (`generic/tclIO.c:1615-1617`).
+    pub close2_proc: *const c_void,
+    /// `int (*)(void *instanceData, int mode)`.
+    pub block_mode_proc: *const c_void,
+    /// `int (*)(void *instanceData)`.
+    pub flush_proc: *const c_void,
+    /// `int (*)(void *instanceData, int interestMask)`.
+    pub handler_proc: *const c_void,
+    /// `long long (*)(void *, long long offset, int mode, int *errorCodePtr)`.
+    pub wide_seek_proc: *const c_void,
+    /// `void (*)(void *instanceData, int action)`.
+    pub thread_action_proc: *const c_void,
+    /// `int (*)(void *instanceData, long long length)`.
+    pub truncate_proc: *const c_void,
+}
+
+/// `TCL_CHANNEL_VERSION_5` (`generic/tcl.h:1387`), the only version
+/// `Tcl_CreateChannel` accepts (`generic/tclIO.c:1612-1614`).
+pub const TCL_CHANNEL_VERSION_5: usize = 5;
+
 /// `TCL_SMALL_HASH_TABLE` (`generic/tcl.h`), measured as 4.
 pub const TCL_SMALL_HASH_TABLE: usize = 4;
 

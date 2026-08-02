@@ -162,7 +162,7 @@ pub const RECOMMENDED_STACK: usize = 256 * 1024 * 1024;
 /// they were produced. The stdout form buffers: a script that prints in a loop
 /// should not be measuring one syscall per line.
 #[derive(Clone)]
-enum Output {
+pub(crate) enum Output {
     Capture(Arc<Mutex<String>>),
     Stdout(Arc<Mutex<std::io::BufWriter<std::io::Stdout>>>),
 }
@@ -174,7 +174,7 @@ impl Output {
         ))))
     }
 
-    fn write(&self, s: &str) {
+    pub(crate) fn write(&self, s: &str) {
         match self {
             Output::Capture(buf) => buf.lock().expect("output lock").push_str(s),
             Output::Stdout(out) => {
@@ -186,7 +186,7 @@ impl Output {
     /// Push what is buffered out to the operating system. Called at the end of
     /// every evaluation, so an error the caller prints afterwards cannot
     /// overtake the output of the script that raised it.
-    fn flush(&self) {
+    pub(crate) fn flush(&self) {
         if let Output::Stdout(out) = self {
             let _ = out.lock().expect("output lock").flush();
         }
@@ -554,6 +554,14 @@ impl Hooks {
                 // line attached.
                 #[cfg(feature = "tk")]
                 ext::TK_DISPATCH => crate::tk::dispatch::extension(vm, arg),
+                // The channel ops write through the running interpreter's own
+                // output, so that `puts stdout x` reaches wherever `puts x`
+                // does — including an `Output::Capture`. That sink is only in
+                // scope here, which is why they are dispatched from the closure
+                // rather than from `extension` below.
+                id if id >= ext::CHANNEL_BASE => {
+                    crate::cmd_channel::run(vm, id, arg, &out).map_err(TclError::plain)
+                }
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
             if let Err(e) = outcome {
@@ -1808,9 +1816,7 @@ fn int_operand(v: &Value, side: Side, op: &str) -> Result<i64, String> {
         // is an operator with no bignum meaning; none can answer from a
         // truncation, so reaching here with one is a bug rather than a script
         // error.
-        BigOperand::Big(b) => Err(format!(
-            "integer value too large to represent: {b}"
-        )),
+        BigOperand::Big(b) => Err(format!("integer value too large to represent: {b}")),
     }
 }
 
@@ -1932,9 +1938,7 @@ fn big_arith(id: u16, p: BigInt, q: BigInt) -> Result<Value, String> {
                 // zero, and only ±1 survives it — the same rule the `i64` arm
                 // applies, and a bignum base is never ±1.
                 return match () {
-                    _ if p.is_zero() => {
-                        Err("exponentiation of zero by negative power".to_string())
-                    }
+                    _ if p.is_zero() => Err("exponentiation of zero by negative power".to_string()),
                     _ => Ok(Value::Int(0)),
                 };
             }
@@ -1966,9 +1970,7 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
         }
         // `i64::MIN / -1` is the one integer division whose true quotient does
         // not fit an `i64`; Tcl's answer is the bignum, and now so is this one.
-        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => {
-            Ok(from_big(-BigInt::from(i64::MIN)))
-        }
+        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => Ok(from_big(-BigInt::from(i64::MIN))),
         (ext::DIV, Num::Int(i), Num::Int(j)) => Ok(Value::Int(
             i.div_euclid(j)
                 - i64::from(

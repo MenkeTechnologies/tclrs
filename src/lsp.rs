@@ -522,8 +522,10 @@ mod tests {
         let HoverContents::Markup(markup) = on_command.contents else {
             panic!("expected markup");
         };
+        // `puts`'s synopsis is tclsh 9.0.4's own `wrong # args` wording, and it
+        // names the channel argument: `puts ?-nonewline? ?channel? string`.
         assert!(
-            markup.value.contains("puts ?-nonewline? string"),
+            markup.value.contains("puts ?-nonewline? ?channel? string"),
             "{markup:?}"
         );
 
