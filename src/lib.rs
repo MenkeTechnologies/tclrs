@@ -24,6 +24,8 @@ pub mod cache;
 /// `after`, `update` and `vwait` — the event loop a Tk script lives inside.
 pub mod cmd_after;
 pub mod cmd_channel;
+pub mod cmd_clock;
+pub mod cmd_file;
 /// `info` — what the interpreter knows about itself.
 pub mod cmd_info;
 pub mod cmd_list;
@@ -40,6 +42,7 @@ pub mod cursor;
 pub mod dap;
 pub mod dump;
 pub mod expr;
+pub mod expr_math;
 pub mod list;
 pub mod lsp;
 pub mod names;

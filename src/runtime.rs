@@ -1708,7 +1708,7 @@ impl Num {
 /// the nearest double, which makes distinct integers compare equal, and it
 /// cannot represent one larger than `f64::MAX` at all. `None` only for a NaN,
 /// which has no ordering.
-fn big_cmp(p: &Num, q: &Num) -> Option<std::cmp::Ordering> {
+pub(crate) fn big_cmp(p: &Num, q: &Num) -> Option<std::cmp::Ordering> {
     match (p, q) {
         (Num::Float(f), _) | (_, Num::Float(f)) if f.is_nan() => None,
         // An infinity is beyond every integer, so its side decides outright.
@@ -1765,7 +1765,7 @@ pub(crate) enum NotNumeric {
 
 /// Interpret a value as a Tcl number. Leading and trailing whitespace is
 /// allowed, as are the radix prefixes `0x`, `0o` and `0b`.
-fn tcl_num(v: &Value) -> Result<Num, NotNumeric> {
+pub(crate) fn tcl_num(v: &Value) -> Result<Num, NotNumeric> {
     match v {
         Value::Int(i) => Ok(Num::Int(*i)),
         Value::Float(f) => Ok(Num::Float(*f)),
@@ -2422,6 +2422,9 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
         // The ranges are tested from the highest base down, so that a lower
         // one's `id >= BASE` does not swallow a higher module's ops.
+        id if id >= ext::FILE_BASE => crate::cmd_file::extension(vm, id, arg),
+        id if id >= ext::CLOCK_BASE => crate::cmd_clock::extension(vm, id, arg),
+        id if id >= ext::MATH_BASE => crate::expr_math::extension(vm, id, arg),
         id if id >= ext::REGEXP_BASE => crate::regexp::extension(vm, id, arg),
         id if id >= ext::STRING_BASE => crate::cmd_string::extension(vm, id, arg),
         id if id >= ext::ASSOC_BASE => crate::assoc::extension(vm, id, arg),

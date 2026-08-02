@@ -18,10 +18,19 @@ fn main() {
     let commands = names::commands();
     // Appended rather than sorted, so that adding one to this list adds a
     // section to the page instead of reordering the ones already there.
-    let ensembles: Vec<Ensemble> = ["string", "array", "dict", "info", "namespace", "package"]
-        .iter()
-        .map(|name| Ensemble::probe(name))
-        .collect();
+    let ensembles: Vec<Ensemble> = [
+        "string",
+        "array",
+        "dict",
+        "info",
+        "namespace",
+        "package",
+        "clock",
+        "file",
+    ]
+    .iter()
+    .map(|name| Ensemble::probe(name))
+    .collect();
     let conversions = conversions();
 
     let operator_count: usize = tclrs::expr::LEVELS.iter().map(|l| l.len()).sum();
