@@ -279,7 +279,15 @@ pub(crate) fn call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclE
         // A procedure the script defined shadows a foreign command of the same
         // name, which is the order tclsh resolves in.
         Some(p) if p.chunk == chunk_key(&vm.chunk) => enter(vm, &name, &p, args),
-        _ => foreign(vm, &name, args),
+        // A registered Tk command is the only thing a chunk hands control to
+        // that can read or write the interpreter's variables behind its back,
+        // so this is where the running slot vector and the interpreter's map
+        // are brought into agreement and the traces that costs are fired. The
+        // sync sits on *this* arm rather than around the whole op because the
+        // arm above it is an ordinary procedure call, which cannot do that and
+        // should not pay for it. See `crate::runtime::sync_out`; when nothing
+        // is traced each side is one atomic load.
+        _ => foreign(interp, vm, &name, args),
     };
     outcome.map_err(|msg| TclError {
         msg,
@@ -338,16 +346,21 @@ fn enter(vm: &mut VM, name: &str, p: &RuntimeProc, args: &[Value]) -> Result<(),
 /// Without the `tk` feature there is no second table to consult, and the answer
 /// is the `invalid command name` the compiler used to defer — same wording,
 /// same line.
-fn foreign(vm: &mut VM, name: &str, args: &[Value]) -> Result<(), String> {
+fn foreign(interp: &Shared, vm: &mut VM, name: &str, args: &[Value]) -> Result<(), String> {
     #[cfg(feature = "tk")]
     {
-        let result = crate::tk::dispatch::invoke(name, args)?;
-        vm.push(Value::Str(std::sync::Arc::new(result)));
+        crate::runtime::sync_out(interp, vm)?;
+        let outcome = crate::tk::dispatch::invoke(name, args);
+        // Even a command that failed may have written a variable before it
+        // failed, exactly as a failing script's `set` still counts, so taking
+        // the interpreter's values back up is not on the success path only.
+        crate::runtime::sync_in(interp, vm);
+        vm.push(Value::Str(std::sync::Arc::new(outcome?)));
         Ok(())
     }
     #[cfg(not(feature = "tk"))]
     {
-        let _ = (vm, args);
+        let _ = (interp, vm, args);
         Err(format!("invalid command name \"{name}\""))
     }
 }

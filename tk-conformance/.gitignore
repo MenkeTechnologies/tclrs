@@ -1,0 +1,7 @@
+vendor/
+work/
+runner/target/
+
+# A binary, so its lock file is part of the measurement: the same commit must
+# resolve to the same dependency versions on any machine.
+!runner/Cargo.lock

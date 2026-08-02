@@ -171,19 +171,29 @@ fn tk_init_returns_rather_than_stopping_on_a_missing_slot() {
     // `tcl_findLibrary` all answer now (`crate::cmd_namespace`,
     // `crate::cmd_source`).
     //
-    // What stops it now is one line further in — `global tk_library tk_version
-    // tk_patchLevel` inside `tkInit` (`generic/tkWindow.c:3509-3516`). Tk set
-    // both variables through `Tcl_SetVar2` (slot 238, called twice, at
-    // `generic/tkWindow.c:1066-1067`) and this host's `set_var2` stores them in
-    // its own `vars` table rather than in the interpreter's globals, so the
-    // script cannot read back what Tk wrote. Bridging that table is
-    // `tk-varbridge`'s work, not this frontend's.
+    // `can't read "tk_version"` stood here after that, until `tk-varbridge`
+    // bridged the host's `vars` table to the interpreter's globals — Tk writes
+    // both `tk_version` and `tk_patchLevel` through `Tcl_SetVar2` (slot 238,
+    // `generic/tkWindow.c:1066-1067`) and the script can now read them back.
     //
-    // The call and slot counts below did not move with it: the whole failure is
-    // still on this side of the stub table, so Tk asked for exactly what it
-    // asked for before.
+    // So `tkInit` runs to its last statement, which is `tcl_findLibrary tk
+    // $tk_version $tk_patchLevel tk.tcl TK_LIBRARY tk_library`
+    // (`generic/tkWindow.c:3513`), and *that* is the refusal now. The search
+    // itself works; what it cannot do is compile what it finds. `tk.tcl` uses
+    // `{*}` argument expansion in eleven places and this frontend refuses it
+    // (`compiler.rs:1026`), because an expanded word decides the argument count
+    // when the command runs and every call site here is resolved while the
+    // script is read.
+    //
+    // The refusal is asserted rather than the whole message because the search
+    // path is absolute and depends on where the binary was built.
+    //
+    // The call and slot counts below did not move with any of it: the whole
+    // failure is still on this side of the stub table, so Tk asked for exactly
+    // what it asked for before.
     assert!(
-        out.contains(r#"can't read \"tk_version\": no such variable"#),
+        out.contains("Can't find a usable tk.tcl in the following directories")
+            || out.contains("{*} argument expansion is not supported yet"),
         "the failure moved: {out:?}"
     );
     let calls = err.lines().filter(|l| l.starts_with("tkslot ")).count();
