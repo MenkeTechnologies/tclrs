@@ -522,6 +522,9 @@ pub(crate) struct Compiler {
     /// through a command that could not absorb it, so an enclosing one still
     /// can.
     pub(crate) deferrable: bool,
+    /// Which namespace the code being lowered belongs to, and what `variable`
+    /// has linked inside a procedure body. See `crate::cmd_namespace`.
+    pub(crate) ns: crate::cmd_namespace::NsCtx,
 }
 
 impl Compiler {
@@ -548,11 +551,15 @@ impl Compiler {
             debug,
             subst_depth: 0,
             deferrable: false,
+            ns: crate::cmd_namespace::NsCtx::default(),
         };
         // Signatures are collected before anything is emitted so a procedure
         // may call one that the script defines further down, which is legal in
         // Tcl as long as the call is not reached first.
         crate::procs::prescan(&mut c.procs, script);
+        // The same, for the procedures a `namespace eval` block defines, under
+        // the qualified names they take.
+        crate::cmd_namespace::prescan_script(&mut c.procs, script, "::");
         crate::coro::prescan(&mut c.coros, script);
         c.script_value(script)?;
         Ok(c)
@@ -724,7 +731,15 @@ impl Compiler {
     pub(crate) fn var_place(&mut self, name: &str) -> Place {
         match self.slot_of(name) {
             Some(slot) => Place::Slot(slot),
-            None => Place::Global(self.b.add_name(name)),
+            // The one hook namespaces need in the variable path: a name that
+            // reaches the global table is the *namespace's* variable when the
+            // code being lowered belongs to one. At the root namespace the key
+            // is the name unchanged, so nothing that compiled before namespaces
+            // existed compiles differently now. See `crate::cmd_namespace`.
+            None => {
+                let key = crate::cmd_namespace::global_key(self, name);
+                Place::Global(self.b.add_name(&key))
+            }
         }
     }
 
@@ -940,6 +955,12 @@ impl Compiler {
         "yield",
         "yieldto",
         "info",
+        // ── the namespace block's own names ──────────────────────────────
+        "namespace",
+        "variable",
+        "rename",
+        "source",
+        "tcl_findLibrary",
     ];
 
     fn command(&mut self, cmd: &Command) -> Result<(), CompileError> {
@@ -1016,9 +1037,12 @@ impl Compiler {
             "string" | "append" | "format" => self.cmd_string_family(name, args),
             "break" => self.cmd_loop_exit(args, true),
             "continue" => self.cmd_loop_exit(args, false),
-            "proc" => self.cmd_proc(args),
+            // `ns_proc` and `ns_global` are one-line wrappers in
+            // `crate::cmd_namespace` that record which namespace the definition
+            // or the declaration belongs to and then call the handler below.
+            "proc" => self.ns_proc(args),
             "return" => self.cmd_return(args),
-            "global" => self.cmd_global(args),
+            "global" => self.ns_global(args),
             "catch" => self.cmd_catch(args),
             "error" => self.cmd_error(args),
             "array" => self.cmd_array(args),
@@ -1029,6 +1053,22 @@ impl Compiler {
             "yieldto" => self.cmd_yieldto(args),
             "info" => self.cmd_info(args),
             "regexp" | "regsub" => crate::regexp::compile(self, name, args),
+            // ── namespaces, `rename` and `source` ────────────────────────
+            // One block, so that the module owning them merges as one hunk.
+            // It sits here — after every builtin, before the procedures —
+            // because a name written inside a namespace resolves to that
+            // namespace's procedure before it resolves to a global one, which
+            // is `TclGetNamespaceForQualName`'s two-step search. See
+            // `crate::cmd_namespace`.
+            "namespace" => self.cmd_namespace(args),
+            "variable" => self.cmd_variable(args),
+            "rename" => self.cmd_rename(args),
+            "source" => self.cmd_source(args),
+            "tcl_findLibrary" => self.cmd_find_library(args),
+            other if self.ns_resolves(other).is_some() => {
+                crate::cmd_namespace::call(self, other, args)
+            }
+            // ── end of the namespace block ───────────────────────────────
             // The command an inline `rust { ... }` block was rewritten into.
             name if name == crate::rust_ffi::COMPILE_COMMAND => self.cmd_rust_compile(args),
             // A coroutine's context command. Its name is refused to `proc`, so
