@@ -349,11 +349,25 @@ fn enter(vm: &mut VM, name: &str, p: &RuntimeProc, args: &[Value]) -> Result<(),
 fn foreign(interp: &Shared, vm: &mut VM, name: &str, args: &[Value]) -> Result<(), String> {
     #[cfg(feature = "tk")]
     {
+        // Two exchanges, and they are not the same one.
+        //
+        // `sync_out` fires the write traces a Tk widget's `-variable` may have
+        // on it, and `sync_in` re-empties the read-traced slots so the next
+        // read fires. Both are one atomic load when nothing is traced.
+        //
+        // `flush_globals`/`reseed_globals` move *every* variable, because the
+        // command being called may re-enter the interpreter — a `-command`
+        // callback, a `bind` script and an `after` script are all evaluated
+        // from inside Tk while this call is on the stack. Without them a
+        // callback cannot see a variable the script set, and what the callback
+        // sets never reaches the script.
         crate::runtime::sync_out(interp, vm)?;
+        crate::runtime::flush_globals(vm, interp);
         let outcome = crate::tk::dispatch::invoke(name, args);
         // Even a command that failed may have written a variable before it
         // failed, exactly as a failing script's `set` still counts, so taking
         // the interpreter's values back up is not on the success path only.
+        crate::runtime::reseed_globals(vm, interp);
         crate::runtime::sync_in(interp, vm);
         vm.push(Value::Str(std::sync::Arc::new(outcome?)));
         Ok(())

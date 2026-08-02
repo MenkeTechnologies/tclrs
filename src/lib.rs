@@ -28,6 +28,7 @@ pub mod cmd_channel;
 pub mod cmd_info;
 pub mod cmd_list;
 pub mod cmd_namespace;
+pub mod cmd_package;
 /// `uplevel`, `upvar`, `variable` and `apply` — reaching another scope.
 pub mod cmd_scope;
 pub mod cmd_source;

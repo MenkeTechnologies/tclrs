@@ -87,6 +87,24 @@ pub(crate) fn shared_for(host: *mut Host) -> Shared {
     shared
 }
 
+/// Make `shared` the interpreter behind `host`, replacing whatever
+/// [`shared_for`] created.
+///
+/// What a session opened by `tclrs --tk` does with the interpreter the script
+/// is about to run in: a callback Tk evaluates — a `-command` body, a `bind`
+/// script, an `after` script — then runs against the same variables and
+/// procedures the script that registered it has, rather than in an interpreter
+/// of the host's own that shares nothing with it. See
+/// [`crate::tk::session::open`].
+pub(crate) fn adopt(host: *mut Host, shared: Shared) {
+    let key = host as usize;
+    let mut interps = INTERPS.lock().expect("Tk interpreter registry");
+    match interps.iter_mut().find(|e| e.host == key) {
+        Some(e) => e.shared = shared,
+        None => interps.push(Entry { host: key, shared }),
+    }
+}
+
 /// Forget the interpreter behind `host`. Called by `Tcl_DeleteInterp`; the
 /// state itself goes when the last `Shared` handle does.
 pub fn forget(host: *mut Host) {

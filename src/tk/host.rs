@@ -670,6 +670,9 @@ unsafe fn install_impls(t: &mut TclStubs, degraded: bool, level: Level) -> Vec<u
             "tcl_InvalidateStringRep",
             invalidate_string_rep as *const (),
         ),
+        // int (*tcl_ParseArgsObjv)(Tcl_Interp *, const Tcl_ArgvInfo *, Tcl_Size *,
+        //     Tcl_Obj *const *, Tcl_Obj ***) /* 667 */
+        install(t, "tcl_ParseArgsObjv", parse_args_objv as *const ()),
         // int (*tcl_ListObjAppendList)(Tcl_Interp *, Tcl_Obj *, Tcl_Obj *) /* 43 */
         install(
             t,
@@ -1601,6 +1604,26 @@ unsafe extern "C" fn get_startup_script(encoding_out: *mut *const c_char) -> *mu
     STARTUP_SCRIPT.load(Ordering::Relaxed)
 }
 
+/// Record the file this process was started with, as `Tcl_MainEx` does from
+/// `argv` (`generic/tclMain.c:336-338`).
+///
+/// Written straight into the pair rather than through the slot below, because
+/// this is the *host* saying what it was started with and not a call Tk made:
+/// going through the slot would put a `tkslot tcl_SetStartupScript` line in a
+/// log whose whole value is that every line in it is Tk's.
+///
+/// The answer matters on macOS. `TkpInit` opens a console window — and with it
+/// the channel subsystem — when stdin is not a terminal *and* there is no
+/// startup script (`tk9.0.4/macosx/tkMacOSXInit.c:585`), so a session that ran
+/// a script file and did not say so would take a branch `wish script.tcl` does
+/// not.
+pub fn set_startup_file(path: &str) {
+    unsafe {
+        let kept = retain(obj::new_string(path.as_bytes()));
+        obj::release(STARTUP_SCRIPT.swap(kept, Ordering::Relaxed));
+    }
+}
+
 /// Slot 622. `void Tcl_SetStartupScript(Tcl_Obj *path, const char *encoding)`
 /// (`generic/tclMain.c:206-241`): both values are reference-counted by the
 /// callee, and the previous pair is released.
@@ -2507,4 +2530,285 @@ unsafe extern "C" fn list_obj_get_elements(
     *objc = l.elems.len() as isize;
     *objv = l.elems.as_mut_ptr();
     TCL_OK
+}
+
+/// Slot 667. `Tcl_ParseArgsObjv`, a port of `generic/tclIndexObj.c:989-1244`.
+///
+/// `Tk_Init` reaches this the moment the interpreter has an `argv`
+/// (`tk9.0.4/generic/tkWindow.c:3312-3325`): it hands its own option table —
+/// `-sync`, `-colormap`, `-display`, `-geometry`, `-name`, `-visual`, `-use`,
+/// then `--` and `-help` (`:3196-3212`) — and takes back whatever did not
+/// match, which it writes into `argv` and `argc` again (`:3331-3334`).
+///
+/// Nothing reached it while the host's variables were its own, because
+/// `Tcl_GetVar2Ex` answered NULL for `argv` and Tk skipped the whole block.
+/// With `tclrs`'s globals bridged through, `argv` is there — `src/main.rs` sets
+/// it as `tclsh` does — so the block runs and this is the slot it needs.
+///
+/// The port is the C control flow, with the parts the C reaches through
+/// pointers written out: the descriptor array is read through
+/// [`ArgvInfo`], and the four type actions Tk's table can produce
+/// (`CONSTANT`, `FUNC`, `REST`, `HELP`) each do what the C case does. The
+/// remaining types are ported too, so a hosted extension with a different
+/// table is not silently mis-parsed.
+///
+/// # Safety
+/// `arg_table` is a NULL-terminated-by-`TCL_ARGV_END` array the caller owns,
+/// `objv` holds `*objc_ptr` object pointers, and `rem_objv`, when non-NULL,
+/// receives a `Tcl_Alloc` block the caller frees.
+unsafe extern "C" fn parse_args_objv(
+    interp: *mut c_void,
+    arg_table: *const ArgvInfo,
+    objc_ptr: *mut isize,
+    objv: *const *mut TclObj,
+    rem_objv: *mut *mut *mut TclObj,
+) -> c_int {
+    entered!("tcl_ParseArgsObjv");
+
+    // `leftovers` always starts with the command name, which is `objv[0]` —
+    // the C comment at `:1027-1032` explains why the caller is entitled to at
+    // least that one element back.
+    let want_leftovers = !rem_objv.is_null();
+    let mut leftovers: Vec<*mut TclObj> = Vec::new();
+    if want_leftovers {
+        leftovers.push(*objv);
+    }
+
+    let mut src_index: isize = 1;
+    let mut dst_index: isize = 1;
+    let mut objc = *objc_ptr - 1;
+    let mut rest = false;
+
+    while objc > 0 {
+        let cur = *objv.offset(src_index);
+        src_index += 1;
+        objc -= 1;
+        let text = obj::text_of(cur);
+        // The C compares the *second* byte first as a cheap filter, because
+        // the first is almost always `-`; matching on the whole prefix here is
+        // the same test written once.
+        let mut matched: Option<&ArgvInfo> = None;
+        let mut ambiguous = false;
+        let mut info = arg_table;
+        while !info.is_null() && (*info).type_ != TCL_ARGV_END {
+            let entry = &*info;
+            if entry.key.is_null() {
+                info = info.add(1);
+                continue;
+            }
+            let key = CStr::from_ptr(entry.key).to_string_lossy();
+            if !key.starts_with(text.as_str()) {
+                info = info.add(1);
+                continue;
+            }
+            // An exact match wins outright, however many entries it prefixes.
+            if key.len() == text.len() {
+                matched = Some(entry);
+                ambiguous = false;
+                break;
+            }
+            if matched.is_some() {
+                ambiguous = true;
+                break;
+            }
+            matched = Some(entry);
+            info = info.add(1);
+        }
+        if ambiguous {
+            install_result(
+                interp,
+                obj::new_string(format!("ambiguous option \"{text}\"").as_bytes()),
+            );
+            return TCL_ERROR;
+        }
+        let Some(entry) = matched else {
+            // Unrecognized. Copied down when the caller wants leftovers, an
+            // error when it does not (`:1086-1101`).
+            if !want_leftovers {
+                install_result(
+                    interp,
+                    obj::new_string(format!("unrecognized argument \"{text}\"").as_bytes()),
+                );
+                return TCL_ERROR;
+            }
+            dst_index += 1;
+            leftovers.push(cur);
+            continue;
+        };
+
+        match entry.type_ {
+            TCL_ARGV_CONSTANT => *(entry.dst as *mut c_int) = entry.src as c_int,
+            TCL_ARGV_INT => {
+                if objc == 0 {
+                    return missing_arg(interp, &text);
+                }
+                let next = *objv.offset(src_index);
+                match objtype::wide_of(next) {
+                    Some(v) if v >= c_int::MIN as i64 && v <= c_int::MAX as i64 => {
+                        *(entry.dst as *mut c_int) = v as c_int;
+                    }
+                    _ => {
+                        let key = CStr::from_ptr(entry.key).to_string_lossy().into_owned();
+                        install_result(
+                            interp,
+                            obj::new_string(
+                                format!(
+                                    "expected integer argument for \"{key}\" but got \"{}\"",
+                                    obj::text_of(next)
+                                )
+                                .as_bytes(),
+                            ),
+                        );
+                        return TCL_ERROR;
+                    }
+                }
+                src_index += 1;
+                objc -= 1;
+            }
+            TCL_ARGV_STRING => {
+                if objc == 0 {
+                    return missing_arg(interp, &text);
+                }
+                // The C stores the object's own string rep, which stays alive
+                // as long as the object does; `bytes` is that same storage.
+                *(entry.dst as *mut *const c_char) =
+                    (**objv.offset(src_index)).bytes as *const c_char;
+                src_index += 1;
+                objc -= 1;
+            }
+            TCL_ARGV_REST => {
+                // `TCL_ARGV_AUTO_REST` leaves `dstPtr` NULL, which is the
+                // documented way to ask for the split without recording where
+                // it happened (`:1136-1145`).
+                if !entry.dst.is_null() {
+                    *(entry.dst as *mut c_int) = dst_index as c_int;
+                }
+                rest = true;
+                break;
+            }
+            TCL_ARGV_FLOAT => {
+                if objc == 0 {
+                    return missing_arg(interp, &text);
+                }
+                let next = *objv.offset(src_index);
+                match objtype::double_of(next) {
+                    Some(v) => *(entry.dst as *mut f64) = v,
+                    None => {
+                        let key = CStr::from_ptr(entry.key).to_string_lossy().into_owned();
+                        install_result(
+                            interp,
+                            obj::new_string(
+                                format!(
+                                    "expected floating-point argument for \"{key}\" but got \"{}\"",
+                                    obj::text_of(next)
+                                )
+                                .as_bytes(),
+                            ),
+                        );
+                        return TCL_ERROR;
+                    }
+                }
+                src_index += 1;
+                objc -= 1;
+            }
+            TCL_ARGV_FUNC => {
+                // Tk's own `CopyValue` (`tk9.0.4/generic/tkWindow.c:3167-3174`)
+                // stores the object and answers 1, which consumes it. A handler
+                // answering 0 does not, which is how a flag-shaped option with
+                // an optional value works.
+                let handler: ArgvFuncProc = std::mem::transmute(entry.src);
+                let arg = if objc == 0 {
+                    std::ptr::null_mut()
+                } else {
+                    *objv.offset(src_index)
+                };
+                if handler(entry.client_data, arg, entry.dst) != 0 {
+                    src_index += 1;
+                    objc -= 1;
+                }
+            }
+            TCL_ARGV_GENFUNC => {
+                let handler: ArgvGenFuncProc = std::mem::transmute(entry.src);
+                let taken = handler(
+                    entry.client_data,
+                    interp,
+                    objc,
+                    objv.offset(src_index),
+                    entry.dst,
+                );
+                if taken < 0 {
+                    return TCL_ERROR;
+                }
+                src_index += taken;
+                objc -= taken;
+            }
+            TCL_ARGV_HELP => {
+                // The C prints the table's usage into the result and fails.
+                // Tk's `-help` is exactly this, and a script that asks for it
+                // is asking for the message rather than a window.
+                install_result(interp, obj::new_string(usage_of(arg_table).as_bytes()));
+                return TCL_ERROR;
+            }
+            other => {
+                install_result(
+                    interp,
+                    obj::new_string(
+                        format!("bad argument type {other} in Tcl_ArgvInfo").as_bytes(),
+                    ),
+                );
+                return TCL_ERROR;
+            }
+        }
+    }
+    let _ = rest;
+
+    if !want_leftovers {
+        return TCL_OK;
+    }
+    // Everything after an `--` is a leftover too (`:1222-1225`).
+    for i in 0..objc {
+        leftovers.push(*objv.offset(src_index + i));
+    }
+    *objc_ptr = leftovers.len() as isize;
+    // The caller frees this with `Tcl_Free`, so it has to come from the same
+    // allocator `tcl_alloc` uses. The trailing NULL is the undocumented but
+    // relied-upon terminator the C leaves (`:1226`).
+    let bytes = (leftovers.len() + 1) * std::mem::size_of::<*mut TclObj>();
+    let block = libc::malloc(bytes) as *mut *mut TclObj;
+    for (i, p) in leftovers.iter().enumerate() {
+        *block.add(i) = *p;
+    }
+    *block.add(leftovers.len()) = std::ptr::null_mut();
+    *rem_objv = block;
+    TCL_OK
+}
+
+/// The refusal at `generic/tclIndexObj.c:1236-1238`, which every option type
+/// that needs a value shares.
+unsafe fn missing_arg(interp: *mut c_void, text: &str) -> c_int {
+    install_result(
+        interp,
+        obj::new_string(format!("\"{text}\" option requires an additional argument").as_bytes()),
+    );
+    TCL_ERROR
+}
+
+/// `PrintUsage` (`generic/tclIndexObj.c:1246-…`), reduced to the part a caller
+/// can observe: the option names and their help strings, one per line.
+unsafe fn usage_of(arg_table: *const ArgvInfo) -> String {
+    let mut out = String::from("Command-specific options:");
+    let mut info = arg_table;
+    while !info.is_null() && (*info).type_ != TCL_ARGV_END {
+        let entry = &*info;
+        if !entry.key.is_null() {
+            out.push_str("\n ");
+            out.push_str(&CStr::from_ptr(entry.key).to_string_lossy());
+            if !entry.help.is_null() {
+                out.push_str(": ");
+                out.push_str(&CStr::from_ptr(entry.help).to_string_lossy());
+            }
+        }
+        info = info.add(1);
+    }
+    out
 }

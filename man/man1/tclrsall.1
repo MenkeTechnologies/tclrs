@@ -112,6 +112,20 @@ Most subcommands are answered while compiling, because most of what
 .B info
 asks has a compile-time answer here.
 .TP
+.B Packages
+.BR package ,
+whole: \fBfiles\fR, \fBforget\fR, \fBifneeded\fR, \fBnames\fR, \fBprefer\fR,
+\fBpresent\fR, \fBprovide\fR, \fBrequire\fR, \fBunknown\fR, \fBvcompare\fR,
+\fBversions\fR and \fBvsatisfies\fR, with TIP 268's version normalisation and
+comparison ported from \fBgeneric/tclPkg.c\fR. The registry is shared with the
+\fBTcl_PkgProvideEx\fR a hosted extension calls, so
+.B package require Tk
+in a
+.B \-\-tk
+session is answered by what
+.B Tk_Init
+provided.
+.TP
 .B Lists
 .BR list ", " llength ", " lindex ", " lappend ", " lrange ", " lreverse ", "
 .BR linsert ", " lreplace ", " lsearch ", " lsort ", " join ", " split ", "

@@ -211,14 +211,18 @@ fn drive() -> ExitCode {
     // Only the ordinary run reads stdin a command at a time; every other action
     // wants the whole script before it does anything.
     if let (Action::Run, Source::Stdin) = (&action, &source) {
-        let mut interp = interp_for(&program, script_args);
+        let mut interp = interp_for(&program, script_args, None);
         // A terminal gets the line editor — history, completion, multi-line
         // editing. A pipe gets the plain loop, which prints nothing of its own
         // and is what `tclsh < script` is compared against.
-        return match repl::stdin_is_terminal() {
+        let status = match repl::stdin_is_terminal() {
             true => repl_line::run(&mut interp),
             false => repl::run(&mut interp, false),
         };
+        if status == ExitCode::SUCCESS {
+            tk_main_loop();
+        }
+        return status;
     }
 
     let (src, file) = match &source {
@@ -238,8 +242,17 @@ fn drive() -> ExitCode {
 
     match action {
         Action::Run => {
-            let mut interp = interp_for(file.unwrap_or(&program), script_args);
-            run_source(&mut interp, &src, file)
+            let mut interp = interp_for(file.unwrap_or(&program), script_args, file);
+            let status = run_source(&mut interp, &src, file);
+            // Only a script that succeeded gets the main loop:
+            // `Tcl_Main` guards the call with `exitCode == 0`
+            // (`generic/tclMain.c:589-598`), so a `wish` script that fails
+            // reports the failure and exits rather than leaving its
+            // half-built windows on the screen with nothing to close them.
+            if status == ExitCode::SUCCESS {
+                tk_main_loop();
+            }
+            status
         }
         Action::Aot(out) => report(tclrs::aot::compile_executable(&src, &out)),
         Action::AotObject(out) => report(tclrs::aot::compile_object(&src, &out)),
@@ -290,13 +303,46 @@ fn report(outcome: Result<(), String>) -> ExitCode {
 }
 
 /// An interpreter with `argv0`, `argc` and `argv` set, as `tclsh` sets them.
-fn interp_for(argv0: &str, args: &[String]) -> Interp {
+///
+/// A `--tk` run also opens a Tk session on it before it is handed back, which
+/// is the last moment that can happen: the session is what makes a name Tk has
+/// not registered yet compile to a run-time lookup, and the script is compiled
+/// whole before its first `package require Tk` runs. See
+/// [`tclrs::tk::session`]. Opening one loads nothing — the toolkit is opened by
+/// `package require Tk` and by nothing else.
+fn interp_for(argv0: &str, args: &[String], file: Option<&str>) -> Interp {
     let mut interp = Interp::new();
     interp.set_global("argv0", argv0);
     interp.set_global("argc", args.len().to_string());
     interp.set_global("argv", tclrs::list::join(args));
+    #[cfg(feature = "tk")]
+    if tk_session() {
+        tclrs::tk::session::open(&interp, file);
+    }
+    // The name of the script is a Tk session's business and nothing else's.
+    #[cfg(not(feature = "tk"))]
+    let _ = file;
     interp
 }
+
+/// Sit in Tk's main loop, if the script asked for Tk and Tk is still up.
+///
+/// `wish` does the same thing at the same point: `Tcl_MainLoopProc` is set by
+/// `Tk_Init` (`tk9.0.4/generic/tkWindow.c:3477`) and `Tcl_Main` calls it once
+/// the script has been evaluated and only if the script succeeded
+/// (`generic/tclMain.c:589-598`). It returns when the last main window is
+/// gone, which is what closing the window does — so a Tk application ends the
+/// way a Tk application ends, and a script that never mentioned Tk is
+/// unaffected because nothing registered a main loop.
+#[cfg(feature = "tk")]
+fn tk_main_loop() {
+    if tk_session() {
+        tclrs::tk::session::main_loop();
+    }
+}
+
+#[cfg(not(feature = "tk"))]
+fn tk_main_loop() {}
 
 /// A whole script, evaluated as one. Its first failure ends it.
 fn run_source(interp: &mut Interp, src: &str, file: Option<&str>) -> ExitCode {

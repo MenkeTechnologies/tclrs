@@ -127,7 +127,30 @@ tclrs -c SCRIPT ?arg ...?   run SCRIPT
 tclrs                       read from stdin; a REPL when stdin is a terminal
 tclrs --version             print the version    (also -V)
 tclrs --help                print the usage      (also -h)
+tclrs --tk FILE ?arg ...?   run on the main thread, with Tk available
 ```
+
+`--tk` exists only in a build with the `tk` feature (`cargo build --features
+tk`), and is refused as an unknown option in a default build. It does two
+things: it runs the interpreter on the process main thread — Tk on macOS
+panics otherwise (`tk9.0.4/macosx/tkMacOSXNotify.c:258-272`) — on a 256 MiB
+stack the binary maps itself, and it opens a Tk session before the script is
+compiled, so that a widget command Tk has not registered yet is lowered as a
+run-time lookup rather than as `invalid command name`.
+
+`package require Tk` in a default build is `can't find package Tk`, which is
+what `tclsh` says about a package it cannot locate. In a `--features tk` build
+outside a `--tk` session it names the reason instead — the toolkit is present
+but cannot be initialised off the main thread — rather than claiming it is
+missing.
+
+Nothing is loaded until the script says `package require Tk`. That is what
+`dlopen`s the toolkit, calls `Tk_Init` and registers Tk's commands into the
+interpreter the script is running in; a `--tk` run of a script that never asks
+for Tk never opens the dylib. When the script has finished, the binary enters
+Tk's own main loop if Tk registered one — the same thing `wish` does, and under
+the same condition, which is that the script succeeded
+(`generic/tclMain.c:589-598`).
 
 Shell completion is [`completions/_tclrs`](completions/_tclrs) — put that
 directory on `fpath`. The manual pages are [`man/man1/tclrs.1`](man/man1/tclrs.1) and the all-in-one
@@ -298,6 +321,13 @@ the same binary. `TCLRS_REPL_MODE=vi` picks the REPL's keymap.
 fusevm's own knobs work unchanged: `FUSEVM_JIT_BLOCK_THRESHOLD`,
 `FUSEVM_JIT_TRACE_THRESHOLD`, `FUSEVM_JIT_CACHE_DIR` and `FUSEVM_FFI_DIR`.
 
+A `--features tk` build reads three more. `TCLRS_LIBTK` is the Tk dylib to
+open, instead of the Homebrew paths tried by default. `TCLRS_TK_TRACE` puts the
+stub-call log back on stderr — one line per call into the host, which is the
+probe's instrument and is off in a session because `Tk_Init` alone serves 2726
+of them — along with one `tkinit` line reporting what `Tk_Init` returned.
+`TCLRS_TK_STRINGS` logs the strings that crossed the boundary.
+
 ---
 
 ## [0x03] THE LIBRARY
@@ -357,6 +387,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | The event loop | `after` — `ms`, `ms script`, `idle script`, `cancel`, `info`; `update`, `update idletasks`; `vwait` |
 | Scope | `uplevel`, `upvar #0`, `apply` |
 | Introspection | `info` — `args`, `body`, `commands`, `complete`, `coroutine`, `default`, `exists`, `globals`, `hostname`, `level`, `locals`, `nameofexecutable`, `patchlevel`, `procs`, `script`, `tclversion`, `vars` |
+| Packages | `package` — `files`, `forget`, `ifneeded`, `names`, `prefer`, `present`, `provide`, `require`, `unknown`, `vcompare`, `versions`, `vsatisfies` |
 | Run-time evaluation | `eval`, `source`, `tcl_findLibrary` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
 | Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
@@ -365,6 +396,20 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Channels | `open`, `close`, `gets`, `read`, `flush`, `eof`, `seek`, `tell`, `fconfigure`, and `puts` to a channel; `stdin`, `stdout` and `stderr` |
 
 Command substitution works on any of them.
+
+`package` is ported from `generic/tclPkg.c`, version arithmetic included: TIP
+268's normalisation and comparison, so `9.0` and `9.0.0` are the same version,
+`010` and `10` are the same number, `1.2a3` sorts below `1.2`, and a component
+wider than 64 bits still compares correctly. `tests/package_differential.rs`
+runs a hundred cases through `tclsh` and through this binary and requires the
+completion code and the result string to agree on every one.
+
+Two answers differ from a freshly started `tclsh`, and both are `init.tcl`'s
+doing rather than the command's: `package names` starts empty, because this
+frontend provides nothing about itself, and `package unknown` starts unset,
+because there is no `auto_path` to search. `package files` always answers the
+empty string for the same reason — nothing records which file provided a
+package, since there is no package index to record.
 
 `docs/reference.html` is the same surface as a page, generated rather than
 written: `cargo run --bin gen-docs` renders every command from the compiler's

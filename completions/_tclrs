@@ -5,6 +5,10 @@
 # The options that do not run the script the ordinary way (--aot, --tiers, the
 # dumps) each want a whole script, so they take a file; -c takes the script
 # itself. `(- *)` marks the ones that end the command line.
+#
+# --tk is offered unconditionally, because a completion is read from a file and
+# cannot know whether the binary on this machine was built with the feature.
+# A build without it refuses the option like any other unknown one.
 
 _tclrs() {
   _arguments -s \
@@ -19,6 +23,7 @@ _tclrs() {
     '--dump-tokens[print the parser'\''s lexical output instead of running it]' \
     '--dump-ast[print the parse tree instead of running it]' \
     '--disasm[print the compiled bytecode instead of running it]' \
+    '--tk[run on the main thread, with Tk available to the script]' \
     '*:Tcl script:_files -g "*.tcl"'
 }
 

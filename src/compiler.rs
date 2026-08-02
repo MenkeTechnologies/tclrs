@@ -427,6 +427,14 @@ pub mod ext {
     pub const EVENT_BASE: u16 = SUBSYSTEM_BASE + 2 * BLOCK;
     /// `package`, whose `require Tk` drives Tk's initialisation.
     pub const PKG_BASE: u16 = SUBSYSTEM_BASE + 3 * BLOCK;
+    /// `[line, name, arg …]` with the count in the inline operand — the
+    /// `package` command, whole.
+    ///
+    /// Nothing about it is decided while compiling, not even the argument
+    /// count: every answer depends on a registry that only exists at run time,
+    /// and a `package require` may run an `ifneeded` script, so the op is
+    /// handed the same evaluator [`EVAL`] gets. See [`crate::cmd_package`].
+    pub const PACKAGE: u16 = PKG_BASE;
     /// `expr`'s math functions, `clock`, `file` and `glob`
     /// ([`crate::expr_math`], [`crate::cmd_clock`], [`crate::cmd_file`]).
     pub const MATH_BASE: u16 = SUBSYSTEM_BASE + 4 * BLOCK;
@@ -1159,6 +1167,7 @@ impl Compiler {
         "uplevel",
         "upvar",
         "apply",
+        "package",
     ];
 
     fn command(&mut self, cmd: &Command) -> Result<(), CompileError> {
@@ -1262,6 +1271,11 @@ impl Compiler {
             "upvar" => self.cmd_upvar(args),
             "apply" => self.cmd_apply(args),
             // ── end of the block ────────────────────────────────────────
+            // Asked before the Tk arm below, so that a `--tk` session — where
+            // every unmatched name is lowered as a run-time lookup — still
+            // gets this frontend's own `package` rather than looking for one
+            // Tk never registered.
+            "package" => crate::cmd_package::compile(self, args),
             "regexp" | "regsub" => crate::regexp::compile(self, name, args),
             // The channel ensemble. Ahead of the namespace block below for the
             // same reason every other builtin above is: a builtin name wins
