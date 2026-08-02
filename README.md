@@ -532,7 +532,6 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `upvar`. An alias has to be a live link to a variable of another frame, and a variable here is a frame slot holding a value, with no indirection for one to point through. Reported as the command this frontend does not have, which is what it is | `invalid command name "upvar"` |
 | `coroutine` anywhere but a script's top level or a command substitution in one; a coroutine of a built-in or of anything but one of the script's procedures; `yieldto` at a command that is not a coroutine of the script | `"coroutine" is only supported at the top level of a script, or in a command substitution in one` |
 | `info body`; `info locals` / `level` / `frame`; `info class` / `object`; `info constant` / `consts`; `info functions`; `info loaded`; `info cmdcount` / `cmdtype` / `errorstack` | `info body is not supported yet: a procedure's body is compiled into the enclosing chunk and its source text is not kept` |
-| Arbitrary-precision integers. An `i64` that overflows is an error, and so is the one integer division whose true quotient does not fit (`i64::MIN / -1`) and an integer *literal* or operand that does not fit at all (`expr {99999999999999999999 + 1}`) | `integer value too large to represent` |
 | Input nesting past `parser::MAX_NESTING_DEPTH` — 64_000 command substitutions or array indices deep, well past anything the reference interpreter survives | `too many nested substitutions (infinite loop?)` |
 | Ahead-of-time compilation of a script using `catch` or a coroutine | `ahead-of-time compilation of a script using "catch" is not supported: it needs the driver that only the interpreter has` |
 
@@ -623,7 +622,7 @@ repeated four times.
 and the persistent native-code cache:
 
 ```toml
-fusevm = { version = "0.15.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
+fusevm = { version = "0.17.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
 ```
 
 | Feature | What it adds |

@@ -108,8 +108,25 @@ The
 ensemble (over a variable) and the
 .B dict
 ensemble (over a value).
+.TP
+.B Regular expressions
+.BR regexp ", " regsub .
+The engine is a finite automaton, so back-references and look-ahead are refused
+by name rather than approximated;
+.B switch \-regexp
+and
+.B lsearch \-regexp
+take a pattern too.
+.TP
+.B Introspection
+The
+.B info
+ensemble.
+.TP
+.B Another frame
+.BR eval ", " uplevel ", " apply .
 .PP
-.BR eval ", " puts " and " expr
+.BR puts " and " expr
 complete the set. The generated reference at
 https://menketechnologies.github.io/tclrs/reference.html lists every command,
 every ensemble subcommand with whether it is implemented, and the operator
@@ -132,10 +149,13 @@ and
 which floor toward negative infinity and stay integral for integral operands
 \(em take a frontend extension op.
 .PP
-Integers are 64-bit here where Tcl's are arbitrary-precision: an overflow is an
-error, raised by the numeric hook, rather than a wrapped result. The chunk asks
-fusevm for the overflow-checked lowering so the JIT and the AOT compiler agree
-with the interpreter about it.
+Integers are arbitrary-precision, as Tcl 9's are: an
+.B i64
+that overflows promotes through the numeric hook rather than raising or
+wrapping. The chunk asks fusevm for the overflow-checked lowering, so native
+arithmetic stays in registers on the common path and deopts into the hook when a
+result does not fit \(em which is how the JIT and the AOT compiler agree with the
+interpreter about it.
 .SH "THE REPL"
 A terminal gets a reedline editor. Multi-line editing is decided by the parser
 itself \(em a command with a brace, quote or bracket still open keeps the
@@ -199,10 +219,15 @@ or
 .SH COMPILATION
 .TP
 .B JIT
-Every VM arms fusevm's three tiers. A hot loop inside a procedure reaches a
-compiled trace, because its variables are frame slots; the same loop at a
-script's top level reaches nothing, because a top-level variable is a VM
-global.
+Every VM arms fusevm's three tiers. Every counted loop reaches a compiled trace,
+whether its counter is a procedure's frame slot or a script's top-level VM
+global \(em fusevm promotes the globals a trace references to registers at entry
+and spills them at every exit. What a loop still fails on is an extension op in
+its body, which is why
+.B foreach
+and
+.B "dict for"
+reach nothing.
 .B \-\-tiers
 reports which tiers a given script actually reached, rather than asserting it.
 .TP
@@ -219,16 +244,14 @@ A construct that is not built yet is refused by name \(em
 .RI \(dq " ... " \(dq
 .B is not supported yet
 \(em rather than silently misread. That includes
-.BR "string wordend" / wordstart ,
-the
+.BR "string wordend" / wordstart
+past ASCII, the
 .B array
 search-token subcommands,
 several
 .B dict
-subcommands, every
-.B info
-subcommand but
-.BR coroutine ,
+subcommands,
+.BR "info body" / locals / level / frame ,
 .B switch \-matchvar
 and
 .B return \-code
@@ -236,6 +259,11 @@ other than
 .B ok
 or
 .BR error .
+Whole commands that are not built \(em
+.BR upvar ", " namespace ", " open
+and the rest of channel IO, and every
+.B expr
+math function \(em are refused by name as well.
 .SH TESTING
 Every program in the differential suites is executed by both
 .BR tclsh (1)

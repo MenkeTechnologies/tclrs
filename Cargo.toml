@@ -58,11 +58,14 @@ path = "src/bin/gen_docs.rs"
 [dependencies]
 # Execution and codegen live in fusevm; this crate only lowers to its ops.
 #
-# 0.15.0 is the floor: the tracing tier compiles a loop over VM *globals* there,
+# 0.17.0 is the floor. 0.15.0 gave the tracing tier a loop over VM *globals*,
 # which is what a Tcl script's top-level loop is made of — before it, only a
-# loop whose counter was a procedure's frame slot reached native code. It is
-# also where coroutines' halt-and-request mechanism and `VM::clear_halt` live,
-# which the driver resumes a parked VM with.
+# loop whose counter was a procedure's frame slot reached native code — and it
+# is also where coroutines' halt-and-request mechanism and `VM::clear_halt`
+# live, which the driver resumes a parked VM with. 0.17.0 adds the *sited*
+# numeric hook, which carries the arithmetic's chunk identity and op index, so
+# `incr` and `expr` report their own wording off the same `GetVar / LoadInt /
+# Add` without either read stopping being a native op.
 #
 # `jit` is fusevm's three-tier Cranelift JIT (linear / block / tracing);
 # `jit-disk-cache` adds the persistent on-disk cache of compiled native code
