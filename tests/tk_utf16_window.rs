@@ -161,10 +161,19 @@ fn tk_init_returns_rather_than_stopping_on_a_missing_slot() {
         out.contains("tkhost Tk_Init returned 1 "),
         "expected an observed return code, got {out:?}"
     );
-    // Which is TCL_ERROR, and the reason is this crate's compiler rather than
+    // Which is TCL_ERROR, and the reason is this crate's frontend rather than
     // anything Tk asked for. See the module docs on `tclrs::tk`.
+    //
+    // It used to be the compiler refusing `proc tkInit {}` inside an `if`, and
+    // it is now the *first command that script evaluates*: `namespace`, in the
+    // condition of that same `if`. The `proc` compiles and binds its name when
+    // the branch runs (`crate::procs`), so what stops `Tk_Init` is the three
+    // commands the script needs and this frontend does not have —
+    // `namespace`, `rename`, `tcl_findLibrary`. The call and slot counts below
+    // did not move with it: the whole failure is on this side of the stub
+    // table, so Tk asked for exactly what it asked for before.
     assert!(
-        out.contains("is only supported at the top level of a script"),
+        out.contains(r#"invalid command name \"namespace\""#),
         "the failure moved: {out:?}"
     );
     let calls = err.lines().filter(|l| l.starts_with("tkslot ")).count();

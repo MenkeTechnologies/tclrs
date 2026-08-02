@@ -246,11 +246,15 @@ cached under `~/.cache/fusevm/ffi` by the SHA-256 of the block's body
 rustc.
 
 **Registration happens while compiling, not while running.** This frontend
-resolves dispatch at compile time — a name is a builtin, a procedure, a
-coroutine, or an error before the VM starts — so the block is compiled and
+resolves dispatch at compile time wherever the script's own text decides it — a
+name is a builtin, a top-level procedure, a coroutine, an exported Rust
+function, or unknown before the VM starts — so the block is compiled and
 registered as its command is lowered, which is what makes `add` a known name by
 the next line. A procedure of the same name still wins: dispatch asks the
-script's own definitions first.
+script's own definitions first. The two kinds of name the text cannot decide —
+a procedure defined by a `proc` away from the top level, and a command Tk
+registers during `Tk_Init` — resolve in a run-time command table instead; see
+[Procedures](#procedures).
 
 Signatures are fusevm's marshalling set: up to four `i64` arguments returning
 `i64`, up to three `f64` returning `f64`, and `*const c_char` returning either
@@ -451,6 +455,27 @@ one value per formal — filling in defaults and collecting a trailing `args`
 there rather than in the body. `global` moves a named variable back to the
 global table for the body that declared it.
 
+A `proc` that is **not** at the script's top level — inside an `if`, a loop, a
+command substitution, or another procedure's body — is compiled the same way and
+bound differently. Its body is lowered where it stands, behind a jump, with the
+same prologue and the same slots; what changes is that the *name* is bound when
+the `proc` command runs, by an extension op, rather than while the script is
+compiled. So `if {0} {proc f {} {}}` leaves `f` an `invalid command name`, a
+definition inside a taken branch replaces whatever the name meant before it, and
+a procedure that defines another defines it for good once it has run — which is
+what tclsh does, and what `tests/proc_differential.rs` compares against tclsh
+line by line.
+
+Calls follow the definition. A name the compiler can resolve keeps its direct
+`Op::Call`; a name some conditional `proc` defines resolves in a run-time
+command table instead, at every call site in the script — including the ones
+written above the definition, and including a name a top-level `proc` also
+claims, because only run time knows which definition ran last. The compiler
+learns which names those are in its first pass and lowers their call sites in
+the second, so a script with no conditional `proc` compiles in one pass and its
+call sites are byte-identical to what they were. `bench/counted_loop_proc.tcl`
+is unchanged by all of it: 28 ops, one `Op::Call`, `traced=true`.
+
 ### Coroutines
 
 A coroutine is a second `fusevm::VM` over the same chunk. `coroutine name cmd
@@ -497,7 +522,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `string` subcommands outside the implemented set; `string is -failindex` | `"string wordend" is not supported yet` |
 | `format` conversions outside the implemented set | `the "%n" conversion is not supported yet` |
 | `lsearch -regexp` / `-sorted` / `-dictionary` / `-nocase` / `-index` / `-stride` / `-subindices` / `-bisect`; `lsort -command` / `-dictionary` / `-index` / `-nocase` / `-stride`. `-increasing` and `-decreasing` *are* taken: they only describe the order `-sorted` and `-bisect` search in, so the two that read it name it — `lsearch -sorted -increasing is not supported yet` | `lsearch -regexp is not supported yet` |
-| `proc` anywhere but a script's top level; redefining a built-in; redefining a procedure; a procedure and a coroutine of the same name | `"proc" is only supported at the top level of a script` |
+| Redefining a built-in — including from a `proc` away from the top level; redefining a procedure *at the top level*; a procedure and a coroutine of the same name | `redefining the built-in command "set" is not supported` |
 | `return` outside a procedure; `return` or `break` or `continue` out of a `catch` script; `return -code` other than `ok` or `error`; `return`'s other options | `"return" outside of a procedure is not supported` |
 | `catch`'s third (options-variable) argument; `error`'s `info` and `code` arguments | `… the options variable is not supported` |
 | `eval` inside a procedure body | `"eval" inside a procedure is not supported: the script it builds cannot reach the procedure's local variables` |

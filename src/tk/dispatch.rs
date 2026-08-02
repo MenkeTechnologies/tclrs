@@ -18,20 +18,27 @@
 //!
 //! # The shape of the answer
 //!
-//! One extension op, [`crate::compiler::ext::TK_DISPATCH`], and it is emitted
-//! under exactly one condition: the name matched nothing at compile time *and*
-//! a Tk interpreter exists in this process. Both halves matter.
+//! One extension op, [`crate::compiler::ext::DYN_CALL`], shared with the other
+//! kind of name this frontend cannot resolve while compiling — a procedure
+//! defined by a `proc` that is not at a script's top level (see
+//! [`crate::procs`]). The op is one run-time lookup over two tables, procedures
+//! first; this module owns the second one.
 //!
-//! * A process that never loaded Tk never emits it, so every script that
-//!   compiled before this existed compiles to the same bytecode now —
-//!   including `bench/counted_loop_proc.tcl`, whose trace eligibility is what
-//!   the tiers report measures.
+//! A *Tk* name reaches it under exactly one condition: the name matched nothing
+//! at compile time *and* a Tk interpreter exists in this process. Both halves
+//! matter.
+//!
+//! * A process that never loaded Tk never emits it for an unknown name, so
+//!   every script that compiled before this existed compiles to the same
+//!   bytecode now — including `bench/counted_loop_proc.tcl`, whose trace
+//!   eligibility is what the tiers report measures.
 //! * A name that *is* a builtin never reaches it, so no builtin becomes
 //!   dynamic and no hot loop grows an extension op it did not have.
 //!
-//! When the op runs and finds nothing registered under the name, it raises the
-//! error the compiler would have deferred — same wording, same script line —
-//! which is why the fallback is not a second, weaker diagnosis.
+//! When the op runs and finds nothing registered under the name in either
+//! table, it raises the error the compiler would have deferred — same wording,
+//! same script line — which is why the fallback is not a second, weaker
+//! diagnosis.
 //!
 //! # What "calling a C command" means
 //!
@@ -51,14 +58,12 @@
 
 use std::ffi::{c_int, c_void};
 
-use fusevm::{Op, Value, VM};
+use fusevm::Value;
 
 use super::abi::{TclObj, TCL_OK};
 use super::host;
 use super::interp;
-use crate::compiler::{ext, CompileError, Compiler};
-use crate::parser::Word;
-use crate::runtime::{to_tcl_string, TclError};
+use crate::runtime::to_tcl_string;
 
 /// Whether a Tk interpreter exists in this process at all.
 ///
@@ -139,11 +144,14 @@ pub unsafe fn invoke_objv(
 /// Call the registered command `name` with tclrs values, and give back what it
 /// left as the interpreter result.
 ///
+/// The fallback half of [`crate::compiler::ext::DYN_CALL`], reached once the
+/// run-time procedure table has answered that it knows no such name.
+///
 /// The words are `Tcl_Obj`s built here: retained before the call because a
 /// command may keep one (`Tcl_IncrRefCount` is a macro over `refCount`,
 /// `generic/tcl.h:2517-2519`, so a command that keeps one has already written
 /// to it by the time this returns), released after.
-fn call(name: &str, args: &[Value]) -> Result<String, String> {
+pub(crate) fn invoke(name: &str, args: &[Value]) -> Result<String, String> {
     let interp_ptr = interp::current() as *mut c_void;
     if interp_ptr.is_null() {
         return Err(format!("invalid command name \"{name}\""));
@@ -163,60 +171,5 @@ fn call(name: &str, args: &[Value]) -> Result<String, String> {
             TCL_OK => Ok(result),
             _ => Err(result),
         }
-    }
-}
-
-/// [`ext::TK_DISPATCH`]: the operands are the script line, the command name and
-/// then the arguments, in the order the compiler pushed them.
-///
-/// The line rides on the stack because the failure this op can produce is the
-/// one the compiler used to defer, and that one is *located* — dropping the
-/// line would turn `(file "x.tcl" line 7)` into a message with no place, which
-/// a differential test against tclsh would notice.
-pub fn extension(vm: &mut VM, argc: u8) -> Result<(), TclError> {
-    let mut values = Vec::with_capacity(argc as usize);
-    for _ in 0..argc {
-        values.push(vm.pop());
-    }
-    values.reverse();
-    let line = match values.first() {
-        Some(Value::Int(n)) => *n as usize,
-        _ => 0,
-    };
-    let name = to_tcl_string(&values[1]);
-    match call(&name, &values[2..]) {
-        Ok(result) => {
-            vm.push(Value::Str(std::sync::Arc::new(result)));
-            Ok(())
-        }
-        Err(msg) => Err(TclError {
-            msg,
-            line: Some(line),
-        }),
-    }
-}
-
-impl Compiler {
-    /// A call to a command that may be registered by the time this runs: the
-    /// line, the name, then the arguments, then the op that pops all of them.
-    ///
-    /// The arguments are lowered exactly as any other command's are, so a
-    /// command substitution inside one still runs before the dispatch — and
-    /// still runs even when the dispatch then fails, which is the order Tcl
-    /// substitutes in and the order `Compiler::defer` already preserved.
-    pub(crate) fn call_foreign(&mut self, name: &str, args: &[Word]) -> Result<(), CompileError> {
-        let count = u8::try_from(args.len() + 2)
-            .map_err(|_| self.err(format!("more than 253 arguments to the command \"{name}\"")))?;
-        self.push_value(Value::Int(self.command_line as i64));
-        self.push_str(name);
-        for arg in args {
-            self.word(arg)?;
-        }
-        // The op consumes the line, the name and every argument, and leaves the
-        // command's value: `count` off the stack for one on. The two operands
-        // the compiler synthesised are part of that count, so the depth this
-        // reports is one deeper than a call with the name alone would be.
-        self.emit(Op::Extended(ext::TK_DISPATCH, count), 1 - count as i32);
-        Ok(())
     }
 }

@@ -25,14 +25,44 @@
 //! parameter the caller omitted and folds any surplus arguments into the
 //! variadic `args` list. The callee then always receives exactly one value per
 //! formal parameter, which is what makes the fixed prologue above correct.
+//!
+//! ## A `proc` that is not at the script's top level
+//!
+//! Everything above needs the callee's name and signature while the *caller* is
+//! being compiled. A `proc` inside an `if`, a loop or another procedure's body
+//! does not supply them: in tclsh the command starts answering when the
+//! defining code runs, and not before. Measured against tclsh 9.0.4:
+//!
+//! ```text
+//! if {0} {proc f {} {}} ; f       → invalid command name "f"
+//! if {1} {proc f {} {}} ; f       → runs
+//! proc f {} {return one}
+//! if {1} {proc f {} {return two}} ; f   → two
+//! if {1} {proc f {a b} {}} ; f 1   → wrong # args: should be "f a b"
+//! proc outer {} {proc inner {} {…}}     → `inner` exists only after `outer` ran
+//! ```
+//!
+//! So the body is compiled where it stands — behind a jump, with the same
+//! prologue, reaching the same tiers — and the *name* is bound separately, by
+//! [`ext::PROC_DEFINE`], when control reaches the `proc` command. A call to a
+//! name bound that way is [`ext::DYN_CALL`], which resolves in the run-time
+//! command table and does the argument adapting the compiler would have done.
+//!
+//! Compile-time resolution is untouched by any of this. A `proc` at the
+//! script's top level still registers a `Chunk` sub-entry, its calls are still
+//! `Op::Call(name_idx, n)` with the actuals arranged by the call site, and
+//! `bench/counted_loop_proc.tcl` still trace-compiles. The run-time path is
+//! reached only for a name whose definition is conditional, which the compiler
+//! learns in its first pass (see [`crate::compiler::compile`]).
 
 use std::collections::HashMap;
 
-use fusevm::Op;
+use fusevm::{Frame, Op, Value, VM};
 
-use crate::compiler::{ext, CompileError, Compiler, Scope};
+use crate::compiler::{ext, literal_value, CompileError, Compiler, Scope};
 use crate::list;
 use crate::parser::{Script, Word};
+use crate::runtime::{to_tcl_string, Shared, TclError};
 
 /// One formal parameter of a procedure.
 #[derive(Clone, PartialEq, Eq)]
@@ -157,18 +187,182 @@ pub fn prescan(procs: &mut HashMap<String, Signature>, script: &Script) {
     }
 }
 
+// ── the run-time command table ───────────────────────────────────────────
+
+/// A procedure whose name was bound while the script was running.
+///
+/// The entry point is an op index, which only means anything inside the chunk
+/// it was taken from — so the chunk it came from is recorded with it. A nested
+/// `eval` runs a chunk of its own; a procedure it defined has an entry point
+/// that indexes nothing here, and jumping to it would run whichever op happens
+/// to sit at that index. `Chunk::op_hash` is `#[serde(skip)]`, so it is 0 for
+/// every chunk an ahead-of-time binary deserialized: the op count is kept
+/// alongside it so that identity is not resting on one field that can be zero.
+#[derive(Clone)]
+pub(crate) struct RuntimeProc {
+    chunk: ChunkKey,
+    entry: usize,
+    sig: Signature,
+}
+
+type ChunkKey = (u64, usize);
+
+fn chunk_key(chunk: &fusevm::Chunk) -> ChunkKey {
+    (chunk.op_hash, chunk.ops.len())
+}
+
+/// [`ext::PROC_DEFINE`]: bind `name` to the body at `entry`, as the `proc`
+/// command that is running says to.
+///
+/// The argument list arrives as the text the script wrote, and is parsed here
+/// rather than carried as a structure, because this is the one place a
+/// signature is needed at run time and the text is already a chunk constant.
+/// It parsed once at compile time, which is where a malformed one is reported;
+/// the refusal is repeated rather than assumed away.
+pub(crate) fn define_op(interp: &Shared, vm: &mut VM) -> Result<(), TclError> {
+    let entry = vm.pop();
+    let spec = to_tcl_string(&vm.pop());
+    let name = to_tcl_string(&vm.pop());
+    let entry = match entry {
+        Value::Int(n) if n >= 0 && (n as usize) < vm.chunk.ops.len() => n as usize,
+        other => {
+            return Err(TclError::plain(format!(
+                "procedure \"{name}\" has no body at {}",
+                to_tcl_string(&other)
+            )))
+        }
+    };
+    let sig = parse_signature(&name, &spec).map_err(TclError::plain)?;
+    let defined = RuntimeProc {
+        chunk: chunk_key(&vm.chunk),
+        entry,
+        sig,
+    };
+    interp
+        .lock()
+        .expect("interpreter lock")
+        .commands
+        .insert(name, defined);
+    // `proc` itself evaluates to the empty string.
+    vm.push(Value::Str(std::sync::Arc::new(String::new())));
+    Ok(())
+}
+
+/// [`ext::DYN_CALL`]: the operands are the script line, the command name and
+/// then the arguments, in the order the compiler pushed them.
+///
+/// The line rides on the stack because the failures this op can produce are the
+/// ones the compiler used to decide, and those are *located* — dropping the line
+/// would turn `(file "x.tcl" line 7)` into a message with no place, which a
+/// differential test against tclsh would notice.
+pub(crate) fn call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
+    let mut values = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        values.push(vm.pop());
+    }
+    values.reverse();
+    let line = match values.first() {
+        Some(Value::Int(n)) => *n as usize,
+        _ => 0,
+    };
+    let name = to_tcl_string(&values[1]);
+    let args = &values[2..];
+
+    // The lock is released before control moves: entering the body runs
+    // arbitrary Tcl, which may define another procedure or `eval` a script,
+    // and both of those want this same lock.
+    let defined = {
+        let state = interp.lock().expect("interpreter lock");
+        state.commands.get(&name).cloned()
+    };
+    let outcome = match defined {
+        // A procedure the script defined shadows a foreign command of the same
+        // name, which is the order tclsh resolves in.
+        Some(p) if p.chunk == chunk_key(&vm.chunk) => enter(vm, &name, &p, args),
+        _ => foreign(vm, &name, args),
+    };
+    outcome.map_err(|msg| TclError {
+        msg,
+        line: Some(line),
+    })
+}
+
+/// Enter a procedure's body, having arranged the actual arguments the way its
+/// prologue expects them.
+///
+/// This is [`Compiler::push_actuals`] at run time and it makes the same three
+/// decisions: refuse an argument count the signature does not admit, supply a
+/// default for each omitted parameter, and fold the surplus into `args`. The
+/// frame is the one `Op::Call` would have pushed — `stack_base` beneath the
+/// formals, so `Op::ReturnValue` truncates back past them — and `vm.ip` is
+/// already the op after this one, which is where the body returns to.
+fn enter(vm: &mut VM, name: &str, p: &RuntimeProc, args: &[Value]) -> Result<(), String> {
+    let sig = &p.sig;
+    let fixed = sig.fixed();
+    if args.len() < sig.required || (!sig.variadic && args.len() > fixed) {
+        return Err(format!("wrong # args: should be \"{}\"", sig.usage(name)));
+    }
+    let base = vm.stack.len();
+    for i in 0..fixed {
+        let value = match args.get(i) {
+            Some(v) => v.clone(),
+            // `required` guarantees the omitted parameters have defaults.
+            None => {
+                let default = sig.params[i]
+                    .default
+                    .as_deref()
+                    .expect("defaulted parameter");
+                literal_value(default)
+            }
+        };
+        vm.push(value);
+    }
+    if sig.variadic {
+        let rest: Vec<String> = args[fixed.min(args.len())..]
+            .iter()
+            .map(to_tcl_string)
+            .collect();
+        vm.push(Value::Str(std::sync::Arc::new(list::join(&rest))));
+    }
+    vm.frames.push(Frame {
+        return_ip: vm.ip,
+        stack_base: base,
+        slots: Vec::new(),
+    });
+    vm.ip = p.entry;
+    Ok(())
+}
+
+/// A name no procedure answers to: a command Tk registered, or nothing.
+///
+/// Without the `tk` feature there is no second table to consult, and the answer
+/// is the `invalid command name` the compiler used to defer — same wording,
+/// same line.
+fn foreign(vm: &mut VM, name: &str, args: &[Value]) -> Result<(), String> {
+    #[cfg(feature = "tk")]
+    {
+        let result = crate::tk::dispatch::invoke(name, args)?;
+        vm.push(Value::Str(std::sync::Arc::new(result)));
+        Ok(())
+    }
+    #[cfg(not(feature = "tk"))]
+    {
+        let _ = (vm, args);
+        Err(format!("invalid command name \"{name}\""))
+    }
+}
+
 impl Compiler {
     /// `proc name args body`.
     pub(crate) fn cmd_proc(&mut self, args: &[Word]) -> Result<(), CompileError> {
         let [name_w, spec_w, body_w] = args else {
             return self.error("wrong # args: should be \"proc name args body\"");
         };
-        if !self.top_level {
-            // A nested `proc` defines its procedure only when the enclosing
-            // code runs, whereas this compiler would register it whether that
-            // code is reached or not.
-            return self.error("\"proc\" is only supported at the top level of a script");
-        }
+        // A `proc` the script's own text runs exactly once binds its name while
+        // this compiler is running, so its calls can be `Op::Call`. Anywhere
+        // else the binding is an event at run time, and both halves of that —
+        // the definition and every call — go through the run-time table.
+        let at_top = self.top_level;
         let name = self.literal_of(name_w, "procedure name")?.to_string();
         if Compiler::BUILTINS.contains(&name.as_str()) {
             return self.error(format!(
@@ -186,7 +380,18 @@ impl Compiler {
             Ok(sig) => sig,
             Err(msg) => return self.error(msg),
         };
-        if !self.defined.insert(name.clone()) {
+        if !at_top {
+            // Recorded for the next pass, which is what turns every call to
+            // this name — including the ones already compiled above it — into a
+            // run-time lookup. A definition in a branch that is never taken is
+            // recorded too: the name being *conditional* is the fact that
+            // matters, not whether the condition holds.
+            self.seen_runtime.insert(name.clone());
+        } else if !self.defined.insert(name.clone()) {
+            // Only a top-level definition claims the name at compile time, so
+            // only a second top-level one is a redefinition this compiler
+            // cannot represent. A conditional one is not: it replaces the
+            // command when it runs, which the run-time table does model.
             return self.error(format!(
                 "procedure \"{name}\" is redefined, which is not supported"
             ));
@@ -198,7 +403,12 @@ impl Compiler {
                 ))
             })?
             .into();
-        self.procs.insert(name.clone(), sig.clone());
+        if at_top {
+            // The signature a call site needs in order to arrange the actuals
+            // itself. A conditional definition supplies it at run time instead,
+            // out of the argument-list text [`ext::PROC_DEFINE`] carries.
+            self.procs.insert(name.clone(), sig.clone());
+        }
         // A body that will not parse is still a definition: tclsh compiles a
         // procedure's body when it is first called, so `proc p {} {puts "x}`
         // with `p` never called runs to completion there. The failure becomes
@@ -240,10 +450,53 @@ impl Compiler {
 
         let after = self.b.current_pos();
         self.b.patch_jump(skip, after);
-        let name_idx = self.b.add_name(&name);
-        self.b.add_sub_entry(name_idx, entry);
-        // `proc` itself evaluates to the empty string.
-        self.push_empty();
+        if at_top {
+            // The address book `Op::Call` and `coroutine` resolve through. Only
+            // a top-level definition earns one: two conditional definitions may
+            // share a name, and `Chunk::find_sub` answers with the first entry
+            // registered under it, which would send both calls to one body.
+            let name_idx = self.b.add_name(&name);
+            self.b.add_sub_entry(name_idx, entry);
+        }
+        // A top-level definition needs a run-time binding too when some *other*,
+        // conditional definition claims the same name: every call to that name
+        // has become a lookup, so the table has to be able to answer with this
+        // body — and to answer with it only from the moment this command runs.
+        let bind_when_it_runs = !at_top || self.runtime.contains(&name);
+        if !bind_when_it_runs {
+            // `proc` itself evaluates to the empty string.
+            self.push_empty();
+            return Ok(());
+        }
+        self.push_str(&name);
+        self.push_str(&spec);
+        self.push_value(Value::Int(entry as i64));
+        // Three operands off the stack for `proc`'s own empty result on.
+        self.emit(Op::Extended(ext::PROC_DEFINE, 3), -2);
+        Ok(())
+    }
+
+    /// A call to a command whose name is resolved when the call runs: a
+    /// procedure some conditional `proc` defines, or a command Tk registered.
+    ///
+    /// The line, the name, then the arguments, then the op that pops all of
+    /// them. The arguments are lowered exactly as any other command's are, so a
+    /// command substitution inside one still runs before the dispatch — and
+    /// still runs even when the dispatch then fails, which is the order Tcl
+    /// substitutes in and the order [`Compiler::defer`] already preserved.
+    pub(crate) fn call_runtime(&mut self, name: &str, args: &[Word]) -> Result<(), CompileError> {
+        let count = u8::try_from(args.len() + 2)
+            .map_err(|_| self.err(format!("more than 253 arguments to the command \"{name}\"")))?;
+        self.push_value(Value::Int(self.command_line as i64));
+        self.push_str(name);
+        for arg in args {
+            self.word(arg)?;
+        }
+        // The op consumes the line, the name and every argument, and leaves the
+        // command's value: `count` off the stack for one on. The two operands
+        // the compiler synthesised are part of that count, so the depth this
+        // reports is one deeper than a call with the name alone would be.
+        self.emit(Op::Extended(ext::DYN_CALL, count), 1 - count as i32);
         Ok(())
     }
 
