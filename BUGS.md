@@ -220,6 +220,18 @@ approximated, and nothing is silently mis-run.
   (`src/rust_ffi.rs`, `tests/rust_ffi.rs`). The signatures are fusevm's
   marshalling set: up to four `i64` returning `i64`, up to three `f64`
   returning `f64`, and `*const c_char` returning `i64` or `*const c_char`.
+- **Channels.** The generic layer of `generic/tclIO.c` — the name table, the
+  reference count, the encoding, the end-of-line translation, the buffering
+  mode and the end-of-file rule — with one driver per channel
+  (`src/cmd_channel.rs`). `open`, `close`, `gets`, `read`, `puts` to a channel,
+  `flush`, `eof`, `seek`, `tell` and `fconfigure`, plus `stdin`, `stdout` and
+  `stderr`. A file channel's name is `file` followed by its descriptor number,
+  as `unix/tclUnixChan.c:1845` builds it. `-translation` takes `auto`, `binary`,
+  `cr`, `lf`, `crlf` and `platform` on each side independently; `-encoding`
+  takes `utf-8` and `iso8859-1`; `-buffering` takes `full`, `line` and `none`.
+  The C side is `src/tk/channel.rs`: thirty-seven `TclStubs` slots including
+  `Tcl_CreateChannel`, which takes a `Tcl_ChannelType` — Tk's own table of
+  driver procs — and calls into it thereafter.
 - **The rest of the toolchain.** `--disasm`, `--dump-tokens` and `--dump-ast`
   print the bytecode, the lexical output and the parse tree; the zsh completion
   is `completions/_tclrs`; the manual pages are `man/man1/tclrs.1` and the
@@ -270,6 +282,30 @@ approximated, and nothing is silently mis-run.
   as `string is wordchar` does. Measured against tclsh: `a²b` is three words
   because U+00B2 is `No` and not `Nd`, and `a‿b` is one because U+203F is `Pc` —
   neither is derivable from what Rust's standard library exposes.
+- **Command pipelines and sockets.** `open |command` is refused rather than
+  read as a file whose name begins with a pipe, and there is no socket driver,
+  so `Tcl_OpenCommandChannel` and `Tcl_MakeTcpClientChannel` have no body.
+- **Stacked channels.** `Tcl_StackChannel` (`generic/tclIO.c:1796`) puts one
+  driver on top of another and is what `zlib push` and `tls` are built from;
+  every `topChanPtr` / `bottomChanPtr` hop in `tclIO.c` exists for it. There is
+  one driver per channel here, and the four stacking slots are traps.
+- **Non-blocking channels.** `fconfigure -blocking 0` is refused rather than
+  accepted and ignored: a channel that reports itself non-blocking and then
+  blocks is worse than one that says it cannot. Background flushing and the
+  `BG_FLUSH_SCHEDULED` machinery go with it.
+- **Channel encodings beyond `utf-8` and `iso8859-1`,** which are what the
+  channel default and `-translation binary` need. `Tcl_GetEncoding`'s table of
+  the rest is not ported and a name outside the two is refused by name.
+  `fconfigure -eofchar` and `-profile` are reported at their defaults and
+  refused when set.
+- **Half-closing a read-write channel.** `close $chan read` on a channel with
+  both sides open needs a driver whose `close2Proc` honours `TCL_CLOSE_READ`
+  (`generic/tcl.h:1369-1370`), and no device here has one — tclsh's own file
+  driver has not either. `close $chan read` on a channel that only has a read
+  side is a plain close, as it is in tclsh.
+- **The POSIX list form of an access mode.** `open $f {WRONLY CREAT TRUNC}`
+  (`generic/tclIOUtil.c:1540-1600`) is refused by name; the `r`/`r+`/`w`/`w+`/
+  `a`/`a+` strings are implemented.
 - **`switch -matchvar` and `-indexvar`.** Named rather than reported as bad
   options, because `switch` does have them. Both hand the match and its indices
   back through a variable, which the `switch` lowering has nowhere to put:
@@ -684,6 +720,15 @@ fixes this.
   here and `max size for a Tcl value exceeded` under tclsh. The *precision* in the
   same position saturates and reports tclsh's message
   (`cmd_string::format`); the width still parses and fails.
+
+- **`puts` with no channel does not go through the channel table.** `close
+  stdout` makes `puts stdout hi` report `can not find channel named "stdout"`,
+  the same as tclsh, but bare `puts hi` still prints: it lowers to `ext::PUTS`,
+  which writes to the interpreter's output sink directly. That op exists to keep
+  the common `puts` off the channel path — the whole family is extension ops
+  that stop a JIT trace — and routing it through the table would cost a lookup
+  on every write to buy a case that only `close stdout` reaches. Named here
+  rather than hidden.
 
 ### Reached by the widened generator
 

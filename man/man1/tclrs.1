@@ -113,7 +113,13 @@ the
 ensemble, and the list commands
 .RB ( list ", " llength ", " lindex ", " lappend ", " lrange ", " lreverse ", "
 .BR linsert ", " lreplace ", " lsearch ", " lsort ", " join ", " split ", "
-.BR concat ).
+.BR concat ),
+and the channel commands
+.RB ( open ", " close ", " gets ", " read ", " flush ", " eof ", " seek ", "
+.BR tell ", " fconfigure ),
+which
+.B puts
+also takes a channel for.
 .PP
 All twelve parsing rules: braces, quotes, backslash substitution, command
 substitution, variable and array-element substitution, and comments. Rule 5,

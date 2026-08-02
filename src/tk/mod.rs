@@ -28,6 +28,8 @@
 //!   fields of directly.
 //! * [`hash`] — `Tcl_HashTable`, which Tk allocates itself and calls into
 //!   directly, so it cannot live behind the table.
+//! * [`channel`] — the channel slots, and the `Tcl_ChannelType` driver table
+//!   Tk supplies and this side calls *into*.
 //! * [`trace`] — the recorder that turns a call into a line of output.
 //! * [`host`] — the interpreter Tk is handed and the slots implemented so far.
 //! * [`interp`] — one [`crate::runtime::Interp`] behind every `Tcl_Interp *`,
@@ -73,11 +75,12 @@
 //!   matches the source: the three mentions of `TclIntStubs` functions in Tk are
 //!   all inside comments.
 //!
-//! # Three things the stub table does not cover
+//! # Four things the stub table does not cover
 //!
 //! Reading the header's function list suggests Tk can be satisfied by supplying
-//! 691 functions. It cannot. Three data structures are shared by *layout*, and
-//! Tk operates on them with macros that never reach the table:
+//! 691 functions. It cannot. Four data structures are shared by *layout*.
+//! Tk operates on three of them with macros that never reach the table, and
+//! hands the fourth over for the host to call back through:
 //!
 //! 1. **`Tcl_Obj`.** `Tcl_IncrRefCount`, `Tcl_DecrRefCount` and `Tcl_IsShared`
 //!    read and write `objPtr->refCount` in place (`generic/tcl.h:2517-2534`),
@@ -91,7 +94,12 @@
 //!    function pointers stored inside the caller's own table
 //!    (`generic/tcl.h:2607-2610`), so a host has to implement Tcl's hash table,
 //!    not just answer questions about it. See [`hash`].
-//! 3. **`Tcl_DString`, `Tcl_CmdInfo`, `Tcl_Time`, `Tcl_Namespace`,
+//! 3. **`Tcl_ChannelType`.** A driver is a table of Tk's own function pointers
+//!    (`generic/tcl.h:1445-1494`) handed to `Tcl_CreateChannel`, and the host
+//!    calls *into* it on every read, write and close — the only place the
+//!    boundary runs that way round. Tk's console is one
+//!    (`tk9.0.4/generic/tkConsole.c:66-84`). See [`channel`].
+//! 4. **`Tcl_DString`, `Tcl_CmdInfo`, `Tcl_Time`, `Tcl_Namespace`,
 //!    `Tcl_DictSearch`.** Declared by Tk on its own stack; `Tcl_DStringValue`
 //!    and `Tcl_DStringLength` are field accesses (`generic/tcl.h:892-893`).
 //!    See [`dstring`].
@@ -122,7 +130,19 @@
 //! `cargo run --features tk --bin tk-host` against the same library, with the
 //! object layer, the evaluator and the notifier all behind the table: **2726
 //! calls over 71 distinct slots**, and `Tk_Init` *returns* — it does not stop
-//! on a missing slot at any point. 142 of the 691 `TclStubs` slots have bodies.
+//! on a missing slot at any point. 179 of the 691 `TclStubs` slots have bodies.
+//!
+//! That measurement is of the run whose **stdin is a pipe**, and stdin decides
+//! which of two branches `TkpInit` takes. With stdin on `/dev/null` — a
+//! character device with no blocks, which is what a test harness gives a
+//! process — Tk opens a console instead
+//! (`tk9.0.4/macosx/tkMacOSXInit.c:493-494`, `:585-598`), and that branch is a
+//! different measurement: **2666 calls over 72 distinct slots**, stopping at
+//! `Tcl_Init` on the second interpreter `Tk_CreateConsoleWindow` creates
+//! (`tk9.0.4/generic/tkConsole.c:344-345`). Before [`channel`] existed it
+//! stopped 27 calls earlier, at `Tcl_CreateChannel`. Both are pinned:
+//! `tests/tk_utf16_window.rs` runs the pipe branch and
+//! `tests/tk_console_channels.rs` the console one.
 //!
 //! On the way it evaluates `file tildeexpand ~/.Xdefaults` in a second
 //! interpreter created and deleted for the purpose
@@ -192,6 +212,7 @@
 //!   not reach it, for the `bind Button` reason above.
 
 pub mod abi;
+pub mod channel;
 pub mod dispatch;
 pub mod dstring;
 pub mod eval;
