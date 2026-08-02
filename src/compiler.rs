@@ -80,6 +80,40 @@ pub mod ext {
     /// `info coroutine`: the running coroutine's qualified name, or `""`.
     pub const CORO_INFO: u16 = 14;
 
+    // ── the event loop and the scope commands ────────────────────────────
+    //
+    // `crate::cmd_after`, `crate::cmd_info` and `crate::cmd_scope`. Numbered
+    // into the two gaps below [`ASSOC_BASE`] — 35–39 and 58–60 — because
+    // `crate::runtime::extension` routes everything at or above a module's base
+    // by range, so an id above 64 would be dispatched to [`crate::assoc`]
+    // whatever arm was written for it. Each of these has an explicit arm ahead
+    // of the range tests.
+
+    /// `after`: `[arg …]` with the count in the inline operand → the handle, or
+    /// the empty string. Everything the command decides — whether the first
+    /// word is a delay or a subcommand, what the scripts concatenate to — is
+    /// decided here, as the reference implementation decides it.
+    pub const AFTER: u16 = 35;
+    /// `update ?idletasks?`: `[arg …]` with the count in the inline operand.
+    pub const UPDATE: u16 = 36;
+    /// `vwait ?varName?`: `[arg …]` with the count in the inline operand.
+    pub const VWAIT: u16 = 37;
+    /// `uplevel ?level? arg …`: `[arg …]` with the count in the inline operand
+    /// → the value of the script, run at the level the first word resolves to.
+    pub const UPLEVEL: u16 = 38;
+    /// `info exists`: `[place]` → 1 or 0 for a scalar, `[name, index, place]`
+    /// for an array element when `arg` is 1.
+    pub const INFO_EXISTS: u16 = 39;
+    /// `info commands` / `procs` / `globals` / `locals` / `vars`:
+    /// `[candidates, slots, pattern]` → the matching names, as a list. `arg`
+    /// says which set is being asked for; see `crate::cmd_info::names_kind`.
+    pub const INFO_NAMES: u16 = 58;
+    /// `info level`: the number of procedure activations on the stack.
+    pub const INFO_LEVEL: u16 = 59;
+    /// `info complete` on a value the script computed. The literal form is
+    /// answered while compiling and emits nothing.
+    pub const INFO_COMPLETE: u16 = 60;
+
     /// `[name, arg …]` with the count in the inline operand — call the function
     /// an inline `rust { ... }` block exported. Emitted only for a name
     /// [`crate::rust_ffi::is_exported`] answered for while compiling.
@@ -431,6 +465,11 @@ pub(crate) struct LoopCtx {
 pub(crate) struct Scope {
     pub locals: HashMap<String, u16>,
     pub globals: HashSet<String>,
+    /// Local names `upvar #0` bound to a *differently named* global, which is
+    /// the one link this frontend can make while the script is read. Consulted
+    /// by [`Compiler::var_place`]; see [`crate::cmd_scope`] for why the level
+    /// has to be `#0` and both names have to be literals.
+    pub aliases: crate::cmd_scope::Aliases,
     pub next_slot: u16,
 }
 
@@ -554,6 +593,9 @@ impl Compiler {
         // Tcl as long as the call is not reached first.
         crate::procs::prescan(&mut c.procs, script);
         crate::coro::prescan(&mut c.coros, script);
+        // The body text of every procedure, which `info body` answers with and
+        // which the lowering below discards.
+        crate::cmd_info::prescan(script);
         c.script_value(script)?;
         Ok(c)
     }
@@ -722,6 +764,18 @@ impl Compiler {
     /// through `GetVar` / `SetVar` — [`crate::cmd_list`]'s `lappend` is the one
     /// that does, so that it can extend the list in place.
     pub(crate) fn var_place(&mut self, name: &str) -> Place {
+        // `upvar #0 other local` binds `local` to the global `other` for the
+        // rest of the body. Every command reaches a variable through here, so
+        // the link is made once and `set`, `$`, `unset`, `incr`, `lappend` and
+        // `info exists` all follow it — see [`crate::cmd_scope`].
+        if let Some(target) = self
+            .scope
+            .as_ref()
+            .and_then(|s| s.aliases.get(name))
+            .cloned()
+        {
+            return Place::Global(self.b.add_name(&target));
+        }
         match self.slot_of(name) {
             Some(slot) => Place::Slot(slot),
             None => Place::Global(self.b.add_name(name)),
@@ -940,6 +994,14 @@ impl Compiler {
         "yield",
         "yieldto",
         "info",
+        // ── cmd_after / cmd_scope (the event loop and the scope commands) ──
+        "after",
+        "update",
+        "vwait",
+        "uplevel",
+        "upvar",
+        "variable",
+        "apply",
     ];
 
     fn command(&mut self, cmd: &Command) -> Result<(), CompileError> {
@@ -1027,7 +1089,20 @@ impl Compiler {
             "coroutine" => self.cmd_coroutine(args),
             "yield" => self.cmd_yield(args),
             "yieldto" => self.cmd_yieldto(args),
-            "info" => self.cmd_info(args),
+            // ── the event loop and the scope commands ───────────────────
+            // One block, so that the modules behind it merge as one change.
+            // `info` moved here from `crate::coro`, which owned it when
+            // `info coroutine` was the only subcommand; `crate::cmd_info`
+            // still lowers that one to `crate::coro`'s own op.
+            "info" => crate::cmd_info::compile(self, args),
+            "after" => self.cmd_event_op(ext::AFTER, "after", args),
+            "update" => self.cmd_event_op(ext::UPDATE, "update", args),
+            "vwait" => self.cmd_event_op(ext::VWAIT, "vwait", args),
+            "uplevel" => self.cmd_uplevel(args),
+            "upvar" => self.cmd_upvar(args),
+            "variable" => self.cmd_variable(args),
+            "apply" => self.cmd_apply(args),
+            // ── end of the block ────────────────────────────────────────
             "regexp" | "regsub" => crate::regexp::compile(self, name, args),
             // The command an inline `rust { ... }` block was rewritten into.
             name if name == crate::rust_ffi::COMPILE_COMMAND => self.cmd_rust_compile(args),

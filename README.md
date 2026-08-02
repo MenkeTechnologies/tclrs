@@ -342,13 +342,16 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 
 | Group | Commands |
 | --- | --- |
-| Variables | `set`, `incr`, `unset`, `append`, array variables (`a(k)`), `global` |
+| Variables | `set`, `incr`, `unset`, `append`, array variables (`a(k)`), `global`, `variable`, `upvar #0` |
 | Output | `puts`, with `-nonewline` |
 | Expressions | `expr` |
 | Control flow | `if` / `elseif` / `else`, `while`, `for`, `foreach`, `switch` (`-exact`, `-glob`), `break`, `continue` |
 | Procedures | `proc`, `return` (with `-code ok` / `-code error`) |
 | Errors | `catch`, `error` |
-| Coroutines | `coroutine`, `yield`, `yieldto`, `info coroutine` |
+| Coroutines | `coroutine`, `yield`, `yieldto` |
+| The event loop | `after` — `ms`, `ms script`, `idle script`, `cancel`, `info`; `update`, `update idletasks`; `vwait` |
+| Scope | `uplevel`, `upvar #0`, `variable`, `apply` |
+| Introspection | `info` — `args`, `body`, `commands`, `complete`, `coroutine`, `default`, `exists`, `globals`, `hostname`, `level`, `locals`, `nameofexecutable`, `patchlevel`, `procs`, `script`, `tclversion`, `vars` |
 | Run-time evaluation | `eval` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
 | Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
@@ -502,7 +505,11 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `catch`'s third (options-variable) argument; `error`'s `info` and `code` arguments | `… the options variable is not supported` |
 | `eval` inside a procedure body | `"eval" inside a procedure is not supported: the script it builds cannot reach the procedure's local variables` |
 | `coroutine` anywhere but a script's top level or a command substitution in one; a coroutine of a built-in or of anything but one of the script's procedures; `yieldto` at a command that is not a coroutine of the script | `"coroutine" is only supported at the top level of a script, or in a command substitution in one` |
-| `info`, apart from `info coroutine` | `unknown or unsupported subcommand "exists": only "info coroutine" is supported` |
+| `info` subcommands that need machinery this frontend has none of: `frame`, `errorstack`, `cmdcount`, `cmdtype`, `class`, `object`, `consts`, `constant`, `functions`, `library`, `loaded`, `sharedlibextension`; and `info level N`, which needs a record of the command that entered a level | `info frame is not supported yet` |
+| `uplevel` to a level that is a procedure activation. The level is resolved when the command runs, so `uplevel #0` and an `uplevel 1` that reaches the script's own level both work and only the unreachable case is refused | `"uplevel" to level 1 is not supported: that level is a procedure activation, and a procedure's variables are frame slots no name reaches once the chunk is built` |
+| `upvar` at any level but `#0`, `upvar` outside a procedure, and `upvar` whose names are not literals. The link is made while the script is read — see `src/cmd_scope.rs` | `"upvar 1" is not supported: only "#0" — a link to a global — can be bound while the script is read` |
+| `apply` of a lambda that is a value rather than written out, and a lambda naming a namespace other than `::` | `"apply" of a computed lambda is not supported: the body would be compiled as a chunk of its own, which cannot reach frame slots` |
+| `vwait` on more than one variable, and its `-timeout` / `-readable` / `-writable` / `-all` options | `"vwait" takes at most one variable name in this phase` |
 | Arbitrary-precision integers. An `i64` that overflows is an error, and so is the one integer division whose true quotient does not fit (`i64::MIN / -1`) and an integer *literal* or operand that does not fit at all (`expr {99999999999999999999 + 1}`) | `integer value too large to represent` |
 | Input nesting past `parser::MAX_NESTING_DEPTH` — 64_000 command substitutions or array indices deep, well past anything the reference interpreter survives | `too many nested substitutions (infinite loop?)` |
 | Ahead-of-time compilation of a script using `catch` or a coroutine | `ahead-of-time compilation of a script using "catch" is not supported: it needs the driver that only the interpreter has` |
@@ -1179,7 +1186,7 @@ no `cc`.
 
 [`examples/`](examples) holds runnable programs, one per slice of the language —
 variables and substitution, `expr`, control flow, procedures, lists, strings,
-`dict` and `array`, errors, coroutines, `eval`, and a FizzBuzz that prints. Run
+`dict` and `array`, errors, coroutines, `eval`, the event loop and the scope commands, and a FizzBuzz that prints. Run
 one directly:
 
 ```sh

@@ -192,10 +192,26 @@ fn script_value_is_the_last_command() {
 #[test]
 fn unsupported_constructs_are_refused() {
     for (src, expected) in [
-        // `proc`, `foreach` and `set a(1) x` all stood here until the phases
-        // that built them landed. `uplevel` is a command this frontend has no
-        // implementation of at all, so it stands in now.
-        ("uplevel 1 {set x 1}", "invalid command name \"uplevel\""),
+        // `proc`, `foreach`, `set a(1) x` and `uplevel` have all stood here in
+        // turn, each until the phase that built it landed. `rename` stands in
+        // now: it is a command this frontend has no implementation of at all,
+        // which is what this entry is for — an *unknown name*, reported by the
+        // dispatcher's own fallthrough, as opposed to a command that exists and
+        // refuses something.
+        //
+        // `uplevel` was the entry until `src/cmd_scope.rs` implemented it. It
+        // is still refused for a level that names a procedure activation, but
+        // that refusal comes from a command that exists, so it no longer
+        // measures what this test measures — the entry below in the same list
+        // covers it instead.
+        ("rename a b", "invalid command name \"rename\""),
+        // `uplevel` exists now, and refuses a level it cannot reach. This is
+        // not the canary above: it is a live command reporting that the target
+        // level is a procedure's frame slots.
+        (
+            "proc outer {} {inner}\nproc inner {} {uplevel 1 {set x 1}}\nouter",
+            "\"uplevel\" to level 1 is not supported",
+        ),
         (
             "array startsearch a",
             "array startsearch is not supported yet",

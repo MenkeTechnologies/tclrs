@@ -209,6 +209,11 @@ pub(crate) struct State {
     /// How many scripts are running, counting the outermost.
     depth: usize,
     limit: usize,
+    /// The `after` scripts this interpreter has registered and not yet run.
+    /// Tcl keeps them on the interpreter too (`Tcl_SetAssocData(interp,
+    /// "tclAfter", …)`, `generic/tclTimer.c:801-807`); see
+    /// [`crate::cmd_after`].
+    pub(crate) afters: crate::cmd_after::Afters,
 }
 
 pub(crate) type Shared = Arc<Mutex<State>>;
@@ -243,6 +248,7 @@ impl Interp {
                 output,
                 depth: 0,
                 limit: DEFAULT_RECURSION_LIMIT,
+                afters: crate::cmd_after::Afters::default(),
             })),
         }
     }
@@ -548,6 +554,18 @@ impl Hooks {
             let outcome = match id {
                 ext::EVAL => eval_op(&interp, vm, arg),
                 ext::FFI_CALL => ffi_op(vm, arg).map_err(TclError::plain),
+                // The event loop and the scope commands. Their own arms rather
+                // than the plain one below because each needs the interpreter
+                // the running chunk belongs to: an `after` script, a `vwait`'s
+                // variable and an `uplevel`'s script are all state that lives
+                // across chunks, not inside this one.
+                ext::AFTER => crate::cmd_after::after_op(&interp, vm, arg),
+                ext::UPDATE => crate::cmd_after::update_op(&interp, vm, arg),
+                ext::VWAIT => crate::cmd_after::vwait_op(&interp, vm, arg),
+                ext::UPLEVEL => crate::cmd_scope::uplevel_op(&interp, vm, arg),
+                ext::INFO_NAMES => {
+                    crate::cmd_info::names_op(&interp, vm, arg).map_err(TclError::plain)
+                }
                 // Its own arm rather than the plain one below because the
                 // error it raises is located: it stands in for a refusal the
                 // compiler would otherwise have deferred with the command's
@@ -666,6 +684,90 @@ fn eval_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     vm.globals = globals;
     vm.push(result?);
     Ok(())
+}
+
+// ── reaching the interpreter from a running chunk ────────────────────────
+//
+// Four windows onto the interpreter's variables for an op that has to run a
+// script, or wait for one, in the middle of a chunk. `eval` opens and closes the
+// same two windows inline above; `after`, `vwait` and `uplevel` need them named,
+// because they cross the boundary more than once per command.
+
+/// Write the running chunk's variables back into the interpreter, so a nested
+/// script sees what the chunk has done.
+pub(crate) fn flush_globals(vm: &VM, interp: &Shared) {
+    flush(&vm.chunk, interp, &vm.globals);
+}
+
+/// Project the interpreter's variables back into the running chunk, so the
+/// chunk sees what a nested script did.
+pub(crate) fn reseed_globals(vm: &mut VM, interp: &Shared) {
+    vm.globals = seed(&vm.chunk, interp);
+}
+
+/// What the interpreter holds for `name`, or `None` when it holds nothing.
+/// Only correct once [`flush_globals`] has run, which is what `vwait` does
+/// before it starts waiting.
+pub(crate) fn global_value(interp: &Shared, name: &str) -> Option<Value> {
+    interp
+        .lock()
+        .expect("interpreter lock")
+        .globals
+        .get(name)
+        .cloned()
+}
+
+/// Every variable that is set, for `info globals` and `info vars`.
+///
+/// Two sources, because neither is complete on its own: the interpreter's map
+/// holds what earlier evaluations left behind, and the running chunk's slot
+/// vector holds what *this* one has assigned and not yet written back. A name
+/// the compiler generated for its own loop state is not a script's variable and
+/// is left out, as it is everywhere else.
+pub(crate) fn global_names_of(interp: &Shared, vm: &VM) -> Vec<String> {
+    let mut names: Vec<String> = interp
+        .lock()
+        .expect("interpreter lock")
+        .globals
+        .keys()
+        .filter(|n| !n.starts_with('\u{0}'))
+        .cloned()
+        .collect();
+    for (slot, name) in vm.chunk.names.iter().enumerate() {
+        if name.starts_with('\u{0}') {
+            continue;
+        }
+        if matches!(vm.globals.get(slot), Some(Value::Undef) | None) {
+            // Unset in the chunk is unset, whatever an earlier evaluation left
+            // in the map: this chunk's `unset x` has to be visible before the
+            // write-back happens.
+            names.retain(|n| n != name);
+            continue;
+        }
+        names.push(name.clone());
+    }
+    names
+}
+
+/// Whether the variable at `place` is set, for `info exists`.
+pub(crate) fn var_is_set(vm: &VM, place: Place) -> bool {
+    let value = match place {
+        Place::Global(index) => vm.globals.get(index as usize),
+        Place::Slot(slot) => vm.frames.last().and_then(|f| f.slots.get(slot as usize)),
+    };
+    !matches!(value, Some(Value::Undef) | None)
+}
+
+/// Pop the place operand the compiler encodes as one integer — a name index, or
+/// a frame slot as `-(slot + 1)`. The encoding is
+/// [`crate::assoc`]'s; this is the same decode, for the ops outside that module
+/// that take the same operand.
+pub(crate) fn place_of_encoded(vm: &mut VM) -> Result<Place, String> {
+    match vm.pop() {
+        Value::Int(raw) if raw < 0 => Ok(Place::Slot((-raw - 1) as u16)),
+        Value::Int(raw) => Ok(Place::Global(raw as u16)),
+        other => Err(format!("not a variable place: {other:?}")),
+    }
 }
 
 // ── the driver ───────────────────────────────────────────────────────────
@@ -1767,6 +1869,18 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         // `error` and `return -code error` raise the message as the error, so
         // the enclosing `catch` — or the caller of `eval` — receives it.
         ext::ERROR => Err(to_tcl_string(&vm.pop())),
+        // The three `info` ops that need nothing but the running VM. The fourth,
+        // `INFO_NAMES`, reads the interpreter and is handled where `interp` is
+        // in scope.
+        ext::INFO_EXISTS => crate::cmd_info::exists_op(vm, arg),
+        ext::INFO_LEVEL => {
+            crate::cmd_info::level_op(vm);
+            Ok(())
+        }
+        ext::INFO_COMPLETE => {
+            crate::cmd_info::complete_op(vm);
+            Ok(())
+        }
         // The ranges are tested from the highest base down, so that a lower
         // one's `id >= BASE` does not swallow a higher module's ops.
         id if id >= ext::REGEXP_BASE => crate::regexp::extension(vm, id, arg),
@@ -1808,9 +1922,7 @@ fn int_operand(v: &Value, side: Side, op: &str) -> Result<i64, String> {
         // is an operator with no bignum meaning; none can answer from a
         // truncation, so reaching here with one is a bug rather than a script
         // error.
-        BigOperand::Big(b) => Err(format!(
-            "integer value too large to represent: {b}"
-        )),
+        BigOperand::Big(b) => Err(format!("integer value too large to represent: {b}")),
     }
 }
 
@@ -1932,9 +2044,7 @@ fn big_arith(id: u16, p: BigInt, q: BigInt) -> Result<Value, String> {
                 // zero, and only ±1 survives it — the same rule the `i64` arm
                 // applies, and a bignum base is never ±1.
                 return match () {
-                    _ if p.is_zero() => {
-                        Err("exponentiation of zero by negative power".to_string())
-                    }
+                    _ if p.is_zero() => Err("exponentiation of zero by negative power".to_string()),
                     _ => Ok(Value::Int(0)),
                 };
             }
@@ -1966,9 +2076,7 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
         }
         // `i64::MIN / -1` is the one integer division whose true quotient does
         // not fit an `i64`; Tcl's answer is the bignum, and now so is this one.
-        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => {
-            Ok(from_big(-BigInt::from(i64::MIN)))
-        }
+        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => Ok(from_big(-BigInt::from(i64::MIN))),
         (ext::DIV, Num::Int(i), Num::Int(j)) => Ok(Value::Int(
             i.div_euclid(j)
                 - i64::from(

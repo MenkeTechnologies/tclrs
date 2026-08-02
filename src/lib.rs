@@ -21,7 +21,13 @@ pub mod aot;
 pub mod aot_runtime;
 pub mod assoc;
 pub mod cache;
+/// `after`, `update` and `vwait` — the event loop a Tk script lives inside.
+pub mod cmd_after;
+/// `info` — what the interpreter knows about itself.
+pub mod cmd_info;
 pub mod cmd_list;
+/// `uplevel`, `upvar`, `variable` and `apply` — reaching another scope.
+pub mod cmd_scope;
 pub mod cmd_string;
 pub mod compiler;
 pub mod control;

@@ -191,6 +191,31 @@ approximated, and nothing is silently mis-run.
   ensemble subcommand with the compiler's own answer for whether it is
   implemented, the `expr` ladder as the parser binds it, and the `format`
   conversions the runtime answers to.
+- **The event loop.** `after ms`, `after ms script`, `after idle script`,
+  `after cancel` (by id and by script text), `after info`, `update`,
+  `update idletasks` and `vwait` (`src/cmd_after.rs`). The registry of pending
+  scripts is per interpreter, as Tcl's is (`Tcl_SetAssocData(interp,
+  "tclAfter", …)`), so handles are numbered from `after#0` per interpreter. One
+  timer event runs every handler already due, in deadline order, and not the
+  ones registered while it runs — the generation rule of
+  `TimerHandlerEventProc` (`generic/tclTimer.c:606-694`). A default build's only
+  event sources are those scripts; a `--features tk` build also pumps the
+  ported notifier, where Tk's window and file events arrive.
+- **Reaching another scope.** `uplevel`, `upvar #0`, `variable` and `apply`
+  (`src/cmd_scope.rs`). `uplevel` resolves its level when the command runs, so
+  `uplevel #0` and an `uplevel 1` whose target is the script's own level both
+  work exactly and only a target that is a procedure activation is refused.
+  `upvar #0 other local` is a compile-time binding through
+  `Compiler::var_place`, so every command that reaches a variable follows it —
+  `set`, `$`, `incr`, `lappend`, `unset`, `info exists`. `apply` of a lambda
+  written out is compiled as an anonymous procedure, with its own frame slots
+  and entered by `Op::Call`, so it costs a call and nothing else.
+- **`info`.** `args`, `body`, `commands`, `complete`, `coroutine`, `default`,
+  `exists`, `globals`, `hostname`, `level`, `locals`, `nameofexecutable`,
+  `patchlevel`, `procs`, `script`, `tclversion` and `vars`
+  (`src/cmd_info.rs`). Most are answered while compiling; `exists`, the name
+  lists and `level` are ops, because each is a question about the running
+  program.
 
 ## Not implemented
 
@@ -247,13 +272,22 @@ approximated, and nothing is silently mis-run.
   the body is entered through the chunk's sub table. `yieldto` at a command that
   is not a coroutine of the script is refused: it would have to evaluate that
   command in the resumer's context, which this frontend cannot do.
-- **`info`, apart from `info coroutine`.** Every other subcommand is refused by
-  name rather than mis-answered.
+- **The `info` subcommands that name machinery this frontend has none of.**
+  `frame`, `errorstack` and `cmdcount` need a record of each active call;
+  `class`, `object`, `consts`, `constant` and `cmdtype` need an object system;
+  `functions` needs the `expr` math functions, which are refused; `library`,
+  `loaded` and `sharedlibextension` need Tcl's script library and package
+  loader. Each is `info frame is not supported yet` rather than mis-answered.
+  `info level N` is refused separately: the *value* of a level is the command
+  and arguments that entered it, and `Op::Call` pushes the actual arguments and
+  nothing that names the command. `info level` with no argument is exact.
+- **`uplevel` to a level that is a procedure activation, and `upvar` at any
+  level but `#0`.** See the entry under "What the differential fuzzer cannot
+  reach" below for what that costs and what the two real fixes are.
 - **Every command outside those above.** `open` / `read` / `close`,
-  `source`, `upvar`, `uplevel`, `rename`, `namespace`, `apply`, `clock`,
-  `encoding`, `binary`, … An unknown command name is `invalid command name "…"`
-  at compile time rather than at run time, which is where a runtime command
-  table would move it.
+  `source`, `rename`, `namespace`, `clock`, `encoding`, `binary`, … An unknown
+  command name is `invalid command name "…"` at compile time rather than at run
+  time, which is where a runtime command table would move it.
 - **An array element as the variable a list command names.** `lappend a(x) v`,
   `lassign {1 2} a(x) a(y)`, `lset a(x) 0 v`, `lpop a(x)` and `ledit a(x) 0 0 v`
   are all `this command does not take an array element yet`, from the one
@@ -311,6 +345,51 @@ approximated, and nothing is silently mis-run.
   parser binds it, and the `format` conversions the runtime answers to.
 
 ## Divergences from tclsh where behavior *is* implemented
+
+Four of these are the event loop's and are not fuzzer findings; they are listed
+first because each is a deliberate decision with the measurement behind it.
+
+- **`vwait` notices a write by comparing values, not by tracing them.** Tcl puts
+  a write trace on the variable (`Tcl_TraceVar2`, `generic/tclEvent.c:1604`).
+  There is no variable trace here, so `vwait` records what the variable held when
+  the wait began and compares after every pass. A write that stores *the value
+  that was already there* therefore does not end the wait — `set ::d 0; after 0
+  {set ::d 0}; vwait ::d` waits on where tclsh returns. Every other write is
+  noticed, including a first assignment to a variable that did not exist and an
+  `unset`.
+- **`vwait` on something nothing can write answers where tclsh hangs.** This one
+  runs the other way: `Tcl_VwaitObjCmd` reports `can't wait for
+  variable(s)/channel(s): would wait forever` when `Tcl_DoOneEvent` answers 0
+  (`generic/tclEvent.c:1755-1763`), and on macOS that never happens, because the
+  CFRunLoop blocks with no timeout. Measured: `vwait neverset` under tclsh 9.0.4
+  had to be killed after five seconds, with stdin both a terminal and
+  `/dev/null`. tclrs raises Tcl's own message instead of entering the wait.
+- **An `after` script's failure prints two lines where tclsh prints four.**
+  `AfterProc` hands the error to `Tcl_BackgroundException`, which prints the
+  message, the `while executing` stack that produced it, and then
+  `    ("after" script)`. There is no error stack in this frontend, so the
+  message and the `("after" script)` line are printed and the middle is not
+  invented. Both go to stderr and the run continues, as tclsh's does.
+- **`info locals` lists the locals the compiler has reached, not the ones that
+  exist.** A slot is allocated the first time a name is lowered, and lowering
+  follows the body's text, so the answer is "the parameters, plus every local
+  mentioned textually before this `info locals`, that is set right now". A local
+  whose only mention is *after* the call — reachable only by a loop carrying
+  control backwards over it — is not listed. `info vars` inside a procedure has
+  the same bound on its local half; the names `global`, `variable` and
+  `upvar #0` bound into the frame are exact, and are listed whether or not the
+  variable they link to is set, as tclsh lists them.
+- **`info commands`, `info procs` and `info globals` do not list a script
+  library.** tclsh answers with `auto_execok`, `auto_load`, `unknown` and the
+  rest, and with the `auto_path` global, because `init.tcl` defined them. There
+  is no script library here, so the answers are the script's own names and the
+  interpreter's own variables. Both implementations answer the same question
+  about the script's own names, which is what `tests/event_differential.rs`
+  compares.
+- **`info script` answers the empty string unless a host sets it.** The library's
+  entry point is handed a string, not a file, which is the case tclsh answers
+  the empty string for (`tclsh -c`). `crate::cmd_info::set_script` is how a host
+  says which file a script came from.
 
 Found by `scripts/fuzz_parity.sh`, the differential fuzzer: it generates seeded
 random Tcl programs, runs each under both `tclsh` 9.0.4 and tclrs, and minimises
@@ -745,28 +824,58 @@ prints a hit count per entry.
 The generator's own blind spots, so a gap in the report is a known gap rather
 than an unexamined one. Measured against the 2000-program run above.
 
-- **`upvar`, `uplevel` and `apply` need a variable table this design does not
-  have.** Each has to reach a *caller's* variables by name at run time. A
-  procedure's locals here are frame slots the compiler assigned, so nothing
-  addresses them by name once the chunk is built, and a nested script is a chunk
-  of its own that reaches only globals — which is the same wall `eval` inside a
-  procedure body hits, and why that is refused rather than run against the wrong
-  variables.
+- **`upvar` and `uplevel` reach only the global level; `apply` needs its lambda
+  written out.** Each of the three has to reach variables that are not the
+  running chunk's globals. A procedure's locals here are frame slots the
+  compiler assigned, so nothing addresses them by name once the chunk is built,
+  and a nested script is a chunk of its own that reaches only globals — the
+  same wall `eval` inside a procedure body hits, and why that is refused rather
+  than run against the wrong variables.
 
-  A subset *is* expressible: `uplevel #0`, and `uplevel 1` from a procedure the
-  top level called, both target the global table, which is exactly what `eval`
-  already does; `upvar #0 g l` is a global alias. That subset was deliberately
-  not shipped. Whether `uplevel 1` means "the global table" or "another
-  procedure's slots" is a run-time property of the call stack, so the working
-  cases and the refused ones could not be told apart until the script ran, and
-  the mechanism would have to be unpicked by the real fix rather than extended
-  by it. The real fix is a run-time variable table addressable by name at any
-  level — the same machinery that would move an unknown command name from
-  compile time to run time.
-- **Commands tclrs does not have.** `{*}` expansion, `upvar`,
-  `uplevel`, `namespace`, `apply`, `rename`, `source` and file I/O are outside
-  the command set entirely, so a generated use of one is `invalid command name`
-  and says nothing about parity. They are deliberately not generated, and belong
+  This entry used to say the expressible subset had been *deliberately not
+  shipped*, because "whether `uplevel 1` means 'the global table' or 'another
+  procedure's slots' is a run-time property of the call stack, so the working
+  cases and the refused ones could not be told apart until the script ran".
+  `src/cmd_scope.rs` tells them apart *at* run time, which is what that
+  objection was pointing at: `ext::UPLEVEL` reads `vm.frames.len()`, resolves
+  the level against it, serves a target that is the global level exactly, and
+  refuses a target that is a procedure activation by number. So `uplevel #0`,
+  `uplevel 1` from a procedure the script's own top level called, and
+  `uplevel 0` at the top level all work, and only the unreachable case refuses.
+
+  `upvar` is narrower, because a link is not a one-off evaluation: it has to
+  hold for the rest of the body. `upvar #0 other local` is bound while the
+  script is read, in `Scope::aliases`, and `Compiler::var_place` — which every
+  command in this crate reaches a variable through — follows it. That is why the
+  level and both names have to be literals: `upvar #0 $win data`, Tk's own
+  idiom, is refused. `apply` compiles a written-out lambda as an anonymous
+  procedure with its own frame slots; a lambda that is a *value* is refused,
+  because its body would be a chunk of its own and its parameters could not be
+  its own.
+
+  **What the general case costs.** Reaching level *N* by name needs one of two
+  things, and neither is a small change:
+
+  1. *A per-procedure slot-name table, published where `proc` discards the
+     scope.* Attributing a live frame to its procedure needs no new machinery —
+     `Op::Call` records `return_ip`, and `chunk.ops[return_ip - 1]` is the
+     `Op::Call` that pushed the frame, whose name index names the callee — so
+     the only missing half is the table itself. It changes how procedures are
+     compiled.
+  2. *A run-time variable table addressable by name at any level*, which is what
+     the reference interpreter has. It costs procedure locals their slots, and
+     with them fusevm's block and tracing tiers, which read slots out of a flat
+     `i64` buffer and cannot see a hash table.
+
+  The second is still the real fix — the same machinery that would move an
+  unknown command name from compile time to run time — and it is a trade, not a
+  free win.
+- **Commands tclrs does not have.** `{*}` expansion, `namespace`, `rename`,
+  `source` and file I/O are outside the command set entirely, so a generated use
+  of one is `invalid command name` and says nothing about parity. `uplevel`,
+  `upvar`, `variable` and `apply` were on this list until `src/cmd_scope.rs`
+  landed; what they now refuse is the entry above, and what they answer is
+  `tests/event_differential.rs`. They are deliberately not generated, and belong
   in the generator on the day the commands exist. `regexp`, `regsub`,
   `lassign`, `lset`, `lpop`,
   `ledit`, `lrepeat`, `lremove`, `lseq` and `lmap` exist now and are not
