@@ -85,6 +85,23 @@ pub mod ext {
     /// [`crate::rust_ffi::is_exported`] answered for while compiling.
     pub const FFI_CALL: u16 = 63;
 
+    /// `[line, name, arg …]` with the count in the inline operand — call the
+    /// command `name` in whichever Tk interpreter is current, looking it up at
+    /// run time.
+    ///
+    /// The one op in this table whose callee is not known while compiling. Tk
+    /// registers its commands during `Tk_Init`, so a script that says `button
+    /// .b` is compiled before `button` exists; see [`crate::tk::dispatch`] for
+    /// the two conditions that have to hold before this is emitted at all.
+    ///
+    /// The line rides on the stack because the failure this op can raise —
+    /// `invalid command name` — is located, and dropping the line would change
+    /// a diagnostic that is pinned against tclsh.
+    ///
+    /// 61 rather than 64: [`ASSOC_BASE`] is 64, and an id at or above it is
+    /// dispatched to [`crate::assoc`] by range.
+    pub const TK_DISPATCH: u16 = 61;
+
     /// Pop a value and push Tcl's boolean reading of it — 1 or 0 — or refuse it.
     /// `arg` is 0 for a condition and 1 for `!`, which differ in how they word
     /// the refusal. Emitted only where the value could be a string, so the
@@ -1025,6 +1042,15 @@ impl Compiler {
             // a script's own definition is never shadowed by a library it
             // loaded.
             other if crate::rust_ffi::is_exported(other) => self.call_ffi(other, args),
+            // A name no module claims, in a process that has a Tk interpreter
+            // in it: the name is looked up in that interpreter's command table
+            // when the command runs, because Tk registers `button`, `pack`,
+            // `wm` and the rest long after this compiler has finished. Nothing
+            // registered under it by then and the op raises the same
+            // `invalid command name`, on the same line, that the arm below
+            // would have deferred. See `crate::tk::dispatch`.
+            #[cfg(feature = "tk")]
+            other if crate::tk::dispatch::takes_over(other) => self.call_foreign(other, args),
             // The list commands own the tail of the dispatch, and report the
             // unknown-command error for anything no module claims.
             other => crate::cmd_list::compile(self, other, args),

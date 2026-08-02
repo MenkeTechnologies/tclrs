@@ -1,10 +1,16 @@
-//! The stand-in interpreter that Tk is handed, and the slots it has so far.
+//! The interpreter that Tk is handed, and the slots it has so far.
 //!
-//! This is not an interpreter. It is the smallest thing that satisfies Tk's
-//! demands one at a time, so that the *next* demand becomes visible. Anything
-//! implemented here was implemented because a run stopped on it and the Tk
-//! source at that call site said what the answer had to be; nothing was added
-//! speculatively.
+//! Everything here was written because a run stopped on it and the Tk source at
+//! that call site said what the answer had to be; nothing was added
+//! speculatively. That is still the method, and it is what makes the list of
+//! implemented slots a measurement rather than a plan.
+//!
+//! The evaluator is not in this file. A slot that has to *run* a script — the
+//! three `Tcl_Eval*` — lives in [`super::eval`], against a
+//! [`crate::runtime::Interp`] that [`super::interp`] pairs with each `Host`;
+//! this file keeps the data structures those slots operate on. [`Level`] is the
+//! seam: [`Level::Probe`] is the table without them, whose stopping point is a
+//! pinned measurement, and [`Level::Hosting`] is the table with.
 //!
 //! Every implementation is installed by slot *name*, looked up in the generated
 //! name table, never by a literal index. Indices are the ABI, but a literal
@@ -44,6 +50,20 @@ pub struct HostInterp {
 /// `Tcl_RegisterObjType`, `Tcl_GetThreadData` — have no other way to reach
 /// state. One per process is all Tk needs here and all this phase creates.
 static CURRENT: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());
+
+/// The primary `Tcl_Interp *`, as [`build`] returned it.
+///
+/// [`CURRENT`] is the `Host`; this is the 32-byte wrapper Tk was handed, which
+/// is what a call *into* Tk has to pass back. A command registered by Tk and
+/// invoked from a script this process started itself — rather than from inside
+/// a `Tcl_Eval*` — is called against this one; see
+/// [`super::interp::current`].
+static PRIMARY_INTERP: AtomicPtr<HostInterp> = AtomicPtr::new(ptr::null_mut());
+
+/// The primary `Tcl_Interp *`, or null when no host has been built.
+pub fn primary_interp() -> *mut HostInterp {
+    PRIMARY_INTERP.load(Ordering::Relaxed)
+}
 
 /// The four stub tables, built once per process and never moved.
 ///
@@ -99,6 +119,15 @@ pub struct HostCommand {
     pub proc_: *mut c_void,
     pub client_data: *mut c_void,
     pub delete_proc: *mut c_void,
+    /// Whether `proc_` is a `Tcl_ObjCmdProc2` rather than a `Tcl_ObjCmdProc`.
+    ///
+    /// The two differ in the width of their third argument — `Tcl_Size`, i.e.
+    /// `ptrdiff_t`, against `int` (`generic/tcl.h:587-591`, `generic/tcl.h:332`)
+    /// — so calling one through the other's type leaves half of `objc`
+    /// undefined. Which slot the command arrived through is the only record of
+    /// which it is, so it is kept at that moment rather than guessed at the
+    /// call.
+    pub proc2: bool,
     /// The subcommand dictionary, for a command created as an ensemble.
     pub ensemble_map: *mut TclObj,
 }
@@ -151,7 +180,42 @@ pub fn degraded() -> bool {
     std::env::var_os("TCLRS_TK_DEGRADED").is_some()
 }
 
+/// Which of the two stub tables to build.
+///
+/// They differ by five slots, and the difference is the whole of phase 2. The
+/// distinction is kept rather than collapsed because the two answer different
+/// questions and both answers are worth having:
+///
+/// * [`Level::Probe`] is the *measuring instrument*. Every slot with no body is
+///   a trap, so the first thing Tk asks for that this crate cannot supply stops
+///   the run and names itself. Its stopping point is a measurement, pinned by
+///   `tests/tk_probe_session.rs`, and it must keep stopping where it stopped —
+///   otherwise the number in `src/tk/mod.rs` is a claim about a table nobody
+///   can rebuild.
+/// * [`Level::Hosting`] is the *host*. It adds the evaluator and the C
+///   trampoline, so a script Tk hands over is compiled and run rather than
+///   trapped on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Level {
+    Probe,
+    Hosting,
+}
+
+/// The measuring table, and a host with no evaluator behind it.
 pub fn build() -> *mut HostInterp {
+    build_at(Level::Probe)
+}
+
+/// The hosting table: [`build`] plus the evaluator and the trampoline.
+///
+/// Only one of the two may be built per process — they share [`TABLES`] and
+/// [`CURRENT`] — which is why each caller is a separate binary or a separate
+/// test process.
+pub fn build_hosting() -> *mut HostInterp {
+    build_at(Level::Hosting)
+}
+
+fn build_at(level: Level) -> *mut HostInterp {
     let mut tcl = Box::new(TclStubs {
         magic: TCL_STUB_MAGIC,
         hooks: ptr::null(),
@@ -173,7 +237,7 @@ pub fn build() -> *mut HostInterp {
         slots: TCL_INT_PLAT_TRAPS,
     });
 
-    unsafe { install_impls(&mut tcl, degraded()) };
+    unsafe { install_impls(&mut tcl, degraded(), level) };
 
     let hooks = Box::new(TclStubHooks {
         tcl_plat_stubs: &*tcl_plat,
@@ -198,7 +262,14 @@ pub fn build() -> *mut HostInterp {
     // at the same point, so that `Tcl_GetObjType("double")` answers from the
     // first call rather than only after something has built a double.
     objtype::register_host_types();
-    unsafe { wrap_interp(host) }
+    let interp = unsafe { wrap_interp(host) };
+    PRIMARY_INTERP.store(interp, Ordering::Relaxed);
+    // Registering it here rather than on first use is what makes
+    // `tk::dispatch::may_exist` true from the moment a host exists, so a script
+    // compiled after `Tk_Init` can name a Tk command and one compiled before
+    // any host was built is lowered exactly as it was.
+    super::interp::shared_for(host);
+    interp
 }
 
 /// Wrap a [`Host`] in the 32-byte `Interp` prefix Tk's `Tcl_InitStubs` reads.
@@ -235,14 +306,27 @@ fn empty_host() -> Host {
 /// Slots that have been given a body, in install order. Reported by the probe
 /// so "how many of the table is real" is a measured number.
 pub fn implemented() -> Vec<(usize, &'static str)> {
+    implemented_at(Level::Probe)
+}
+
+/// The same, for whichever table is being built. Deduplicated, because
+/// `tcl_AppendStringsToObj` is installed twice at [`Level::Hosting`] under
+/// `TCLRS_TK_DEGRADED` — once truncating, once by the trampoline — and a slot
+/// counted twice would overstate the coverage.
+pub fn implemented_at(level: Level) -> Vec<(usize, &'static str)> {
     let mut scratch = TclStubs {
         magic: TCL_STUB_MAGIC,
         hooks: ptr::null(),
         slots: TCL_TRAPS,
     };
+    let mut seen = Vec::new();
     let mut out = Vec::new();
     unsafe {
-        for i in install_impls(&mut scratch, degraded()) {
+        for i in install_impls(&mut scratch, degraded(), level) {
+            if seen.contains(&i) {
+                continue;
+            }
+            seen.push(i);
             out.push((i, TCL_NAMES[i]));
         }
     }
@@ -290,6 +374,105 @@ unsafe fn c_bytes(p: *const c_char, len: isize) -> &'static [u8] {
 }
 
 // ---------------------------------------------------------------------------
+// What the evaluator and the dispatcher need from this file
+//
+// Everything below is a thin, named way in to machinery the slots above
+// already use. It is separate from the slots themselves because none of it is
+// a call Tk makes: a call from this side must not appear in the trace log, or
+// the log stops being a record of what Tk asked for.
+// ---------------------------------------------------------------------------
+
+/// The index of a slot by the name `tclDecls.h` gives it. Panics on an unknown
+/// name, so a typo in a caller is a failure at the call rather than a jump
+/// through the wrong slot.
+pub fn slot_index(name: &str) -> usize {
+    slot(&TCL_NAMES, name)
+}
+
+/// A C string's bytes, with Tcl's convention that a negative length means
+/// "measure it" (`TCL_INDEX_NONE`, `generic/tcl.h:2292`).
+///
+/// # Safety
+/// `p` is null or points at `len` readable bytes, or at a NUL-terminated
+/// string when `len` is negative.
+pub unsafe fn c_bytes_of(p: *const c_char, len: isize) -> &'static [u8] {
+    c_bytes(p, len)
+}
+
+/// The string rep of `obj`, regenerating it through the type's
+/// `updateStringProc` if a `Tcl_ObjType` has invalidated it.
+///
+/// # Safety
+/// `obj` is a live `Tcl_Obj`.
+pub unsafe fn obj_bytes_of(obj: *mut TclObj) -> &'static [u8] {
+    obj::string_of(obj)
+}
+
+/// A fresh value holding `bytes`, with one reference already taken.
+///
+/// Taking the reference here is what makes it safe to hand to a C command: a
+/// command that keeps the value calls `Tcl_IncrRefCount`, which is a direct
+/// write to `refCount` (`generic/tcl.h:2517-2519`), and a count of 1 on arrival
+/// is what Tcl's own callers give it.
+///
+/// # Safety
+/// A host must exist, since the allocation is counted against it.
+pub unsafe fn retained_obj(bytes: &[u8]) -> *mut TclObj {
+    let obj = obj::new_string(bytes);
+    obj::incr_ref(obj);
+    obj
+}
+
+/// Give back a reference taken by [`retained_obj`], freeing the value if that
+/// was the last one — the `Tcl_DecrRefCount` macro's own behaviour
+/// (`generic/tcl.h:2524-2531`).
+///
+/// # Safety
+/// `obj` is a live `Tcl_Obj` this side retained.
+pub unsafe fn release_obj(obj: *mut TclObj) {
+    obj::release(obj);
+}
+
+/// Append `bytes` to `obj`'s string rep, dropping any internal representation
+/// first.
+///
+/// Tcl's `Tcl_AppendToObj` does the same: appending is defined on the string
+/// rep, so a value that was a list stops being one (`generic/tclStringObj.c`'s
+/// `Tcl_AppendToObj` calls `SetStringFromAny`). Leaving a stale list behind
+/// would make the next `Tcl_ListObjGetElements` answer from bytes that are no
+/// longer there.
+///
+/// # Safety
+/// `obj` is a live `Tcl_Obj`.
+pub unsafe fn append_bytes_to_obj(obj: *mut TclObj, bytes: &[u8]) {
+    obj::append_bytes(obj, bytes);
+}
+
+/// Make `bytes` the interpreter result.
+///
+/// The body of `Tcl_SetObjResult` without its trace line, for the same reason
+/// `reset_dstring` exists: this is called by the evaluator when a script
+/// finishes, and Tk did not ask for it.
+///
+/// # Safety
+/// `interp` is a `Tcl_Interp *` this crate handed to Tk.
+pub unsafe fn set_result_bytes(interp: *mut c_void, bytes: &[u8]) {
+    install_result(interp, obj::new_string(bytes));
+}
+
+/// The interpreter result as bytes, empty when nothing has been set.
+///
+/// # Safety
+/// `interp` is a `Tcl_Interp *` this crate handed to Tk.
+pub unsafe fn result_bytes(interp: *mut c_void) -> Vec<u8> {
+    let h = &mut *(*(interp as *mut HostInterp)).host;
+    if h.result.is_null() {
+        return Vec::new();
+    }
+    obj::string_of(h.result).to_vec()
+}
+
+// ---------------------------------------------------------------------------
 // The implemented slots
 // ---------------------------------------------------------------------------
 
@@ -299,7 +482,7 @@ unsafe fn c_bytes(p: *const c_char, len: isize) -> &'static [u8] {
 /// Each `as *const ()` below erases a signature that must match the header
 /// exactly; the comment on each line is the `tclDecls.h` declaration it was
 /// written from.
-unsafe fn install_impls(t: &mut TclStubs, degraded: bool) -> Vec<usize> {
+unsafe fn install_impls(t: &mut TclStubs, degraded: bool, level: Level) -> Vec<usize> {
     let mut slots = vec![
         // const char *(*tcl_PkgRequireEx)(Tcl_Interp *, const char *, const char *, int, void *) /* 1 */
         install(t, "tcl_PkgRequireEx", pkg_require_ex as *const ()),
@@ -559,7 +742,46 @@ unsafe fn install_impls(t: &mut TclStubs, degraded: bool) -> Vec<usize> {
             append_strings_to_obj as *const (),
         ));
     }
+    if level == Level::Hosting {
+        slots.extend(install_hosting(t));
+    }
     slots
+}
+
+/// The slots that turn the measuring instrument into a host: the trampoline
+/// for the one slot Rust cannot write, and the evaluator.
+///
+/// Installed last, so that `tcl_AppendStringsToObj` here overwrites the
+/// truncating body [`Level::Probe`] may have put there — the two are the same
+/// slot and the real one must win.
+///
+/// # Safety
+/// As [`install_impls`]: each erased signature is the one `tclDecls.h` gives
+/// the slot, quoted on the line above it.
+unsafe fn install_hosting(t: &mut TclStubs) -> Vec<usize> {
+    vec![
+        // void (*tcl_AppendStringsToObj)(Tcl_Obj *objPtr, ...) /* 15 */
+        //
+        // The C trampoline, not a Rust body: stable rustc cannot define a
+        // C-variadic function at all. See `src/tk/trampoline.c`.
+        install(
+            t,
+            "tcl_AppendStringsToObj",
+            super::eval::tclrs_tk_append_strings_to_obj as *const (),
+        ),
+        // TCL_NORETURN void (*tcl_Panic)(const char *format, ...) /* 2 */
+        install(
+            t,
+            "tcl_Panic",
+            super::eval::tclrs_tk_panic_trampoline as *const (),
+        ),
+        // int (*tcl_EvalEx)(Tcl_Interp *, const char *, Tcl_Size, int) /* 291 */
+        install(t, "tcl_EvalEx", super::eval::eval_ex as *const ()),
+        // int (*tcl_EvalObjv)(Tcl_Interp *, Tcl_Size, Tcl_Obj *const [], int) /* 292 */
+        install(t, "tcl_EvalObjv", super::eval::eval_objv as *const ()),
+        // int (*tcl_EvalObjEx)(Tcl_Interp *, Tcl_Obj *, int) /* 293 */
+        install(t, "tcl_EvalObjEx", super::eval::eval_obj_ex as *const ()),
+    ]
 }
 
 macro_rules! entered {
@@ -1065,7 +1287,7 @@ unsafe extern "C" fn create_obj_command(
     delete_proc: *mut c_void,
 ) -> *mut c_void {
     entered!("tcl_CreateObjCommand");
-    record_command(interp, name, proc_, client_data, delete_proc)
+    record_command(interp, name, proc_, client_data, delete_proc, false)
 }
 
 /// Slot 676. Same body, its own trace line: two slots sharing one function
@@ -1079,28 +1301,78 @@ unsafe extern "C" fn create_obj_command2(
     delete_proc: *mut c_void,
 ) -> *mut c_void {
     entered!("tcl_CreateObjCommand2");
-    record_command(interp, name, proc_, client_data, delete_proc)
+    record_command(interp, name, proc_, client_data, delete_proc, true)
 }
 
 /// Add a command to the table and return its token.
+///
+/// A name that is already taken is replaced rather than appended, which is
+/// Tcl's contract: `Tcl_CreateObjCommand` deletes the old command of that name
+/// first (`generic/tclBasic.c`'s `Tcl_CreateObjCommand2` calls the old entry's
+/// `deleteProc` before installing the new one). Appending instead would leave
+/// the *first* registration shadowing every later one, which is the wrong way
+/// round.
 unsafe fn record_command(
     interp: *mut c_void,
     name: *const c_char,
     proc_: *mut c_void,
     client_data: *mut c_void,
     delete_proc: *mut c_void,
+    proc2: bool,
 ) -> *mut c_void {
     let text = String::from_utf8_lossy(CStr::from_ptr(name).to_bytes()).into_owned();
     note("CreateObjCommand", &text);
     let h = &mut *(*(interp as *mut HostInterp)).host;
-    h.commands.push(Box::new(HostCommand {
-        name: text,
+    let fresh = HostCommand {
+        name: text.clone(),
         proc_,
         client_data,
         delete_proc,
+        proc2,
         ensemble_map: ptr::null_mut(),
-    }));
-    &mut **h.commands.last_mut().unwrap() as *mut HostCommand as *mut c_void
+    };
+    match h.commands.iter().position(|c| c.name == text) {
+        Some(i) => {
+            let old = std::mem::replace(&mut *h.commands[i], fresh);
+            run_delete_proc(&old);
+            &mut *h.commands[i] as *mut HostCommand as *mut c_void
+        }
+        None => {
+            h.commands.push(Box::new(fresh));
+            &mut **h.commands.last_mut().unwrap() as *mut HostCommand as *mut c_void
+        }
+    }
+}
+
+/// Run a command's `Tcl_CmdDeleteProc` — `void (*)(void *clientData)`
+/// (`generic/tcl.h:559`) — if it has one. Called where Tcl would call it: when
+/// the command is replaced, and when the interpreter holding it is deleted
+/// (`generic/tclBasic.c`).
+unsafe fn run_delete_proc(cmd: &HostCommand) {
+    if cmd.delete_proc.is_null() {
+        return;
+    }
+    let f: unsafe extern "C" fn(*mut c_void) = std::mem::transmute(cmd.delete_proc);
+    f(cmd.client_data);
+}
+
+/// The command registered under `name` in `host`, or `None`.
+///
+/// The lifetime is a claim about the table, not about the borrow: a
+/// `HostCommand` is boxed, so its address survives the vector growing, and the
+/// entry lives until the interpreter is deleted.
+///
+/// # Safety
+/// `host` is null or a `Host` this crate created and has not deleted.
+pub unsafe fn command_named(host: *mut Host, name: &str) -> Option<&'static HostCommand> {
+    if host.is_null() {
+        return None;
+    }
+    (*host)
+        .commands
+        .iter()
+        .find(|c| c.name == name)
+        .map(|c| &*(&**c as *const HostCommand))
 }
 
 /// Slot 94.
@@ -1111,21 +1383,38 @@ unsafe fn record_command(
 /// drive through the same table. What it gets is a second host with its own
 /// commands, variables and result, sharing the process-wide tables and thread
 /// data.
+/// The interpreter this returns is independent in the sense Tk needs: its own
+/// commands, its own result, and — since [`super::interp::shared_for`] pairs
+/// each `Host` with a [`crate::runtime::Interp`] of its own — its own variables
+/// and its own compiled-chunk cache. A `set` in it is invisible to the primary
+/// interpreter, which is what a throwaway interpreter for parsing an option
+/// file has to mean.
 unsafe extern "C" fn create_interp() -> *mut c_void {
     entered!("tcl_CreateInterp");
     let host = Box::into_raw(Box::new(empty_host()));
+    super::interp::shared_for(host);
     wrap_interp(host) as *mut c_void
 }
 
-/// Slot 111. Frees the child host. The primary is never deleted, and freeing it
-/// would pull the tables out from under Tk.
+/// Slot 110. Frees the child host, its commands and its tclrs interpreter. The
+/// primary is never deleted, and freeing it would pull the tables out from
+/// under Tk.
 unsafe extern "C" fn delete_interp(interp: *mut c_void) {
     entered!("tcl_DeleteInterp");
     let h = (*(interp as *mut HostInterp)).host;
-    if h != CURRENT.load(Ordering::Relaxed) {
-        drop(Box::from_raw(h));
-        drop(Box::from_raw(interp as *mut HostInterp));
+    if h == CURRENT.load(Ordering::Relaxed) {
+        return;
     }
+    // Tcl runs each command's delete procedure and each association's delete
+    // procedure as the interpreter goes away (`generic/tclBasic.c`'s
+    // `DeleteInterpProc`). A command whose `clientData` is a Tk allocation
+    // would otherwise leak it.
+    for cmd in &(*h).commands {
+        run_delete_proc(cmd);
+    }
+    super::interp::forget(h);
+    drop(Box::from_raw(h));
+    drop(Box::from_raw(interp as *mut HostInterp));
 }
 
 /// Slot 108.
@@ -1850,6 +2139,7 @@ unsafe extern "C" fn create_ensemble(
         proc_: ptr::null_mut(),
         client_data: ptr::null_mut(),
         delete_proc: ptr::null_mut(),
+        proc2: false,
         ensemble_map: ptr::null_mut(),
     }));
     &mut **h.commands.last_mut().unwrap() as *mut HostCommand as *mut c_void

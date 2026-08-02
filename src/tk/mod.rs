@@ -1,4 +1,5 @@
-//! Hosting the real Tk toolkit: measuring what it needs from an interpreter.
+//! Hosting the real Tk toolkit: what it needs from an interpreter, and the
+//! interpreter it is given.
 //!
 //! Tk 9.0 does not link against Tcl. Its dylib has no undefined `Tcl_*` symbol
 //! at all — every call it makes goes through a table of function pointers it
@@ -7,8 +8,12 @@
 //! by reading 258 pages of documentation: hand Tk a table in which every slot
 //! is a trap that names itself, call `Tk_Init`, and read off what it asks for.
 //!
-//! This module is that instrument, and nothing more. It creates no windows,
-//! runs no event loop and implements no widget. Its output is a list.
+//! That measurement came first and is still here: [`host::build`] hands Tk a
+//! table whose unimplemented slots trap, and [`host::Level::Probe`] is the name
+//! of that table. On top of it sits the host proper — [`host::build_hosting`] —
+//! which adds the evaluator, so a script Tk hands over is compiled by this
+//! crate's own parser and compiler and run on fusevm rather than trapped on.
+//! Neither creates a window, runs an event loop or implements a widget.
 //!
 //! * [`abi`] — the layouts, each one taken from a cited line of the Tcl 9.0.4
 //!   source and confirmed with `offsetof` rather than inferred.
@@ -24,7 +29,13 @@
 //! * [`hash`] — `Tcl_HashTable`, which Tk allocates itself and calls into
 //!   directly, so it cannot live behind the table.
 //! * [`trace`] — the recorder that turns a call into a line of output.
-//! * [`host`] — the stand-in interpreter and the slots implemented so far.
+//! * [`host`] — the interpreter Tk is handed and the slots implemented so far.
+//! * [`interp`] — one [`crate::runtime::Interp`] behind every `Tcl_Interp *`,
+//!   including the second one Tk creates for its option database.
+//! * [`eval`] — the `Tcl_Eval*` slots, and the two callbacks the C trampoline
+//!   in `trampoline.c` calls back through.
+//! * [`dispatch`] — calling a command Tk registered from a script this crate
+//!   compiled, which is the one thing compile-time name resolution cannot do.
 //! * [`load`] — `dlopen` of the real libtk and the `Tk_Init` call.
 //!
 //! Everything here is behind the `tk` cargo feature, and a build without that
@@ -37,15 +48,20 @@
 //! tk-probe`:
 //!
 //! * Tk called **39 distinct slots of the 691** before it asked for something
-//!   that could not be answered, over 276 calls. With one slot deliberately
+//!   that could not be answered, over 274 calls. With one slot deliberately
 //!   faked (see below) it reaches **47 distinct slots** over 419 calls. So
 //!   `Tk_Init` exercises under 7% of the table, and the other 93% can be traps
 //!   for as long as no widget is created.
 //!
-//!   (That number was 421 while the host counted two frees of its own result
-//!   value as calls Tk had made — [`host`] reached the `tclFreeObj` *slot* to
-//!   release it rather than the plain function behind it. The two calls Tk
-//!   itself makes through `Tcl_DecrRefCount` are still there.)
+//!   Those totals were 276 and 421 when they were first measured, and the two
+//!   calls that went are not Tk's: `Tcl_ResetResult` and `Tcl_SetObjResult`
+//!   released the previous result by calling slot 30's *body*, which logged a
+//!   `TclFreeObj` line as though Tk had asked for one. Splitting the body out
+//!   of the slot — as `Tcl_DStringInit` and `reset_dstring` already were —
+//!   leaves the log holding only what Tk called. The two `TclFreeObj` lines
+//!   that remain are Tk's own, through the `Tcl_DecrRefCount` macro, and are
+//!   what `tests/tk_probe_session.rs` asserts on. Distinct slots and the
+//!   stopping point are unchanged.
 //! * The run ends at `Tcl_EvalEx(interp, "file tildeexpand ~/.Xdefaults", ...)`
 //!   (`tk9.0.4/generic/tkOption.c:1592`) — the first request that needs an
 //!   evaluator rather than a data structure.
@@ -80,22 +96,46 @@
 //!
 //! # The one slot that cannot be written in stable Rust
 //!
-//! Seven slots are variadic. Six of them Tk calls only for error reporting, and
-//! ignoring the variadic arguments is harmless. `Tcl_AppendStringsToObj`
-//! (slot 15) is not one of those: Tk builds a command name out of its variadic
-//! arguments (`tk9.0.4/generic/tkUtil.c:1222`). Defining a C-variadic function
-//! is rejected by stable rustc (`error[E0658]`, tracking issue 44930), and on
-//! AAPCS64 there is no non-variadic declaration that can reach the arguments
-//! either, because they are all passed on the stack. A C trampoline is the fix
-//! and is not part of this phase; setting `TCLRS_TK_DEGRADED` installs a body
-//! that appends nothing, purely so the enumeration can continue past it, and
-//! every line of that run describes a Tk that was fed a truncated string.
+//! Seven slots are variadic. Defining a C-variadic function is rejected by
+//! stable rustc (`error[E0658]`, tracking issue 44930), and on AAPCS64 there is
+//! no non-variadic declaration that can reach the arguments either, because
+//! they are all passed on the stack. Five of the seven Tk calls only to build
+//! text a script would read, and ignoring their variadic arguments costs the
+//! text and nothing else — `eval` argues that one slot at a time. The other two
+//! carry a payload and go through `src/tk/trampoline.c`, a C file compiled by
+//! `build.rs`:
+//!
+//! * `Tcl_AppendStringsToObj` (slot 15), because Tk builds a fully qualified
+//!   command name out of its arguments (`tk9.0.4/generic/tkUtil.c:1222`) and a
+//!   body that ignored them registers every ensemble subcommand under the
+//!   ensemble's own name;
+//! * `Tcl_Panic` (slot 2), because it never returns and the formatted message
+//!   is the only account of why.
+//!
+//! `TCLRS_TK_DEGRADED` still installs the truncating body phase 1 used for slot
+//! 15, so the run that motivated the trampoline can be reproduced.
+//!
+//! # What the hosting table reaches
+//!
+//! `cargo run --features tk --bin tk-host` against the same library: **692
+//! calls over 51 distinct slots**, stopping at slot 675 `Tcl_GetBoolFromObj`.
+//! On the way it evaluates `file tildeexpand ~/.Xdefaults` in a second
+//! interpreter created and deleted for the purpose
+//! (`tk9.0.4/generic/tkOption.c:1496-1499`), builds every `::tk::…` ensemble
+//! subcommand name through the trampoline, and registers the main window
+//! command `.` along with the rest of Tk's command set. `Tk_Init` does not
+//! return: what it wants next is the value-conversion family — `GetBool`,
+//! `GetInt`, `GetDouble`, `GetWideInt`, then `Tcl_GetIndexFromObjStruct` — none
+//! of which is an evaluator question.
 
 pub mod abi;
+pub mod dispatch;
 pub mod dstring;
+pub mod eval;
 pub mod generated;
 pub mod hash;
 pub mod host;
+pub mod interp;
 pub mod load;
 pub mod obj;
 pub mod objtype;
