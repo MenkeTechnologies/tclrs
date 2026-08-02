@@ -14,6 +14,13 @@
 //!   source and confirmed with `offsetof` rather than inferred.
 //! * [`generated`] — the four stub tables' slot names and one trap per slot,
 //!   derived from the headers by `scripts/gen_tk_stubs.py`.
+//! * [`obj`] — the shadow `Tcl_Obj`: its pinned storage, the ownership rule for
+//!   every pointer that crosses the boundary, and the bridge to this crate's
+//!   own values.
+//! * [`objtype`] — the `Tcl_ObjType` contract: the registry, the four procs,
+//!   and the host's own list, dictionary and scalar types.
+//! * [`dstring`] — `Tcl_DString`, which Tk allocates itself and reads two
+//!   fields of directly.
 //! * [`hash`] — `Tcl_HashTable`, which Tk allocates itself and calls into
 //!   directly, so it cannot live behind the table.
 //! * [`trace`] — the recorder that turns a call into a line of output.
@@ -31,9 +38,14 @@
 //!
 //! * Tk called **39 distinct slots of the 691** before it asked for something
 //!   that could not be answered, over 276 calls. With one slot deliberately
-//!   faked (see below) it reaches **47 distinct slots** over 421 calls. So
+//!   faked (see below) it reaches **47 distinct slots** over 419 calls. So
 //!   `Tk_Init` exercises under 7% of the table, and the other 93% can be traps
 //!   for as long as no widget is created.
+//!
+//!   (That number was 421 while the host counted two frees of its own result
+//!   value as calls Tk had made — [`host`] reached the `tclFreeObj` *slot* to
+//!   release it rather than the plain function behind it. The two calls Tk
+//!   itself makes through `Tcl_DecrRefCount` are still there.)
 //! * The run ends at `Tcl_EvalEx(interp, "file tildeexpand ~/.Xdefaults", ...)`
 //!   (`tk9.0.4/generic/tkOption.c:1592`) — the first request that needs an
 //!   evaluator rather than a data structure.
@@ -51,15 +63,20 @@
 //!
 //! 1. **`Tcl_Obj`.** `Tcl_IncrRefCount`, `Tcl_DecrRefCount` and `Tcl_IsShared`
 //!    read and write `objPtr->refCount` in place (`generic/tcl.h:2517-2534`),
-//!    and Tk's ten `Tcl_ObjType` implementations write `typePtr` and
-//!    `internalRep` directly. Only the free path is a slot.
+//!    and Tk's twelve `Tcl_ObjType` implementations write `typePtr` and
+//!    `internalRep` directly. Only the free path is a slot. Worse than that:
+//!    two of the objects Tk operates on are not Tcl's memory at all but Tk's own
+//!    C stack (`tk9.0.4/macosx/tkMacOSXEmbed.c:160-165`,
+//!    `tk9.0.4/generic/tkObj.c:201-206`), and the second leaves `refCount`
+//!    uninitialised. See [`obj`] and [`objtype`].
 //! 2. **`Tcl_HashTable`.** `Tcl_FindHashEntry` and `Tcl_CreateHashEntry` call
 //!    function pointers stored inside the caller's own table
 //!    (`generic/tcl.h:2607-2610`), so a host has to implement Tcl's hash table,
 //!    not just answer questions about it. See [`hash`].
-//! 3. **`Tcl_DString`, `Tcl_CmdInfo`, `Tcl_Time`, `Tcl_Namespace`.** Declared by
-//!    Tk on its own stack; `Tcl_DStringValue` and `Tcl_DStringLength` are field
-//!    accesses (`generic/tcl.h:892-893`).
+//! 3. **`Tcl_DString`, `Tcl_CmdInfo`, `Tcl_Time`, `Tcl_Namespace`,
+//!    `Tcl_DictSearch`.** Declared by Tk on its own stack; `Tcl_DStringValue`
+//!    and `Tcl_DStringLength` are field accesses (`generic/tcl.h:892-893`).
+//!    See [`dstring`].
 //!
 //! # The one slot that cannot be written in stable Rust
 //!
@@ -75,10 +92,13 @@
 //! every line of that run describes a Tk that was fed a truncated string.
 
 pub mod abi;
+pub mod dstring;
 pub mod generated;
 pub mod hash;
 pub mod host;
 pub mod load;
+pub mod obj;
+pub mod objtype;
 pub mod trace;
 
 pub use abi::RawStub;
