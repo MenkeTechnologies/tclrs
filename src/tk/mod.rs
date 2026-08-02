@@ -137,11 +137,15 @@ pub mod eval;
 pub mod generated;
 pub mod hash;
 pub mod host;
+pub mod index;
 pub mod interp;
 pub mod load;
 pub mod notifier;
 pub mod obj;
 pub mod objtype;
+pub mod pkg;
+pub mod preserve;
 pub mod trace;
+pub mod utf16;
 
 pub use abi::RawStub;

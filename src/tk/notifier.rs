@@ -74,6 +74,7 @@
 
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use super::abi::{RawStub, TclPlatStubs, TclStubs, TclTime};
 use super::generated::{TCL_NAMES, TCL_PLAT_NAMES};
@@ -1850,7 +1851,36 @@ pub unsafe fn install_impls(t: &mut TclStubs) -> Vec<usize> {
         install(t, "tcl_ThreadQueueEvent", thread_queue_event as *const ()),
         install(t, "tcl_AlertNotifier", alert_notifier as *const ()),
         install(t, "tcl_ServiceModeHook", service_mode_hook as *const ()),
+        install(t, "tcl_SetMainLoop", set_main_loop as *const ()),
     ]
+}
+
+/// The `Tcl_MainLoopProc *` `Tk_Init` hands over on its way out.
+///
+/// `void Tk_MainLoop(void)` (`tk9.0.4/generic/tkEvent.c`), which is a
+/// `while (Tk_GetNumMainWindows() > 0) Tcl_DoOneEvent(0)`. Storing it is the
+/// whole of slot 284's contract, and calling it is how a session with a window
+/// stays alive.
+static MAIN_LOOP: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+
+/// Slot 284. `void Tcl_SetMainLoop(Tcl_MainLoopProc *proc)`
+/// (`generic/tclDecls.h`; body at `generic/tclMain.c:647-654`, which is a
+/// single assignment into thread-specific data).
+///
+/// Tk calls it once, with `Tk_MainLoop`, immediately after providing itself as
+/// a package (`tk9.0.4/generic/tkWindow.c:3477`) — so reaching this slot means
+/// `Tk_Init` has done everything it is going to do.
+///
+/// # Safety
+/// `proc` is a `Tcl_MainLoopProc *` or NULL. Nothing here calls it.
+unsafe extern "C" fn set_main_loop(proc_: *mut c_void) {
+    entered!("tcl_SetMainLoop");
+    MAIN_LOOP.store(proc_, Ordering::Relaxed);
+}
+
+/// The main-loop procedure Tk registered, or NULL if it has not.
+pub fn main_loop_proc() -> *mut c_void {
+    MAIN_LOOP.load(Ordering::Relaxed)
 }
 
 /// Patch the one platform slot Tk asks for into the `TclPlatStubs` table.

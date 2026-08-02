@@ -25,8 +25,12 @@
  *   Tcl_Panic               (slot 2)  — the message is the whole content of
  *       the call. Tk calls it 227 times and it never returns, so an abort
  *       without the formatted text is an abort with no diagnosis.
+ *   Tcl_ObjPrintf           (slot 578) — the formatted text *is* the returned
+ *       value. `wm geometry .` answers with Tcl_ObjPrintf("%dx%d+%d+%d", ...)
+ *       (tk9.0.4/generic/tkWm.c), so a body that ignored the arguments would
+ *       return an empty geometry rather than the window's.
  *
- * The remaining five are argued about, not marshalled; see `tk::eval`.
+ * The remaining four are argued about, not marshalled; see `tk::eval`.
  */
 
 #include <stdarg.h>
@@ -37,6 +41,7 @@
 extern void tclrs_tk_append_strings(void *obj_ptr, const char *const *strings,
 				    size_t count);
 extern void tclrs_tk_panic(const char *text);
+extern void *tclrs_tk_new_string_obj(const char *text, size_t length);
 
 /*
  * Tcl's own loop over the argument list ends at the first NULL and has no upper
@@ -50,6 +55,9 @@ extern void tclrs_tk_panic(const char *text);
  * `Tcl_Panic` writes through vfprintf with no limit; a truncated diagnostic is
  * still a diagnostic, and this process is about to abort either way. */
 #define TCLRS_TK_PANIC_BUF 4096
+
+/* As above, for a formatted value. Tk's longest is a window geometry. */
+#define TCLRS_TK_PRINTF_BUF 4096
 
 /*
  * void Tcl_AppendStringsToObj(Tcl_Obj *objPtr, ...) — generic/tclDecls.h:92.
@@ -94,4 +102,34 @@ tclrs_tk_panic_trampoline(const char *format, ...)
 	va_end(ap);
 
 	tclrs_tk_panic(buf);
+}
+
+/*
+ * Tcl_Obj *Tcl_ObjPrintf(const char *format, ...) —
+ * generic/tclStringObj.c:2931-2944, which formats into a fresh value.
+ *
+ * Tcl formats with its own printf subset (AppendPrintfToObjVA,
+ * generic/tclStringObj.c:2708-2900) rather than with the C library's, because
+ * it has to accept Tcl's own size modifiers. This uses vsnprintf, which agrees
+ * with it on every conversion Tk actually passes — the widest is
+ * "%dx%d+%d+%d" — and would disagree only on a Tcl-specific modifier, which
+ * would be a format string no C library could be handed at all.
+ */
+void *
+tclrs_tk_obj_printf(const char *format, ...)
+{
+	char buf[TCLRS_TK_PRINTF_BUF];
+	va_list ap;
+	int n;
+
+	va_start(ap, format);
+	n = vsnprintf(buf, sizeof buf, format, ap);
+	va_end(ap);
+
+	if (n < 0) {
+		n = 0;
+	} else if ((size_t) n >= sizeof buf) {
+		n = (int) sizeof buf - 1;
+	}
+	return tclrs_tk_new_string_obj(buf, (size_t) n);
 }

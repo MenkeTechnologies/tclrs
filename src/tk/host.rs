@@ -106,6 +106,11 @@ pub struct Host {
     pub assoc_data: Vec<(String, *mut c_void, *mut c_void)>,
     /// Namespaces Tk asked for, by fully qualified name.
     pub namespaces: Vec<(String, *mut TclNamespace)>,
+    /// Each namespace's export patterns, keyed by the address of its
+    /// [`TclNamespace`]. Tcl keeps them in `Namespace.exportArrayPtr`
+    /// (`generic/tclInt.h`), which is past the end of the public
+    /// `Tcl_Namespace` this host hands out, so they live here instead.
+    pub exports: Vec<(usize, Vec<String>)>,
     /// Variables Tk linked to C storage: name and `TCL_LINK_*` type.
     pub linked_vars: Vec<(String, c_int)>,
     /// Exit handlers Tk registered. Recorded, never run.
@@ -302,6 +307,7 @@ fn empty_host() -> Host {
         vars: Vec::new(),
         assoc_data: Vec::new(),
         namespaces: Vec::new(),
+        exports: Vec::new(),
         linked_vars: Vec::new(),
         exit_handlers: Vec::new(),
     }
@@ -559,6 +565,8 @@ unsafe fn install_impls(t: &mut TclStubs, degraded: bool, level: Level) -> Vec<u
             "tcl_CreateThreadExitHandler",
             create_thread_exit_handler as *const (),
         ),
+        // void (*tcl_CreateExitHandler)(Tcl_ExitProc *, void *) /* 93 */
+        install(t, "tcl_CreateExitHandler", create_exit_handler as *const ()),
         // Tcl_HashEntry *(*tcl_NextHashEntry)(Tcl_HashSearch *searchPtr) /* 193 */
         install(t, "tcl_NextHashEntry", next_hash_entry as *const ()),
         // void (*tcl_ResetResult)(Tcl_Interp *interp) /* 217 */
@@ -592,6 +600,17 @@ unsafe fn install_impls(t: &mut TclStubs, degraded: bool, level: Level) -> Vec<u
         // Tcl_Namespace *(*tcl_CreateNamespace)(Tcl_Interp *, const char *,
         //     void *, Tcl_NamespaceDeleteProc *) /* 506 */
         install(t, "tcl_CreateNamespace", create_namespace as *const ()),
+        // int (*tcl_Export)(Tcl_Interp *, Tcl_Namespace *, const char *, int) /* 509 */
+        install(t, "tcl_Export", export as *const ()),
+        // Tcl_Command (*tcl_FindCommand)(Tcl_Interp *, const char *,
+        //     Tcl_Namespace *, int) /* 515 */
+        install(t, "tcl_FindCommand", find_command as *const ()),
+        // int (*tcl_Canceled)(Tcl_Interp *, int flags) /* 581 */
+        install(t, "tcl_Canceled", canceled as *const ()),
+        // Tcl_Obj *(*tcl_GetStartupScript)(const char **encodingPtr) /* 623 */
+        install(t, "tcl_GetStartupScript", get_startup_script as *const ()),
+        // void (*tcl_SetStartupScript)(Tcl_Obj *path, const char *encoding) /* 622 */
+        install(t, "tcl_SetStartupScript", set_startup_script as *const ()),
         // Tcl_Command (*tcl_CreateEnsemble)(Tcl_Interp *, const char *,
         //     Tcl_Namespace *, int) /* 541 */
         install(t, "tcl_CreateEnsemble", create_ensemble as *const ()),
@@ -738,6 +757,18 @@ unsafe fn install_impls(t: &mut TclStubs, degraded: bool, level: Level) -> Vec<u
         // Tcl_Obj *(*tcl_DStringToObj)(Tcl_DString *dsPtr) /* 685 */
         install(t, "tcl_DStringToObj", dstring_to_obj as *const ()),
     ];
+    // The UTF-8 to UTF-16 conversion Cocoa needs, with Tcl's own decoder.
+    slots.extend(super::utf16::install_impls(t));
+    // The deferred-free table is a module: three slots that share one side
+    // table, plus the two errno slots that sit beside them in `tclPreserve.c`'s
+    // neighbourhood of the stub table.
+    slots.extend(super::preserve::install_impls(t));
+    // The package table is a module too: `Tcl_PkgProvideEx` needs Tcl's
+    // version normalisation and comparison, which is 250 lines of C.
+    slots.extend(super::pkg::install_impls(t));
+    // The two index-lookup slots carry a `Tcl_ObjType` of their own, so like
+    // the event loop they are a module rather than two more bodies here.
+    slots.extend(super::index::install_impls(t));
     // The event loop is a module of its own — twenty-four slots ported from
     // `generic/tclNotify.c`, `generic/tclTimer.c` and `macosx/tclMacOSXNotify.c`
     // — so it installs itself rather than listing its bodies here.
@@ -789,6 +820,16 @@ unsafe fn install_hosting(t: &mut TclStubs) -> Vec<usize> {
         install(t, "tcl_EvalObjv", super::eval::eval_objv as *const ()),
         // int (*tcl_EvalObjEx)(Tcl_Interp *, Tcl_Obj *, int) /* 293 */
         install(t, "tcl_EvalObjEx", super::eval::eval_obj_ex as *const ()),
+        // Tcl_Obj *(*tcl_ObjPrintf)(const char *format, ...) /* 578 */
+        //
+        // The third trampoline: the formatted text is the returned value, so
+        // ignoring the variadic arguments would answer every `wm geometry`
+        // with an empty string.
+        install(
+            t,
+            "tcl_ObjPrintf",
+            super::eval::tclrs_tk_obj_printf as *const (),
+        ),
     ]
 }
 
@@ -1513,6 +1554,120 @@ unsafe extern "C" fn get_command_info(
     1
 }
 
+/// The startup script `Tcl_SetStartupScript` last recorded, and the encoding
+/// name that came with it.
+///
+/// Tcl keeps both in thread-specific data (`generic/tclMain.c`'s
+/// `ThreadSpecificData.path` and `.encoding`); one process-wide pair is the
+/// same thing for a host with one interpreter thread.
+static STARTUP_SCRIPT: AtomicPtr<TclObj> = AtomicPtr::new(ptr::null_mut());
+static STARTUP_ENCODING: AtomicPtr<TclObj> = AtomicPtr::new(ptr::null_mut());
+
+/// Slot 623. `Tcl_Obj *Tcl_GetStartupScript(const char **encodingPtr)`
+/// (`generic/tclMain.c:257-273`).
+///
+/// NULL means "this process was not started with a script", and that is the
+/// truthful answer for a host that was not: `Tcl_MainEx` is what sets it, from
+/// `argv`, and nothing here runs `Tcl_MainEx`.
+///
+/// The answer is load-bearing on macOS. `TkpInit` opens a console window when
+/// stdin is not a terminal *and* there is no startup script
+/// (`tk9.0.4/macosx/tkMacOSXInit.c:585`), so returning NULL under a redirected
+/// stdin sends Tk into `Tk_CreateConsoleWindow` and the channel subsystem
+/// behind it.
+///
+/// # Safety
+/// `encoding_out` is null or writable.
+unsafe extern "C" fn get_startup_script(encoding_out: *mut *const c_char) -> *mut TclObj {
+    entered!("tcl_GetStartupScript");
+    if !encoding_out.is_null() {
+        let enc = STARTUP_ENCODING.load(Ordering::Relaxed);
+        *encoding_out = if enc.is_null() {
+            ptr::null()
+        } else {
+            (*enc).bytes
+        };
+    }
+    STARTUP_SCRIPT.load(Ordering::Relaxed)
+}
+
+/// Slot 622. `void Tcl_SetStartupScript(Tcl_Obj *path, const char *encoding)`
+/// (`generic/tclMain.c:206-241`): both values are reference-counted by the
+/// callee, and the previous pair is released.
+///
+/// # Safety
+/// `path` is null or a live `Tcl_Obj`; `encoding` is null or a NUL-terminated
+/// string.
+unsafe extern "C" fn set_startup_script(path: *mut TclObj, encoding: *const c_char) {
+    entered!("tcl_SetStartupScript");
+    let kept = if path.is_null() {
+        ptr::null_mut()
+    } else {
+        retain(path)
+    };
+    obj::release(STARTUP_SCRIPT.swap(kept, Ordering::Relaxed));
+    let enc = if encoding.is_null() {
+        ptr::null_mut()
+    } else {
+        retain(obj::new_string(CStr::from_ptr(encoding).to_bytes()))
+    };
+    obj::release(STARTUP_ENCODING.swap(enc, Ordering::Relaxed));
+}
+
+/// Slot 581. `int Tcl_Canceled(Tcl_Interp *interp, int flags)`
+/// (`generic/tclBasic.c:5231-5243`): `TCL_OK` unless the script in progress has
+/// been cancelled.
+///
+/// `Tk_MainLoop` and `update` ask before each pass so that a cancelled script
+/// stops running. Nothing in this host cancels anything — `Tcl_CancelEval` is
+/// not implemented and the `CANCELED` flag it sets does not exist here — so the
+/// answer is the C's own answer for an interpreter with the flag clear
+/// (`generic/tclBasic.c:5240-5242`), and will stay correct for as long as that
+/// remains true.
+unsafe extern "C" fn canceled(_interp: *mut c_void, _flags: c_int) -> c_int {
+    entered!("tcl_Canceled");
+    TCL_OK
+}
+
+/// Slot 515. `Tcl_Command Tcl_FindCommand(Tcl_Interp *, const char *,
+/// Tcl_Namespace *, int)` (`generic/tclNamesp.c:2926-2947`): the command token,
+/// or NULL when there is no such command.
+///
+/// Tk asks this only as a yes/no question — "did a script define
+/// `::tk::mac::Quit`?" and its siblings
+/// (`tk9.0.4/macosx/tkMacOSXHLEvents.c:116,132,149,242,620`,
+/// `tk9.0.4/macosx/tkMacOSXMenus.c:180,204,220`) — and the answer decides
+/// whether an Apple Event is forwarded to a script or handled by the default.
+/// A host with no such command must answer NULL, and does.
+///
+/// The C's resolution order is: global namespace when the name starts with
+/// `::` or `TCL_GLOBAL_ONLY` is set, otherwise the context namespace and then
+/// global (`generic/tclNamesp.c:2963-2975`). This host's command table is flat
+/// and every name Tk registered into it is the name Tk spelled, so the two
+/// spellings of a global command — with and without the leading `::` — are
+/// both tried and nothing else is.
+unsafe extern "C" fn find_command(
+    interp: *mut c_void,
+    name: *const c_char,
+    _context_ns: *mut TclNamespace,
+    _flags: c_int,
+) -> *mut c_void {
+    entered!("tcl_FindCommand");
+    let text = String::from_utf8_lossy(CStr::from_ptr(name).to_bytes()).into_owned();
+    note("FindCommand", &text);
+    let h = &mut *(*(interp as *mut HostInterp)).host;
+    let bare = text.strip_prefix("::").unwrap_or(&text);
+    let qualified = format!("::{bare}");
+    match h
+        .commands
+        .iter()
+        .find(|c| c.name == text || c.name == bare || c.name == qualified)
+    {
+        Some(c) => &**c as *const HostCommand as *mut c_void,
+        None => ptr::null_mut(),
+    }
+}
+
 /// Slot 166. Tcl guarantees a value here even when nothing has been set
 /// (`generic/tclBasic.c` keeps an always-live `objResultPtr`), so an empty one
 /// is created on demand rather than returning NULL.
@@ -1567,6 +1722,19 @@ unsafe extern "C" fn init_hash_table(t: *mut TclHashTable, key_type: c_int) {
 /// Tk rather than exiting, so there is no point at which Tcl would call them.
 unsafe extern "C" fn create_thread_exit_handler(proc_: *mut c_void, client_data: *mut c_void) {
     entered!("tcl_CreateThreadExitHandler");
+    host().exit_handlers.push((proc_, client_data));
+}
+
+/// Slot 93. `void Tcl_CreateExitHandler(Tcl_ExitProc *, void *)`
+/// (`generic/tclEvent.c`), which pushes onto the front of a process-wide list
+/// under `exitMutex`.
+///
+/// Recorded, never run: the C's list is walked by `Tcl_Finalize`, and this host
+/// has nothing that calls it. Tk registers one per main window
+/// (`tk9.0.4/generic/tkWindow.c`), so the count is a measurement of how many
+/// windows a session created.
+unsafe extern "C" fn create_exit_handler(proc_: *mut c_void, client_data: *mut c_void) {
+    entered!("tcl_CreateExitHandler");
     host().exit_handlers.push((proc_, client_data));
 }
 
@@ -2126,6 +2294,60 @@ unsafe extern "C" fn create_namespace(
     }));
     h.namespaces.push((text, ns));
     ns
+}
+
+/// Slot 509. `int Tcl_Export(Tcl_Interp *, Tcl_Namespace *, const char *, int)`
+/// (`generic/tclNamesp.c:1454-1465`).
+///
+/// Ttk exports every widget command from `::ttk` on its way up
+/// (`tk9.0.4/generic/ttk/ttkInit.c`), which is the only reason this slot is
+/// reached during `Tk_Init`.
+///
+/// Three of the C's four behaviours are here: reset the list first when asked
+/// (`generic/tclNamesp.c:1487-1499`), refuse a pattern carrying a namespace
+/// qualifier (`generic/tclNamesp.c:1505-1514`), and ignore a pattern already in
+/// the list (`generic/tclNamesp.c:1520-1530`). The fourth — growing the array
+/// in powers of two from five (`generic/tclNamesp.c:1536-1544`) — is an
+/// allocation strategy, not a behaviour, and a `Vec` has its own.
+///
+/// The qualifier test is written out rather than routed through
+/// `TclGetNamespaceForQualName`: that function resolves a qualified name
+/// against the namespace tree, and the only thing this call site uses it for is
+/// to discover that the pattern contained `::` at all
+/// (`generic/tclNamesp.c:1509`).
+unsafe extern "C" fn export(
+    interp: *mut c_void,
+    ns: *mut TclNamespace,
+    pattern: *const c_char,
+    reset_list_first: c_int,
+) -> c_int {
+    entered!("tcl_Export");
+    let text = String::from_utf8_lossy(CStr::from_ptr(pattern).to_bytes()).into_owned();
+    note("Export", &text);
+    let h = &mut *(*(interp as *mut HostInterp)).host;
+    let key = ns as usize;
+    let slot = match h.exports.iter().position(|(k, _)| *k == key) {
+        Some(i) => i,
+        None => {
+            h.exports.push((key, Vec::new()));
+            h.exports.len() - 1
+        }
+    };
+    if reset_list_first != 0 {
+        h.exports[slot].1.clear();
+    }
+    if text.contains("::") {
+        set_result_bytes(
+            interp,
+            format!("invalid export pattern \"{text}\": pattern can't specify a namespace")
+                .as_bytes(),
+        );
+        return TCL_ERROR;
+    }
+    if !h.exports[slot].1.contains(&text) {
+        h.exports[slot].1.push(text);
+    }
+    TCL_OK
 }
 
 /// Slot 541. An ensemble is a command whose subcommands are looked up in a
