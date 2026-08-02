@@ -235,6 +235,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "The list sorted by the reference merge sort — the algorithm, not just the ordering, because `-unique` observes it.",
     },
     Entry {
+        name: "namespace",
+        synopsis: "namespace subcommand ?arg ...?",
+        summary: "The namespace ensemble. A namespace is resolved while compiling, so its variables and procedures take qualified names; the queries are answered from interpreter state.",
+    },
+    Entry {
         name: "proc",
         synopsis: "proc name args body",
         summary: "Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.",
@@ -255,6 +260,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "Substitute for a regular expression's matches; the new string, or the count when a variable is named.",
     },
     Entry {
+        name: "rename",
+        synopsis: "rename oldName newName",
+        summary: "Rename a command, or delete it when the new name is empty. A call the same chunk compiled is guarded so a deleted command still refuses.",
+    },
+    Entry {
         name: "return",
         synopsis: "return ?-code code? ?result?",
         summary: "Return from the enclosing procedure with the result. `-code ok` and `-code error` are the codes implemented.",
@@ -263,6 +273,11 @@ pub const CORPUS: &[Entry] = &[
         name: "set",
         synopsis: "set varName ?newValue?",
         summary: "Read or write a variable; yields its value. A procedure's variables are slots, a script's are VM globals.",
+    },
+    Entry {
+        name: "source",
+        synopsis: "source ?-encoding encoding? fileName",
+        summary: "Read a file and evaluate it against this interpreter; yields the value of its last command.",
     },
     Entry {
         name: "split",
@@ -280,9 +295,19 @@ pub const CORPUS: &[Entry] = &[
         summary: "Run the body of the first pattern that matches, `-exact` or `-glob`.",
     },
     Entry {
+        name: "tcl_findLibrary",
+        synopsis: "tcl_findLibrary basename version patch initScript enVarName varName",
+        summary: "Tcl's own library-directory search, ported from `library/auto.tcl`: find the initialisation script, set the library variable and source it.",
+    },
+    Entry {
         name: "unset",
         synopsis: "unset ?-nocomplain? ?--? ?name ...?",
         summary: "Remove variables or array elements.",
+    },
+    Entry {
+        name: "variable",
+        synopsis: "variable ?name value ...? name ?value?",
+        summary: "Declare a namespace variable. In a procedure body it links the local name to the namespace's variable rather than creating one.",
     },
     Entry {
         name: "while",
@@ -311,6 +336,7 @@ pub fn subcommands(command: &str) -> &'static [&'static str] {
         "array" => ARRAY_SUBCOMMANDS,
         "dict" => DICT_SUBCOMMANDS,
         "info" => &["coroutine"],
+        "namespace" => crate::cmd_namespace::SUBCOMMANDS,
         _ => &[],
     }
 }
@@ -329,6 +355,7 @@ pub fn subcommand_corpus(command: &str) -> &'static [Entry] {
         "array" => ARRAY_CORPUS,
         "dict" => DICT_CORPUS,
         "info" => INFO_CORPUS,
+        "namespace" => NAMESPACE_CORPUS,
         _ => &[],
     }
 }
@@ -638,6 +665,107 @@ const INFO_CORPUS: &[Entry] = &[Entry {
     summary: "The name of the running coroutine, or the empty string outside one.",
 }];
 
+/// `namespace`'s subcommands, in the order `cmd_namespace::SUBCOMMANDS` lists
+/// them — which is the order tclsh's own `unknown or ambiguous subcommand`
+/// message lists them in, so the two agree.
+const NAMESPACE_CORPUS: &[Entry] = &[
+    Entry {
+        name: "children",
+        synopsis: "namespace children ?name? ?pattern?",
+        summary: "The child namespaces of a namespace, fully qualified.",
+    },
+    Entry {
+        name: "code",
+        synopsis: "namespace code script",
+        summary: "The script wrapped so that evaluating it later runs it in this namespace.",
+    },
+    Entry {
+        name: "current",
+        synopsis: "namespace current",
+        summary: "The namespace the command was written in. Folded while compiling, since that is where a namespace is decided.",
+    },
+    Entry {
+        name: "delete",
+        synopsis: "namespace delete ?name name...?",
+        summary: "Remove namespaces, their child namespaces and their commands.",
+    },
+    Entry {
+        name: "ensemble",
+        synopsis: "namespace ensemble subcommand ?arg ...?",
+        summary: "`exists`, `create` and `configure`. Dispatching *through* an ensemble is not implemented: a call resolves its command while compiling.",
+    },
+    Entry {
+        name: "eval",
+        synopsis: "namespace eval name arg ?arg...?",
+        summary: "Lower the body with this namespace current, which is what gives its `proc`, `variable` and `$v` the namespace's names. The name and the body have to be written out.",
+    },
+    Entry {
+        name: "exists",
+        synopsis: "namespace exists name",
+        summary: "1 when the namespace exists.",
+    },
+    Entry {
+        name: "export",
+        synopsis: "namespace export ?-clear? ?pattern pattern...?",
+        summary: "Add patterns to the namespace's export list, or report it when no pattern is given.",
+    },
+    Entry {
+        name: "forget",
+        synopsis: "namespace forget ?pattern pattern...?",
+        summary: "Remove the imports of the commands a pattern names — not the commands themselves.",
+    },
+    Entry {
+        name: "import",
+        synopsis: "namespace import ?-force? ?pattern pattern...?",
+        summary: "Bring exported commands into this namespace under their tail names. A pattern that matches nothing is not an error.",
+    },
+    Entry {
+        name: "inscope",
+        synopsis: "namespace inscope ns script ?arg...?",
+        summary: "Evaluate the script in a namespace, with the extra arguments appended as list elements.",
+    },
+    Entry {
+        name: "origin",
+        synopsis: "namespace origin name",
+        summary: "Where an imported command was originally defined; the command's own name when it was not imported.",
+    },
+    Entry {
+        name: "parent",
+        synopsis: "namespace parent ?name?",
+        summary: "The namespace containing this one; empty for the root.",
+    },
+    Entry {
+        name: "path",
+        synopsis: "namespace path ?namespaceList?",
+        summary: "Refused: it changes how a later name resolves, which this frontend resolved while compiling.",
+    },
+    Entry {
+        name: "qualifiers",
+        synopsis: "namespace qualifiers string",
+        summary: "Everything before the last `::`, a port of `NamespaceQualifiersCmd`. Folded when the argument is written out.",
+    },
+    Entry {
+        name: "tail",
+        synopsis: "namespace tail string",
+        summary: "Everything after the last `::`, a port of `NamespaceTailCmd`.",
+    },
+    Entry {
+        name: "unknown",
+        synopsis: "namespace unknown ?script?",
+        summary: "Refused, for the same reason `namespace path` is.",
+    },
+    Entry {
+        name: "upvar",
+        synopsis: "namespace upvar ns ?otherVar myVar ...?",
+        summary: "Refused, for the same reason `namespace path` is.",
+    },
+    Entry {
+        name: "which",
+        synopsis: "namespace which ?-command? ?-variable? name",
+        summary: "The qualified name a command or variable resolves to, or the empty string.",
+    },
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,6 +814,7 @@ mod tests {
         assert!(subcommands("array").contains(&"names"));
         assert!(subcommands("dict").contains(&"keys"));
         assert!(subcommands("info").contains(&"coroutine"));
+        assert!(subcommands("namespace").contains(&"eval"));
         assert!(subcommands("puts").is_empty());
     }
 }
