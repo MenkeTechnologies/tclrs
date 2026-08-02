@@ -226,11 +226,15 @@ fn build_at(level: Level) -> *mut HostInterp {
         hooks: ptr::null(),
         slots: TCL_INT_TRAPS,
     });
-    let tcl_plat = Box::new(TclPlatStubs {
+    let mut tcl_plat = Box::new(TclPlatStubs {
         magic: TCL_STUB_MAGIC,
         hooks: ptr::null(),
         slots: TCL_PLAT_TRAPS,
     });
+    // The one platform slot referenced anywhere in libtk. It has to be in place
+    // before `Tk_Init` runs, because Tk calls it from `Tk_MacOSXSetupTkNotifier`
+    // (`tk9.0.4/macosx/tkMacOSXNotify.c:270-271`) during initialisation.
+    unsafe { super::notifier::install_plat(&mut tcl_plat) };
     let tcl_int_plat = Box::new(TclIntPlatStubs {
         magic: TCL_STUB_MAGIC,
         hooks: ptr::null(),
@@ -734,6 +738,10 @@ unsafe fn install_impls(t: &mut TclStubs, degraded: bool, level: Level) -> Vec<u
         // Tcl_Obj *(*tcl_DStringToObj)(Tcl_DString *dsPtr) /* 685 */
         install(t, "tcl_DStringToObj", dstring_to_obj as *const ()),
     ];
+    // The event loop is a module of its own — twenty-four slots ported from
+    // `generic/tclNotify.c`, `generic/tclTimer.c` and `macosx/tclMacOSXNotify.c`
+    // — so it installs itself rather than listing its bodies here.
+    slots.extend(super::notifier::install_impls(t));
     if degraded {
         // void (*tcl_AppendStringsToObj)(Tcl_Obj *objPtr, ...) /* 15 */
         slots.push(install(

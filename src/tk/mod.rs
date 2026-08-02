@@ -36,6 +36,8 @@
 //!   in `trampoline.c` calls back through.
 //! * [`dispatch`] — calling a command Tk registered from a script this crate
 //!   compiled, which is the one thing compile-time name resolution cannot do.
+//! * [`notifier`] — the event loop: Tcl's event queue, timers, idle handlers
+//!   and file handlers, ported from Tcl 9.0.4 onto a CFRunLoop.
 //! * [`load`] — `dlopen` of the real libtk and the `Tk_Init` call.
 //!
 //! Everything here is behind the `tk` cargo feature, and a build without that
@@ -137,6 +139,7 @@ pub mod hash;
 pub mod host;
 pub mod interp;
 pub mod load;
+pub mod notifier;
 pub mod obj;
 pub mod objtype;
 pub mod trace;
