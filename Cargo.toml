@@ -63,11 +63,29 @@ name = "tk-probe"
 path = "src/bin/tk_probe.rs"
 required-features = ["tk"]
 
+# The same, with the evaluator behind the table: `Tk_Init` against an
+# interpreter that compiles and runs the scripts it is handed, and then a Tcl
+# script calling a command Tk registered. Its argument, if any, is a script to
+# evaluate once `Tk_Init` has returned.
+[[bin]]
+name = "tk-host"
+path = "src/bin/tk_host.rs"
+required-features = ["tk"]
+
 [features]
 # The Tk hosting instrument (`src/tk/`). Off by default: a machine with no Tk
 # installed builds and tests exactly as before, and nothing outside `src/tk/`
 # changes behaviour when it is on.
-tk = []
+#
+# `dep:cc` is the C compiler driver for `src/tk/trampoline.c`, which exists
+# because stable rustc cannot define a C-variadic function (`error[E0658]`) and
+# two of the stub slots are variadic with a payload. It is an optional
+# *build*-dependency, so a default build neither downloads it nor runs a C
+# compiler — see `build.rs`.
+tk = ["dep:cc"]
+
+[build-dependencies]
+cc = { version = "1", optional = true }
 
 [dependencies]
 # Execution and codegen live in fusevm; this crate only lowers to its ops.

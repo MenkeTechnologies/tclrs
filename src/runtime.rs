@@ -199,7 +199,7 @@ impl Output {
 /// it: the `eval` command compiles and runs a nested script from inside the
 /// extension handler of the chunk that invoked it. No lock is ever held across
 /// a `VM::run`, so that nesting can go as deep as `limit` allows.
-struct State {
+pub(crate) struct State {
     /// The variables, keyed by name. This is the authority, not the VM's slot
     /// vector — see `seed`.
     globals: HashMap<String, Value>,
@@ -211,7 +211,7 @@ struct State {
     limit: usize,
 }
 
-type Shared = Arc<Mutex<State>>;
+pub(crate) type Shared = Arc<Mutex<State>>;
 
 /// A Tcl interpreter: the variables of a session, and the chunks compiled for
 /// it.
@@ -292,6 +292,20 @@ impl Interp {
         names
     }
 
+    /// The handle a foreign caller re-enters this interpreter through.
+    ///
+    /// [`Interp`] takes `&mut self` to evaluate, which a C callback re-entering
+    /// through a stub table cannot produce: the same interpreter may already be
+    /// part-way through an evaluation further down the stack. The state behind
+    /// it is an `Arc<Mutex<…>>` and no lock is held while a script runs, which
+    /// is what makes that re-entry sound — the `eval` command relies on the
+    /// same property. Handing out the handle is how `crate::tk::interp` keeps
+    /// one interpreter per `Tcl_Interp *` without owning it.
+    #[cfg(feature = "tk")]
+    pub(crate) fn into_shared(self) -> Shared {
+        self.shared
+    }
+
     /// Take everything captured so far, leaving the buffer empty. Always empty
     /// for an interpreter built by [`Interp::new`], which does not capture.
     pub fn take_output(&mut self) -> String {
@@ -319,7 +333,7 @@ impl Default for Interp {
 
 /// Compile `src` — reusing the cached chunk when the same text has been
 /// evaluated before — and run it against `shared`.
-fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> {
+pub(crate) fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> {
     let compiled = {
         let mut state = shared.lock().expect("interpreter lock");
         // The limit counts nested evaluations, so the outermost script — the
@@ -534,6 +548,12 @@ impl Hooks {
             let outcome = match id {
                 ext::EVAL => eval_op(&interp, vm, arg),
                 ext::FFI_CALL => ffi_op(vm, arg).map_err(TclError::plain),
+                // Its own arm rather than the plain one below because the
+                // error it raises is located: it stands in for a refusal the
+                // compiler would otherwise have deferred with the command's
+                // line attached.
+                #[cfg(feature = "tk")]
+                ext::TK_DISPATCH => crate::tk::dispatch::extension(vm, arg),
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
             if let Err(e) = outcome {
