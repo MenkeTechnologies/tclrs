@@ -660,9 +660,9 @@ impl Compiler {
     /// procedure body it *links* the local name to that variable, which is what
     /// [`global_key`] then reads.
     pub(crate) fn cmd_variable(&mut self, args: &[Word]) -> Result<(), CompileError> {
-        if args.is_empty() {
-            return self.error("wrong # args: should be \"variable ?name value...? name ?value?\"");
-        }
+        // `variable` with no arguments is legal and does nothing — measured
+        // against tclsh 9.0.4, which answers with the empty string. The loop
+        // below already answers that way, so there is nothing to refuse.
         let here = self.ns.current.clone();
         let mut i = 0;
         while i < args.len() {

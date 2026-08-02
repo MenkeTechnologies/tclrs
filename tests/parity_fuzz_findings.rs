@@ -1448,7 +1448,11 @@ fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
     // `string is punct` used to sit here as the compile-time half of the
     // distinction — refused before `catch` could run. It is answered now, from
     // the category tables the class needs, so it belongs on the other side.
-    agrees(&tclsh, "catch {string is punct a} m; puts m:$m", out("m:0\n"));
+    agrees(
+        &tclsh,
+        "catch {string is punct a} m; puts m:$m",
+        out("m:0\n"),
+    );
     // The refusal that remains is narrower and still catchable, because it is
     // decided when the character is read rather than when the script is: U+20C1
     // is one of the 4804 code points tclsh 9.0.4 categorises and Unicode 16.0
@@ -1457,8 +1461,10 @@ fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
         &tclsh,
         "catch {string is punct [format %c 0x20C1]} m; puts m:$m",
         out("m:0\n"),
-        out("m:string is punct: U+20C1 is categorised by tclsh 9.0.4 and not by \
-             Unicode 16.0, which is the table this build carries\n"),
+        out(
+            "m:string is punct: U+20C1 is categorised by tclsh 9.0.4 and not by \
+             Unicode 16.0, which is the table this build carries\n",
+        ),
     );
 }
 
@@ -1495,14 +1501,18 @@ fn expr_left_shift_past_the_word_width_promotes() {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
-    agrees(&tclsh, "puts [expr {1 << 63}]", out("9223372036854775808\n"));
-    agrees(&tclsh, "puts [expr {1 << 64}]", out("18446744073709551616\n"));
-    // A distance far past the word, and the round trip back down.
     agrees(
         &tclsh,
-        "puts [expr {(1 << 200) >> 200}]",
-        out("1\n"),
+        "puts [expr {1 << 63}]",
+        out("9223372036854775808\n"),
     );
+    agrees(
+        &tclsh,
+        "puts [expr {1 << 64}]",
+        out("18446744073709551616\n"),
+    );
+    // A distance far past the word, and the round trip back down.
+    agrees(&tclsh, "puts [expr {(1 << 200) >> 200}]", out("1\n"));
     // A right shift still saturates rather than wrapping its distance.
     agrees(&tclsh, "puts [expr {-1 >> 100}]", out("-1\n"));
     // The shifts that do fit still answer, and a right shift at any distance

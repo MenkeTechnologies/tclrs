@@ -342,12 +342,17 @@ fn unsupported_coroutine_constructs_are_refused() {
             "proc h {} {}\nproc g {} {yieldto h}",
             "ceding control to a command that is not a coroutine",
         ),
-        // `info` has exactly one subcommand here.
+        // `info` had exactly one subcommand when this was written, and
+        // `info commands` and `info level` stood here as the two that were not
+        // it. Both are implemented now (`src/cmd_info.rs`), so the entries name
+        // two that are still refused instead: `info frame` needs a record of
+        // each active call, and `info level N` needs the command that entered a
+        // level, neither of which any call site here keeps.
+        ("puts [info frame]", "info frame is not supported yet"),
         (
-            "puts [info commands]",
-            "only \"info coroutine\" is supported",
+            "puts [info level 1]",
+            "\"info level\" with a level number is not supported",
         ),
-        ("puts [info level]", "only \"info coroutine\" is supported"),
         ("info", "wrong # args"),
         (
             "puts [info coroutine x]",

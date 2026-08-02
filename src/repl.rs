@@ -72,25 +72,13 @@ pub fn run(interp: &mut Interp, interactive: bool) -> ExitCode {
 
 /// Whether `src` needs more input before it is a script.
 ///
-/// `tclsh` asks `Tcl_CommandComplete`, a scanner written for the question.
-/// tclrs asks the parser instead and reads which failure it reports, because
-/// the parser already separates a construct left open at the end of the input
-/// from one that is malformed — and only the first can be fixed by typing more.
-/// A malformed script is complete: it is evaluated, and its error reported,
-/// rather than leaving the prompt waiting for input that cannot help.
+/// The answer lives in [`tclrs::parser::incomplete`], because `info complete`
+/// asks the same question of the same parser and the two must not be able to
+/// disagree — a REPL that kept reading where `info complete` said 1 would be
+/// answering from a second reading of the same text.
 pub fn incomplete(src: &str) -> bool {
-    matches!(tclrs::parse(src), Err(e) if UNTERMINATED.contains(&e.msg.as_str()))
+    tclrs::parser::incomplete(src)
 }
-
-/// The parser's messages for a construct still open at the end of the input.
-/// Every one of them is reached only by running out of text.
-const UNTERMINATED: &[&str] = &[
-    "missing close-brace",
-    "missing close-brace for variable name",
-    "missing close-bracket",
-    "missing \"",
-    "missing )",
-];
 
 /// True when stdin is a terminal, and the loop should prompt and echo.
 pub fn stdin_is_terminal() -> bool {

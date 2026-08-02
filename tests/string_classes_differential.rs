@@ -54,10 +54,8 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 /// counter of this suite's own, so two tests never read each other's file.
 fn reference(tclsh: &PathBuf, program: &str) -> String {
     let index = NEXT.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "tclrs-classes-{}-{index}.tcl",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("tclrs-classes-{}-{index}.tcl", std::process::id()));
     std::fs::write(&path, program).expect("write program");
     let out = Command::new(tclsh).arg(&path).output().expect("run tclsh");
     let _ = std::fs::remove_file(&path);
@@ -95,16 +93,16 @@ fn character_classes_match_tclsh_across_code_points() {
     // Ranges chosen for their boundaries, not their size: each one straddles a
     // change of general category.
     const RANGES: &[(u32, u32)] = &[
-        (0x00, 0x100),    // ASCII and the C1 controls
+        (0x00, 0x100), // ASCII and the C1 controls
         // General punctuation through the currency symbols, split around
         // U+20C1: that one is in the enumerated set this build refuses, so a
         // sweep that crossed it would be testing the refusal, which
         // `a_code_point_beyond_our_tables_is_refused` does on its own.
         (0x2000, 0x20C1),
         (0x20C2, 0x2100),
-        (0x2150, 0x2190),  // number forms into arrows
-        (0x3000, 0x3040),  // CJK punctuation into kana
-        (0xFF00, 0xFF70),  // fullwidth forms
+        (0x2150, 0x2190),   // number forms into arrows
+        (0x3000, 0x3040),   // CJK punctuation into kana
+        (0xFF00, 0xFF70),   // fullwidth forms
         (0x1F600, 0x1F610), // an astral plane
     ];
 

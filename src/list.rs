@@ -483,7 +483,8 @@ pub fn parse_int_exact(text: &str) -> Option<i64> {
         // Only a decimal spelling is compared: a radix one is re-parsed by the
         // same accumulator and would need its own bound.
         if !trimmed.contains(['x', 'X', 'o', 'O', 'b', 'B'])
-            && (magnitude.len() > bound.len() || (magnitude.len() == bound.len() && magnitude > bound))
+            && (magnitude.len() > bound.len()
+                || (magnitude.len() == bound.len() && magnitude > bound))
         {
             return None;
         }

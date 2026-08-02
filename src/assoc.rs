@@ -580,7 +580,7 @@ pub(crate) fn target_of(word: &Word) -> Option<Target> {
 
 impl Compiler {
     /// Emit the index of `a(i)`, whose parts concatenate like any other word.
-    fn index_value(&mut self, index: &[Part]) -> Result<(), CompileError> {
+    pub(crate) fn index_value(&mut self, index: &[Part]) -> Result<(), CompileError> {
         self.word(&Word {
             parts: index.to_vec(),
             ..Word::default()
@@ -609,7 +609,7 @@ impl Compiler {
     ///
     /// [`runtime::place_of`](crate::assoc::place_of) decodes it; the negative
     /// half cannot collide with a name index, which is unsigned.
-    fn array_place(&mut self, name: &str) -> i64 {
+    pub(crate) fn array_place(&mut self, name: &str) -> i64 {
         self.note_array(name);
         self.var_place_operand(name)
     }
@@ -1521,7 +1521,7 @@ fn pop_int(vm: &mut VM) -> i64 {
 
 /// Decode the operand [`Compiler::array_place`] pushed: a name index in the
 /// VM's global table, or a frame slot written as `-(slot + 1)`.
-fn place_of(vm: &mut VM) -> Place {
+pub(crate) fn place_of(vm: &mut VM) -> Place {
     let raw = pop_int(vm);
     if raw < 0 {
         Place::Slot((-raw - 1) as u16)
@@ -1536,11 +1536,21 @@ fn place_of(vm: &mut VM) -> Place {
 /// the place: a *read* of a variable that was never set must not allocate one,
 /// and `array exists` on an unset name must stay false rather than becoming a
 /// variable by being asked about.
-fn peek(vm: &VM, place: Place) -> Option<&Value> {
+pub(crate) fn peek(vm: &VM, place: Place) -> Option<&Value> {
     match place {
         Place::Global(idx) => vm.globals.get(idx as usize),
         Place::Slot(slot) => vm.frames.last().and_then(|f| f.slots.get(slot as usize)),
     }
+}
+
+/// Whether `name(index)` is set, for `info exists`.
+///
+/// Every way of *not* being set is the same answer here — the variable does not
+/// exist, it exists and is not an array, or it is an array with no such element
+/// — which is why this cannot go through [`ext::ELEM_GET`], whose job is to tell
+/// those three apart in the diagnostic.
+pub(crate) fn element_is_set(vm: &VM, place: Place, index: &str) -> bool {
+    matches!(peek(vm, place), Some(Value::Hash(map)) if map.contains_key(index))
 }
 
 fn pop_str(vm: &mut VM) -> String {

@@ -192,10 +192,29 @@ fn script_value_is_the_last_command() {
 #[test]
 fn unsupported_constructs_are_refused() {
     for (src, expected) in [
-        // `proc`, `foreach` and `set a(1) x` all stood here until the phases
-        // that built them landed. `uplevel` is a command this frontend has no
-        // implementation of at all, so it stands in now.
-        ("uplevel 1 {set x 1}", "invalid command name \"uplevel\""),
+        // `proc`, `foreach`, `set a(1) x`, `uplevel` and `rename` have all
+        // stood here in turn, each until the phase that built it landed.
+        // `interp create` stands in now: it is a command this frontend has no
+        // implementation of at all, which is what this entry is for — an
+        // *unknown name*, reported by the dispatcher's own fallthrough, as
+        // opposed to a command that exists and refuses something.
+        //
+        // `rename` was the entry until `src/cmd_namespace.rs` implemented it.
+        // It now answers `can't rename "a": command doesn't exist`, which comes
+        // from a command that exists, so it stopped measuring what this test
+        // measures. `uplevel` before it went the same way, to
+        // `src/cmd_scope.rs`; the entry below covers what is left of it.
+        //
+        // `interp` is chosen because a second interpreter is not on any current
+        // branch: `tclrs::Interp` is created by the host, never by a script.
+        ("interp create i", "invalid command name \"interp\""),
+        // `uplevel` exists now, and refuses a level it cannot reach. This is
+        // not the canary above: it is a live command reporting that the target
+        // level is a procedure's frame slots.
+        (
+            "proc outer {} {inner}\nproc inner {} {uplevel 1 {set x 1}}\nouter",
+            "\"uplevel\" to level 1 is not supported",
+        ),
         (
             "array startsearch a",
             "array startsearch is not supported yet",
