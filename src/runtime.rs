@@ -306,6 +306,14 @@ impl Interp {
         self.shared
     }
 
+    /// The same handle, without giving up ownership: a Tk session hands it to
+    /// the host it builds and then goes on running scripts through this
+    /// interpreter, which is the point — the two are one interpreter.
+    #[cfg(feature = "tk")]
+    pub(crate) fn shared_handle(&self) -> Shared {
+        Arc::clone(&self.shared)
+    }
+
     /// Take everything captured so far, leaving the buffer empty. Always empty
     /// for an interpreter built by [`Interp::new`], which does not capture.
     pub fn take_output(&mut self) -> String {
@@ -548,12 +556,28 @@ impl Hooks {
             let outcome = match id {
                 ext::EVAL => eval_op(&interp, vm, arg),
                 ext::FFI_CALL => ffi_op(vm, arg).map_err(TclError::plain),
-                // Its own arm rather than the plain one below because the
-                // error it raises is located: it stands in for a refusal the
-                // compiler would otherwise have deferred with the command's
-                // line attached.
+                // Its own arm because `package require` may run a script — the
+                // `ifneeded` one, or `package unknown` — and a script needs
+                // the interpreter, which only this closure holds.
+                ext::PACKAGE => package_op(&interp, vm, arg),
+                // Its own arm rather than the plain one below for two reasons.
+                // The error it raises is located: it stands in for a refusal
+                // the compiler would otherwise have deferred with the
+                // command's line attached. And the command it calls may
+                // re-enter the interpreter — a `-command` callback, a `bind`
+                // script, an `after` script are all evaluated from inside Tk
+                // while this op is on the stack — so the running chunk's slots
+                // are written back before the call and re-read after it, as
+                // `eval_op` does for exactly the same reason. Without that a
+                // callback cannot see a variable the script set, and what the
+                // callback sets never reaches the script.
                 #[cfg(feature = "tk")]
-                ext::TK_DISPATCH => crate::tk::dispatch::extension(vm, arg),
+                ext::TK_DISPATCH => {
+                    flush(&vm.chunk, &interp, &vm.globals);
+                    let outcome = crate::tk::dispatch::extension(vm, arg);
+                    vm.globals = seed(&vm.chunk, &interp);
+                    outcome
+                }
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
             if let Err(e) = outcome {
@@ -666,6 +690,46 @@ fn eval_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     vm.globals = globals;
     vm.push(result?);
     Ok(())
+}
+
+/// The evaluator [`crate::cmd_package`] runs an `ifneeded` or `package unknown`
+/// script through: [`eval_op`]'s write-back and re-read, with the concatenation
+/// left out because a package script is one string.
+struct VmScriptHost<'a> {
+    interp: &'a Shared,
+    vm: &'a mut VM,
+}
+
+impl crate::cmd_package::ScriptHost for VmScriptHost<'_> {
+    fn eval(&mut self, src: &str) -> Result<String, TclError> {
+        flush(&self.vm.chunk, self.interp, &self.vm.globals);
+        let result = run_source(self.interp, src);
+        self.vm.globals = seed(&self.vm.chunk, self.interp);
+        result.map(|v| to_tcl_string(&v))
+    }
+}
+
+/// The `package` command. The arguments come off the stack before the script
+/// host is built, because the host borrows the VM for as long as it lives.
+fn package_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
+    let (line, argv) = crate::cmd_package::take_args(vm, argc);
+    let outcome = {
+        let mut host = VmScriptHost { interp, vm };
+        crate::cmd_package::run(&argv, &mut host)
+    };
+    match outcome {
+        Ok(result) => {
+            vm.push(Value::Str(Arc::new(result)));
+            Ok(())
+        }
+        // A failure raised by a script this command ran already carries the
+        // line it happened on; only a failure of `package` itself takes the
+        // line of the `package` command.
+        Err(e) => Err(TclError {
+            msg: e.msg,
+            line: e.line.or(Some(line)),
+        }),
+    }
 }
 
 // ── the driver ───────────────────────────────────────────────────────────
@@ -1808,9 +1872,7 @@ fn int_operand(v: &Value, side: Side, op: &str) -> Result<i64, String> {
         // is an operator with no bignum meaning; none can answer from a
         // truncation, so reaching here with one is a bug rather than a script
         // error.
-        BigOperand::Big(b) => Err(format!(
-            "integer value too large to represent: {b}"
-        )),
+        BigOperand::Big(b) => Err(format!("integer value too large to represent: {b}")),
     }
 }
 
@@ -1932,9 +1994,7 @@ fn big_arith(id: u16, p: BigInt, q: BigInt) -> Result<Value, String> {
                 // zero, and only ±1 survives it — the same rule the `i64` arm
                 // applies, and a bignum base is never ±1.
                 return match () {
-                    _ if p.is_zero() => {
-                        Err("exponentiation of zero by negative power".to_string())
-                    }
+                    _ if p.is_zero() => Err("exponentiation of zero by negative power".to_string()),
                     _ => Ok(Value::Int(0)),
                 };
             }
@@ -1966,9 +2026,7 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
         }
         // `i64::MIN / -1` is the one integer division whose true quotient does
         // not fit an `i64`; Tcl's answer is the bignum, and now so is this one.
-        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => {
-            Ok(from_big(-BigInt::from(i64::MIN)))
-        }
+        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => Ok(from_big(-BigInt::from(i64::MIN))),
         (ext::DIV, Num::Int(i), Num::Int(j)) => Ok(Value::Int(
             i.div_euclid(j)
                 - i64::from(

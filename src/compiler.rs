@@ -102,6 +102,18 @@ pub mod ext {
     /// dispatched to [`crate::assoc`] by range.
     pub const TK_DISPATCH: u16 = 61;
 
+    /// `[line, name, arg …]` with the count in the inline operand — the
+    /// `package` command, whole.
+    ///
+    /// Nothing about it is decided while compiling, not even the argument
+    /// count: every answer depends on a registry that only exists at run time,
+    /// and a `package require` may run an `ifneeded` script, so the op is
+    /// handed the same evaluator [`EVAL`] gets. See [`crate::cmd_package`].
+    ///
+    /// 58 rather than an id past [`ASSOC_BASE`], for the reason [`TK_DISPATCH`]
+    /// gives: an id at or above 64 is dispatched by range.
+    pub const PACKAGE: u16 = 58;
+
     /// Pop a value and push Tcl's boolean reading of it — 1 or 0 — or refuse it.
     /// `arg` is 0 for a condition and 1 for `!`, which differ in how they word
     /// the refusal. Emitted only where the value could be a string, so the
@@ -940,6 +952,7 @@ impl Compiler {
         "yield",
         "yieldto",
         "info",
+        "package",
     ];
 
     fn command(&mut self, cmd: &Command) -> Result<(), CompileError> {
@@ -1028,6 +1041,11 @@ impl Compiler {
             "yield" => self.cmd_yield(args),
             "yieldto" => self.cmd_yieldto(args),
             "info" => self.cmd_info(args),
+            // Asked before the Tk arm below, so that a `--tk` session — where
+            // every unmatched name is lowered as a run-time lookup — still
+            // gets this frontend's own `package` rather than looking for one
+            // Tk never registered.
+            "package" => crate::cmd_package::compile(self, args),
             "regexp" | "regsub" => crate::regexp::compile(self, name, args),
             // The command an inline `rust { ... }` block was rewritten into.
             name if name == crate::rust_ffi::COMPILE_COMMAND => self.cmd_rust_compile(args),

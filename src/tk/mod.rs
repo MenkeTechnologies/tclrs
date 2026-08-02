@@ -39,6 +39,9 @@
 //! * [`notifier`] — the event loop: Tcl's event queue, timers, idle handlers
 //!   and file handlers, ported from Tcl 9.0.4 onto a CFRunLoop.
 //! * [`load`] — `dlopen` of the real libtk and the `Tk_Init` call.
+//! * [`session`] — the product binary's entry points: what `tclrs --tk` opens
+//!   before the script is compiled, what `package require Tk` does inside it,
+//!   and the Tk main loop the application sits in afterwards.
 //!
 //! Everything here is behind the `tk` cargo feature, and a build without that
 //! feature never compiles a line of it, so a machine with no Tk installed is
@@ -180,6 +183,35 @@
 //!   `CALLBACK-FIRED`: Tk evaluated the callback back through
 //!   `Tcl_EvalObjEx`, this crate compiled it, and fusevm ran it. A *click* does
 //!   not reach it, for the `bind Button` reason above.
+//!
+//! # The same thing, from the product binary
+//!
+//! [`session`] is the sequence above with the script in charge of it, and
+//! `tclrs --tk app.tcl` is where it runs. Measured on this tree, against the
+//! same library:
+//!
+//! ```text
+//! package require Tk            → 9.0.4
+//! button .b -text hello         → .b
+//! pack .b
+//! .b invoke                     → the -command body runs, in the script's
+//!                                 own interpreter
+//! ```
+//!
+//! `Tk_Init` still returns `TCL_ERROR` there, for the reason above and with the
+//! same message — `"proc" is only supported at the top level of a script`,
+//! after the same 2726 served calls — and `package require Tk` still answers
+//! `9.0.4`, because Tk provided itself as a package (`:3461-3469`) several
+//! hundred calls before it reached the statement that failed. What decides
+//! whether the package is present is the registry, not the completion code.
+//!
+//! The window is the window server's account and not Tk's: with the script
+//! sitting in `Tk_MainLoop`, `CGWindowListCopyWindowInfo` reports
+//! `pid=43113 owner="tclrs" bounds=67x60+5+38` against that live process — a
+//! toplevel resized to the button it contains, which is layout the main loop
+//! ran. The same process had just evaluated 999 levels of nested `eval`
+//! (226 MB resident), so the borrowed 256 MiB stack in `src/main_thread.rs` and
+//! Tk's main-thread requirement hold at the same time and in the same process.
 
 pub mod abi;
 pub mod dispatch;
@@ -196,6 +228,7 @@ pub mod obj;
 pub mod objtype;
 pub mod pkg;
 pub mod preserve;
+pub mod session;
 pub mod trace;
 pub mod utf16;
 

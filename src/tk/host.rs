@@ -1591,6 +1591,26 @@ unsafe extern "C" fn get_startup_script(encoding_out: *mut *const c_char) -> *mu
     STARTUP_SCRIPT.load(Ordering::Relaxed)
 }
 
+/// Record the file this process was started with, as `Tcl_MainEx` does from
+/// `argv` (`generic/tclMain.c:336-338`).
+///
+/// Written straight into the pair rather than through the slot below, because
+/// this is the *host* saying what it was started with and not a call Tk made:
+/// going through the slot would put a `tkslot tcl_SetStartupScript` line in a
+/// log whose whole value is that every line in it is Tk's.
+///
+/// The answer matters on macOS. `TkpInit` opens a console window — and with it
+/// the channel subsystem — when stdin is not a terminal *and* there is no
+/// startup script (`tk9.0.4/macosx/tkMacOSXInit.c:585`), so a session that ran
+/// a script file and did not say so would take a branch `wish script.tcl` does
+/// not.
+pub fn set_startup_file(path: &str) {
+    unsafe {
+        let kept = retain(obj::new_string(path.as_bytes()));
+        obj::release(STARTUP_SCRIPT.swap(kept, Ordering::Relaxed));
+    }
+}
+
 /// Slot 622. `void Tcl_SetStartupScript(Tcl_Obj *path, const char *encoding)`
 /// (`generic/tclMain.c:206-241`): both values are reference-counted by the
 /// callee, and the previous pair is released.

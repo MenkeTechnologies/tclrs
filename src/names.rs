@@ -235,6 +235,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "The list sorted by the reference merge sort — the algorithm, not just the ordering, because `-unique` observes it.",
     },
     Entry {
+        name: "package",
+        synopsis: "package option ?arg ...?",
+        summary: "The package ensemble: what a name is provided at, what would load it, and TIP 268's version arithmetic over both.",
+    },
+    Entry {
         name: "proc",
         synopsis: "proc name args body",
         summary: "Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.",
@@ -311,6 +316,7 @@ pub fn subcommands(command: &str) -> &'static [&'static str] {
         "array" => ARRAY_SUBCOMMANDS,
         "dict" => DICT_SUBCOMMANDS,
         "info" => &["coroutine"],
+        "package" => crate::cmd_package::SUBCOMMANDS,
         _ => &[],
     }
 }
@@ -329,6 +335,7 @@ pub fn subcommand_corpus(command: &str) -> &'static [Entry] {
         "array" => ARRAY_CORPUS,
         "dict" => DICT_CORPUS,
         "info" => INFO_CORPUS,
+        "package" => PACKAGE_CORPUS,
         _ => &[],
     }
 }
@@ -629,6 +636,72 @@ const DICT_CORPUS: &[Entry] = &[
         name: "with",
         synopsis: "dict with dictVarName ?key ...? script",
         summary: "Refused: not built yet.",
+    },
+];
+
+/// `package`'s subcommands, in `pkgOptions`' order
+/// (`generic/tclPkg.c:1067-1071`) — which is [`crate::cmd_package`]'s order,
+/// and the order the `bad option` message lists them in.
+const PACKAGE_CORPUS: &[Entry] = &[
+    Entry {
+        name: "files",
+        synopsis: "package files package",
+        summary: "The files a package was loaded from. Always empty here: nothing records one, because this frontend has no package index.",
+    },
+    Entry {
+        name: "forget",
+        synopsis: "package forget ?package ...?",
+        summary: "Drop everything known about each package — its version and every script that would load it. A name that is not known is not an error.",
+    },
+    Entry {
+        name: "ifneeded",
+        synopsis: "package ifneeded package version ?script?",
+        summary: "Register the script that loads a version, or, with no script, report the one registered for exactly that version.",
+    },
+    Entry {
+        name: "names",
+        synopsis: "package names",
+        summary: "Every package that is provided or has a loading script, in the order each was first mentioned.",
+    },
+    Entry {
+        name: "prefer",
+        synopsis: "package prefer ?latest|stable?",
+        summary: "Whether an unqualified require takes the newest version or the newest stable one. Starts at stable and only ever moves to latest.",
+    },
+    Entry {
+        name: "present",
+        synopsis: "package present ?-exact? package ?requirement ...?",
+        summary: "Like require for a package already provided, and an error rather than a load attempt for one that is not.",
+    },
+    Entry {
+        name: "provide",
+        synopsis: "package provide package ?version?",
+        summary: "Declare this package present at a version, or report the version it was declared at. A second, different version is a conflict.",
+    },
+    Entry {
+        name: "require",
+        synopsis: "package require ?-exact? package ?requirement ...?",
+        summary: "Make a package present, loading it if it is not, and yield the version that ended up provided.",
+    },
+    Entry {
+        name: "unknown",
+        synopsis: "package unknown ?command?",
+        summary: "The script run when a required package is not known; the empty string clears it.",
+    },
+    Entry {
+        name: "vcompare",
+        synopsis: "package vcompare version1 version2",
+        summary: "-1, 0 or 1 by TIP 268's ordering, in which 9.0 and 9.0.0 are equal and 1.2a3 sorts below 1.2.",
+    },
+    Entry {
+        name: "versions",
+        synopsis: "package versions package",
+        summary: "The versions a loading script has been registered for.",
+    },
+    Entry {
+        name: "vsatisfies",
+        synopsis: "package vsatisfies version ?requirement ...?",
+        summary: "Whether the version meets any of the requirements, each a version, a versionMin-versionMax range, or a versionMin- open range.",
     },
 ];
 

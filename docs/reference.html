@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. The 50 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. The 51 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -72,11 +72,11 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">50</div>
+            <div class="stat-val">51</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">40/59</div>
+            <div class="stat-val">52/71</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -130,6 +130,7 @@
         <tr><td><code>lseq</code></td><td><code>lseq n ??op? n ??by? n??</code></td><td>An arithmetic sequence; a zero step yields one element and a step pointing away from the end yields none.</td></tr>
         <tr><td><code>lset</code></td><td><code>lset listVar ?index? ?index ...? value</code></td><td>Replace the element at an index path in the variable's list; the end grows by one element only.</td></tr>
         <tr><td><code>lsort</code></td><td><code>lsort ?-option value ...? list</code></td><td>The list sorted by the reference merge sort — the algorithm, not just the ordering, because `-unique` observes it.</td></tr>
+        <tr><td><code>package</code></td><td><code>package option ?arg ...?</code></td><td>The package ensemble: what a name is provided at, what would load it, and TIP 268's version arithmetic over both.</td></tr>
         <tr><td><code>proc</code></td><td><code>proc name args body</code></td><td>Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.</td></tr>
         <tr><td><code>puts</code></td><td><code>puts ?-nonewline? string</code></td><td>Write the string to stdout.</td></tr>
         <tr><td><code>regexp</code></td><td><code>regexp ?-option ...? exp string ?matchVar? ?subMatchVar ...?</code></td><td>Match a regular expression, setting the match variables; the count under -all, the text under -inline.</td></tr>
@@ -243,6 +244,25 @@
         <tr><td><code>info coroutine</code></td><td><span class="state-yes">implemented</span></td></tr>
           </tbody>
         </table>
+        <h3><code>package</code> &mdash; 12 of 12 implemented</h3>
+        <table class="file-table">
+          <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
+          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
+          <tbody>
+        <tr><td><code>package files</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package forget</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package ifneeded</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package names</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package prefer</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package present</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package provide</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package require</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package unknown</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package vcompare</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package versions</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>package vsatisfies</code></td><td><span class="state-yes">implemented</span></td></tr>
+          </tbody>
+        </table>
       </section>
 
       <section id="expr">
@@ -283,7 +303,7 @@
 
       <section id="format">
         <h2><code>format</code> conversions</h2>
-        <p>21 conversions, established by running one of each
+        <p>22 conversions, established by running one of each
         through the runtime and reading the answer. A conversion missing from
         this table is <code>bad field specifier</code>.</p>
         <table class="file-table">
@@ -302,7 +322,7 @@
         <tr><td><code>%j</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%l</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%o</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%p</code></td><td><span class="state-no">the "%p" conversion is not supported yet</span></td></tr>
+        <tr><td><code>%p</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%q</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%s</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%t</code></td><td><span class="state-yes">implemented</span></td></tr>
