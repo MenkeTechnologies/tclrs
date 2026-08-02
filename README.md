@@ -353,7 +353,8 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Procedures | `proc`, `return` (with `-code ok` / `-code error`) |
 | Errors | `catch`, `error` |
 | Coroutines | `coroutine`, `yield`, `yieldto`, `info coroutine` |
-| Run-time evaluation | `eval` |
+| Namespaces | `namespace` — `eval`, `current`, `qualifiers`, `tail`, `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`, `import`, `forget`, `origin`, `which`, `ensemble exists` / `create` / `configure`; `variable`; `rename` |
+| Run-time evaluation | `eval`, `source`, `tcl_findLibrary` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
 | Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
 | Regular expressions | `regexp`, `regsub` — with `-nocase`, `-all`, `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`, `-start` and `--`; `switch -regexp` and `lsearch -regexp` take one too |
@@ -501,6 +502,50 @@ loop is lowered once however many times it runs. The nested script sees the
 interpreter's variables in both directions, including the ones a failing nested
 script had already set.
 
+### Namespaces
+
+A namespace is resolved where everything else in this frontend is resolved:
+while compiling. `namespace eval foo { … }` lowers its body into the enclosing
+chunk with the compiler's current namespace switched, and that one switch is
+what every name in the body is resolved against.
+
+| Written inside `::foo` | Reaches |
+| --- | --- |
+| `set v 1` | the interpreter variable `foo::v` |
+| `proc p {…} {…}` | a procedure registered as `foo::p` |
+| `p` | `::foo::p` if there is one, otherwise `::p` — `TclGetNamespaceForQualName`'s two-step search |
+| `variable v` inside a procedure | links the local name `v` to `::foo::v` |
+| `global v` inside a procedure | the root namespace's `v`, even when `::foo` has one |
+
+The root namespace is the empty prefix, so a global variable keeps the name it
+always had and a script that uses no namespace compiles to exactly the bytecode
+it compiled to before. The queries — `namespace exists`, `children`, `which`,
+`origin`, `parent` — read a registry the interpreter holds and the compiled code
+fills in as it runs, so they answer for what the script actually created.
+
+Because the resolution happens while compiling, a namespace this compiler cannot
+read is refused rather than guessed at: `namespace eval $n {…}`, a computed body,
+and `namespace path` / `unknown` / `upvar`, which would change a resolution after
+it was made.
+
+### `source` and `tcl_findLibrary`
+
+`source` reads a file and evaluates it through the same path `eval` takes, so it
+shares the interpreter's variables in both directions — including namespace
+variables, which are interpreter variables under their qualified names. Its
+procedures are its own chunk's, and do not survive it; [`BUGS.md`](BUGS.md) has
+the entry.
+
+`tcl_findLibrary` is not a C command in Tcl either — it is a procedure of Tcl's
+own library, `library/auto.tcl`, and `src/cmd_source.rs` is a port of it. It
+walks the same directories in the same order: the package's environment
+variable, then `$auto_path` with the macOS `Resources/Scripts` case under each,
+then three directories relative to the executable; the first that holds the
+initialisation script sets the library variable and is sourced.
+`tclrs::cmd_source::seed_library_environment` sets the `tcl_library`,
+`tcl_libPath` and `auto_path` that Tcl's own `init.tcl` sets from C state this
+crate has no equivalent of.
+
 ---
 
 ## [0x05] WHAT IS REFUSED
@@ -528,6 +573,11 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `eval` inside a procedure body | `"eval" inside a procedure is not supported: the script it builds cannot reach the procedure's local variables` |
 | `coroutine` anywhere but a script's top level or a command substitution in one; a coroutine of a built-in or of anything but one of the script's procedures; `yieldto` at a command that is not a coroutine of the script | `"coroutine" is only supported at the top level of a script, or in a command substitution in one` |
 | `info`, apart from `info coroutine` | `unknown or unsupported subcommand "exists": only "info coroutine" is supported` |
+| A computed `namespace eval` name or body, or a computed `namespace import` pattern | `a computed "namespace eval" name is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out` |
+| `namespace path`, `namespace unknown`, `namespace upvar` | `"namespace path" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out` |
+| Calling a command `namespace ensemble create` made; `variable` naming a qualified name inside a procedure | `bad variable name "a::b": can't create a local variable with a namespace separator` |
+| `source -encoding` for anything but UTF-8 | `"source -encoding" is only supported for utf-8: this frontend reads a script as UTF-8` |
+| `namespace eval` inside a procedure body, where an unqualified name in its body would take a frame slot rather than the namespace's variable | `"namespace eval" inside a procedure is not supported yet: an unqualified name in its body would take a frame slot rather than the namespace's variable` |
 | Arbitrary-precision integers. An `i64` that overflows is an error, and so is the one integer division whose true quotient does not fit (`i64::MIN / -1`) and an integer *literal* or operand that does not fit at all (`expr {99999999999999999999 + 1}`) | `integer value too large to represent` |
 | Input nesting past `parser::MAX_NESTING_DEPTH` — 64_000 command substitutions or array indices deep, well past anything the reference interpreter survives | `too many nested substitutions (infinite loop?)` |
 | Ahead-of-time compilation of a script using `catch` or a coroutine | `ahead-of-time compilation of a script using "catch" is not supported: it needs the driver that only the interpreter has` |

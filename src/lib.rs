@@ -22,6 +22,8 @@ pub mod aot_runtime;
 pub mod assoc;
 pub mod cache;
 pub mod cmd_list;
+pub mod cmd_namespace;
+pub mod cmd_source;
 pub mod cmd_string;
 pub mod compiler;
 pub mod control;

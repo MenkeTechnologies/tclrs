@@ -164,16 +164,26 @@ fn tk_init_returns_rather_than_stopping_on_a_missing_slot() {
     // Which is TCL_ERROR, and the reason is this crate's frontend rather than
     // anything Tk asked for. See the module docs on `tclrs::tk`.
     //
-    // It used to be the compiler refusing `proc tkInit {}` inside an `if`, and
-    // it is now the *first command that script evaluates*: `namespace`, in the
-    // condition of that same `if`. The `proc` compiles and binds its name when
-    // the branch runs (`crate::procs`), so what stops `Tk_Init` is the three
-    // commands the script needs and this frontend does not have —
-    // `namespace`, `rename`, `tcl_findLibrary`. The call and slot counts below
-    // did not move with it: the whole failure is on this side of the stub
-    // table, so Tk asked for exactly what it asked for before.
+    // Where that reason sits has moved twice. It was the compiler refusing
+    // `proc tkInit {}` inside an `if`; then it was `namespace`, the first
+    // command that script evaluates. Both are gone: the `proc` binds its name
+    // when the branch runs (`crate::procs`), and `namespace`, `rename` and
+    // `tcl_findLibrary` all answer now (`crate::cmd_namespace`,
+    // `crate::cmd_source`).
+    //
+    // What stops it now is one line further in — `global tk_library tk_version
+    // tk_patchLevel` inside `tkInit` (`generic/tkWindow.c:3509-3516`). Tk set
+    // both variables through `Tcl_SetVar2` (slot 238, called twice, at
+    // `generic/tkWindow.c:1066-1067`) and this host's `set_var2` stores them in
+    // its own `vars` table rather than in the interpreter's globals, so the
+    // script cannot read back what Tk wrote. Bridging that table is
+    // `tk-varbridge`'s work, not this frontend's.
+    //
+    // The call and slot counts below did not move with it: the whole failure is
+    // still on this side of the stub table, so Tk asked for exactly what it
+    // asked for before.
     assert!(
-        out.contains(r#"invalid command name \"namespace\""#),
+        out.contains(r#"can't read \"tk_version\": no such variable"#),
         "the failure moved: {out:?}"
     );
     let calls = err.lines().filter(|l| l.starts_with("tkslot ")).count();

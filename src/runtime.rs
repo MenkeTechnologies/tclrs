@@ -201,8 +201,9 @@ impl Output {
 /// a `VM::run`, so that nesting can go as deep as `limit` allows.
 pub(crate) struct State {
     /// The variables, keyed by name. This is the authority, not the VM's slot
-    /// vector — see `seed`.
-    globals: HashMap<String, Value>,
+    /// vector — see `seed`. A namespace variable is one of these under its
+    /// qualified name; `crate::cmd_namespace::store_key` is the spelling.
+    pub(crate) globals: HashMap<String, Value>,
     /// Procedures whose name was bound while a script was running, which is
     /// every `proc` that is not at its script's top level. A name here answers
     /// from the moment the defining code ran and not before, which is what
@@ -210,6 +211,11 @@ pub(crate) struct State {
     /// [`crate::procs`]. Held on the interpreter rather than per evaluation, so
     /// a definition survives into the next `eval` the way a variable does.
     pub(crate) commands: HashMap<String, crate::procs::RuntimeProc>,
+    /// The namespaces and commands the running script has created, which is
+    /// what `namespace exists`, `children`, `which` and `origin` answer from.
+    /// Per interpreter rather than per process, because two interpreters have
+    /// separate namespaces. See `crate::cmd_namespace::Registry`.
+    pub(crate) ns: crate::cmd_namespace::Registry,
     cache: ChunkCache,
     /// Where the scripts of this interpreter write.
     output: Output,
@@ -247,6 +253,7 @@ impl Interp {
             shared: Arc::new(Mutex::new(State {
                 globals: HashMap::new(),
                 commands: HashMap::new(),
+                ns: crate::cmd_namespace::Registry::default(),
                 cache: ChunkCache::new(),
                 output,
                 depth: 0,
@@ -560,9 +567,26 @@ impl Hooks {
                 // pattern rather than four arms, so the ops that do not — every
                 // operator and every command module, which is what a hot loop
                 // is made of — fall through on one test.
+                //
+                // A Tk command is one of these too: `runtime-proc` folded the
+                // old `TK_DISPATCH` into `DYN_CALL`, so `crate::procs::call_op`
+                // resolves a script's procedure and a command Tk registered
+                // through the same table, with `crate::tk::dispatch` as the
+                // fallback half.
                 ext::EVAL | ext::FFI_CALL | ext::PROC_DEFINE | ext::DYN_CALL => {
                     interpreter_op(&interp, vm, id, arg)
                 }
+                // ── the namespace block's runtime ops ────────────────────
+                // Their handlers need the interpreter itself — a registry to
+                // query, a file to evaluate — which the plain `extension`
+                // below is not given.
+                id if crate::cmd_namespace::is_op(id) => {
+                    crate::cmd_namespace::extension(&interp, vm, id, arg)
+                }
+                id if crate::cmd_source::is_op(id) => {
+                    crate::cmd_source::extension(&interp, vm, id, arg)
+                }
+                // ── end of the namespace block ───────────────────────────
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
             if let Err(e) = outcome {
@@ -702,6 +726,26 @@ fn eval_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     vm.globals = globals;
     vm.push(result?);
     Ok(())
+}
+
+/// Run `body` with the chunk's variables written back to the interpreter and
+/// re-read afterwards.
+///
+/// A chunk addresses its variables through a slot vector it owns for the
+/// duration of one run, so a command that reaches interpreter state from inside
+/// that run — `source`, `namespace which -variable`, `namespace inscope` —
+/// would otherwise see the values the *previous* run left. This is the same
+/// exchange [`eval_op`] performs, factored out so that every such command makes
+/// it the same way.
+pub(crate) fn with_written_back<T>(
+    interp: &Shared,
+    vm: &mut VM,
+    body: impl FnOnce(&Shared) -> T,
+) -> T {
+    flush(&vm.chunk, interp, &vm.globals);
+    let out = body(interp);
+    vm.globals = seed(&vm.chunk, interp);
+    out
 }
 
 // ── the driver ───────────────────────────────────────────────────────────
@@ -1844,9 +1888,7 @@ fn int_operand(v: &Value, side: Side, op: &str) -> Result<i64, String> {
         // is an operator with no bignum meaning; none can answer from a
         // truncation, so reaching here with one is a bug rather than a script
         // error.
-        BigOperand::Big(b) => Err(format!(
-            "integer value too large to represent: {b}"
-        )),
+        BigOperand::Big(b) => Err(format!("integer value too large to represent: {b}")),
     }
 }
 
@@ -1968,9 +2010,7 @@ fn big_arith(id: u16, p: BigInt, q: BigInt) -> Result<Value, String> {
                 // zero, and only ±1 survives it — the same rule the `i64` arm
                 // applies, and a bignum base is never ±1.
                 return match () {
-                    _ if p.is_zero() => {
-                        Err("exponentiation of zero by negative power".to_string())
-                    }
+                    _ if p.is_zero() => Err("exponentiation of zero by negative power".to_string()),
                     _ => Ok(Value::Int(0)),
                 };
             }
@@ -2002,9 +2042,7 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
         }
         // `i64::MIN / -1` is the one integer division whose true quotient does
         // not fit an `i64`; Tcl's answer is the bignum, and now so is this one.
-        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => {
-            Ok(from_big(-BigInt::from(i64::MIN)))
-        }
+        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => Ok(from_big(-BigInt::from(i64::MIN))),
         (ext::DIV, Num::Int(i), Num::Int(j)) => Ok(Value::Int(
             i.div_euclid(j)
                 - i64::from(
