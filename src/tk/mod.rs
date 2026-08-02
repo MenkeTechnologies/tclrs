@@ -138,25 +138,35 @@
 //!
 //! ```text
 //! if {[namespace which -command tkInit] eq ""} {
-//!   proc tkInit {} { ... tcl_findLibrary tk ... }
+//!   proc tkInit {} { ... rename tkInit {} ... tcl_findLibrary tk ... }
 //! }
 //! tkInit
 //! ```
 //!
 //! (`tk9.0.4/generic/tkWindow.c:3508-3516`), and `Tk_Init` returns whatever
-//! that evaluation returns (`:3518`, `:3536`). This crate's compiler refuses a
-//! `proc` that is not at the top level of a script — `src/procs.rs:166-171`, a
-//! deliberate decision pinned by `tests/proc_differential.rs`, because a
-//! procedure this compiler registers at compile time would exist whether or not
-//! the branch defining it is ever reached. So the script does not compile, the
-//! evaluation fails, and the failure is `Tk_Init`'s answer.
+//! that evaluation returns (`:3518`, `:3536`).
 //!
-//! Three more of the script's commands are also absent from this frontend —
-//! `namespace`, `rename` and `tcl_findLibrary` — and behind them is `tk.tcl`
-//! itself, which is what `tkInit` exists to `source`. That library is where
-//! Tk's class bindings live, so `bind Button` is empty in this host and a mouse
-//! click on a button reaches nothing. The gap between here and a `TCL_OK` is
-//! that much more of the Tcl language, not more of the Tk ABI.
+//! That script *compiles* now. This crate used to refuse a `proc` that is not
+//! at the top level of a script, because a procedure registered while compiling
+//! would exist whether or not the branch defining it is ever reached; the
+//! run-time command table in [`crate::procs`] removed the reason for the
+//! refusal, so the `proc tkInit` is lowered like any other and binds its name
+//! when the branch runs.
+//!
+//! What stops the evaluation now is the *first command the script runs*:
+//! `namespace`, in the condition of that same `if`. Three of the script's
+//! commands are absent from this frontend — `namespace`, `rename` and
+//! `tcl_findLibrary` — and behind them is `tk.tcl` itself, which is what
+//! `tkInit` exists to `source`. That library is where Tk's class bindings live,
+//! so `bind Button` is empty in this host and a mouse click on a button reaches
+//! nothing. The gap between here and a `TCL_OK` is that much more of the Tcl
+//! language, not more of the Tk ABI. Measured: with those three commands
+//! supplied as procedures, the script above runs to completion and its output
+//! matches tclsh 9.0.4 byte for byte.
+//!
+//! The call and slot counts did not move when the refusal did. The whole
+//! failure is on this side of the stub table, so Tk asked for exactly what it
+//! asked for before — 2726 calls over 71 slots, either way.
 //!
 //! # What works anyway
 //!

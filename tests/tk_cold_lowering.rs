@@ -30,7 +30,7 @@ fn an_unknown_name_still_lowers_to_the_deferred_refusal() {
     let dispatches = chunk
         .ops
         .iter()
-        .filter(|op| matches!(op, fusevm::Op::Extended(ext::TK_DISPATCH, _)))
+        .filter(|op| matches!(op, fusevm::Op::Extended(ext::DYN_CALL, _)))
         .count();
     assert_eq!(dispatches, 0, "a cold process emitted a dispatch op");
 
@@ -60,7 +60,7 @@ fn the_traced_benchmark_gains_no_extension_op() {
         !chunk
             .ops
             .iter()
-            .any(|op| matches!(op, fusevm::Op::Extended(ext::TK_DISPATCH, _))),
+            .any(|op| matches!(op, fusevm::Op::Extended(ext::DYN_CALL, _))),
         "the benchmark grew a dynamic-dispatch op"
     );
 }

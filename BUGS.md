@@ -21,6 +21,20 @@ approximated, and nothing is silently mis-run.
   Signatures are collected before anything is emitted, so a procedure may call
   one the script defines further down; defaults and a trailing `args` are
   resolved at the call site.
+- **`proc` in any position.** A `proc` inside an `if`, a loop, a command
+  substitution or another procedure's body binds its name when the defining code
+  *runs*, which is what tclsh does: `if {0} {proc f {} {}}` leaves `f` an
+  `invalid command name`, a definition in a taken branch replaces whatever the
+  name meant before it, and a procedure that defines another defines it for good
+  once it has run. The body is compiled where it stands with the same prologue
+  and the same slots; only the binding moved, to `ext::PROC_DEFINE`. Calls to
+  such a name go through `ext::DYN_CALL`, which resolves in the interpreter's
+  run-time command table and does the argument adapting — defaults, the `args`
+  tail, the `wrong # args` wording — that a compile-time call site does for
+  itself. Names the compiler *can* resolve keep their direct `Op::Call`: the
+  first compilation pass records which names a conditional `proc` defines and
+  only those become dynamic, so `bench/counted_loop_proc.tcl` still lowers to 28
+  ops with one `Op::Call` and still reports `traced=true`.
 - **Errors.** `catch` and `error`. A `catch` region is an extension-wide op whose
   payload is its handler's op index; the driver in `src/runtime.rs` unwinds the
   value stack and the call frames to the region's entry state and resumes at the
@@ -230,12 +244,16 @@ approximated, and nothing is silently mis-run.
   see them. Refused rather than run against the wrong variables.
 - **Procedures across an `eval`.** An evaluated script shares the interpreter's
   variables but not its procedures: it is a chunk of its own, and a call site
-  resolves its command while compiling against that chunk's own `proc`
-  definitions. So `eval {proc twice {x} {…}}` followed by `twice 21` is
-  `invalid command name "twice"`, and so is `eval {twice 21}` for a procedure the
-  outer script defined — both run in tclsh. A runtime command table shared across
-  chunks is the fix; the same one that would move an unknown command name from
-  compile time to run time.
+  resolves its command against that chunk. So `eval {proc twice {x} {…}}`
+  followed by `twice 21` is `invalid command name "twice"`, and so is
+  `eval {twice 21}` for a procedure the outer script defined — both run in
+  tclsh. The run-time command table a conditional `proc` binds into *is* shared
+  across evaluations, and this is the one thing it deliberately will not do: an
+  entry records the chunk its body entry point indexes into (`op_hash` and op
+  count), and a lookup from another chunk misses rather than jumping to whatever
+  op sits at that index. `eval {if {1} {proc f {} {…}}}` followed by `f` is
+  therefore `invalid command name "f"` as well. Carrying the callee's *chunk*
+  through the call — not just its entry — is the fix.
 - **`coroprobe` and `coroinject`.** Inspecting or injecting a command into a
   suspended coroutine is not implemented; both are `invalid command name`.
   Deleting a coroutine by destroying its command needs `rename`, which is not
@@ -247,13 +265,29 @@ approximated, and nothing is silently mis-run.
   the body is entered through the chunk's sub table. `yieldto` at a command that
   is not a coroutine of the script is refused: it would have to evaluate that
   command in the resumer's context, which this frontend cannot do.
+- **Coroutines of a procedure a conditional `proc` defines.** `coroutine c gen
+  3` needs `gen`'s signature while the `coroutine` command is lowered — the
+  actual arguments are arranged by the call site — and needs a sub-table entry
+  to position the fresh VM at. A `proc` away from the top level supplies
+  neither: its signature is carried as text for run time, and it registers no
+  sub entry, because two conditional definitions may share a name and
+  `Chunk::find_sub` answers with whichever was registered first. So `if {1}
+  {proc gen {n} {…}}` followed by `coroutine c gen 3` is `invalid command name
+  "gen"`, raised when the `coroutine` command runs. It works in tclsh. The two
+  halves have the same fix: a coroutine entered through the run-time command
+  table rather than through the sub table.
+- **A coroutine of a top-level procedure some conditional `proc` also
+  redefines.** The coroutine is positioned at the *top-level* body, since that
+  is the one with a sub-table entry, even when a conditional definition of the
+  same name ran later and every ordinary call site would reach the newer one.
 - **`info`, apart from `info coroutine`.** Every other subcommand is refused by
   name rather than mis-answered.
 - **Every command outside those above.** `open` / `read` / `close`,
   `source`, `upvar`, `uplevel`, `rename`, `namespace`, `apply`, `clock`,
-  `encoding`, `binary`, … An unknown command name is `invalid command name "…"`
-  at compile time rather than at run time, which is where a runtime command
-  table would move it.
+  `encoding`, `binary`, … An unknown command name is `invalid command name "…"`,
+  raised when the command runs — `puts [catch {nosuchcmd} m]` is `1` — because
+  the compiler lowers that refusal as code rather than deciding it (see
+  `Compiler::defer`).
 - **An array element as the variable a list command names.** `lappend a(x) v`,
   `lassign {1 2} a(x) a(y)`, `lset a(x) 0 v`, `lpop a(x)` and `ledit a(x) 0 0 v`
   are all `this command does not take an array element yet`, from the one

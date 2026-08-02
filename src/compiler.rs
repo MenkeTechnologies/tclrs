@@ -85,22 +85,49 @@ pub mod ext {
     /// [`crate::rust_ffi::is_exported`] answered for while compiling.
     pub const FFI_CALL: u16 = 63;
 
-    /// `[line, name, arg …]` with the count in the inline operand — call the
-    /// command `name` in whichever Tk interpreter is current, looking it up at
-    /// run time.
+    /// `[name, spec, entry]` → `""`, having registered the procedure `name`
+    /// with the formal-argument list `spec` and the body entry point `entry` in
+    /// the interpreter's run-time command table.
     ///
-    /// The one op in this table whose callee is not known while compiling. Tk
-    /// registers its commands during `Tk_Init`, so a script that says `button
-    /// .b` is compiled before `button` exists; see [`crate::tk::dispatch`] for
-    /// the two conditions that have to hold before this is emitted at all.
+    /// What a `proc` outside a script's top level lowers to. Its body is
+    /// compiled in place, behind a jump, exactly as a top-level one's is — the
+    /// difference is entirely in *when the name starts answering*, and this op
+    /// is that moment. `if {0} {proc f {} {}}` compiles the body and never runs
+    /// this, so `f` is `invalid command name "f"`, which is what tclsh 9.0.4
+    /// answers (measured).
+    ///
+    /// 60 rather than 35: nothing between 48 and 61 without an explicit arm in
+    /// [`crate::runtime::install_hooks`] reaches this module at all — the range
+    /// test below it routes to [`crate::cmd_list`] — so this id and
+    /// [`DYN_CALL`] each need one, and keeping them adjacent keeps that pair
+    /// visible.
+    pub const PROC_DEFINE: u16 = 60;
+
+    /// `[line, name, arg …]` with the count in the inline operand — call the
+    /// command `name`, resolving it in the run-time command table when the call
+    /// happens rather than while the script is compiled.
+    ///
+    /// The one op in this table whose callee is not known while compiling, and
+    /// there are two reasons a callee can fail to be known:
+    ///
+    /// * a procedure defined by a `proc` that is not at the script's top level
+    ///   ([`PROC_DEFINE`]) — the name exists only once the defining code has
+    ///   run, so a call site cannot be lowered to `Op::Call`;
+    /// * a command Tk registered. Tk registers `button`, `pack`, `wm` and the
+    ///   rest during `Tk_Init`, long after a script that says `button .b` was
+    ///   compiled; see [`crate::tk::dispatch`].
+    ///
+    /// The two are one lookup, in that order: a procedure the script defined
+    /// shadows a foreign command of the same name, which is the order tclsh
+    /// resolves in.
     ///
     /// The line rides on the stack because the failure this op can raise —
-    /// `invalid command name` — is located, and dropping the line would change
-    /// a diagnostic that is pinned against tclsh.
+    /// `invalid command name`, `wrong # args` — is located, and dropping the
+    /// line would change a diagnostic that is pinned against tclsh.
     ///
     /// 61 rather than 64: [`ASSOC_BASE`] is 64, and an id at or above it is
     /// dispatched to [`crate::assoc`] by range.
-    pub const TK_DISPATCH: u16 = 61;
+    pub const DYN_CALL: u16 = 61;
 
     /// Pop a value and push Tcl's boolean reading of it — 1 or 0 — or refuse it.
     /// `arg` is 0 for a condition and 1 for `!`, which differ in how they word
@@ -171,8 +198,9 @@ pub mod ext {
 
     // The list commands that name a variable or build one, 48–57. They are in
     // the range `runtime::extension` routes to [`crate::cmd_list`] by id, and
-    // nothing between 48 and 61 has an explicit arm ahead of that range test —
-    // one there would shadow this block silently.
+    // between 48 and 61 only [`PROC_DEFINE`] and [`DYN_CALL`] have an explicit
+    // arm ahead of that range test — another one there would shadow this block
+    // silently.
 
     /// `[list, count]` → the unassigned remainder, then one value per variable
     /// in reverse, so that a `SetVar` per variable pops them in order.
@@ -373,12 +401,23 @@ impl std::error::Error for CompileError {}
 
 /// Compile a parsed script into a chunk whose result is the script's value.
 ///
-/// Two passes. Reading `$x` lowers to a bare `GetVar`, which cannot fail, but
-/// reading a variable that holds an array must — and the `set a(i) v` that makes
-/// it one may be compiled after the `$a` that reads it. The first pass records
-/// every name used as an array; the second, knowing them, guards just those
-/// names. Nothing else differs between the passes, so a script with no arrays
-/// compiles exactly as it did before and pays nothing.
+/// Two passes, for two things a single forward walk cannot know.
+///
+/// Reading `$x` lowers to a bare `GetVar`, which cannot fail, but reading a
+/// variable that holds an array must — and the `set a(i) v` that makes it one
+/// may be compiled after the `$a` that reads it. The first pass records every
+/// name used as an array; the second, knowing them, guards just those names.
+///
+/// A `proc` that is not at the script's top level defines its procedure only
+/// when the enclosing code runs, so every call to that name has to resolve at
+/// run time — including the calls written *above* the definition, and including
+/// the ones that would otherwise have found a top-level `proc` of the same name
+/// at compile time. The first pass records those names; the second, knowing
+/// them, lowers their call sites through [`ext::DYN_CALL`].
+///
+/// Nothing else differs between the passes, so a script with neither an array
+/// nor a nested `proc` compiles in one pass exactly as it did before and pays
+/// nothing.
 pub fn compile(script: &Script) -> Result<fusevm::Chunk, CompileError> {
     lower(script, false)
 }
@@ -391,11 +430,11 @@ pub fn compile_debug(script: &Script) -> Result<fusevm::Chunk, CompileError> {
 }
 
 fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
-    let first = Compiler::run(script, ArrayNames::new(), debug)?;
-    let (mut chunk, tolerant) = if first.seen_arrays.is_empty() {
+    let first = Compiler::run(script, ArrayNames::new(), HashSet::new(), debug)?;
+    let (mut chunk, tolerant) = if first.seen_arrays.is_empty() && first.seen_runtime.is_empty() {
         (first.b.build(), first.tolerant_reads)
     } else {
-        let second = Compiler::run(script, first.seen_arrays, debug)?;
+        let second = Compiler::run(script, first.seen_arrays, first.seen_runtime, debug)?;
         let reads = second.tolerant_reads.clone();
         (second.b.build(), reads)
     };
@@ -485,6 +524,13 @@ pub(crate) struct Compiler {
     pub(crate) procs: HashMap<String, Signature>,
     /// Procedures whose body has been compiled, so a redefinition is caught.
     pub(crate) defined: HashSet<String>,
+    /// Names a `proc` outside the script's top level defines, from the previous
+    /// pass. A call to one of them cannot be lowered to `Op::Call`: the name
+    /// only starts answering once the defining code has run, so it resolves in
+    /// the run-time command table instead. See [`compile`].
+    pub(crate) runtime: HashSet<String>,
+    /// The same, found during this pass — what the next one is given.
+    pub(crate) seen_runtime: HashSet<String>,
     /// Names the script's own `coroutine` commands create. A call to one of
     /// them resumes the coroutine instead of calling a procedure.
     pub(crate) coros: HashSet<String>,
@@ -525,9 +571,14 @@ pub(crate) struct Compiler {
 }
 
 impl Compiler {
-    /// One compilation pass over the script, with the array names the previous
-    /// pass discovered.
-    fn run(script: &Script, arrays: ArrayNames, debug: bool) -> Result<Compiler, CompileError> {
+    /// One compilation pass over the script, with the array names and the
+    /// run-time procedure names the previous pass discovered.
+    fn run(
+        script: &Script,
+        arrays: ArrayNames,
+        runtime: HashSet<String>,
+        debug: bool,
+    ) -> Result<Compiler, CompileError> {
         let mut c = Compiler {
             b: ChunkBuilder::new(),
             tolerant_reads: Vec::new(),
@@ -540,6 +591,8 @@ impl Compiler {
             scope: None,
             procs: HashMap::new(),
             defined: HashSet::new(),
+            runtime,
+            seen_runtime: HashSet::new(),
             coros: HashSet::new(),
             catch_depth: 0,
             body_depth: 0,
@@ -1034,6 +1087,14 @@ impl Compiler {
             // A coroutine's context command. Its name is refused to `proc`, so
             // there is never both a procedure and a coroutine to choose from.
             other if self.coros.contains(other) => self.call_coro(other, args),
+            // A name some `proc` outside the script's top level defines. It
+            // answers only once that `proc` has run, so the call resolves in
+            // the run-time command table — even when a top-level `proc` of the
+            // same name also exists, because in tclsh the later definition
+            // wins and only run time knows which ran last (measured: `proc f
+            // {} {return one}` then `if {1} {proc f {} {return two}}` then `f`
+            // answers `two`).
+            other if self.runtime.contains(other) => self.call_runtime(other, args),
             // A procedure the script defines shadows nothing built in: the
             // names above are refused to `proc` at its definition.
             other if self.procs.contains_key(other) => self.call_proc(other, args),
@@ -1050,7 +1111,7 @@ impl Compiler {
             // `invalid command name`, on the same line, that the arm below
             // would have deferred. See `crate::tk::dispatch`.
             #[cfg(feature = "tk")]
-            other if crate::tk::dispatch::takes_over(other) => self.call_foreign(other, args),
+            other if crate::tk::dispatch::takes_over(other) => self.call_runtime(other, args),
             // The list commands own the tail of the dispatch, and report the
             // unknown-command error for anything no module claims.
             other => crate::cmd_list::compile(self, other, args),

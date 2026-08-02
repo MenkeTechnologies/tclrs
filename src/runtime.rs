@@ -203,6 +203,13 @@ pub(crate) struct State {
     /// The variables, keyed by name. This is the authority, not the VM's slot
     /// vector — see `seed`.
     globals: HashMap<String, Value>,
+    /// Procedures whose name was bound while a script was running, which is
+    /// every `proc` that is not at its script's top level. A name here answers
+    /// from the moment the defining code ran and not before, which is what
+    /// separates it from the procedures the compiler resolves — see
+    /// [`crate::procs`]. Held on the interpreter rather than per evaluation, so
+    /// a definition survives into the next `eval` the way a variable does.
+    pub(crate) commands: HashMap<String, crate::procs::RuntimeProc>,
     cache: ChunkCache,
     /// Where the scripts of this interpreter write.
     output: Output,
@@ -239,6 +246,7 @@ impl Interp {
         Interp {
             shared: Arc::new(Mutex::new(State {
                 globals: HashMap::new(),
+                commands: HashMap::new(),
                 cache: ChunkCache::new(),
                 output,
                 depth: 0,
@@ -546,14 +554,15 @@ impl Hooks {
                 return;
             }
             let outcome = match id {
-                ext::EVAL => eval_op(&interp, vm, arg),
-                ext::FFI_CALL => ffi_op(vm, arg).map_err(TclError::plain),
-                // Its own arm rather than the plain one below because the
-                // error it raises is located: it stands in for a refusal the
-                // compiler would otherwise have deferred with the command's
-                // line attached.
-                #[cfg(feature = "tk")]
-                ext::TK_DISPATCH => crate::tk::dispatch::extension(vm, arg),
+                // The ops that reach back out of the chunk: a nested script, a
+                // function an inline `rust` block exported, and the two halves
+                // of a procedure whose name is bound at run time. One grouped
+                // pattern rather than four arms, so the ops that do not — every
+                // operator and every command module, which is what a hot loop
+                // is made of — fall through on one test.
+                ext::EVAL | ext::FFI_CALL | ext::PROC_DEFINE | ext::DYN_CALL => {
+                    interpreter_op(&interp, vm, id, arg)
+                }
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
             if let Err(e) = outcome {
@@ -622,6 +631,33 @@ fn jit_enabled() -> bool {
         std::env::var("TCLRS_JIT").as_deref(),
         Ok("off") | Ok("0") | Ok("no")
     )
+}
+
+/// The four extension ops that need something the chunk does not carry: the
+/// interpreter itself, or a table living beside it.
+///
+/// They are dispatched together, behind one test in the extension handler,
+/// because every other op — the operators, the list, string, `dict` and array
+/// modules — is answerable from the stack alone and is what a loop is made of.
+/// Two of the four are *located*: their failures stand in for refusals the
+/// compiler would otherwise have deferred with the command's line attached,
+/// which is why they carry a [`TclError`] and not a bare message.
+fn interpreter_op(interp: &Shared, vm: &mut VM, id: u16, arg: u8) -> Result<(), TclError> {
+    match id {
+        ext::EVAL => eval_op(interp, vm, arg),
+        ext::FFI_CALL => ffi_op(vm, arg).map_err(TclError::plain),
+        // A `proc` outside its script's top level binds its name here, when the
+        // command runs, rather than while it is compiled.
+        ext::PROC_DEFINE => crate::procs::define_op(interp, vm),
+        // A call whose name only a run-time table can resolve: such a procedure,
+        // or a command Tk registered.
+        ext::DYN_CALL => crate::procs::call_op(interp, vm, arg),
+        // The caller's pattern sends only the four ids above here. Answering
+        // the rest the way the caller's other arm would is what keeps a fifth
+        // id added there and forgotten here a wrong *answer* rather than a call
+        // to whichever of these happened to be last.
+        _ => extension(vm, id, arg).map_err(TclError::plain),
+    }
 }
 
 /// A call to a function an inline `rust { ... }` block exported: the name was
