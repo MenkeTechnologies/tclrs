@@ -115,6 +115,16 @@ pub struct Host {
     pub linked_vars: Vec<(String, c_int)>,
     /// Exit handlers Tk registered. Recorded, never run.
     pub exit_handlers: Vec<(*mut c_void, *mut c_void)>,
+    /// `errorInfo`: the stack trace a failing script accumulates as each level
+    /// that saw the error adds its own line. `None` until something starts
+    /// logging one, which is what `Tcl_AppendObjToErrorInfo` tests
+    /// (`generic/tclBasic.c:6947-6949`).
+    pub error_info: Option<String>,
+    /// Exceptions reported through `Tcl_BackgroundException`, in the order they
+    /// were reported: the completion code, the result, and the `errorInfo` as
+    /// it stood. A binding script that fails arrives here rather than at the
+    /// caller, because there is no caller — see [`background_exception`].
+    pub background_errors: Vec<(c_int, String, String)>,
 }
 
 /// One entry of the command table. Boxed, so the address returned as the
@@ -310,6 +320,8 @@ fn empty_host() -> Host {
         exports: Vec::new(),
         linked_vars: Vec::new(),
         exit_handlers: Vec::new(),
+        error_info: None,
+        background_errors: Vec::new(),
     }
 }
 
@@ -679,6 +691,34 @@ unsafe fn install_impls(t: &mut TclStubs, degraded: bool, level: Level) -> Vec<u
             t,
             "tcl_InvalidateStringRep",
             invalidate_string_rep as *const (),
+        ),
+        // void (*tcl_AppendObjToErrorInfo)(Tcl_Interp *, Tcl_Obj *) /* 574 */
+        install(
+            t,
+            "tcl_AppendObjToErrorInfo",
+            append_obj_to_error_info as *const (),
+        ),
+        // void (*tcl_BackgroundException)(Tcl_Interp *, int) /* 631 */
+        install(
+            t,
+            "tcl_BackgroundException",
+            background_exception as *const (),
+        ),
+        // void (*tcl_AllowExceptions)(Tcl_Interp *) /* 90 */
+        install(t, "tcl_AllowExceptions", allow_exceptions as *const ()),
+        // Tcl_InterpState (*tcl_SaveInterpState)(Tcl_Interp *, int) /* 535 */
+        install(t, "tcl_SaveInterpState", save_interp_state as *const ()),
+        // int (*tcl_RestoreInterpState)(Tcl_Interp *, Tcl_InterpState) /* 536 */
+        install(
+            t,
+            "tcl_RestoreInterpState",
+            restore_interp_state as *const (),
+        ),
+        // void (*tcl_DiscardInterpState)(Tcl_InterpState) /* 537 */
+        install(
+            t,
+            "tcl_DiscardInterpState",
+            discard_interp_state as *const (),
         ),
         // int (*tcl_ParseArgsObjv)(Tcl_Interp *, const Tcl_ArgvInfo *, Tcl_Size *,
         //     Tcl_Obj *const *, Tcl_Obj ***) /* 667 */
@@ -2881,4 +2921,139 @@ unsafe fn usage_of(arg_table: *const ArgvInfo) -> String {
         info = info.add(1);
     }
     out
+}
+
+/// What [`save_interp_state`] hands back, and the only thing this host has to
+/// save: the completion code and the result value.
+///
+/// Tcl's `InterpState` (`generic/tclResult.c:44-58`) also carries `errorInfo`,
+/// `errorCode`, `errorStack`, `returnOpts`, `returnLevel`, `returnCode` and the
+/// `ERR_ALREADY_LOGGED` flag. None of those exist on this side — the host's
+/// interpreter is a result object and nothing else — so saving them would mean
+/// inventing state to save. The two fields that do exist are saved exactly.
+#[repr(C)]
+struct InterpState {
+    status: c_int,
+    /// Retained for as long as the token lives, as Tcl retains it
+    /// (`generic/tclResult.c:100-101`).
+    result: *mut TclObj,
+}
+
+/// Slot 535. `Tcl_SaveInterpState` (`generic/tclResult.c:72-103`).
+///
+/// Tk takes one of these around every binding script it evaluates
+/// (`tk9.0.4/generic/tkBind.c:2554`, restored at `:2608`), so that a `bind`
+/// script's error does not become the result of whatever the application was
+/// doing when the event arrived. Without it no class binding can run at all,
+/// which is what a mouse click on a widget is made of.
+///
+/// # Safety
+/// `interp` is this host's, and the token must reach exactly one of
+/// [`restore_interp_state`] or [`discard_interp_state`].
+unsafe extern "C" fn save_interp_state(interp: *mut c_void, status: c_int) -> *mut c_void {
+    entered!("tcl_SaveInterpState");
+    let result = retain(get_obj_result(interp));
+    let state = libc::malloc(std::mem::size_of::<InterpState>()) as *mut InterpState;
+    (*state) = InterpState { status, result };
+    state as *mut c_void
+}
+
+/// Slot 536. `Tcl_RestoreInterpState` (`generic/tclResult.c:123-169`): put the
+/// saved result back, answer the saved status, and free the token.
+///
+/// # Safety
+/// `state` came from [`save_interp_state`] and is consumed here.
+unsafe extern "C" fn restore_interp_state(interp: *mut c_void, state: *mut c_void) -> c_int {
+    entered!("tcl_RestoreInterpState");
+    let state_ptr = state as *mut InterpState;
+    let status = (*state_ptr).status;
+    install_result(interp, (*state_ptr).result);
+    discard_interp_state(state);
+    status
+}
+
+/// Slot 537. `Tcl_DiscardInterpState` (`generic/tclResult.c:188-208`): drop the
+/// token without putting anything back.
+///
+/// # Safety
+/// `state` came from [`save_interp_state`] and is consumed here.
+unsafe extern "C" fn discard_interp_state(state: *mut c_void) {
+    entered!("tcl_DiscardInterpState");
+    let state_ptr = state as *mut InterpState;
+    obj::release((*state_ptr).result);
+    libc::free(state);
+}
+
+/// Slot 574. `Tcl_AppendObjToErrorInfo` (`generic/tclBasic.c:6930-6968`).
+///
+/// Tk reaches this from `Tk_BindEvent` when a binding script fails
+/// (`tk9.0.4/generic/tkBind.c:2590`, through `Tcl_AddErrorInfo`), and a
+/// binding script is what a mouse click is made of — so without a body here a
+/// click that raises anything stops the process rather than reporting.
+///
+/// The C initialises `errorInfo` from the interpreter's result the first time
+/// something logs, and appends after that. This does the same, in a `String`
+/// rather than a `Tcl_Obj`, because nothing on this side reads it as a value.
+/// The object is consumed, as the C consumes it (`:6967`).
+///
+/// # Safety
+/// `interp` is this host's and `o` is a reference the caller hands over.
+unsafe extern "C" fn append_obj_to_error_info(interp: *mut c_void, o: *mut TclObj) {
+    entered!("tcl_AppendObjToErrorInfo");
+    let message = obj::text_of(o);
+    let h = &mut *(*(interp as *mut HostInterp)).host;
+    if h.error_info.is_none() {
+        // The first line is the error itself, which is the interpreter's
+        // result at the moment logging starts (`:6947-6949`).
+        h.error_info = Some(obj::text_of(get_obj_result(interp)));
+    }
+    if let Some(info) = h.error_info.as_mut() {
+        info.push_str(&message);
+    }
+    obj::release(o);
+}
+
+/// Slot 631. `Tcl_BackgroundException` (`generic/tclEvent.c:165-193`).
+///
+/// An error with nowhere to go: the script that raised it was run by the event
+/// loop, not called by anything. Tcl queues it for `bgerror`; this records it
+/// and writes it to stderr, which is what Tcl's own default handler does when
+/// no `bgerror` is defined (`generic/tclEvent.c:341-352`).
+///
+/// Recording rather than only printing, because a test that generates an event
+/// has to be able to ask whether the binding it fired failed — the completion
+/// code never reaches the script that called `event generate`.
+///
+/// # Safety
+/// `interp` is this host's.
+unsafe extern "C" fn background_exception(interp: *mut c_void, code: c_int) {
+    entered!("tcl_BackgroundException");
+    if code == TCL_OK {
+        return;
+    }
+    let result = obj::text_of(get_obj_result(interp));
+    let h = &mut *(*(interp as *mut HostInterp)).host;
+    let info = h.error_info.clone().unwrap_or_else(|| result.clone());
+    h.background_errors.push((code, result, info.clone()));
+    eprintln!("tkbgerror {code} {info}");
+    // The next error starts its own trace, as it does in Tcl: the interpreter's
+    // `errorInfo` is reset when the next command that fails begins logging.
+    h.error_info = None;
+}
+
+/// Slot 90. `Tcl_AllowExceptions` (`generic/tclBasic.c`), which tells the
+/// evaluator that `break` and `continue` reaching the top of the script are
+/// legal rather than errors.
+///
+/// `Tk_BindEvent` sets it before every binding script (`tkBind.c:2580`),
+/// because `break` in a binding is how a script says "no further binding on
+/// this event". This host's evaluator already treats a `break` that reaches
+/// the top of an evaluated script as `TCL_BREAK` rather than raising, so the
+/// permission is already granted and there is nothing to set — which is the
+/// one case where the C's side effect is this host's default.
+///
+/// # Safety
+/// `interp` is this host's.
+unsafe extern "C" fn allow_exceptions(_interp: *mut c_void) {
+    entered!("tcl_AllowExceptions");
 }

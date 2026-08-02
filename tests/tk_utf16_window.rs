@@ -274,3 +274,64 @@ fn a_packed_widget_is_mapped_and_its_callback_reaches_a_tclrs_script() {
         "Tk did not evaluate the -command script: {out:?}"
     );
 }
+
+/// A synthetic mouse click reaches a callback this crate compiled.
+///
+/// This is the whole path, and every step of it is Tk's rather than a
+/// simulation: `event generate` builds an `XEvent` and hands it to
+/// `Tk_HandleEvent`; `Tk_BindEvent` matches it against the binding table and
+/// finds the `Button` class binding; the script is evaluated through
+/// `Tcl_EvalEx`, which is this crate's compiler and fusevm; that script calls
+/// `.b invoke`, which is Tk's own button command; and *that* evaluates the
+/// `-command` body, again through this crate. The `puts` at the end is fusevm
+/// writing to the process's stdout.
+///
+/// Three slots had to exist before any of it could happen, and each stopped the
+/// run dead when it did not:
+///
+/// * `Tcl_SaveInterpState` / `Tcl_RestoreInterpState` (535/536), which
+///   `Tk_BindEvent` takes around every binding script it evaluates
+///   (`tk9.0.4/generic/tkBind.c:2554`, `:2608`);
+/// * `Tcl_AppendObjToErrorInfo` (574), which the same function reaches through
+///   `Tcl_AddErrorInfo` when a binding fails (`:2590`);
+/// * `Tcl_BackgroundException` (631), where that failure then goes (`:2591`) —
+///   a binding script has no caller to return an error to.
+///
+/// The class binding is written here because `tk.tcl` is what would otherwise
+/// have written it, and `tk.tcl` does not load yet — see the module docs on
+/// `tclrs::tk`. That is the only part of this a real application would not
+/// have to do for itself.
+#[test]
+fn a_generated_click_reaches_a_callback_through_a_class_binding() {
+    let Some((out, err)) = host(&[
+        "button .b -text hello -command {puts CALLBACK-FIRED}",
+        "pack .b",
+        // What tk.tcl's button.tcl binds, reduced to the part under test: a
+        // release over the widget invokes it.
+        "bind Button <ButtonRelease-1> {.b invoke}",
+        "update",
+        "event generate .b <Button-1>",
+        "event generate .b <ButtonRelease-1>",
+        "update",
+    ]) else {
+        return;
+    };
+    assert!(
+        !err.contains("tktrap "),
+        "the click stopped on a slot: {:?}",
+        err.lines().find(|l| l.starts_with("tktrap "))
+    );
+    assert!(
+        out.contains("CALLBACK-FIRED"),
+        "the generated click did not reach the -command body: {out:?}"
+    );
+    // `<Button-1>` reports one background error, and it names what is missing
+    // rather than something about this host: `::tk::ScreenChanged` is defined
+    // by `tk.tcl` (`tk9.0.4/library/tk.tcl`), which is the file that does not
+    // load. The click still completes, because Tk reports a failed binding and
+    // carries on — which is exactly what `Tcl_BackgroundException` is for.
+    assert!(
+        err.contains(r#"tkbgerror 1 invalid command name "::tk::ScreenChanged""#),
+        "the background error is not the missing tk.tcl one: {err:?}"
+    );
+}
