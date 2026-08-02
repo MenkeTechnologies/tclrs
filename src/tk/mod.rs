@@ -133,7 +133,7 @@
 //! `cargo run --features tk --bin tk-host` against the same library, with the
 //! object layer, the evaluator and the notifier all behind the table: **2726
 //! calls over 71 distinct slots**, and `Tk_Init` *returns* — it does not stop
-//! on a missing slot at any point. 189 of the 691 `TclStubs` slots have bodies.
+//! on a missing slot at any point. 197 of the 691 `TclStubs` slots have bodies.
 //!
 //! That measurement is of the run whose **stdin is a pipe**, and stdin decides
 //! which of two branches `TkpInit` takes. With stdin on `/dev/null` — a
@@ -218,8 +218,26 @@
 //!   being displayed.
 //! * `button .b -command {puts CALLBACK-FIRED}` followed by `.b invoke` prints
 //!   `CALLBACK-FIRED`: Tk evaluated the callback back through
-//!   `Tcl_EvalObjEx`, this crate compiled it, and fusevm ran it. A *click* does
-//!   not reach it, for the `bind Button` reason above.
+//!   `Tcl_EvalObjEx`, this crate compiled it, and fusevm ran it.
+//! * So does a *click*, once something has written the class binding `tk.tcl`
+//!   would have written. With `bind Button <ButtonRelease-1> {.b invoke}` in
+//!   place, `event generate .b <Button-1>` then `<ButtonRelease-1>` prints
+//!   `CALLBACK-FIRED` — `Tk_HandleEvent`, `Tk_BindEvent`, the binding table,
+//!   `Tcl_EvalEx` into this compiler, Tk's button command, and this compiler
+//!   again for the `-command` body. Pinned in
+//!   `tests/tk_utf16_window.rs`. Three slots had to exist first, and each
+//!   stopped the run where it was missing: `Tcl_SaveInterpState` and
+//!   `Tcl_RestoreInterpState`, which `Tk_BindEvent` takes around every binding
+//!   script (`tk9.0.4/generic/tkBind.c:2554`, `:2608`);
+//!   `Tcl_AppendObjToErrorInfo`, where a failing binding is logged (`:2590`);
+//!   and `Tcl_BackgroundException`, where that failure then goes (`:2591`),
+//!   because a binding script has no caller to return an error to.
+//!
+//!   The click still reports one background error —
+//!   `invalid command name "::tk::ScreenChanged"` — and it names the file that
+//!   is missing rather than anything about this host: `tk.tcl` defines that
+//!   procedure. Tk reports the failed binding and carries on, so the click
+//!   completes.
 //! * `label .l -textvariable v -text initial`, then `set v hello`, then
 //!   `.l cget -text` → `hello`. The widget option is a variable trace
 //!   ([`linkvar`]); the answer is read back out of the widget by a real Tk

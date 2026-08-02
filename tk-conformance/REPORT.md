@@ -2,9 +2,9 @@
 
 Reference: **tclsh 9.0.4 with the real Tk 9.0.4 loaded**. Suite: `tk9.0.4/tests` — the `tests/` directory of the matching Tk source release, fetched and checksum-verified by `tk-conformance/fetch-suite.sh`.
 
-The candidate is not a reimplementation of Tk. It is the same `libtcl9tk9.0.dylib` the reference uses, loaded against tclrs's own Tcl stub table: 151 of the 691 `TclStubs` slots have bodies, and Tk reaches this frontend through them.
+The candidate is not a reimplementation of Tk. It is the same `libtcl9tk9.0.dylib` the reference uses, loaded against tclrs's own Tcl stub table: 197 of the 691 `TclStubs` slots have bodies, and Tk reaches this frontend through them.
 
-**1580 of 5040 attempted cases pass — 31.3%.** Over every case the suite contains, including the ones that cannot be run here, that is 1580 of 10046 — 15.7%.
+**1607 of 5069 attempted cases pass — 31.7%.** Over every case the suite contains, including the ones that cannot be run here, that is 1607 of 10046 — 16.0%.
 
 ## How the number is produced
 
@@ -24,7 +24,7 @@ Verdicts are assigned in a fixed order, and agreement is checked before any excu
 | needs a package that is not installed | the reference run failed with `can't find package`. |
 | tclrs has no such command | tclrs refused with `invalid command name` for a command it does not implement. |
 
-**A stub-table trap is a failure, not a skip.** This is the one rule that differs from `conformance/`, and it is the stricter reading. Tk reaches this host through 691 function pointers; 540 of them have no body, and calling one ends the process (`src/tk/trace.rs:101-123`, which argues that answering a plausible zero from a slot whose contract is a live `Tcl_Obj *` turns a precise diagnosis into a crash several frames later). That is not tclrs declining and saying so, the way `invalid command name` is — it is the process dying, and a process that died measured nothing. Excusing it would move almost the whole suite into the skip column and leave a pass rate computed over a handful of cases. The slots that stopped a run are counted on their own below instead.
+**A stub-table trap is a failure, not a skip.** This is the one rule that differs from `conformance/`, and it is the stricter reading. Tk reaches this host through 691 function pointers; 494 of them have no body, and calling one ends the process (`src/tk/trace.rs:101-123`, which argues that answering a plausible zero from a slot whose contract is a live `Tcl_Obj *` turns a precise diagnosis into a crash several frames later). That is not tclrs declining and saying so, the way `invalid command name` is — it is the process dying, and a process that died measured nothing. Excusing it would move almost the whole suite into the skip column and leave a pass rate computed over a handful of cases. The slots that stopped a run are counted on their own below instead.
 
 Everything else is attempted, and anything attempted either matches or fails.
 
@@ -35,10 +35,10 @@ Two things about the extraction are worth stating plainly, and both are inherite
 | | Cases | Share |
 | --- | ---: | ---: |
 | Extracted from the suite | 10046 | 100% |
-| Skipped — cannot be run | 5006 | 49.8% |
-| Attempted | 5040 | 50.2% |
-| ⤷ passed | 1580 | 31.3% of attempted |
-| ⤷ failed | 3460 | 68.7% of attempted |
+| Skipped — cannot be run | 4977 | 49.5% |
+| Attempted | 5069 | 50.5% |
+| ⤷ passed | 1607 | 31.7% of attempted |
+| ⤷ failed | 3462 | 68.3% of attempted |
 
 ## Why cases were skipped
 
@@ -46,7 +46,7 @@ Two things about the extraction are worth stating plainly, and both are inherite
 | --- | ---: |
 | needs a command the reference has not got | 3189 |
 | tcltest constraint not met | 1653 |
-| tclrs has no such command | 146 |
+| tclrs has no such command | 117 |
 | the reference produced no outcome | 18 |
 
 ### Constraints that set cases aside
@@ -100,24 +100,18 @@ Two things about the extraction are worth stating plainly, and both are inherite
 | Name | Cases |
 | --- | ---: |
 | `scan` | 18 |
-| `namespace` | 17 |
 | `safe::interpCreate` | 13 |
 | `::tk::startOfNextWord` | 12 |
 | `::tk::endOfWord` | 11 |
 | `::tk::startOfPreviousWord` | 11 |
 | `::tk::wordBreakAfter` | 11 |
 | `::tk::wordBreakBefore` | 10 |
-| `trace` | 10 |
+| `trace` | 9 |
 | `interp` | 7 |
-| `after` | 6 |
 | `::tk::pkgconfig` | 3 |
 | `binary` | 3 |
 | `pause` | 3 |
 | `tk_dialog` | 3 |
-| `rename` | 2 |
-| `apply` | 1 |
-| `file` | 1 |
-| `flush` | 1 |
 | `tk::MotifFDialog_Create` | 1 |
 | `tk_focusNext` | 1 |
 | `tk_focusPrev` | 1 |
@@ -172,75 +166,74 @@ Two things about the extraction are worth stating plainly, and both are inherite
 
 | Cause | Cases | For example |
 | --- | ---: | --- |
-| tclrs was killed or crashed | 2387 | the stage process died on this case |
-| tclrs raised an error, the reference did not | 594 | "…" outside of a procedure is not supported |
-| both raised an error, messages differ | 457 | "…" outside of a procedure is not supported |
-| results differ | 19 |  |
+| tclrs was killed or crashed | 2420 | the stage process died on this case |
+| tclrs raised an error, the reference did not | 567 | "…" outside of a procedure is not supported |
+| both raised an error, messages differ | 450 | "…" outside of a procedure is not supported |
+| results differ | 22 |  |
 | the reference raised an error, tclrs did not | 3 | can't set "…": variable is array |
 
 ## Which stub slot stopped the run
 
-2884 cases took their worker process down by calling a `TclStubs` slot that has no body. Each is attributed to the slot named on the `tktrap` line that followed its `tkcase` marker, so this is a ranked list of what to implement next rather than an estimate.
+2923 cases took their worker process down by calling a `TclStubs` slot that has no body. Each is attributed to the slot named on the `tktrap` line that followed its `tkcase` marker, so this is a ranked list of what to implement next rather than an estimate.
 
 | Slot | Cases |
 | --- | ---: |
-| `tcl_SplitList` | 1845 |
+| `tcl_SplitList` | 1858 |
+| `tcl_DeleteCommandFromToken` | 274 |
 | `tcl_WrongNumArgs` | 226 |
-| `tcl_DeleteCommandFromToken` | 215 |
-| `tcl_GetDouble` | 130 |
-| `tcl_GetBytesFromObj` | 106 |
-| `tcl_GetIntForIndex` | 86 |
-| `tcl_GetCharLength` | 63 |
-| `tcl_OpenFileChannel` | 35 |
-| `tcl_GetInt` | 31 |
+| `tcl_GetDouble` | 135 |
+| `tcl_GetBytesFromObj` | 127 |
+| `tcl_GetIntForIndex` | 88 |
+| `tcl_GetCharLength` | 64 |
+| `tcl_GetInt` | 34 |
 | `tcl_UniCharIsPrint` | 29 |
-| `tcl_AttemptAlloc` | 26 |
+| `tcl_AttemptAlloc` | 28 |
 | `tcl_UniCharIsUpper` | 24 |
 | `tcl_GetEncoding` | 15 |
-| `tcl_TranslateFileName` | 15 |
-| `tcl_AppendObjToErrorInfo` | 14 |
 | `tcl_Merge` | 7 |
-| `tcl_SaveInterpState` | 7 |
+| `tcl_ScanElement` | 6 |
 | `tcl_AppendPrintfToObj` | 3 |
 | `tcl_AppendResult` | 3 |
-| `tcl_ScanElement` | 3 |
 | `tcl_InterpDeleted` | 1 |
+| `tcl_ZlibStreamInit` | 1 |
 
 ## Tk's own widget demonstration
 
 `demos/widget` is the sample application `wish` ships with: 713 lines, which `info complete` divides into 65 statements (`tk-conformance/boundaries.tcl`; runs of blank lines and comments are not counted as statements). It is run here one statement at a time against one host, in order, the way `wish` runs it — and every statement is attempted, including the ones after the first refusal, so the answer is more than one bit. A statement that ends the process is stepped over when the run is restarted, so one fatal statement does not take its successors with it.
 
-**It gets 1 of 65 statements in, and stops at line 13 of the file.** That statement was refused:
+**It gets 2 of 65 statements in, and stops at line 14 of the file.** That statement was refused:
 
 ```text
-invalid command name "package"
+can't find package msgcat
 ```
 
-Attempted individually, 25 of the 65 statements complete and 40 do not. The refusals, ranked:
+Attempted individually, 27 of the 65 statements complete and 38 do not. The refusals, ranked:
 
 | Refusal | Statements |
 | --- | ---: |
-| `invalid command name "…"` | 18 |
+| `invalid command name "…"` | 16 |
 | `command "…" is an ensemble, which this host does not dispatch yet` | 7 |
 | `{*} argument expansion is not supported yet` | 4 |
-| `command name must be a literal in this phase` | 3 |
 | `called the stub slot tcl_GetDouble, which has no body` | 2 |
 | `called the stub slot tcl_SplitList, which has no body` | 2 |
-| `can't read "…": no such variable` | 2 |
+| `command name must be a literal in this phase` | 2 |
+| `"…" with no level is not supported: the default level 1 is the caller's frame, whose variables are slots this frontend cannot address by name` | 1 |
 | `bad window path name "…"` | 1 |
-| `unknown or unsupported subcommand "…": only "…" is supported` | 1 |
+| `can't find package msgcat` | 1 |
+| `can't read "…": no such variable` | 1 |
+| `unknown namespace in import pattern "…"` | 1 |
 
 ## By suite file
 
 | File | Extracted | Skipped | Attempted | Passed | Rate |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `bell.test` | 8 | 1 | 7 | 5 | 71.4% |
+| `bell.test` | 8 | 0 | 8 | 6 | 75.0% |
 | `bgerror.test` | 3 | 0 | 3 | 0 | 0.0% |
 | `bind.test` | 558 | 13 | 545 | 388 | 71.2% |
 | `bitmap.test` | 7 | 5 | 2 | 0 | 0.0% |
 | `border.test` | 14 | 7 | 7 | 1 | 14.3% |
 | `busy.test` | 59 | 5 | 54 | 0 | 0.0% |
-| `button.test` | 403 | 18 | 385 | 10 | 2.6% |
+| `button.test` | 403 | 16 | 387 | 11 | 2.8% |
 | `canvImg.test` | 84 | 84 | 0 | 0 | — |
 | `canvMoveto.test` | 8 | 8 | 0 | 0 | — |
 | `canvPs.test` | 11 | 8 | 3 | 0 | 0.0% |
@@ -252,32 +245,32 @@ Attempted individually, 25 of the 65 statements complete and 40 do not. The refu
 | `clipboard.test` | 41 | 1 | 40 | 21 | 52.5% |
 | `clrpick.test` | 16 | 7 | 9 | 9 | 100.0% |
 | `cluster.test` | 73 | 55 | 18 | 0 | 0.0% |
-| `cmds.test` | 6 | 2 | 4 | 1 | 25.0% |
+| `cmds.test` | 6 | 1 | 5 | 1 | 20.0% |
 | `color.test` | 21 | 17 | 4 | 4 | 100.0% |
-| `config.test` | 242 | 229 | 13 | 0 | 0.0% |
+| `config.test` | 242 | 215 | 27 | 0 | 0.0% |
 | `cursor.test` | 100 | 16 | 84 | 0 | 0.0% |
 | `dialog.test` | 6 | 4 | 2 | 0 | 0.0% |
 | `embed.test` | 7 | 7 | 0 | 0 | — |
-| `entry.test` | 296 | 38 | 258 | 1 | 0.4% |
+| `entry.test` | 296 | 36 | 260 | 1 | 0.4% |
 | `event.test` | 33 | 32 | 1 | 1 | 100.0% |
 | `filebox.test` | 115 | 51 | 64 | 62 | 96.9% |
 | `focus.test` | 58 | 42 | 16 | 8 | 50.0% |
 | `focusTcl.test` | 42 | 42 | 0 | 0 | — |
-| `font.test` | 292 | 109 | 183 | 131 | 71.6% |
+| `font.test` | 292 | 108 | 184 | 131 | 71.2% |
 | `fontchooser.test` | 19 | 10 | 9 | 0 | 0.0% |
 | `frame.test` | 204 | 202 | 2 | 1 | 50.0% |
 | `geometry.test` | 14 | 0 | 14 | 13 | 92.9% |
 | `get.test` | 15 | 0 | 15 | 1 | 6.7% |
-| `grab.test` | 29 | 2 | 27 | 18 | 66.7% |
-| `grid.test` | 203 | 2 | 201 | 63 | 31.3% |
+| `grab.test` | 29 | 1 | 28 | 18 | 64.3% |
+| `grid.test` | 203 | 2 | 201 | 64 | 31.8% |
 | `image.test` | 52 | 36 | 16 | 7 | 43.8% |
 | `imgBmap.test` | 60 | 34 | 26 | 4 | 15.4% |
 | `imgListFormat.test` | 67 | 4 | 63 | 12 | 19.0% |
 | `imgPNG.test` | 11 | 1 | 10 | 8 | 80.0% |
 | `imgPPM.test` | 34 | 24 | 10 | 0 | 0.0% |
-| `imgPhoto.test` | 243 | 50 | 193 | 33 | 17.1% |
+| `imgPhoto.test` | 243 | 49 | 194 | 34 | 17.5% |
 | `imgSVGnano.test` | 26 | 0 | 26 | 23 | 88.5% |
-| `listbox.test` | 376 | 263 | 113 | 6 | 5.3% |
+| `listbox.test` | 376 | 262 | 114 | 14 | 12.3% |
 | `main.test` | 7 | 5 | 2 | 0 | 0.0% |
 | `menu.test` | 553 | 413 | 140 | 1 | 0.7% |
 | `menuDraw.test` | 67 | 67 | 0 | 0 | — |
@@ -285,17 +278,17 @@ Attempted individually, 25 of the 65 statements complete and 40 do not. The refu
 | `message.test` | 53 | 0 | 53 | 2 | 3.8% |
 | `msgbox.test` | 63 | 47 | 16 | 16 | 100.0% |
 | `obj.test` | 4 | 0 | 4 | 4 | 100.0% |
-| `option.test` | 104 | 4 | 100 | 85 | 85.0% |
+| `option.test` | 104 | 4 | 100 | 93 | 93.0% |
 | `pack.test` | 199 | 2 | 197 | 179 | 90.9% |
 | `packgrid.test` | 18 | 0 | 18 | 1 | 5.6% |
 | `panedwindow.test` | 427 | 427 | 0 | 0 | — |
 | `pkgconfig.test` | 9 | 3 | 6 | 0 | 0.0% |
-| `place.test` | 55 | 1 | 54 | 47 | 87.0% |
+| `place.test` | 55 | 1 | 54 | 48 | 88.9% |
 | `raise.test` | 34 | 26 | 8 | 4 | 50.0% |
 | `safe.test` | 16 | 11 | 5 | 0 | 0.0% |
 | `safePrimarySelection.test` | 60 | 60 | 0 | 0 | — |
 | `scale.test` | 208 | 190 | 18 | 11 | 61.1% |
-| `scrollbar.test` | 169 | 125 | 44 | 34 | 77.3% |
+| `scrollbar.test` | 169 | 125 | 44 | 35 | 79.5% |
 | `select.test` | 111 | 85 | 26 | 19 | 73.1% |
 | `send.test` | 74 | 68 | 6 | 1 | 16.7% |
 | `spinbox.test` | 319 | 30 | 289 | 1 | 0.3% |
@@ -303,7 +296,7 @@ Attempted individually, 25 of the 65 statements complete and 40 do not. The refu
 | `testutils.test` | 21 | 21 | 0 | 0 | — |
 | `text.test` | 695 | 11 | 684 | 1 | 0.1% |
 | `textBTree.test` | 138 | 121 | 17 | 0 | 0.0% |
-| `textDisp.test` | 397 | 330 | 67 | 33 | 49.3% |
+| `textDisp.test` | 397 | 330 | 67 | 34 | 50.7% |
 | `textImage.test` | 26 | 1 | 25 | 0 | 0.0% |
 | `textIndex.test` | 190 | 137 | 53 | 39 | 73.6% |
 | `textMark.test` | 46 | 46 | 0 | 0 | — |
@@ -314,8 +307,8 @@ Attempted individually, 25 of the 65 statements complete and 40 do not. The refu
 | `unixEmbed.test` | 56 | 56 | 0 | 0 | — |
 | `unixFont.test` | 48 | 48 | 0 | 0 | — |
 | `unixMenu.test` | 122 | 8 | 114 | 6 | 5.3% |
-| `unixSelect.test` | 19 | 18 | 1 | 0 | 0.0% |
-| `unixWm.test` | 283 | 110 | 173 | 134 | 77.5% |
+| `unixSelect.test` | 19 | 18 | 1 | 1 | 100.0% |
+| `unixWm.test` | 283 | 107 | 176 | 136 | 77.3% |
 | `util.test` | 12 | 12 | 0 | 0 | — |
 | `visual.test` | 41 | 40 | 1 | 1 | 100.0% |
 | `visual_bb.test` | 1 | 1 | 0 | 0 | — |
@@ -328,8 +321,8 @@ Attempted individually, 25 of the 65 statements complete and 40 do not. The refu
 | `winSend.test` | 51 | 51 | 0 | 0 | — |
 | `winWm.test` | 29 | 29 | 0 | 0 | — |
 | `window.test` | 18 | 14 | 4 | 0 | 0.0% |
-| `winfo.test` | 72 | 14 | 58 | 25 | 43.1% |
-| `wm.test` | 296 | 56 | 240 | 92 | 38.3% |
+| `winfo.test` | 72 | 13 | 59 | 25 | 42.4% |
+| `wm.test` | 296 | 55 | 241 | 93 | 38.6% |
 | `xmfbox.test` | 8 | 8 | 0 | 0 | — |
 
 ## What this measurement does not cover
