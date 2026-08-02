@@ -206,9 +206,17 @@ fn unsupported_constructs_are_refused() {
             "return 1",
             "\"return\" outside of a procedure is not supported",
         ),
+        // This entry was `expr {sin(1)}` until `src/expr_math.rs` landed the
+        // whole of `mathfunc(n)`; `sin` is an answer now, so the entry moved
+        // to the part of `expr`'s function call that is still not built — a
+        // function a *script* defines. tclsh resolves `triple(2)` to the
+        // command `tcl::mathfunc::triple`, so a procedure of that name
+        // extends `expr`; here only the built-in table is consulted, and the
+        // name resolves to nothing. The wording is tclsh's own for a name
+        // that answers to no command.
         (
-            "puts [expr {sin(1)}]",
-            "math function \"sin\" is not supported yet",
+            "proc tcl::mathfunc::triple {x} {expr {3*$x}}\nputs [expr {triple(2)}]",
+            "invalid command name \"tcl::mathfunc::triple\"",
         ),
         ("break", "invoked \"break\" outside of a loop"),
     ] {

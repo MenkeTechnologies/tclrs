@@ -354,6 +354,9 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
 | Regular expressions | `regexp`, `regsub` — with `-nocase`, `-all`, `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`, `-start` and `--`; `switch -regexp` and `lsearch -regexp` take one too |
 | Strings | `format`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright` |
+| Math functions | The whole of `mathfunc(n)` inside `expr`: `abs`, `acos`, `asin`, `atan`, `atan2`, `bool`, `ceil`, `cos`, `cosh`, `double`, `entier`, `exp`, `floor`, `fmod`, `hypot`, `int`, `isfinite`, `isinf`, `isnan`, `isnormal`, `isqrt`, `issubnormal`, `isunordered`, `log`, `log10`, `max`, `min`, `pow`, `rand`, `round`, `sin`, `sinh`, `sqrt`, `srand`, `tan`, `tanh`, `wide` |
+| Time | `clock` — `seconds`, `milliseconds`, `microseconds`, `clicks`, `format`, `scan` (with `-format`), `add`; `-gmt`, `-timezone` (a numeric offset or any zone with a `TZif` file) and the root locale |
+| Filesystem | `file` — `atime`, `copy`, `delete`, `dirname`, `executable`, `exists`, `extension`, `home`, `isdirectory`, `isfile`, `join`, `mkdir`, `mtime`, `nativename`, `normalize`, `owned`, `pathtype`, `readable`, `readlink`, `rename`, `rootname`, `separator`, `size`, `split`, `tail`, `tildeexpand`, `type`, `writable`; `glob` with `-directory`, `-join`, `-nocomplain`, `-path`, `-tails` and `-types`; `pwd`; `cd` |
 
 Command substitution works on any of them.
 
@@ -488,7 +491,10 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | --- | --- |
 | Any command outside [the list above](#0x04-language-surface) | `invalid command name "X"` |
 | `{*}` argument expansion | `{*} argument expansion is not supported yet` |
-| Every `expr` math function | `math function "sin" is not supported yet` |
+| An `expr` math function a *script* defines under `tcl::mathfunc::` | `invalid command name "tcl::mathfunc::triple"` |
+| `clock scan` without `-format`, and `clock`'s `-locale` outside the root catalogue | `clock scan: the free-form parser is not supported yet; use -format` |
+| A `clock` instant before the Gregorian changeover, where the calendar depends on the locale | `clock: dates before the Gregorian changeover of 1752-09-14 are not supported yet` |
+| `file attributes`, `link`, `stat`, `lstat`, `channels`, `system`, `tempfile`, `tempdir`, `volumes` | `file stat is not supported yet: it needs an interface this frontend has not built` |
 | A variable or body word that is not literal (`set $name …`) | the word is refused where a literal is required |
 | An array variable in a `foreach` variable list | `array variables are not supported yet` |
 | `array` / `dict` on a procedure-local variable | `… of the procedure-local variable "x" is not supported yet` |

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. The 50 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. The 55 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -72,11 +72,11 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">50</div>
+            <div class="stat-val">55</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">40/59</div>
+            <div class="stat-val">75/103</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -97,6 +97,8 @@
         <tr><td><code>array</code></td><td><code>array subcommand ?arg ...?</code></td><td>The array ensemble, over a variable rather than a value: an array is never itself a value.</td></tr>
         <tr><td><code>break</code></td><td><code>break</code></td><td>Leave the innermost loop. The stack is unwound by a count the compiler knows statically.</td></tr>
         <tr><td><code>catch</code></td><td><code>catch script ?resultVarName?</code></td><td>Run the script and trap an error from it, including one raised inside a procedure it called; yields the completion code.</td></tr>
+        <tr><td><code>cd</code></td><td><code>cd ?dirName?</code></td><td>Change the working directory; no argument means the home directory.</td></tr>
+        <tr><td><code>clock</code></td><td><code>clock subcommand ?arg ...?</code></td><td>The time ensemble: read the clock, and convert between an instant and a calendar.</td></tr>
         <tr><td><code>concat</code></td><td><code>concat ?arg ...?</code></td><td>Trim each argument of surrounding whitespace and join them with single spaces into one list.</td></tr>
         <tr><td><code>continue</code></td><td><code>continue</code></td><td>Begin the innermost loop's next iteration; in a `for`, its step still runs first.</td></tr>
         <tr><td><code>coroutine</code></td><td><code>coroutine name cmd ?arg ...?</code></td><td>Create a coroutine context — a second VM over the same chunk — running one of the script's procedures, and enter it.</td></tr>
@@ -104,9 +106,11 @@
         <tr><td><code>error</code></td><td><code>error message</code></td><td>Raise an error carrying the message.</td></tr>
         <tr><td><code>eval</code></td><td><code>eval arg ?arg ...?</code></td><td>Concatenate the arguments and run the result as a script against the interpreter's own variables. The chunk is cached by source text.</td></tr>
         <tr><td><code>expr</code></td><td><code>expr arg ?arg ...?</code></td><td>Evaluate the arguments as an expression. A braced argument is compiled once, not re-parsed per evaluation.</td></tr>
+        <tr><td><code>file</code></td><td><code>file subcommand ?arg ...?</code></td><td>The path and filesystem ensemble; the path halves need nothing on disk.</td></tr>
         <tr><td><code>for</code></td><td><code>for start test next body</code></td><td>Run start, then the body while test holds, running next after each iteration. Emitted rotated, like every loop here.</td></tr>
         <tr><td><code>foreach</code></td><td><code>foreach varList list ?varList list ...? command</code></td><td>Iterate over one or more lists in parallel; the longest fixes the count and shorter ones supply empty values.</td></tr>
         <tr><td><code>format</code></td><td><code>format formatString ?arg ...?</code></td><td>Format the arguments the way `sprintf` does, with Tcl's conversion set.</td></tr>
+        <tr><td><code>glob</code></td><td><code>glob ?switches? ?pattern ...?</code></td><td>Every existing name a pattern matches, walked one path component at a time.</td></tr>
         <tr><td><code>global</code></td><td><code>global ?varName ...?</code></td><td>Address the named variables in the global table rather than the procedure's frame slots. Outside a procedure it does nothing.</td></tr>
         <tr><td><code>if</code></td><td><code>if test ?then? body ?elseif test ?then? body ...? ?else? ?body?</code></td><td>The first branch whose test is a true Tcl boolean; a test that is not a boolean is an error, not a false branch.</td></tr>
         <tr><td><code>incr</code></td><td><code>incr varName ?increment?</code></td><td>Add the increment (1 by default) to the variable; yields the new value.</td></tr>
@@ -132,6 +136,7 @@
         <tr><td><code>lsort</code></td><td><code>lsort ?-option value ...? list</code></td><td>The list sorted by the reference merge sort — the algorithm, not just the ordering, because `-unique` observes it.</td></tr>
         <tr><td><code>proc</code></td><td><code>proc name args body</code></td><td>Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.</td></tr>
         <tr><td><code>puts</code></td><td><code>puts ?-nonewline? string</code></td><td>Write the string to stdout.</td></tr>
+        <tr><td><code>pwd</code></td><td><code>pwd</code></td><td>The working directory, as the last cd was told it rather than as getcwd reports it.</td></tr>
         <tr><td><code>regexp</code></td><td><code>regexp ?-option ...? exp string ?matchVar? ?subMatchVar ...?</code></td><td>Match a regular expression, setting the match variables; the count under -all, the text under -inline.</td></tr>
         <tr><td><code>regsub</code></td><td><code>regsub ?-option ...? exp string subSpec ?varName?</code></td><td>Substitute for a regular expression's matches; the new string, or the count when a variable is named.</td></tr>
         <tr><td><code>return</code></td><td><code>return ?-code code? ?result?</code></td><td>Return from the enclosing procedure with the result. `-code ok` and `-code error` are the codes implemented.</td></tr>
@@ -235,6 +240,64 @@
         <tr><td><code>dict with</code></td><td><span class="state-no">dict with is not supported yet</span></td></tr>
           </tbody>
         </table>
+        <h3><code>clock</code> &mdash; 7 of 7 implemented</h3>
+        <table class="file-table">
+          <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
+          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
+          <tbody>
+        <tr><td><code>clock add</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>clock clicks</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>clock format</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>clock microseconds</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>clock milliseconds</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>clock scan</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>clock seconds</code></td><td><span class="state-yes">implemented</span></td></tr>
+          </tbody>
+        </table>
+        <h3><code>file</code> &mdash; 28 of 37 implemented</h3>
+        <table class="file-table">
+          <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
+          <thead><tr><th>subcommand</th><th>state</th></tr></thead>
+          <tbody>
+        <tr><td><code>file atime</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file attributes</code></td><td><span class="state-no">file attributes is not supported yet: it needs an interface this frontend has not built</span></td></tr>
+        <tr><td><code>file channels</code></td><td><span class="state-no">file channels is not supported yet: it needs an interface this frontend has not built</span></td></tr>
+        <tr><td><code>file copy</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file delete</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file dirname</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file executable</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file exists</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file extension</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file home</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file isdirectory</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file isfile</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file join</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file link</code></td><td><span class="state-no">file link is not supported yet: it needs an interface this frontend has not built</span></td></tr>
+        <tr><td><code>file lstat</code></td><td><span class="state-no">file lstat is not supported yet: it needs an interface this frontend has not built</span></td></tr>
+        <tr><td><code>file mkdir</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file mtime</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file nativename</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file normalize</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file owned</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file pathtype</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file readable</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file readlink</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file rename</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file rootname</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file separator</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file size</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file split</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file stat</code></td><td><span class="state-no">file stat is not supported yet: it needs an interface this frontend has not built</span></td></tr>
+        <tr><td><code>file system</code></td><td><span class="state-no">file system is not supported yet: it needs an interface this frontend has not built</span></td></tr>
+        <tr><td><code>file tail</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file tempdir</code></td><td><span class="state-no">file tempdir is not supported yet: it needs an interface this frontend has not built</span></td></tr>
+        <tr><td><code>file tempfile</code></td><td><span class="state-no">file tempfile is not supported yet: it needs an interface this frontend has not built</span></td></tr>
+        <tr><td><code>file tildeexpand</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file type</code></td><td><span class="state-yes">implemented</span></td></tr>
+        <tr><td><code>file volumes</code></td><td><span class="state-no">file volumes is not supported yet: it needs an interface this frontend has not built</span></td></tr>
+        <tr><td><code>file writable</code></td><td><span class="state-yes">implemented</span></td></tr>
+          </tbody>
+        </table>
         <h3><code>info</code> &mdash; 1 of 1 implemented</h3>
         <table class="file-table">
           <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
@@ -283,7 +346,7 @@
 
       <section id="format">
         <h2><code>format</code> conversions</h2>
-        <p>21 conversions, established by running one of each
+        <p>22 conversions, established by running one of each
         through the runtime and reading the answer. A conversion missing from
         this table is <code>bad field specifier</code>.</p>
         <table class="file-table">
@@ -302,7 +365,7 @@
         <tr><td><code>%j</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%l</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%o</code></td><td><span class="state-yes">implemented</span></td></tr>
-        <tr><td><code>%p</code></td><td><span class="state-no">the "%p" conversion is not supported yet</span></td></tr>
+        <tr><td><code>%p</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%q</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%s</code></td><td><span class="state-yes">implemented</span></td></tr>
         <tr><td><code>%t</code></td><td><span class="state-yes">implemented</span></td></tr>
