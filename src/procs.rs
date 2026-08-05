@@ -511,7 +511,14 @@ fn foreign(interp: &Shared, vm: &mut VM, name: &str, args: &[Value]) -> Result<(
 ///
 /// A command whose words all expand to nothing is not an error: `{*}{}` alone
 /// runs no command and answers the empty string in tclsh 9.0.4 (measured, and
-/// `catch {{*}{}}` there is 0).
+/// `catch {{*}{}}` there is 0). That is `INST_INVOKE_EXPANDED`'s own arm —
+/// "Nothing was expanded, return {}", `generic/tclExecute.c:2740-2750`.
+///
+/// The splice refuses a word that is not a well-formed list, as
+/// `INST_EXPAND_STKTOP` does with `TclListObjGetElements`
+/// (`generic/tclExecute.c:2645-2656`: "Make sure that the element at stackTop is
+/// a list; if not, just leave with an error"), which is where `unmatched open
+/// quote in list` comes from.
 pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     let mut values = Vec::with_capacity(argc as usize);
     for _ in 0..argc {

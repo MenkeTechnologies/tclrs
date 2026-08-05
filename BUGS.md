@@ -57,7 +57,7 @@ approximated, and nothing is silently mis-run.
   assigns and `if {*}{1 {puts yes}}` runs its body; and a command Tk registered,
   or nothing, which is `invalid command name`. A command whose words all expand to
   nothing runs nothing and answers the empty string, as tclsh does. Only a command
-  that has a `{*}` pays anything. 38 programs against tclsh in
+  that has a `{*}` pays anything. 41 programs against tclsh in
   `tests/expand_differential.rs`.
 - **Namespaces.** `namespace` — `eval`, `current`, `qualifiers`, `tail`,
   `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`,
