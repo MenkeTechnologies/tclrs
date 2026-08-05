@@ -177,6 +177,16 @@ pub mod ext {
     /// [`crate::procs::expand_call_op`], which is [`DYN_CALL`]'s resolution with
     /// the builtins added under it.
     ///
+    /// The reference implementation makes the same division. `CompileExpanded`
+    /// (`generic/tclCompile.c:1883-1941`) is reached for *any* command with an
+    /// expanded word, ahead of the per-command compile procedures, and emits an
+    /// `INST_EXPAND_STKTOP` per expanded word followed by one
+    /// `INST_INVOKE_EXPANDED` — because, as the comment there says, "the stack
+    /// depth during argument expansion can only be managed at runtime, as the
+    /// number of elements in the expanded lists is not known at compile time".
+    /// `set {*}{a b}` therefore does not reach `TclCompileSetCmd` in tclsh
+    /// either; it reaches the generic invoke, which is what this op is.
+    ///
     /// The flags ride on the stack beside the words rather than in the operand
     /// because the operand is the value count the op consumes — the one number
     /// the VM needs in order to balance the stack — and a mask there would cap a

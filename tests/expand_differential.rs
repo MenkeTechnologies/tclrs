@@ -40,6 +40,16 @@ const PROGRAMS: &[&str] = &[
     // newline, a brace, a backslash and a `$` all stay one argument each.
     "proc n {args} {puts \"argc=[llength $args] <$args>\"}\nn {*}{{a b} {x\ty} {p\nq}}",
     "proc n {args} {puts \"argc=[llength $args] <$args>\"}\nn {*}{a\\ b {$x} {[foo]} {a;b}}",
+    // The `{*}` prefix applies to the whole word, not to the substitution
+    // inside it: `{*}[list a b]c` is the word `a bc`, which is the two elements
+    // `a` and `bc`. An array element and a quoted word carrying a substitution
+    // are expanded the same way.
+    "proc n {args} {puts \"argc=[llength $args] <$args>\"}\nn {*}[list]x\nn {*}[list a b]c",
+    "proc n {args} {puts \"argc=[llength $args] <$args>\"}\nset a(1) {x y}\nn {*}$a(1)\nn {*}\"[list p q] r\"",
+    // A word that is not a well-formed list refuses in the list parser's own
+    // wording, which is where tclsh's comes from too
+    // (`generic/tclExecute.c:2645-2656`, `TclListObjGetElements`).
+    "proc n {args} {}\nputs [catch {n {*}{{*}{a b}}} m]|$m",
     // ── the command's own name ──
     "proc n {args} {puts \"argc=[llength $args] <$args>\"}\nset cmd {n x}\n{*}$cmd y\nset c2 n\n{*}$c2 q",
     // A command whose every word expands to nothing runs nothing.

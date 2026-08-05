@@ -563,7 +563,7 @@ empty string, as tclsh does.
 
 Only a command that has a `{*}` pays anything: one `LoadInt` per word of that
 command, and the op instead of the call. `tests/expand_differential.rs` compares
-38 programs against tclsh byte for byte.
+41 programs against tclsh byte for byte.
 
 ### Coroutines
 
