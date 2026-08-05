@@ -217,6 +217,18 @@ pub(crate) struct State {
     /// Per interpreter rather than per process, because two interpreters have
     /// separate namespaces. See `crate::cmd_namespace::Registry`.
     pub(crate) ns: crate::cmd_namespace::Registry,
+    /// The chunks whose runs are in progress, outermost first.
+    ///
+    /// A procedure's body is an op index, which means nothing outside the chunk
+    /// it was compiled into — so the chunk has to be recorded with it, and it
+    /// has to be recorded as something a later call can *run*. The running one
+    /// is only reachable from the VM as a `Chunk` by value, and copying one per
+    /// `proc` would copy the whole program; this is where the `Arc` the chunk
+    /// arrived as is kept so that [`crate::procs::define_op`] can take a handle
+    /// to it instead. Pushed and popped by [`Machine::start`], so the last entry
+    /// is the chunk of the innermost run — which is the one whose extension
+    /// handler is executing.
+    pub(crate) running: Vec<Arc<Chunk>>,
     cache: ChunkCache,
     /// Where the scripts of this interpreter write.
     output: Output,
@@ -260,6 +272,7 @@ impl Interp {
                 globals: HashMap::new(),
                 commands: HashMap::new(),
                 ns: crate::cmd_namespace::Registry::default(),
+                running: Vec::new(),
                 cache: ChunkCache::new(),
                 output,
                 depth: 0,
@@ -289,7 +302,7 @@ impl Interp {
     /// [`crate::compiler::compile_debug`]'s output, which is the same script
     /// with a line marker before every command.
     pub fn run_chunk(&mut self, chunk: fusevm::Chunk) -> Result<String, TclError> {
-        Machine::run(&self.shared, chunk).map(|v| to_tcl_string(&v))
+        Machine::run(&self.shared, Arc::new(chunk)).map(|v| to_tcl_string(&v))
     }
 
     /// Set a variable from the host — how the binary supplies `argv0`, `argc`
@@ -379,12 +392,46 @@ pub(crate) fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> 
     };
     // The depth is given back however this returns, including the compile
     // failure above, which is why it is not a `?` in the block.
-    let result = compiled.and_then(|chunk| {
-        // `VM::new` takes the chunk by value, so the cached one is cloned
-        // rather than moved out; the parse and the lowering are what the cache
-        // saves.
-        Machine::run(shared, (*chunk).clone())
-    });
+    //
+    // The cached `Arc` is handed over rather than cloned out of: `VM::new` takes
+    // a chunk by value and copies it either way, and keeping the handle is what
+    // lets a `proc` this run defines record the chunk it belongs to without a
+    // second copy of the program. See [`State::running`].
+    let result = compiled.and_then(|chunk| Machine::run(shared, chunk));
+    shared.lock().expect("interpreter lock").depth -= 1;
+    result
+}
+
+/// Enter a procedure body compiled into `chunk`, which is not the chunk the
+/// caller is running.
+///
+/// A procedure is an op index into one chunk's op stream, so a call from
+/// anywhere else cannot be a jump: the body runs on a VM of its own over the
+/// chunk it was compiled into, positioned the way [`Machine::create`] positions
+/// a coroutine's. The interpreter's variables are the same ones either way —
+/// every chunk projects them through [`seed`] and writes them back through
+/// [`flush`] — which is what makes the two runs one interpreter.
+///
+/// Counted against the recursion limit for the same reason [`run_source`] is: a
+/// procedure that calls itself across a chunk boundary spends native stack per
+/// call, and the limit is what turns a runaway one into a Tcl error rather than
+/// a signal.
+pub(crate) fn call_in_chunk(
+    shared: &Shared,
+    chunk: &Arc<Chunk>,
+    entry: usize,
+    actuals: Vec<Value>,
+) -> Result<Value, TclError> {
+    {
+        let mut state = shared.lock().expect("interpreter lock");
+        if state.depth > state.limit {
+            return Err(TclError::plain(
+                "too many nested evaluations (infinite loop?)",
+            ));
+        }
+        state.depth += 1;
+    }
+    let result = Machine::start(shared, Arc::clone(chunk), Some((entry, actuals)));
     shared.lock().expect("interpreter lock").depth -= 1;
     result
 }
@@ -962,7 +1009,12 @@ impl Hooks {
                 // resolves a script's procedure and a command Tk registered
                 // through the same table, with `crate::tk::dispatch` as the
                 // fallback half.
-                ext::EVAL | ext::FFI_CALL | ext::PROC_DEFINE | ext::DYN_CALL => {
+                //
+                // A command with a `{*}` word is one of these as well: its
+                // words are only a list of arguments once they have been
+                // spliced, so which command is being called — and whether it is
+                // a procedure, a Tk command or a builtin — is decided here.
+                ext::EVAL | ext::FFI_CALL | ext::PROC_DEFINE | ext::DYN_CALL | ext::EXPAND_CALL => {
                     interpreter_op(&interp, vm, id, arg)
                 }
                 // ── the namespace block's runtime ops ────────────────────
@@ -1080,13 +1132,13 @@ fn jit_enabled() -> bool {
     )
 }
 
-/// The four extension ops that need something the chunk does not carry: the
+/// The five extension ops that need something the chunk does not carry: the
 /// interpreter itself, or a table living beside it.
 ///
 /// They are dispatched together, behind one test in the extension handler,
 /// because every other op — the operators, the list, string, `dict` and array
 /// modules — is answerable from the stack alone and is what a loop is made of.
-/// Two of the four are *located*: their failures stand in for refusals the
+/// Three of the five are *located*: their failures stand in for refusals the
 /// compiler would otherwise have deferred with the command's line attached,
 /// which is why they carry a [`TclError`] and not a bare message.
 fn interpreter_op(interp: &Shared, vm: &mut VM, id: u16, arg: u8) -> Result<(), TclError> {
@@ -1099,8 +1151,11 @@ fn interpreter_op(interp: &Shared, vm: &mut VM, id: u16, arg: u8) -> Result<(), 
         // A call whose name only a run-time table can resolve: such a procedure,
         // or a command Tk registered.
         ext::DYN_CALL => crate::procs::call_op(interp, vm, arg),
-        // The caller's pattern sends only the four ids above here. Answering
-        // the rest the way the caller's other arm would is what keeps a fifth
+        // A call whose *argument list* only exists at run time, because one of
+        // its words was written `{*}…`.
+        ext::EXPAND_CALL => crate::procs::expand_call_op(interp, vm, arg),
+        // The caller's pattern sends only the five ids above here. Answering
+        // the rest the way the caller's other arm would is what keeps a sixth
         // id added there and forgotten here a wrong *answer* rather than a call
         // to whichever of these happened to be last.
         _ => extension(vm, id, arg).map_err(TclError::plain),
@@ -1333,8 +1388,10 @@ struct Context {
 /// the loop that runs them.
 struct Machine {
     hooks: Hooks,
-    /// The compiled program, from which each coroutine's VM is built.
-    chunk: Chunk,
+    /// The compiled program, from which each coroutine's VM is built. Held as
+    /// the handle it arrived as, because a `proc` this run defines records it —
+    /// see [`State::running`].
+    chunk: Arc<Chunk>,
     contexts: Vec<Context>,
     /// Live coroutines by name. A name leaves as soon as its body ends, which
     /// is what makes a later call report `invalid command name`.
@@ -1352,11 +1409,46 @@ struct Machine {
 impl Machine {
     /// Run one chunk against the interpreter's variables, from the first op to
     /// the end of the main context.
-    fn run(shared: &Shared, chunk: Chunk) -> Result<Value, TclError> {
+    fn run(shared: &Shared, chunk: Arc<Chunk>) -> Result<Value, TclError> {
+        Machine::start(shared, chunk, None)
+    }
+
+    /// The same, optionally entering a procedure body inside the chunk instead
+    /// of running it from the top.
+    ///
+    /// `at` is the body's entry point and its actual arguments, arranged the way
+    /// the prologue expects them. They sit below a frame that returns past the
+    /// end of the program, so the body's `Op::ReturnValue` ends this run with
+    /// the procedure's result — which is how [`Machine::create`] enters a
+    /// coroutine's body, and the reason both go through one function.
+    fn start(
+        shared: &Shared,
+        chunk: Arc<Chunk>,
+        at: Option<(usize, Vec<Value>)>,
+    ) -> Result<Value, TclError> {
         let hooks = Hooks::new(Arc::clone(shared));
-        let mut main = VM::new(chunk.clone());
+        let mut main = VM::new((*chunk).clone());
         hooks.install(&mut main);
         let globals = seed(&chunk, shared);
+        if let Some((entry, actuals)) = at {
+            let base = main.stack.len();
+            for value in actuals {
+                main.stack.push(value);
+            }
+            main.frames.push(Frame {
+                return_ip: chunk.ops.len(),
+                stack_base: base,
+                slots: Vec::new(),
+            });
+            main.ip = entry;
+        }
+        // Recorded for as long as this chunk is the running one, so that a
+        // `proc` it defines can be called from another chunk later.
+        shared
+            .lock()
+            .expect("interpreter lock")
+            .running
+            .push(Arc::clone(&chunk));
 
         let mut machine = Machine {
             hooks,
@@ -1377,6 +1469,7 @@ impl Machine {
         // The variables a failing script did set are still set, as they are in
         // the reference interpreter, so the write-back happens either way.
         flush(&machine.chunk, shared, &machine.globals);
+        shared.lock().expect("interpreter lock").running.pop();
         // Likewise the output: an error the caller prints must not overtake
         // what the failing script had already written.
         machine.hooks.output.flush();
@@ -1582,7 +1675,7 @@ impl Machine {
             .and_then(|idx| self.chunk.find_sub(idx as u16))
             .ok_or_else(|| format!("invalid command name \"{command}\""))?;
 
-        let mut vm = VM::new(self.chunk.clone());
+        let mut vm = VM::new((*self.chunk).clone());
         self.hooks.install(&mut vm);
         let base = vm.stack.len();
         for a in args {

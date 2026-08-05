@@ -35,6 +35,22 @@ pub fn commands() -> Vec<&'static str> {
     all
 }
 
+/// Whether the compiler lowers a command of this name.
+///
+/// [`commands`] answers the same question by building the whole sorted
+/// vocabulary, which is what a completion menu wants and what a dispatch decision
+/// must not do: [`crate::procs::expand_call_op`] asks this per call, for a name
+/// only the running script knows. The sources are the same constants, so a
+/// command added to one of them is answered for here without being listed twice.
+pub fn is_command(name: &str) -> bool {
+    Compiler::BUILTINS.contains(&name)
+        || cmd_list::COMMANDS.contains(&name)
+        || crate::cmd_channel::COMMANDS.contains(&name)
+        || crate::regexp::COMMANDS.contains(&name)
+        || cmd_clock::COMMANDS.contains(&name)
+        || cmd_file::COMMANDS.contains(&name)
+}
+
 /// One command: its name, the synopsis the compiler reports when the argument
 /// count is wrong, and what it does in a line.
 ///

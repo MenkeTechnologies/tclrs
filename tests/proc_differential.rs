@@ -452,27 +452,40 @@ fn a_name_the_compiler_resolves_keeps_its_direct_call() {
     };
 
     // The benchmark whose trace eligibility the tiers report measures: one
-    // direct call, and neither of the two run-time ops anywhere in it.
+    // direct call, no run-time lookup, and the one registration every `proc`
+    // now makes.
+    //
+    // The registration count moved from 0 to 1 when procedures became callable
+    // across chunks: a chunk's own address book answers only inside that chunk,
+    // so a `proc` at a script's top level binds its name in the interpreter's
+    // run-time table as well, which is what lets a `source`d file, an `eval` or
+    // a Tk binding script call it. The op runs once, where the definition
+    // stands — never on a call path, which is what this test is really pinning.
+    // The `--tiers` report still says `traced=true` and `reaches native code
+    // true` for this file, because the loop body is unchanged: `Op::Call` is
+    // still the call, and the loop still contains no `Op::Extended`.
     let src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/bench/counted_loop_proc.tcl"
     ))
     .expect("read the benchmark");
-    assert_eq!(dynamic(&src), (1, 0, 0), "the benchmark's lowering moved");
+    assert_eq!(dynamic(&src), (1, 0, 1), "the benchmark's lowering moved");
 
-    // A script whose procedures are all top-level pays nothing for the
-    // machinery: three direct calls, no lookup, no registration.
+    // A script whose procedures are all top-level pays nothing on a call: three
+    // direct calls and no lookup. One registration per definition is what makes
+    // two names reachable from another chunk — one per definition, not one per call.
     assert_eq!(
         dynamic("proc a {} {return 1}\nproc b {} {return [a]}\nputs [b][a]"),
-        (3, 0, 0)
+        (3, 0, 2)
     );
 
     // One conditional definition makes that name — and only that name —
-    // dynamic. `a` keeps its two direct calls; `b` has one registration and two
-    // lookups, one of them written above the definition.
+    // dynamic. `a` keeps its two direct calls; `b` has two lookups, one of them
+    // written above the definition. Both definitions register, as every `proc`
+    // does now.
     assert_eq!(
         dynamic("proc a {} {return 1}\nputs [b]\nif {1} {proc b {} {return [a]}}\nputs [b][a]"),
-        (2, 2, 1)
+        (2, 2, 2)
     );
 
     // A top-level definition that some conditional one also claims registers
