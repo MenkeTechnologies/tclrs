@@ -190,12 +190,17 @@ fn tk_init_returns_rather_than_stopping_on_a_missing_slot() {
     //
     // So `tkInit` runs to its last statement, which is `tcl_findLibrary tk
     // $tk_version $tk_patchLevel tk.tcl TK_LIBRARY tk_library`
-    // (`generic/tkWindow.c:3513`), and *that* is the refusal now. The search
-    // itself works; what it cannot do is compile what it finds. `tk.tcl` uses
-    // `{*}` argument expansion in eleven places and this frontend refuses it
-    // (`compiler.rs:1026`), because an expanded word decides the argument count
-    // when the command runs and every call site here is resolved while the
-    // script is read.
+    // (`generic/tkWindow.c:3513`), and *that* is the refusal now. With no
+    // `TK_LIBRARY` in the environment — which is how this test runs — the search
+    // finds nothing and the message is the search's own.
+    //
+    // Pointed at an installed Tk it finds `tk.tcl` and reads it, and what stops
+    // it there has moved: `{*}` argument expansion, which `tk.tcl` uses in eleven
+    // places, is implemented now (`crate::procs::expand_call_op`), and the first
+    // construct still refused is `upvar` with no level — `tk.tcl:145`, `upvar
+    // ::tk::FocusGrab($index) data`, in `::tk::SetFocusGrab`. Measured:
+    // `TK_LIBRARY=/opt/homebrew/lib/tk9.0 tclrs --tk` reports
+    // `"upvar" with no level is not supported` for it.
     //
     // The refusal is asserted rather than the whole message because the search
     // path is absolute and depends on where the binary was built.
