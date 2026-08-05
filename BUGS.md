@@ -446,6 +446,26 @@ approximated, and nothing is silently mis-run.
   and is unaffected. The fix is the same one `eval` inside a procedure needs: a
   variable table addressable by name at any level, which is the trade recorded at
   the end of this file.
+- **`break` or `continue` inside a command substitution, in a debug build.** The
+  loop-exit lowering pops the values the enclosing command had pushed and jumps,
+  which is right at run time — `while 1 {incr i; puts [list a [break]]}` prints
+  nothing and leaves `i` at 1 in a release build, which is what tclsh answers —
+  but it also lowers the compiler's *static* depth by that many, where the
+  enclosing command's handler is still going to emit an op for operands it
+  believes are there. The model ends below the loop's entry depth and
+  `Compiler::rotated_loop`'s `debug_assert_eq!` fires, so a debug build aborts on
+  a script a release build runs correctly. `set x [break]` is unaffected: the
+  substitution is the whole word, so nothing was pushed before it.
+
+  Pre-existing and unrelated to argument expansion — the reproducer above has no
+  `{*}` in it, and `compile.test compile-21.1`/`21.2` trip the same assertion
+  without one. The conformance run is a debug build, so it reports these as
+  crashes: 17 before `{*}` landed and 22 after, the five new ones being
+  `compile-21.3`/`21.4` (which used to stop at the `{*}` refusal and now reach
+  this), two `lmap` cases timing out at a million iterations on a loaded machine,
+  and one harness failure. The fix is in `Compiler::cmd_loop_exit`: emit the pops
+  but restore the depth the enclosing command is compiled against, so the exit
+  leaves the one value every command leaves.
 - **A coroutine created or resumed with `{*}`.** A coroutine lives on the
   evaluation that created it — its context command is in that driver's table, not
   in the interpreter's — so both halves miss when the command is expanded.
