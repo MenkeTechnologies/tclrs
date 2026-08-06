@@ -116,6 +116,12 @@ const PROGRAMS: &[&str] = &[
     // Comments and separators do not disturb execution.
     "# leading comment\nputs a ;# trailing\nputs b",
     "puts a; puts b",
+    // A loop exit from inside a word still being built. The pops such an exit
+    // emits are a run-time effect of a path that leaves, so they must not be
+    // charged to the compiler's static depth model — doing so underflowed it.
+    "while 1 {incr i; puts [list a [break]]}\nputs done-$i",
+    "set n 0\nforeach x {1 2 3} {incr n; puts [list v [continue]]}\nputs n-$n",
+    "for {set i 0} {$i<5} {incr i} {puts [string cat x [break]]}\nputs after-$i",
 ];
 
 fn tclsh() -> Option<PathBuf> {
