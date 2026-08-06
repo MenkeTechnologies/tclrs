@@ -74,10 +74,19 @@ pub fn may_exist() -> bool {
     interp::any_exists()
 }
 
-/// Whether this name should be lowered as a run-time lookup rather than handed
-/// to the list commands, which is where the unknown-command error is raised.
+/// Whether a name written in a script could reach *this* table: a Tk
+/// interpreter exists, and the name is not one of the list commands.
 ///
-/// The list commands are asked by name rather than by trying them and catching
+/// It was the compiler's gate for lowering a name as a run-time lookup. It is
+/// not any more: a lookup also finds a procedure another chunk defined, so
+/// `crate::compiler` lowers every name no module claims that way in both feature
+/// sets, and whether a Tk interpreter exists is decided when the call runs
+/// ([`invoke`] answers `invalid command name` when none does). What is left here
+/// is the question this module can answer — would Tk's table be consulted for
+/// this name — which `tests/tk_cold_lowering.rs` asks of a process that has never
+/// built a host.
+///
+/// The list commands are excluded by name rather than by trying them and catching
 /// the refusal, because a refusal is not always "unknown": `llength` with three
 /// arguments refuses too, and that one has to stay a `wrong # args` on
 /// `llength`, not become a lookup for a Tk command called `llength`.

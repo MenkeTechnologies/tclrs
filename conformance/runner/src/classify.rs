@@ -14,8 +14,9 @@
 //!
 //! Everything else is attempted, and anything attempted either matches the
 //! reference byte for byte or is a failure. In particular a *feature* tclrs
-//! declines inside a command it does have — `{*}` expansion, a missing math
-//! function, an `lsort` option, an integer too wide for `i64` — is a failure,
+//! declines inside a command it does have — a missing math function, an `lsort`
+//! option, an array element where a scalar is expected, an integer too wide for
+//! `i64` — is a failure,
 //! not a skip. Those are counted separately as well, so the report can also
 //! state the rate that a looser rule would have produced.
 
@@ -267,7 +268,7 @@ mod tests {
 
         let refused = outcome(
             "err",
-            "{*} argument expansion is not supported yet (line 1)",
+            "array startsearch is not supported yet (line 1)",
         );
         let judged = judge(&case(), Some(&reference), Some(&refused));
         assert_eq!(judged.verdict, Verdict::Fail);

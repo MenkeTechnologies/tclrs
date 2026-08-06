@@ -33,8 +33,32 @@ approximated, and nothing is silently mis-run.
   tail, the `wrong # args` wording — that a compile-time call site does for
   itself. Names the compiler *can* resolve keep their direct `Op::Call`: the
   first compilation pass records which names a conditional `proc` defines and
-  only those become dynamic, so `bench/counted_loop_proc.tcl` still lowers to 28
-  ops with one `Op::Call` and still reports `traced=true`.
+  only those become dynamic, so `bench/counted_loop_proc.tcl` still lowers with
+  one `Op::Call` and still reports `traced=true`.
+- **A procedure callable from any chunk.** `source`, `eval`, an `after` script and
+  a Tk binding script are each a chunk of their own, and a body's entry point is
+  an op index that means nothing in another chunk. Every `proc` therefore binds
+  its name in the interpreter's run-time table as well as in its own chunk's
+  address book, and the table holds the chunk along with the entry point: a call
+  from the chunk that owns the body jumps to it, and a call from anywhere else runs
+  the body on a VM of its own over the owning chunk, against the same interpreter
+  variables. That is what makes `proc f {} {…}` visible inside `eval {f}` and a
+  procedure a `source`d file defines visible to the file that sourced it, both
+  directions, as they are in tclsh. `rename` moves the run-time entry with the
+  registry's, so a name taken away stops answering everywhere.
+- **`{*}` argument expansion.** Rule 5 of the dodekalogue. A command with an
+  expanded word has no callee and no argument count until it runs, so it is
+  lowered whole — the line, then a flag and a value per word, then
+  `ext::EXPAND_CALL` — and the flagged words are spliced by list rules when the op
+  runs (`crate::procs::expand_call_op`). The name may be expanded too: `{*}{n x}
+  y` calls `n` with `x y`. Three kinds of callee, in tclsh's resolution order: a
+  procedure of the interpreter; a command this frontend compiles, reached by
+  rebuilding the words as a *list* and evaluating it, which is why `set {*}{a b}`
+  assigns and `if {*}{1 {puts yes}}` runs its body; and a command Tk registered,
+  or nothing, which is `invalid command name`. A command whose words all expand to
+  nothing runs nothing and answers the empty string, as tclsh does. Only a command
+  that has a `{*}` pays anything. 41 programs against tclsh in
+  `tests/expand_differential.rs`.
 - **Namespaces.** `namespace` — `eval`, `current`, `qualifiers`, `tail`,
   `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`,
   `import`, `forget`, `origin`, `which` and `ensemble exists` / `create` /
@@ -409,12 +433,56 @@ approximated, and nothing is silently mis-run.
   "…"`, raised when the command runs — `puts [catch {nosuchcmd} m]` is `1` —
   because the compiler lowers that refusal as code rather than deciding it (see
   `Compiler::defer`).
-- **`{*}` argument expansion.** A word written `{*}$list` supplies a number of
-  arguments only the running script knows, and every call site here is resolved
-  while the script is read — the argument count is an inline operand of the op
-  the call lowers to. `{*} argument expansion is not supported yet`, where the
-  word stands. This is the one thing between the merged tree and Tk's own
-  `tk.tcl`, which uses it in eleven places; see `src/tk/mod.rs`.
+- **An expanded command that assigns, inside a procedure body.** `{*}` itself is
+  implemented (see the entry under "Implemented"), and a command it expands into
+  that this compiler owns is reached by evaluating the words as a list — which is
+  a chunk of its own, and a chunk addresses a procedure's locals as frame slots
+  it cannot share. So `set {*}{a b}` inside a procedure body writes the *global*
+  `a` where tclsh writes the local one. The words are already values by the time
+  this happens, so only a command that names a variable can reach the difference:
+  `set`, `incr`, `append`, `lappend`, `unset` and `upvar` written with an
+  expansion, inside a procedure, and only for the variable they name. A procedure
+  or a Tk command called with `{*}` — every use in `tk.tcl` — is entered directly
+  and is unaffected. The fix is the same one `eval` inside a procedure needs: a
+  variable table addressable by name at any level, which is the trade recorded at
+  the end of this file.
+- **`break` or `continue` inside a command substitution, in a debug build.** The
+  loop-exit lowering pops the values the enclosing command had pushed and jumps,
+  which is right at run time — `while 1 {incr i; puts [list a [break]]}` prints
+  nothing and leaves `i` at 1 in a release build, which is what tclsh answers —
+  but it also lowers the compiler's *static* depth by that many, where the
+  enclosing command's handler is still going to emit an op for operands it
+  believes are there. The model ends below the loop's entry depth and
+  `Compiler::rotated_loop`'s `debug_assert_eq!` fires, so a debug build aborts on
+  a script a release build runs correctly. `set x [break]` is unaffected: the
+  substitution is the whole word, so nothing was pushed before it.
+
+  Pre-existing and unrelated to argument expansion — the reproducer above has no
+  `{*}` in it, and `compile.test compile-21.1`/`21.2` trip the same assertion
+  without one. The conformance run is a debug build, so it reports these as
+  crashes: 17 before `{*}` landed and 22 after, the five new ones being
+  `compile-21.3`/`21.4` (which used to stop at the `{*}` refusal and now reach
+  this), two `lmap` cases timing out at a million iterations on a loaded machine,
+  and one harness failure. The fix is in `Compiler::cmd_loop_exit`: emit the pops
+  but restore the depth the enclosing command is compiled against, so the exit
+  leaves the one value every command leaves.
+- **A coroutine created or resumed with `{*}`.** A coroutine lives on the
+  evaluation that created it — its context command is in that driver's table, not
+  in the interpreter's — so both halves miss when the command is expanded.
+  `coroutine {*}{c gen 3}` is `invalid command name "gen"`, because the command is
+  reached by evaluating the rebuilt words and the procedure's entry point is in
+  another chunk than the one the coroutine's VM would run; resuming with `{*}{c}`
+  finds no procedure and no Tk command. Written out, both are compiled and work.
+- **A cross-chunk call costs native stack, and is counted against the recursion
+  limit.** A procedure reached from a chunk other than its own runs on a VM of its
+  own, which is a nested evaluation like `eval`'s and spends the same kind of
+  stack: measured on a 2 MB stack in a debug build, a mutually recursive pair
+  split across two chunks survives 8 levels and not 12, where a chain of nested
+  `eval`s survives 16 and not 24. Past `DEFAULT_RECURSION_LIMIT` it is `too many
+  nested evaluations (infinite loop?)`, which is what tclsh answers for its own
+  limit (measured), and the binary runs on `RECOMMENDED_STACK` so the limit is
+  what stops it rather than the stack. A host embedding the library on a small
+  stack should lower the limit, as it already should for `eval`.
 - **An array element as the variable a list command names.** `lappend a(x) v`,
   `lassign {1 2} a(x) a(y)`, `lset a(x) 0 v`, `lpop a(x)` and `ledit a(x) 0 0 v`
   are all `this command does not take an array element yet`, from the one
@@ -431,8 +499,6 @@ approximated, and nothing is silently mis-run.
   refuses and names it rather than answering from a table that does not know it.
   The list is `BEYOND_UNICODE_16` in `src/cmd_string.rs`; regenerate it when the
   crate's Unicode version catches up, at which point it should be empty.
-- **`{*}` expansion.** The parser records `{*}` on the word and the list splitter
-  it needs exists, but the compiler still refuses it.
 - **Subcommands and options recognised and then refused.** `array startsearch`
   and the other search subcommands; `dict` subcommands outside the implemented
   set, and `dict set` into an array element; `string` subcommands outside the
@@ -1066,9 +1132,11 @@ than an unexamined one. Measured against the 2000-program run above.
   The second is still the real fix — the same machinery that would move an
   unknown command name from compile time to run time — and it is a trade, not a
   free win.
-- **Commands tclrs does not have.** `{*}` expansion, `namespace`, `rename`,
-  `source` and file I/O are outside the command set entirely, so a generated use
-  of one is `invalid command name` and says nothing about parity. `uplevel`,
+- **Commands tclrs does not have.** `interp`, `binary`, `trace`, `socket` and
+  `exec` are outside the command set entirely, so a generated use of one is
+  `invalid command name` and says nothing about parity. `{*}` expansion,
+  `namespace`, `rename`, `source` and file I/O were on this list until each
+  landed; the generator should reach them now. `uplevel`,
   `upvar`, `variable` and `apply` were on this list until `src/cmd_scope.rs`
   landed; what they now refuse is the entry above, and what they answer is
   `tests/event_differential.rs`. They are deliberately not generated, and belong

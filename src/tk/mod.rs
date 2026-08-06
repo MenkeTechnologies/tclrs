@@ -184,15 +184,22 @@
 //! What stops it now is the statement those four were in the way of:
 //! `tcl_findLibrary tk $tk_version $tk_patchLevel tk.tcl TK_LIBRARY tk_library`
 //! (`:3513`). The search runs, and with `TK_LIBRARY` pointing at an installed
-//! Tk it finds `tk.tcl` and reads it — and then cannot compile it. `tk.tcl`
-//! uses `{*}` argument expansion in eleven places, and this frontend refuses
-//! one (`crate::compiler`, `{*} argument expansion is not supported yet`),
-//! because an expanded word decides an argument count when the command runs
-//! and every call site here is resolved while the script is read.
+//! Tk it finds `tk.tcl` and reads it — and then cannot compile all of it.
+//!
+//! The refusal that stood here was `{*}` argument expansion, which `tk.tcl` uses
+//! in eleven places. That is implemented: a command containing one is lowered
+//! whole and its words are spliced when it runs
+//! ([`crate::compiler::ext::EXPAND_CALL`], [`crate::procs::expand_call_op`]), and
+//! a procedure the file defines is callable from every other chunk of the
+//! interpreter, which a binding script needs. The wall has moved to `tk.tcl:145`
+//! — `upvar ::tk::FocusGrab($index) data` in `::tk::SetFocusGrab` — which is
+//! `"upvar" with no level is not supported`, because level 1 is the caller's
+//! frame and this frontend addresses a procedure's variables as frame slots.
+//! Behind it, `tk.tcl:219` uses `return -code error -errorcode`.
 //!
 //! `tk.tcl` is where Tk's class bindings live, so `bind Button` is empty in
 //! this host and a mouse click on a button reaches nothing. The gap between
-//! here and a `TCL_OK` is one Tcl language feature, not more of the Tk ABI.
+//! here and a `TCL_OK` is two Tcl language features, not more of the Tk ABI.
 //!
 //! The call and slot counts did not move as the refusal walked forward. The
 //! whole failure is on this side of the stub table, so Tk asked for exactly

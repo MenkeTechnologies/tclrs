@@ -163,6 +163,44 @@ pub mod ext {
     /// dispatched to [`crate::assoc`] by range.
     pub const DYN_CALL: u16 = 61;
 
+    /// `[line, flag, word, flag, word, …]` with the number of stack values in
+    /// the inline operand — call the command those words spell, after splicing
+    /// every word whose `flag` is 1 into the arguments it lists.
+    ///
+    /// What a command containing a `{*}` word lowers to (rule 5 of the
+    /// dodekalogue). Such a command has no argument count until it runs: `n
+    /// {*}$list` passes as many arguments as `$list` has elements, and the
+    /// *name* may be expanded too — `{*}{n x} y` calls `n` with `x y` in tclsh
+    /// 9.0.4 (measured). Both are things this compiler decides for every other
+    /// command while it reads the script, so neither the built-in lowerings nor
+    /// `Op::Call` can be reached: the whole dispatch happens in
+    /// [`crate::procs::expand_call_op`], which is [`DYN_CALL`]'s resolution with
+    /// the builtins added under it.
+    ///
+    /// The reference implementation makes the same division. `CompileExpanded`
+    /// (`generic/tclCompile.c:1883-1941`) is reached for *any* command with an
+    /// expanded word, ahead of the per-command compile procedures, and emits an
+    /// `INST_EXPAND_STKTOP` per expanded word followed by one
+    /// `INST_INVOKE_EXPANDED` — because, as the comment there says, "the stack
+    /// depth during argument expansion can only be managed at runtime, as the
+    /// number of elements in the expanded lists is not known at compile time".
+    /// `set {*}{a b}` therefore does not reach `TclCompileSetCmd` in tclsh
+    /// either; it reaches the generic invoke, which is what this op is.
+    ///
+    /// The flags ride on the stack beside the words rather than in the operand
+    /// because the operand is the value count the op consumes — the one number
+    /// the VM needs in order to balance the stack — and a mask there would cap a
+    /// command at 64 words while making that cap invisible. One `Op::LoadInt`
+    /// per word is the whole cost, and only a command that contains a `{*}` pays
+    /// it.
+    ///
+    /// 59 rather than a fresh block: 58 and 59 are the last two free ids under
+    /// [`PROC_DEFINE`], and this op belongs beside the other two the call
+    /// machinery owns. Like them it needs an explicit arm in
+    /// [`crate::runtime::install_hooks`], since the range test below 61 routes to
+    /// [`crate::cmd_list`].
+    pub const EXPAND_CALL: u16 = 59;
+
     /// Pop a value and push Tcl's boolean reading of it — 1 or 0 — or refuse it.
     /// `arg` is 0 for a condition and 1 for `!`, which differ in how they word
     /// the refusal. Emitted only where the value could be a string, so the
@@ -1040,10 +1078,23 @@ impl Compiler {
     // ── words ────────────────────────────────────────────────────────────
 
     /// Emit a word, leaving its value on the stack.
+    ///
+    /// A `{*}` word is refused here rather than expanded: what it expands into
+    /// is a *number of arguments*, which only the command assembling them can
+    /// act on — [`Compiler::command`] routes such a command to
+    /// [`Compiler::call_expanded`] before any handler sees its words. Reaching
+    /// this with one means a word was used somewhere expansion has no meaning.
     pub(crate) fn word(&mut self, word: &Word) -> Result<(), CompileError> {
         if word.expand {
-            return self.error("{*} argument expansion is not supported yet");
+            return self.error("{*} argument expansion is only meaningful in a command's words");
         }
+        self.word_value(word)
+    }
+
+    /// The same, for the one caller that has already accounted for expansion:
+    /// the value of the word's text, with the `{*}` prefix's meaning left to
+    /// [`ext::EXPAND_CALL`].
+    pub(crate) fn word_value(&mut self, word: &Word) -> Result<(), CompileError> {
         match word.parts.len() {
             0 => self.push_empty(),
             1 => self.part(&word.parts[0])?,
@@ -1200,6 +1251,13 @@ impl Compiler {
             self.push_empty();
             return Ok(());
         };
+        // A `{*}` anywhere in the command — including on the name — is decided
+        // when the command runs, so nothing below this point applies: there is no
+        // name to dispatch on and no argument count to check. See
+        // [`Compiler::call_expanded`].
+        if cmd.words.iter().any(|w| w.expand) {
+            return self.call_expanded(&cmd.words);
+        }
         let name = self.literal_of(first, "command name")?.to_string();
         let args = &cmd.words[1..];
 
@@ -1340,17 +1398,24 @@ impl Compiler {
             // a script's own definition is never shadowed by a library it
             // loaded.
             other if crate::rust_ffi::is_exported(other) => self.call_ffi(other, args),
-            // A name no module claims, in a process that has a Tk interpreter
-            // in it: the name is looked up in that interpreter's command table
-            // when the command runs, because Tk registers `button`, `pack`,
-            // `wm` and the rest long after this compiler has finished. Nothing
-            // registered under it by then and the op raises the same
-            // `invalid command name`, on the same line, that the arm below
-            // would have deferred. See `crate::tk::dispatch`.
-            #[cfg(feature = "tk")]
-            other if crate::tk::dispatch::takes_over(other) => self.call_runtime(other, args),
-            // The list commands own the tail of the dispatch, and report the
-            // unknown-command error for anything no module claims.
+            // A name no module claims: it is looked up in the interpreter's
+            // run-time command table when the command runs, because that is the
+            // only moment it can be known.
+            //
+            // Two things register a name there after this compiler has finished
+            // with the script. A `proc` — in another chunk, or in a branch of
+            // this one — is one; Tk is the other, which registers `button`,
+            // `pack`, `wm` and the rest during `Tk_Init`, long after a script
+            // saying `button .b` was compiled (see `crate::tk::dispatch`).
+            // Nothing registered under the name by then and the op raises the
+            // same `invalid command name`, on the same line, that the arm below
+            // would have deferred — which is why this needs no feature gate and
+            // costs a script that calls no such command nothing.
+            other if !crate::cmd_list::COMMANDS.contains(&other) => self.call_runtime(other, args),
+            // The list commands own the tail of the dispatch. Reached by name
+            // rather than by trying them, so that `llength` with three arguments
+            // stays a `wrong # args` on `llength` instead of becoming a lookup
+            // for a command called `llength`.
             other => crate::cmd_list::compile(self, other, args),
         }
     }

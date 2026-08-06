@@ -34,6 +34,7 @@ fn all_ids() -> Vec<(&'static str, u16)> {
         ("CANON", ext::CANON),
         ("PROC_DEFINE", ext::PROC_DEFINE),
         ("DYN_CALL", ext::DYN_CALL),
+        ("EXPAND_CALL", ext::EXPAND_CALL),
         ("STR_CMP", ext::STR_CMP),
         ("FFI_CALL", ext::FFI_CALL),
         // The list block, 16–34 and 48–57.

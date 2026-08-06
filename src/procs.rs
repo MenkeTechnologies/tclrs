@@ -56,6 +56,7 @@
 //! learns in its first pass (see [`crate::compiler::compile`]).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use fusevm::{Frame, Op, Value, VM};
 
@@ -191,16 +192,20 @@ pub fn prescan(procs: &mut HashMap<String, Signature>, script: &Script) {
 
 /// A procedure whose name was bound while the script was running.
 ///
-/// The entry point is an op index, which only means anything inside the chunk
-/// it was taken from — so the chunk it came from is recorded with it. A nested
-/// `eval` runs a chunk of its own; a procedure it defined has an entry point
-/// that indexes nothing here, and jumping to it would run whichever op happens
-/// to sit at that index. `Chunk::op_hash` is `#[serde(skip)]`, so it is 0 for
-/// every chunk an ahead-of-time binary deserialized: the op count is kept
-/// alongside it so that identity is not resting on one field that can be zero.
+/// The entry point is an op index, which only means anything inside the chunk it
+/// was taken from — so the chunk itself is recorded with it, as a handle that can
+/// still be *run*. A nested `eval` runs a chunk of its own; a procedure defined
+/// in one has an entry point that indexes nothing in the other, and jumping to it
+/// would run whichever op happens to sit at that index. Holding the chunk is what
+/// turns that from a miss into a call: see [`enter_elsewhere`].
+///
+/// `Chunk::op_hash` is `#[serde(skip)]`, so it is 0 for every chunk an
+/// ahead-of-time binary deserialized: [`chunk_key`] keeps the op count alongside
+/// it so that the "is this the running chunk?" test is not resting on one field
+/// that can be zero.
 #[derive(Clone)]
 pub(crate) struct RuntimeProc {
-    chunk: ChunkKey,
+    chunk: Arc<fusevm::Chunk>,
     entry: usize,
     sig: Signature,
 }
@@ -209,6 +214,17 @@ type ChunkKey = (u64, usize);
 
 fn chunk_key(chunk: &fusevm::Chunk) -> ChunkKey {
     (chunk.op_hash, chunk.ops.len())
+}
+
+/// The name a procedure is filed under: the qualified name with no leading
+/// `::`, which is how [`crate::cmd_namespace::store_key`] spells one everywhere
+/// else in this crate.
+///
+/// A definition writes `proc ::tk::ScreenChanged` and a caller writes
+/// `tk::ScreenChanged` or `::tk::ScreenChanged`; all three name one procedure, so
+/// all three have to reach one key.
+fn table_key(name: &str) -> &str {
+    crate::cmd_namespace::store_key(name)
 }
 
 /// [`ext::PROC_DEFINE`]: bind `name` to the body at `entry`, as the `proc`
@@ -233,19 +249,29 @@ pub(crate) fn define_op(interp: &Shared, vm: &mut VM) -> Result<(), TclError> {
         }
     };
     let sig = parse_signature(&name, &spec).map_err(TclError::plain)?;
-    let defined = RuntimeProc {
-        chunk: chunk_key(&vm.chunk),
-        entry,
-        sig,
-    };
-    interp
-        .lock()
-        .expect("interpreter lock")
-        .commands
-        .insert(name, defined);
+    let mut state = interp.lock().expect("interpreter lock");
+    let chunk = running_chunk(&state, vm);
+    let defined = RuntimeProc { chunk, entry, sig };
+    state.commands.insert(table_key(&name).to_string(), defined);
+    drop(state);
     // `proc` itself evaluates to the empty string.
     vm.push(Value::Str(std::sync::Arc::new(String::new())));
     Ok(())
+}
+
+/// A handle to the chunk the calling VM is running.
+///
+/// The interpreter records it on the way in ([`crate::runtime::State::running`]),
+/// so the ordinary answer is a handle to the same allocation and costs a
+/// reference count. The copy below is the fallback for a VM whose chunk the
+/// interpreter never saw — nothing in this crate produces one, and a wrong
+/// entry point would run arbitrary ops, so the identity is checked rather than
+/// assumed.
+fn running_chunk(state: &crate::runtime::State, vm: &VM) -> Arc<fusevm::Chunk> {
+    match state.running.last() {
+        Some(chunk) if chunk_key(chunk) == chunk_key(&vm.chunk) => Arc::clone(chunk),
+        _ => Arc::new(vm.chunk.clone()),
+    }
 }
 
 /// [`ext::DYN_CALL`]: the operands are the script line, the command name and
@@ -266,19 +292,62 @@ pub(crate) fn call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclE
         _ => 0,
     };
     let name = to_tcl_string(&values[1]);
-    let args = &values[2..];
+    invoke(interp, vm, &name, &values[2..], line)
+}
 
-    // The lock is released before control moves: entering the body runs
-    // arbitrary Tcl, which may define another procedure or `eval` a script,
-    // and both of those want this same lock.
-    let defined = {
-        let state = interp.lock().expect("interpreter lock");
-        state.commands.get(&name).cloned()
+/// Call the command `name` with `args`, resolving it in the run-time table and
+/// then outside it — the resolution both run-time call ops share.
+///
+/// `line` is the call site's, for the failures that would otherwise have no
+/// place: `invalid command name`, `wrong # args`. A failure raised *inside* a
+/// procedure's body carries its own and keeps it.
+fn invoke(
+    interp: &Shared,
+    vm: &mut VM,
+    name: &str,
+    args: &[Value],
+    line: usize,
+) -> Result<(), TclError> {
+    let defined = defined_proc(interp, name);
+    dispatch(interp, vm, name, args, line, defined)
+}
+
+/// What the interpreter's run-time command table holds for `name`.
+///
+/// The lock is taken and released here rather than held across the call, because
+/// entering the body runs arbitrary Tcl — which may define another procedure or
+/// `eval` a script, and both of those want this same lock.
+fn defined_proc(interp: &Shared, name: &str) -> Option<RuntimeProc> {
+    let state = interp.lock().expect("interpreter lock");
+    state.commands.get(table_key(name)).cloned()
+}
+
+/// The half of [`invoke`] after the lookup, so that a caller which has already
+/// looked the name up — [`expand_call_op`], which needs to know whether it missed
+/// before it decides what else the name could be — does not look it up twice.
+fn dispatch(
+    interp: &Shared,
+    vm: &mut VM,
+    name: &str,
+    args: &[Value],
+    line: usize,
+    defined: Option<RuntimeProc>,
+) -> Result<(), TclError> {
+    let here = |msg: String| TclError {
+        msg,
+        line: Some(line),
     };
-    let outcome = match defined {
+    match defined {
         // A procedure the script defined shadows a foreign command of the same
         // name, which is the order tclsh resolves in.
-        Some(p) if p.chunk == chunk_key(&vm.chunk) => enter(vm, &name, &p, args),
+        Some(p) if chunk_key(&p.chunk) == chunk_key(&vm.chunk) => {
+            enter(vm, name, &p, args).map_err(here)
+        }
+        // The same procedure, reached from a chunk its body is not in.
+        Some(p) => enter_elsewhere(interp, vm, name, &p, args).map_err(|e| match e.line {
+            Some(_) => e,
+            None => here(e.msg),
+        }),
         // A registered Tk command is the only thing a chunk hands control to
         // that can read or write the interpreter's variables behind its back,
         // so this is where the running slot vector and the interpreter's map
@@ -287,12 +356,8 @@ pub(crate) fn call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclE
         // arm above it is an ordinary procedure call, which cannot do that and
         // should not pay for it. See `crate::runtime::sync_out`; when nothing
         // is traced each side is one atomic load.
-        _ => foreign(interp, vm, &name, args),
-    };
-    outcome.map_err(|msg| TclError {
-        msg,
-        line: Some(line),
-    })
+        None => foreign(interp, vm, name, args).map_err(here),
+    }
 }
 
 /// Enter a procedure's body, having arranged the actual arguments the way its
@@ -305,14 +370,37 @@ pub(crate) fn call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclE
 /// formals, so `Op::ReturnValue` truncates back past them — and `vm.ip` is
 /// already the op after this one, which is where the body returns to.
 fn enter(vm: &mut VM, name: &str, p: &RuntimeProc, args: &[Value]) -> Result<(), String> {
-    let sig = &p.sig;
+    let actuals = actuals(name, &p.sig, args)?;
+    let base = vm.stack.len();
+    for value in actuals {
+        vm.push(value);
+    }
+    vm.frames.push(Frame {
+        return_ip: vm.ip,
+        stack_base: base,
+        slots: Vec::new(),
+    });
+    vm.ip = p.entry;
+    Ok(())
+}
+
+/// One value per formal parameter, which is what a procedure's fixed prologue
+/// expects: refuse an argument count the signature does not admit, supply a
+/// default for each omitted parameter, and fold the surplus into `args`.
+///
+/// [`Compiler::push_actuals`] makes the same three decisions while compiling, for
+/// a call whose callee the compiler knows. This is that function for a callee only
+/// the run-time table knows, and it is one function rather than one per entry path
+/// so that a jump into the body and a run of the body in another chunk cannot
+/// disagree about what the arguments are.
+fn actuals(name: &str, sig: &Signature, args: &[Value]) -> Result<Vec<Value>, String> {
     let fixed = sig.fixed();
     if args.len() < sig.required || (!sig.variadic && args.len() > fixed) {
         return Err(format!("wrong # args: should be \"{}\"", sig.usage(name)));
     }
-    let base = vm.stack.len();
+    let mut out = Vec::with_capacity(sig.params.len());
     for i in 0..fixed {
-        let value = match args.get(i) {
+        out.push(match args.get(i) {
             Some(v) => v.clone(),
             // `required` guarantees the omitted parameters have defaults.
             None => {
@@ -322,22 +410,46 @@ fn enter(vm: &mut VM, name: &str, p: &RuntimeProc, args: &[Value]) -> Result<(),
                     .expect("defaulted parameter");
                 literal_value(default)
             }
-        };
-        vm.push(value);
+        });
     }
     if sig.variadic {
         let rest: Vec<String> = args[fixed.min(args.len())..]
             .iter()
             .map(to_tcl_string)
             .collect();
-        vm.push(Value::Str(std::sync::Arc::new(list::join(&rest))));
+        out.push(Value::Str(Arc::new(list::join(&rest))));
     }
-    vm.frames.push(Frame {
-        return_ip: vm.ip,
-        stack_base: base,
-        slots: Vec::new(),
-    });
-    vm.ip = p.entry;
+    Ok(out)
+}
+
+/// Call a procedure whose body was compiled into another chunk.
+///
+/// An entry point is an op index, so this cannot be a jump: the body runs on a
+/// VM of its own over the chunk it belongs to
+/// ([`crate::runtime::call_in_chunk`]), and the value it returns is pushed here
+/// as the call's result. The variables are the interpreter's either way — the
+/// chunk being left writes its slot vector back before the nested run and re-reads
+/// it after, which is the exchange `eval` already makes — so the two runs are one
+/// interpreter and one set of globals.
+///
+/// This is what makes a procedure callable from anywhere in an interpreter rather
+/// than only from the chunk that defined it: `source`, `eval`, an `after` script
+/// and a Tk binding script are each a chunk of their own, and in tclsh a
+/// procedure is visible from all of them.
+fn enter_elsewhere(
+    interp: &Shared,
+    vm: &mut VM,
+    name: &str,
+    p: &RuntimeProc,
+    args: &[Value],
+) -> Result<(), TclError> {
+    let actuals = actuals(name, &p.sig, args).map_err(TclError::plain)?;
+    let chunk = Arc::clone(&p.chunk);
+    let entry = p.entry;
+    let value = crate::runtime::with_written_back(interp, vm, |interp| {
+        crate::runtime::call_in_chunk(interp, &chunk, entry, actuals)
+    })?;
+    vm.push(value);
     Ok(())
 }
 
@@ -377,6 +489,113 @@ fn foreign(interp: &Shared, vm: &mut VM, name: &str, args: &[Value]) -> Result<(
         let _ = (interp, vm, args);
         Err(format!("invalid command name \"{name}\""))
     }
+}
+
+/// [`ext::EXPAND_CALL`]: the operands are the script line and then one flag and
+/// one value per word of the command, in the order the compiler pushed them.
+///
+/// The words become an argument vector — a flagged one contributing its list
+/// elements, an unflagged one contributing itself — and the vector's first
+/// element is the command's name. Which command that is decides how it runs:
+///
+/// * a procedure, from the run-time table, entered exactly as [`call_op`] enters
+///   one;
+/// * one of this frontend's own commands, which is compiled — the arguments are
+///   values by now, so the command is rebuilt as a *list* and evaluated, and a
+///   list evaluated as a script is one command whose words are its elements with
+///   no further substitution. That is what `eval [list …]` means in Tcl, and it
+///   is why `set {*}{a b}` assigns rather than being refused for an argument
+///   count no compiler could have known;
+/// * anything else — a command Tk registered, or nothing at all — through
+///   [`foreign`], which answers `invalid command name` when it is nothing.
+///
+/// A command whose words all expand to nothing is not an error: `{*}{}` alone
+/// runs no command and answers the empty string in tclsh 9.0.4 (measured, and
+/// `catch {{*}{}}` there is 0). That is `INST_INVOKE_EXPANDED`'s own arm —
+/// "Nothing was expanded, return {}", `generic/tclExecute.c:2740-2750`.
+///
+/// The splice refuses a word that is not a well-formed list, as
+/// `INST_EXPAND_STKTOP` does with `TclListObjGetElements`
+/// (`generic/tclExecute.c:2645-2656`: "Make sure that the element at stackTop is
+/// a list; if not, just leave with an error"), which is where `unmatched open
+/// quote in list` comes from.
+pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
+    let mut values = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        values.push(vm.pop());
+    }
+    values.reverse();
+    let line = match values.first() {
+        Some(Value::Int(n)) => *n as usize,
+        _ => 0,
+    };
+    let here = |msg: String| TclError {
+        msg,
+        line: Some(line),
+    };
+    let words = splice(&values[1..]).map_err(here)?;
+    let Some((first, args)) = words.split_first() else {
+        vm.push(Value::Str(Arc::new(String::new())));
+        return Ok(());
+    };
+    let name = to_tcl_string(first);
+    // A procedure of this interpreter wins over the compiled command of the same
+    // name, which cannot happen — `proc` refuses a built-in name — but the order
+    // is the one tclsh resolves in, and one lookup answers both questions: which
+    // procedure to enter, or whether to fall through to the compiler.
+    let defined = defined_proc(interp, &name);
+    if defined.is_none() && crate::names::is_command(&name) {
+        return as_script(interp, vm, &words).map_err(|e| here(e.msg));
+    }
+    dispatch(interp, vm, &name, args, line, defined)
+}
+
+/// Splice the `(flag, value)` pairs [`ext::EXPAND_CALL`] carries into one
+/// argument vector.
+///
+/// A flagged word's value is parsed as a Tcl list and its elements are spliced in
+/// place of it, which is rule 5's definition of `{*}`; an unflagged one is passed
+/// through as the value it is, so a number the VM computed stays a number.
+fn splice(pairs: &[Value]) -> Result<Vec<Value>, String> {
+    let mut out = Vec::with_capacity(pairs.len() / 2);
+    for pair in pairs.chunks(2) {
+        let [flag, value] = pair else {
+            // The compiler emits the pairs; an odd count is a corrupt chunk.
+            return Err("malformed expanded call".to_string());
+        };
+        if matches!(flag, Value::Int(0)) {
+            out.push(value.clone());
+            continue;
+        }
+        for element in list::split(&to_tcl_string(value))? {
+            out.push(Value::Str(Arc::new(element)));
+        }
+    }
+    Ok(out)
+}
+
+/// Run the command `words` spells by evaluating it: the words as a *list*, which
+/// as a script is one command with those words and no substitution left to do.
+///
+/// The one path a compiled command can be reached by when its argument count was
+/// not known while the script was read. It costs a compilation of the rebuilt
+/// command — [`crate::cache`] keeps it, so a call repeated with the same values
+/// compiles once — which is the price of not having a second implementation of
+/// every command that takes an argument vector.
+///
+/// The nested script cannot see a procedure's *local* variables, since a chunk
+/// addresses locals as frame slots of its own; every word here is already a value,
+/// so the only case that reaches the difference is an expanded command that
+/// assigns — `set {*}{a b}` inside a procedure body writes the global `a`.
+/// BUGS.md records it.
+fn as_script(interp: &Shared, vm: &mut VM, words: &[Value]) -> Result<(), TclError> {
+    let text: Vec<String> = words.iter().map(to_tcl_string).collect();
+    let src = list::join(&text);
+    let value = crate::runtime::with_written_back(interp, vm, |interp| {
+        crate::runtime::run_source(interp, &src)
+    })?;
+    vm.push(value);
+    Ok(())
 }
 
 impl Compiler {
@@ -485,16 +704,13 @@ impl Compiler {
             let name_idx = self.b.add_name(&name);
             self.b.add_sub_entry(name_idx, entry);
         }
-        // A top-level definition needs a run-time binding too when some *other*,
-        // conditional definition claims the same name: every call to that name
-        // has become a lookup, so the table has to be able to answer with this
-        // body — and to answer with it only from the moment this command runs.
-        let bind_when_it_runs = !at_top || self.runtime.contains(&name);
-        if !bind_when_it_runs {
-            // `proc` itself evaluates to the empty string.
-            self.push_empty();
-            return Ok(());
-        }
+        // Every definition binds its name in the run-time table as well, because
+        // the chunk's own address book answers only inside the chunk: a `source`d
+        // file, an `eval`, an `after` script and a Tk binding script are each a
+        // chunk of their own, and in tclsh a procedure defined at one script's top
+        // level is callable from all of them. Four ops per definition, run once —
+        // a call the compiler *can* resolve is still `Op::Call`, so nothing on a
+        // call path pays for this.
         self.push_str(&name);
         self.push_str(&spec);
         self.push_value(Value::Int(entry as i64));
@@ -524,6 +740,31 @@ impl Compiler {
         // the compiler synthesised are part of that count, so the depth this
         // reports is one deeper than a call with the name alone would be.
         self.emit(Op::Extended(ext::DYN_CALL, count), 1 - count as i32);
+        Ok(())
+    }
+
+    /// A command with at least one `{*}` word (rule 5 of the dodekalogue).
+    ///
+    /// The whole command is handed to run time: the line, then every word as a
+    /// flag and a value, then [`ext::EXPAND_CALL`], which splices the flagged
+    /// ones and calls whatever the result spells. Nothing is resolved here
+    /// because nothing can be — `{*}$list` decides the argument count when the
+    /// list is read, and `{*}$cmd` decides the command's *name* the same way.
+    ///
+    /// The words are lowered in the order they were written, so a command
+    /// substitution in one still runs before the dispatch and still runs when
+    /// the dispatch then fails: `n [puts before] {*}{x "y}` prints `before` and
+    /// then reports `unmatched open quote in list` in tclsh 9.0.4 (measured).
+    pub(crate) fn call_expanded(&mut self, words: &[Word]) -> Result<(), CompileError> {
+        let count = u8::try_from(1 + 2 * words.len()).map_err(|_| {
+            self.err("more than 126 words in a command with {*} argument expansion".to_string())
+        })?;
+        self.push_value(Value::Int(self.command_line as i64));
+        for w in words {
+            self.emit(Op::LoadInt(i64::from(w.expand)), 1);
+            self.word_value(w)?;
+        }
+        self.emit(Op::Extended(ext::EXPAND_CALL, count), 1 - count as i32);
         Ok(())
     }
 

@@ -274,9 +274,10 @@ name is a builtin, a top-level procedure, a coroutine, an exported Rust
 function, or unknown before the VM starts — so the block is compiled and
 registered as its command is lowered, which is what makes `add` a known name by
 the next line. A procedure of the same name still wins: dispatch asks the
-script's own definitions first. The two kinds of name the text cannot decide —
-a procedure defined by a `proc` away from the top level, and a command Tk
-registers during `Tk_Init` — resolve in a run-time command table instead; see
+script's own definitions first. The names the text cannot decide — a procedure
+defined by a `proc` away from the top level, a procedure another chunk defined, a
+command Tk registers during `Tk_Init`, and a command whose own name is written
+`{*}$cmd` — resolve in a run-time command table instead; see
 [Procedures](#procedures).
 
 Signatures are fusevm's marshalling set: up to four `i64` arguments returning
@@ -527,7 +528,42 @@ claims, because only run time knows which definition ran last. The compiler
 learns which names those are in its first pass and lowers their call sites in
 the second, so a script with no conditional `proc` compiles in one pass and its
 call sites are byte-identical to what they were. `bench/counted_loop_proc.tcl`
-is unchanged by all of it: 28 ops, one `Op::Call`, `traced=true`.
+is unchanged by all of it: one `Op::Call`, `traced=true`.
+
+**A procedure is callable from any chunk of the interpreter.** `source`, `eval`,
+an `after` script and a Tk binding script are each a chunk of their own, and an
+entry point is an op index that means nothing outside the chunk it came from —
+so every `proc` binds its name in the interpreter's run-time table as well as in
+its own chunk's address book, and the table holds the chunk with the entry point.
+A call that finds a procedure of the running chunk jumps to it; one that finds a
+procedure of another chunk runs that chunk's body on a VM of its own, positioned
+the way a coroutine's is, against the same interpreter variables. Four ops per
+definition, run once where the definition stands; nothing on a call path pays for
+it. `rename` moves the table's entry with the registry's, so a name taken away
+stops answering in every chunk.
+
+### `{*}` argument expansion
+
+A word written `{*}$list` supplies a *number* of arguments, which the script
+decides while it runs. Every other command in this frontend has its callee and
+its argument count settled while the script is read — the count is an inline
+operand of the op the call lowers to — so a command containing a `{*}` is lowered
+whole instead: the line, then one flag and one value per word, then
+`ext::EXPAND_CALL`, which splices the flagged words by list rules and calls what
+the result spells. That covers the name as well, since `{*}{n x} y` calls `n`.
+
+Three kinds of callee, in the order tclsh resolves them: a procedure of the
+interpreter, entered exactly as any run-time call enters one; a command this
+frontend compiles, which is rebuilt as a *list* and evaluated — a list evaluated
+as a script is one command whose words are its elements, with no substitution left
+to do, which is why `set {*}{a b}` assigns and `if {*}{1 {puts yes}}` runs its
+body; and anything else, which is a command Tk registered or an `invalid command
+name`. A command whose words all expand to nothing runs nothing and answers the
+empty string, as tclsh does.
+
+Only a command that has a `{*}` pays anything: one `LoadInt` per word of that
+command, and the op instead of the call. `tests/expand_differential.rs` compares
+41 programs against tclsh byte for byte.
 
 ### Coroutines
 
@@ -609,7 +645,6 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | Refused | Message |
 | --- | --- |
 | Any command outside [the list above](#0x04-language-surface) | `invalid command name "X"` |
-| `{*}` argument expansion | `{*} argument expansion is not supported yet` |
 | An `expr` math function a *script* defines under `tcl::mathfunc::` | `invalid command name "tcl::mathfunc::triple"` |
 | `clock scan` without `-format`, and `clock`'s `-locale` outside the root catalogue | `clock scan: the free-form parser is not supported yet; use -format` |
 | A `clock` instant before the Gregorian changeover, where the calendar depends on the locale | `clock: dates before the Gregorian changeover of 1752-09-14 are not supported yet` |
@@ -657,7 +692,7 @@ not implemented; a coroutine goes away when its body ends.
 | 1 Commands, 3 Words | command and word splitting, line tracking |
 | 2 Evaluation | words retained in order for the compiler |
 | 4 Double quotes | quoted words with substitution |
-| 5 Argument expansion | `{*}` recorded on the word |
+| 5 Argument expansion | `{*}` recorded on the word, spliced by `ext::EXPAND_CALL` when the command runs |
 | 6 Braces | nesting, literal text, backslash retention |
 | 7 Command substitution | nested scripts parsed eagerly |
 | 8 Variable substitution | `$name`, `$name(index)`, `${name}`, `${name(index)}` |
