@@ -86,7 +86,16 @@ itself, and open a Tk session before the script is compiled. Nothing is loaded
 until the script runs
 .BR "package require Tk" ,
 which opens the Tk shared library, initialises it and registers its commands
-into the interpreter the script is running in. When the script has finished
+into the interpreter the script is running in. Tk's script library is looked for
+beside the shared library that was actually loaded, so
+.B tk.tcl
+is found without
+.B TK_LIBRARY
+in the environment;
+.B TK_LIBRARY
+and
+.B TCL_LIBRARY
+still take precedence. When the script has finished
 successfully the binary enters Tk's own main loop, as
 .BR wish (1)
 does, and returns when the last window is gone. Present only in a build with

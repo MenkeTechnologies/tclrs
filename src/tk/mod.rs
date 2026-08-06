@@ -107,14 +107,14 @@
 //!    and `Tcl_DStringLength` are field accesses (`generic/tcl.h:892-893`).
 //!    See [`dstring`].
 //!
-//! # The one slot that cannot be written in stable Rust
+//! # The slots that cannot be written in stable Rust
 //!
 //! Seven slots are variadic. Defining a C-variadic function is rejected by
 //! stable rustc (`error[E0658]`, tracking issue 44930), and on AAPCS64 there is
 //! no non-variadic declaration that can reach the arguments either, because
-//! they are all passed on the stack. Five of the seven Tk calls only to build
-//! text a script would read, and ignoring their variadic arguments costs the
-//! text and nothing else — `eval` argues that one slot at a time. The other two
+//! they are all passed on the stack. Three of the seven Tk calls only to build
+//! text a script does not read, and ignoring their variadic arguments costs the
+//! text and nothing else — `eval` argues that one slot at a time. The other four
 //! carry a payload and go through `src/tk/trampoline.c`, a C file compiled by
 //! `build.rs`:
 //!
@@ -123,7 +123,14 @@
 //!   body that ignored them registers every ensemble subcommand under the
 //!   ensemble's own name;
 //! * `Tcl_Panic` (slot 2), because it never returns and the formatted message
-//!   is the only account of why.
+//!   is the only account of why;
+//! * `Tcl_ObjPrintf` (slot 578), because the formatted text is the value Tk
+//!   returns: `wm geometry .` is one call of it (`tk9.0.4/generic/tkWm.c`);
+//! * `Tcl_AppendPrintfToObj` (slot 579), for the same reason one value along.
+//!   `bind Button` rebuilds every pattern it reports through `GetPatternObj`,
+//!   whose modifier names and button numbers arrive only as variadic arguments
+//!   (`tk9.0.4/generic/tkBind.c:5190`, `:5212`), so the query form of `bind`
+//!   needs it — it trapped without it.
 //!
 //! `TCLRS_TK_DEGRADED` still installs the truncating body phase 1 used for slot
 //! 15, so the run that motivated the trampoline can be reproduced.
@@ -131,17 +138,24 @@
 //! # What the hosting table reaches
 //!
 //! `cargo run --features tk --bin tk-host` against the same library, with the
-//! object layer, the evaluator and the notifier all behind the table: **2726
-//! calls over 71 distinct slots**, and `Tk_Init` *returns* — it does not stop
-//! on a missing slot at any point. 197 of the 691 `TclStubs` slots have bodies.
+//! object layer, the evaluator and the notifier all behind the table: **2737
+//! calls over 75 distinct slots**, and `Tk_Init` *returns* — it does not stop
+//! on a missing slot at any point. 200 of the 691 `TclStubs` slots have bodies.
+//!
+//! Two of those 200 are not reached by `Tk_Init` at all and are there for what
+//! comes after it: `Tcl_DeleteCommandFromToken` (104) and `Tcl_InterpDeleted`
+//! (184), which every widget's destroy procedure calls
+//! (`tk9.0.4/generic/tkButton.c:951`, `:1646`). `destroy .b` stopped on the
+//! first and `destroy .` on the second; both run now, and the `Tk_Init`
+//! measurement above is unchanged by them.
 //!
 //! That measurement is of the run whose **stdin is a pipe**, and stdin decides
 //! which of two branches `TkpInit` takes. With stdin on `/dev/null` — a
 //! character device with no blocks, which is what a test harness gives a
 //! process — Tk opens a console instead
 //! (`tk9.0.4/macosx/tkMacOSXInit.c:493-494`, `:585-598`), and that branch is a
-//! different measurement: **2666 calls over 72 distinct slots**, stopping at
-//! `Tcl_Init` on the second interpreter `Tk_CreateConsoleWindow` creates
+//! different measurement: **2677 calls, stopping at `Tcl_Init`** on the second
+//! interpreter `Tk_CreateConsoleWindow` creates
 //! (`tk9.0.4/generic/tkConsole.c:344-345`). Before [`channel`] existed it
 //! stopped 27 calls earlier, at `Tcl_CreateChannel`. Both are pinned:
 //! `tests/tk_utf16_window.rs` runs the pipe branch and
@@ -183,33 +197,58 @@
 //!
 //! What stops it now is the statement those four were in the way of:
 //! `tcl_findLibrary tk $tk_version $tk_patchLevel tk.tcl TK_LIBRARY tk_library`
-//! (`:3513`). The search runs, and with `TK_LIBRARY` pointing at an installed
-//! Tk it finds `tk.tcl` and reads it — and then cannot compile all of it.
+//! (`:3513`). The search finds `tk.tcl` with nothing in the environment naming
+//! it — the directory of the `dlopen`ed dylib goes on `auto_path` before
+//! `Tk_Init` is called, which is where an installed `tk9.0/tk.tcl` sits and
+//! what `tcl_findLibrary` walks (`load::seed_library_path`) — reads it, and
+//! then cannot compile all of it.
 //!
-//! The refusal that stood here was `{*}` argument expansion, which `tk.tcl` uses
-//! in eleven places. That is implemented: a command containing one is lowered
-//! whole and its words are spliced when it runs
+//! Three of the refusals that stood here have gone. `{*}` argument expansion,
+//! which `tk.tcl` uses in eleven places, is implemented: a command containing
+//! one is lowered whole and its words are spliced when it runs
 //! ([`crate::compiler::ext::EXPAND_CALL`], [`crate::procs::expand_call_op`]), and
 //! a procedure the file defines is callable from every other chunk of the
-//! interpreter, which a binding script needs. The wall has moved to `tk.tcl:145`
-//! — `upvar ::tk::FocusGrab($index) data` in `::tk::SetFocusGrab` — which is
-//! `"upvar" with no level is not supported`, because level 1 is the caller's
-//! frame and this frontend addresses a procedure's variables as frame slots.
-//! Behind it, `tk.tcl:219` uses `return -code error -errorcode`.
+//! interpreter, which a binding script needs. `upvar` with no level and `upvar`
+//! of a computed array element — `upvar ::tk::FocusGrab($index) data` in
+//! `::tk::SetFocusGrab` (`tk.tcl:145`) — are implemented too, over the
+//! per-procedure slot-name table in [`crate::cmd_scope`].
+//!
+//! What stops it now is `return -code error -errorcode` (`tk.tcl:219`, in
+//! `::tk::GetSelection`): `return option "-errorcode" is not supported`, from
+//! `Compiler::cmd_return` in [`crate::procs`]. Measured — a `tk-host` run with
+//! stdin a pipe and nothing in the environment naming a library reports
+//! `Tk_Init returned 1 after 2737 served calls` and a result of
+//! `<root>/tk9.0/tk.tcl: return option "-errorcode" is not supported`, where
+//! `<root>` is the directory `dladdr` gave for the loaded dylib.
+//!
+//! Behind it, hand-probed by stripping each refusal from a copy of `tk.tcl` in
+//! turn and re-running `Tk_Init` against the copy:
+//!
+//! 1. a local whose name carries a namespace separator — `variable ::tk::Priv`
+//!    (`:258`, `:543`), [`crate::cmd_namespace`]'s `cmd_variable`;
+//! 2. a `proc` parameter list that names one parameter twice — `proc
+//!    ::tk::EventMotifBindings {n1 dummy dummy}` (`:305`), which tclsh 9.0.4
+//!    accepts (measured);
+//! 3. `namespace eval` inside a procedure body — `::tk::SourceLibFile` (`:502`),
+//!    which is how `tk.tcl` reads every class-binding file;
+//! 4. a command name the script computes — `$w ${dir}view scroll …`,
+//!    `$widget configure …`, `$path cget …` in four procedures
+//!    (`:550`, `:566`, `:609`, `:657`), refused at `Compiler::call`;
+//! 5. `eval` inside a procedure body — `::tk::mac::DoScriptText` (`:720`).
+//!
+//! Every one of them is a Tcl language feature. No further stub slot is reached
+//! in any of it. Split into its 206 top-level commands with `info complete` and
+//! compiled one at a time, the copy with the first three stripped leaves five
+//! commands refused, which are items 4 and 5.
 //!
 //! `tk.tcl` is where Tk's class bindings live, so `bind Button` is empty in
-//! this host and a mouse click on a button reaches nothing. The gap between
-//! here and a `TCL_OK` is a handful of Tcl language features, not more of the Tk
-//! ABI. Measured by splitting `tk.tcl` into its 55 top-level commands with
-//! `info complete` and compiling each on its own: 37 of the 55 compile. `{*}` is
-//! six of the eighteen that do not, a command name the script computes is five,
-//! and the rest are one each. `upvar` was one of them — `::tk::SetFocusGrab`'s
-//! `upvar ::tk::FocusGrab($index) data`, which is a computed array element at the
-//! caller's level — and `src/cmd_scope.rs` now compiles it.
+//! this host until a script writes one, and a mouse click on a button reaches
+//! nothing without it. The gap between here and a `TCL_OK` is Tcl language
+//! features, not more of the Tk ABI.
 //!
 //! The call and slot counts did not move as the refusal walked forward. The
 //! whole failure is on this side of the stub table, so Tk asked for exactly
-//! what it asked for before — 2726 calls over 71 slots, every time.
+//! what it asked for before — 2737 calls over 75 slots, every time.
 //!
 //! # What works anyway
 //!
@@ -284,7 +323,9 @@
 //! ```
 //!
 //! `Tk_Init` still returns `TCL_ERROR` there, for the reason above and after
-//! the same 2726 served calls, and `package require Tk` still answers `9.0.4`,
+//! 2750 served calls — thirteen more than `tk-host`'s 2737, because this host
+//! sets `argv0` and `tk-host` does not; see the argument block below — and
+//! `package require Tk` still answers `9.0.4`,
 //! because Tk provided itself as a package (`:3461-3469`) several hundred calls
 //! before it reached the statement that failed. What decides whether the
 //! package is present is the registry, not the completion code.

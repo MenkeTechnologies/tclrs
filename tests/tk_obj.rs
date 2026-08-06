@@ -229,7 +229,7 @@ fn the_decr_ref_count_macro_reaches_the_free_path_at_zero() {
         let o = obj::new_string(b"counted");
         let count = o as *mut isize;
         *count += 1;
-        assert!(obj::is_host_allocated(o));
+        let serial = obj::serial_of(o).expect("a freshly allocated object is live");
 
         // The macro, verbatim: post-decrement, then free if the old value was
         // 1 or less.
@@ -238,8 +238,11 @@ fn the_decr_ref_count_macro_reaches_the_free_path_at_zero() {
         assert_eq!(old, 1);
         obj::free_obj(o);
 
-        assert!(
-            !obj::is_host_allocated(o),
+        // By serial, not by address: an address is only an identity while the
+        // object is live, and this assertion is about after.
+        assert_ne!(
+            obj::serial_of(o),
+            Some(serial),
             "the freed object is still in the live set"
         );
     }
@@ -247,10 +250,16 @@ fn the_decr_ref_count_macro_reaches_the_free_path_at_zero() {
 
 /// A nested value releases everything it owns, and the accounting says so.
 ///
-/// The counters are process-wide and other tests run beside this one, so the
-/// assertions are the one-sided ones that stay true under that: monotone
-/// counters moved by at least what this allocated, and no pointer of this
-/// batch left in the live set.
+/// Every object is followed by its serial number ([`obj::serial_of`]) rather
+/// than by its address, because the claim is about *these ten objects* and an
+/// address stops naming an object the moment it is freed: the allocator hands
+/// the block out again, and this test runs beside others that allocate. Asking
+/// `is_host_allocated` after the free asks "is anything live here", which a
+/// concurrent allocation answers yes to, for a reason that has nothing to do
+/// with what is being tested. Asking for the serial asks "is *that* object
+/// still live", which nothing else in the process can make true again.
+///
+/// The counters are process-wide, so those two assertions stay one-sided.
 #[test]
 fn freeing_a_nested_value_releases_every_object_under_it() {
     unsafe {
@@ -261,20 +270,28 @@ fn freeing_a_nested_value_releases_every_object_under_it() {
             .collect();
         let list = objtype::new_list(&inner);
         let dict = objtype::new_dict(&[(inner[0], list)]);
-        for p in &inner {
-            assert!(obj::is_host_allocated(*p));
-        }
+        let owned: Vec<*mut TclObj> = inner.iter().copied().chain([list, dict]).collect();
+        // The ten identities this test is about, taken while all ten are live.
+        // Distinct by construction: a serial is issued once per process.
+        let serials: Vec<u64> = owned
+            .iter()
+            .map(|p| obj::serial_of(*p).expect("a freshly allocated object is live"))
+            .collect();
+        let mut unique = serials.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), 10, "two objects were issued the same serial");
 
         obj::free_obj(dict);
 
-        for (i, p) in inner.iter().enumerate() {
-            assert!(
-                !obj::is_host_allocated(*p),
-                "element {i} outlived the dictionary that owned the list that \
-                 owned it"
+        for (i, (p, serial)) in owned.iter().zip(&serials).enumerate() {
+            assert_ne!(
+                obj::serial_of(*p),
+                Some(*serial),
+                "object {i} outlived the dictionary that owned the list that \
+                 owned it: it is still live at {p:?} under serial {serial}"
             );
         }
-        assert!(!obj::is_host_allocated(list));
 
         let (created_after, freed_after, _) = obj::counts();
         assert!(created_after - created_before >= 10);
@@ -468,7 +485,7 @@ fn tk_shimmering_a_host_list_runs_the_list_types_free_proc() {
     unsafe {
         let element = obj::new_string(b"element");
         let list = objtype::new_list(&[element]);
-        assert!(obj::is_host_allocated(element));
+        let serial = obj::serial_of(element).expect("a freshly allocated object is live");
 
         // InitBorderObj, verbatim.
         obj::string_of(list); // Tcl_GetString(objPtr)
@@ -480,8 +497,13 @@ fn tk_shimmering_a_host_list_runs_the_list_types_free_proc() {
         (*list).type_ptr = &FOREIGN_TYPE;
         (*list).internal_rep.ptr1 = ptr::null_mut();
 
-        assert!(
-            !obj::is_host_allocated(element),
+        // By serial, not by address, for the reason
+        // `freeing_a_nested_value_releases_every_object_under_it` gives: after
+        // the free the address may belong to a concurrent test's object, and
+        // that says nothing about this element.
+        assert_ne!(
+            obj::serial_of(element),
+            Some(serial),
             "the list's freeIntRepProc did not drop its element's reference, so \
              shimmering to a Tk type leaks"
         );

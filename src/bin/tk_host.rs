@@ -38,6 +38,17 @@ fn main() {
     );
 
     let tk_interp = host::build_hosting();
+    // The same library discovery a `tclrs --tk` session performs
+    // (`tclrs::tk::session::load_tk`), so this probe measures the search that
+    // ships rather than one only it does.
+    let root = lib.library_root();
+    if let Some(root) = &root {
+        let added = unsafe { load::seed_library_path(tk_interp as *mut std::ffi::c_void, root) };
+        println!("tkhost dylib root {root}");
+        for dir in added {
+            println!("tkhost library path {dir}");
+        }
+    }
     println!("tkhost calling Tk_Init");
 
     let rc = unsafe { load::call_tk_init(&lib, tk_interp) };
