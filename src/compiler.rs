@@ -1708,7 +1708,8 @@ impl Compiler {
         }
         // Discard whatever this iteration pushed before jumping, so the exit
         // point sees the depth it was compiled for.
-        let surplus = self.depth.saturating_sub(ctx.depth);
+        let before = self.depth;
+        let surplus = before.saturating_sub(ctx.depth);
         for _ in 0..surplus {
             self.emit(Op::Pop, -1);
         }
@@ -1719,7 +1720,15 @@ impl Compiler {
         } else {
             ctx.continues.push(jump);
         }
-        // The jump leaves; the value keeps the sequencer's arithmetic honest.
+        // Those pops are a run-time effect of a path that leaves, so they must
+        // not follow the enclosing command into the compiler's model. `break`
+        // inside a word being built — `puts [list a [break]]` — sits above the
+        // loop's entry depth, and charging its pops to the model would leave the
+        // enclosing command short by exactly that much: its next negative delta
+        // then underflows, which is the `rotated loop body is unbalanced`
+        // assertion. Restore the depth the enclosing command was compiled
+        // against, then give it the one value it is waiting for.
+        self.depth = before;
         self.push_empty();
         Ok(())
     }
