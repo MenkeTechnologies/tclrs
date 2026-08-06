@@ -507,6 +507,10 @@ pub mod ext {
     pub const CLOCK_BASE: u16 = SUBSYSTEM_BASE + 5 * BLOCK;
     /// `file`, `glob`, `pwd` and `cd`, dispatched to [`crate::cmd_file`].
     pub const FILE_BASE: u16 = SUBSYSTEM_BASE + 6 * BLOCK;
+    // ── the encoding block ───────────────────────────────────────────────
+    /// The `encoding` ensemble, dispatched to [`crate::cmd_encoding`].
+    pub const ENCODING_BASE: u16 = SUBSYSTEM_BASE + 7 * BLOCK;
+    // ── end of the encoding block ────────────────────────────────────────
 }
 
 /// Wide extension opcode ids, whose payload is a `usize` rather than a byte.
@@ -1495,6 +1499,14 @@ impl Compiler {
             "clock" => crate::cmd_clock::compile(self, args),
             "file" | "glob" | "pwd" | "cd" => crate::cmd_file::compile(self, name, args),
             // ── end of the clock/file block ──────────────────────────────
+            // ── the encoding ensemble ────────────────────────────────────
+            // One arm, as `clock` above is: the name is claimed here and the
+            // whole of the lowering — argument parsing included, because which
+            // argument is an option is decided by their count — lives in
+            // [`crate::cmd_encoding`]. Ahead of the namespace block below,
+            // like every other builtin.
+            "encoding" => crate::cmd_encoding::compile(self, args),
+            // ── end of the encoding ensemble ─────────────────────────────
             // ── namespaces, `rename` and `source` ────────────────────────
             // One block, so that the module owning them merges as one hunk.
             // It sits here — after every builtin, before the procedures —

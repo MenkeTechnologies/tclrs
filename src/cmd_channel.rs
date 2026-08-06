@@ -229,10 +229,14 @@ impl Buffering {
     }
 }
 
-/// The encodings this layer converts between. `Tcl_GetEncoding` has a table of
-/// dozens; two of them are what the channel defaults and `-translation binary`
-/// need, and the rest are refused by name rather than silently treated as one
-/// of these.
+/// The encodings this layer converts between.
+///
+/// The two the channel machinery itself needs have their own arms because they
+/// are what every channel starts as and what `-translation binary` switches to,
+/// and because both are a straight walk over the bytes with no table to consult.
+/// Everything else goes through [`crate::cmd_encoding`], which owns the tables
+/// and the ported conversion procs, so `fconfigure -encoding` accepts exactly
+/// the set `encoding names` lists.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Encoding {
     /// The system encoding on every platform this runs on, and what
@@ -241,6 +245,9 @@ enum Encoding {
     /// What `-translation binary` switches to
     /// (`generic/tclIO.c:8392-8393`, `:8441-8442`): one byte, one character.
     Iso8859_1,
+    /// Any other encoding `encoding names` offers, by the name that list holds
+    /// — which is why this is a `&'static str` and not a `String`.
+    Named(&'static str),
 }
 
 impl Encoding {
@@ -248,6 +255,7 @@ impl Encoding {
         match self {
             Encoding::Utf8 => "utf-8",
             Encoding::Iso8859_1 => "iso8859-1",
+            Encoding::Named(name) => name,
         }
     }
 }
@@ -752,13 +760,22 @@ fn fill(c: &mut Channel) -> Result<bool, String> {
         return Ok(false);
     }
     c.raw.extend_from_slice(&buf[..n]);
-    decode(c);
+    decode(c)?;
     Ok(true)
 }
 
 /// Move every complete character out of `raw` and through the translation.
-fn decode(c: &mut Channel) {
+fn decode(c: &mut Channel) -> Result<(), String> {
     let text = match c.encoding {
+        // Anything with a table behind it, decoded by the module that owns the
+        // tables. What is left in `raw` is the start of a character whose rest
+        // has not arrived.
+        Encoding::Named(name) => {
+            let (text, used) = crate::cmd_encoding::stream_decode(name, &c.raw)
+                .map_err(|e| format!("error reading \"{}\": {e}", c.name))?;
+            c.raw.drain(..used);
+            text
+        }
         Encoding::Iso8859_1 => {
             let s: String = c.raw.iter().map(|b| *b as char).collect();
             c.raw.clear();
@@ -783,6 +800,7 @@ fn decode(c: &mut Channel) {
         }
     };
     translate_in(c, &text);
+    Ok(())
 }
 
 /// Apply the channel's input translation to freshly decoded text.
@@ -908,16 +926,22 @@ fn translate_out(t: Translation, text: &str) -> String {
 }
 
 /// Encode translated text for the device.
-fn encode(e: Encoding, text: &str) -> Vec<u8> {
-    match e {
+fn encode(e: Encoding, text: &str) -> Result<Vec<u8>, String> {
+    Ok(match e {
         Encoding::Utf8 => text.as_bytes().to_vec(),
+        // Encoded by the module that owns the tables, under a channel's own
+        // profile — `strict`, which is what tclsh reports for a fresh channel
+        // and what this layer reports for the option it refuses to set. So a
+        // character the encoding cannot hold is an error rather than a
+        // substitution, as it is in tclsh.
+        Encoding::Named(name) => crate::cmd_encoding::stream_encode(name, text)?,
         // One byte per character, with anything outside Latin-1 replaced —
         // Tcl's `tcl8` profile answers `?` for an unrepresentable character.
         Encoding::Iso8859_1 => text
             .chars()
             .map(|ch| if (ch as u32) < 0x100 { ch as u8 } else { b'?' })
             .collect(),
-    }
+    })
 }
 
 /// `Tcl_WriteChars` (`generic/tclIO.c:4171-4218`), plus the buffering decision
@@ -941,7 +965,11 @@ fn write_id(id: usize, text: &str, sink: Option<&Output>) -> Result<(), String> 
     }
     let ready = with_channel(id, |c| {
         let translated = translate_out(c.output_translation, text);
-        c.out.extend_from_slice(&encode(c.encoding, &translated));
+        let name = c.name.clone();
+        c.out.extend_from_slice(
+            &encode(c.encoding, &translated)
+                .map_err(|e| format!("error writing \"{name}\": {e}"))?,
+        );
         Ok(match c.buffering {
             Buffering::None => true,
             Buffering::Line => translated.contains('\n'),
@@ -1062,12 +1090,14 @@ pub fn set_option(id: usize, option: &str, value: &str) -> Result<(), String> {
                          \"-encoding iso8859-1\""
                     ))
                 }
-                other => {
-                    return Err(format!(
-                        "encoding \"{other}\" is not implemented in this frontend; \
-                         utf-8 and iso8859-1 are"
-                    ))
-                }
+                // Every other name `encoding names` offers, which is the
+                // set `crate::cmd_encoding` has tables or a ported conversion
+                // proc for. A name it does not offer is refused with the same
+                // message `encoding convertfrom` would give it.
+                other => match crate::cmd_encoding::static_name(other) {
+                    Some(name) => Encoding::Named(name),
+                    None => return Err(format!("unknown encoding \"{other}\"")),
+                },
             };
             with_channel(id, |c| {
                 c.encoding = encoding;

@@ -142,6 +142,18 @@ fn blocks() -> Vec<Block> {
             vec![("CLOCK_BASE", ext::CLOCK_BASE)],
         ),
         ("FILE", ext::FILE_BASE, vec![("FILE_BASE", ext::FILE_BASE)]),
+        (
+            "ENCODING",
+            ext::ENCODING_BASE,
+            vec![
+                ("CONVERT", tclrs::cmd_encoding::ext::CONVERT),
+                ("NAMES", tclrs::cmd_encoding::ext::NAMES),
+                ("SYSTEM", tclrs::cmd_encoding::ext::SYSTEM),
+                ("DIRS", tclrs::cmd_encoding::ext::DIRS),
+                ("PROFILES", tclrs::cmd_encoding::ext::PROFILES),
+                ("USER", tclrs::cmd_encoding::ext::USER),
+            ],
+        ),
     ]
 }
 
