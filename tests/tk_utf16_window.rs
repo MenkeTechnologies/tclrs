@@ -203,27 +203,35 @@ fn tk_init_returns_rather_than_stopping_on_a_missing_slot() {
     //
     // So `tkInit` runs to its last statement, which is `tcl_findLibrary tk
     // $tk_version $tk_patchLevel tk.tcl TK_LIBRARY tk_library`
-    // (`generic/tkWindow.c:3513`), and *that* is the refusal now. With no
-    // `TK_LIBRARY` in the environment — which is how this test runs — the search
-    // finds nothing and the message is the search's own.
+    // (`generic/tkWindow.c:3513`), and *that* is where it stops now. The search
+    // no longer needs anything in the environment: the directory of the dylib
+    // that was `dlopen`ed goes on `auto_path` first
+    // (`tclrs::tk::load::seed_library_path`), and an installed `tk9.0/tk.tcl`
+    // sits there — see
+    // `the_tk_script_library_is_found_beside_the_loaded_dylib_with_no_environment`.
+    // So `tk.tcl` is found and read, and what stops it is a construct in it.
     //
-    // Pointed at an installed Tk it finds `tk.tcl` and reads it, and what stops
-    // it there has moved: `{*}` argument expansion, which `tk.tcl` uses in eleven
-    // places, is implemented now (`crate::procs::expand_call_op`), and the first
-    // construct still refused is `upvar` with no level — `tk.tcl:145`, `upvar
-    // ::tk::FocusGrab($index) data`, in `::tk::SetFocusGrab`. Measured:
-    // `TK_LIBRARY=/opt/homebrew/lib/tk9.0 tclrs --tk` reports
-    // `"upvar" with no level is not supported` for it.
+    // Which construct has moved three times, and the assertion moves with it
+    // rather than being deleted. It was `{*}` argument expansion, which `tk.tcl`
+    // uses in eleven places, until `crate::procs::expand_call_op` landed; then
+    // `upvar` with no level and `upvar` of a computed array element —
+    // `tk.tcl:145`, `upvar ::tk::FocusGrab($index) data` in
+    // `::tk::SetFocusGrab` — until `crate::cmd_scope`'s slot-name table landed.
+    // It is now `return -code error -errorcode` at `tk.tcl:219`, in
+    // `::tk::GetSelection`, from `Compiler::cmd_return`. Whoever implements
+    // `return`'s option dictionary should swap in whatever `tk.tcl` stops on
+    // then; `tclrs::tk`'s module docs carry the ordered list of what is behind
+    // it.
     //
     // The refusal is asserted rather than the whole message because the search
-    // path is absolute and depends on where the binary was built.
+    // path is absolute and depends on where the binary was built and where Tk
+    // is installed.
     //
     // The call and slot counts below did not move with any of it: the whole
     // failure is still on this side of the stub table, so Tk asked for exactly
     // what it asked for before.
     assert!(
-        out.contains("Can't find a usable tk.tcl in the following directories")
-            || out.contains("{*} argument expansion is not supported yet"),
+        out.contains("return option \\\"-errorcode\\\" is not supported"),
         "the failure moved: {out:?}"
     );
     let calls = err.lines().filter(|l| l.starts_with("tkslot ")).count();
