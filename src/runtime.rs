@@ -217,6 +217,11 @@ pub(crate) struct State {
     /// Per interpreter rather than per process, because two interpreters have
     /// separate namespaces. See `crate::cmd_namespace::Registry`.
     pub(crate) ns: crate::cmd_namespace::Registry,
+    /// Global names an `upvar` outside a procedure made one variable: the alias,
+    /// and the name it stands for. Empty for almost every script, and one hash
+    /// lookup per name at a chunk's entry and exit when it is not — see
+    /// [`alias_global`].
+    aliases: HashMap<String, String>,
     cache: ChunkCache,
     /// Where the scripts of this interpreter write.
     output: Output,
@@ -260,6 +265,7 @@ impl Interp {
                 globals: HashMap::new(),
                 commands: HashMap::new(),
                 ns: crate::cmd_namespace::Registry::default(),
+                aliases: HashMap::new(),
                 cache: ChunkCache::new(),
                 output,
                 depth: 0,
@@ -403,7 +409,10 @@ fn seed(chunk: &Chunk, shared: &Shared) -> Vec<Value> {
         chunk
             .names
             .iter()
-            .map(|name| state.globals.get(name).cloned().unwrap_or(Value::Undef))
+            .map(|name| {
+                let key = state.alias_of(name);
+                state.globals.get(key).cloned().unwrap_or(Value::Undef)
+            })
             .collect()
     };
     traced.blank_reads(&mut values);
@@ -448,6 +457,12 @@ fn write_back(
         if name.starts_with('\u{0}') {
             continue;
         }
+        // An aliased name is not its own variable: `upvar` outside a procedure
+        // made it another spelling of one, and the write goes where that one is.
+        // Resolved only when some alias exists, so a script that made none pays
+        // one `is_empty` for the whole write-back rather than a copy per name.
+        let aliased = (!state.aliases.is_empty()).then(|| state.alias_of(name).to_string());
+        let name: &str = aliased.as_deref().unwrap_or(name);
         let value = globals.get(slot).unwrap_or(&Value::Undef);
         let watched = traced.at(slot);
         match value {
@@ -458,19 +473,179 @@ fn write_back(
             Value::Undef if watched.reads || boundary == Boundary::Sync => {}
             Value::Undef => {
                 if state.globals.remove(name).is_some() && watched.unsets {
-                    fired.push((name.clone(), TraceOp::Unset));
+                    fired.push((name.to_string(), TraceOp::Unset));
                 }
             }
             value => {
                 let changed = state.globals.get(name) != Some(value);
-                state.globals.insert(name.clone(), value.clone());
+                state.globals.insert(name.to_string(), value.clone());
                 if changed && watched.writes {
-                    fired.push((name.clone(), TraceOp::Write));
+                    fired.push((name.to_string(), TraceOp::Write));
                 }
             }
         }
     }
+    // The names the chunk's own table does not carry, which a run-time `upvar`
+    // interned past the end of it. They are ordinary globals in every other
+    // respect, so they are written back on the same terms — including an empty
+    // slot at the end of a chunk being an `unset`. No trace is consulted: a
+    // trace is registered against a name the chunk *names*, and these are
+    // exactly the names it does not.
+    for (offset, name) in overflow_names(chunk, globals).iter().enumerate() {
+        let value = globals.get(overflow_value_index(chunk, offset));
+        match value {
+            Some(Value::Undef) | None if boundary == Boundary::End => {
+                state.globals.remove(name);
+            }
+            Some(Value::Undef) | None => {}
+            Some(value) => {
+                state.globals.insert(name.clone(), value.clone());
+            }
+        }
+    }
     fired
+}
+
+/// The overflow directory of a running chunk: the names a run-time `upvar`
+/// reached that the chunk's own name table does not carry.
+///
+/// It lives in the projection it describes — at the index one past the chunk's
+/// last name — rather than beside the interpreter, and that is deliberate. A
+/// projection travels with the VM: it is moved in and out of a parked coroutine,
+/// handed across an `eval`, and flushed by whichever code holds it. A directory
+/// held anywhere else would have to be kept in step with all of that; held here
+/// it cannot fall out of step, because it *is* part of the thing being moved.
+fn overflow_names(chunk: &Chunk, globals: &[Value]) -> Vec<String> {
+    match globals.get(chunk.names.len()) {
+        Some(Value::Array(names)) => names.iter().map(to_tcl_string).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Where the value of the `offset`th overflow name sits: past the directory.
+fn overflow_value_index(chunk: &Chunk, offset: usize) -> usize {
+    chunk.names.len() + 1 + offset
+}
+
+impl State {
+    /// Every variable name the interpreter holds. Taken as a set where a *change*
+    /// to it has to be noticed — `cmd_scope::in_frame_context` compares the set
+    /// before a script with the set after to find a variable the script created.
+    pub(crate) fn global_names(&self) -> HashSet<String> {
+        self.globals.keys().cloned().collect()
+    }
+
+    /// The name an alias stands for, or the name itself. One step is enough for
+    /// every alias this frontend makes — a chain would need `upvar` to an alias,
+    /// which registers the target it resolved to — and a bounded walk is what
+    /// keeps a cycle from being a hang.
+    fn alias_of<'a>(&'a self, name: &'a str) -> &'a str {
+        let mut at = name;
+        if self.aliases.is_empty() {
+            return at;
+        }
+        for _ in 0..8 {
+            match self.aliases.get(at) {
+                Some(target) if target != at => at = target,
+                _ => break,
+            }
+        }
+        at
+    }
+}
+
+/// Make the global `alias` another spelling of the global `target`, which is
+/// what `upvar` outside a procedure does.
+///
+/// The pair lives on the interpreter rather than in a chunk, because that is the
+/// lifetime it has: `tk.tcl` binds `::tk::Priv` once and every later script sees
+/// one variable. `seed` and `write_back` resolve through it, so a chunk that
+/// mentions either name reaches the same storage without any op knowing.
+pub(crate) fn alias_global(interp: &Shared, alias: &str, target: &str) -> Result<(), String> {
+    let alias = crate::cmd_namespace::store_key(alias).to_string();
+    let target = crate::cmd_namespace::store_key(target).to_string();
+    if alias == target {
+        // `TclPtrObjMakeUpvarIdx` refuses this outright
+        // (`generic/tclVar.c`: "can't upvar from variable to itself").
+        return Err("can't upvar from variable to itself".to_string());
+    }
+    let mut state = interp.lock().expect("interpreter lock");
+    // The alias takes the target's value: they are one variable from here on, and
+    // the target's is the one that survives — which is what tclsh does, since the
+    // link is to the target's storage.
+    if let Some(value) = state.globals.get(&target).cloned() {
+        state.globals.insert(alias.clone(), value);
+    } else {
+        state.globals.remove(&alias);
+    }
+    state.aliases.insert(alias, target);
+    Ok(())
+}
+
+/// The index in the running chunk's projection that holds the global `key`,
+/// adding it to the overflow area when the chunk's name table has no entry for
+/// it. The value is seeded from the interpreter, as `seed` seeds a named one.
+///
+/// This is what lets `upvar #0 ::tk::Priv.$disp priv` reach a variable whose
+/// name no op in the chunk could have mentioned: after this the link is an
+/// ordinary [`Place::Global`], and every element, `array`, `lappend` and `unset`
+/// op reaches it the way it reaches any other global.
+pub(crate) fn intern_overflow(interp: &Shared, vm: &mut VM, key: &str) -> Result<u16, String> {
+    let base = vm.chunk.names.len();
+    let mut names = overflow_names(&vm.chunk, &vm.globals);
+    if let Some(offset) = names.iter().position(|n| n == key) {
+        return index_of(base + 1 + offset);
+    }
+    names.push(key.to_string());
+    let offset = names.len() - 1;
+    let value_at = base + 1 + offset;
+    if vm.globals.len() <= value_at {
+        vm.globals.resize(value_at + 1, Value::Undef);
+    }
+    vm.globals[base] = Value::Array(
+        names
+            .iter()
+            .map(|n| Value::Str(Arc::new(n.clone())))
+            .collect(),
+    );
+    vm.globals[value_at] = interp
+        .lock()
+        .expect("interpreter lock")
+        .globals
+        .get(key)
+        .cloned()
+        .unwrap_or(Value::Undef);
+    index_of(value_at)
+}
+
+fn index_of(index: usize) -> Result<u16, String> {
+    u16::try_from(index).map_err(|_| "too many variables in one chunk".to_string())
+}
+
+/// Take the projection again, keeping whatever overflow names the old one had.
+///
+/// Every place a chunk's projection is rebuilt part-way through a run goes
+/// through this rather than through `seed` directly: an `upvar` made before the
+/// rebuild must still point somewhere after it.
+fn reproject(chunk: &Chunk, shared: &Shared, old: &[Value]) -> Vec<Value> {
+    let mut values = seed(chunk, shared);
+    let names = overflow_names(chunk, old);
+    if names.is_empty() {
+        return values;
+    }
+    let base = chunk.names.len();
+    values.resize(base + 1 + names.len(), Value::Undef);
+    values[base] = Value::Array(
+        names
+            .iter()
+            .map(|n| Value::Str(Arc::new(n.clone())))
+            .collect(),
+    );
+    let state = shared.lock().expect("interpreter lock");
+    for (offset, name) in names.iter().enumerate() {
+        values[base + 1 + offset] = state.globals.get(name).cloned().unwrap_or(Value::Undef);
+    }
+    values
 }
 
 /// Which kind of write-back this is, which is the whole of what an empty slot
@@ -986,6 +1161,15 @@ impl Hooks {
                 ext::UPDATE => crate::cmd_after::update_op(&interp, vm, arg),
                 ext::VWAIT => crate::cmd_after::vwait_op(&interp, vm, arg),
                 ext::UPLEVEL => crate::cmd_scope::uplevel_op(&interp, vm, arg),
+                // `upvar` with a computed target needs the interpreter for the
+                // same reason `uplevel` does: a name the chunk's table does not
+                // carry is interned against the interpreter's variables.
+                ext::UPVAR => crate::cmd_scope::upvar_op(&interp, vm, arg),
+                // Following a link needs nothing but the VM, but it raises the
+                // located `TclError` the arms above raise rather than the plain
+                // string the module below returns, so it is dispatched here.
+                ext::LINK_GET => crate::cmd_scope::link_get(vm, arg == 1),
+                ext::LINK_SET => crate::cmd_scope::link_set(vm),
                 ext::INFO_NAMES => {
                     crate::cmd_info::names_op(&interp, vm, arg).map_err(TclError::plain)
                 }
@@ -1145,7 +1329,7 @@ fn eval_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
 
     flush(&vm.chunk, interp, &vm.globals);
     let result = run_source(interp, &src);
-    let globals = seed(&vm.chunk, interp);
+    let globals = reproject(&vm.chunk, interp, &vm.globals);
     vm.globals = globals;
     vm.push(result?);
     Ok(())
@@ -1168,7 +1352,7 @@ pub(crate) fn flush_globals(vm: &VM, interp: &Shared) {
 /// Project the interpreter's variables back into the running chunk, so the
 /// chunk sees what a nested script did.
 pub(crate) fn reseed_globals(vm: &mut VM, interp: &Shared) {
-    vm.globals = seed(&vm.chunk, interp);
+    vm.globals = reproject(&vm.chunk, interp, &vm.globals);
 }
 
 /// Run `body` with the chunk's variables written back to the interpreter and
@@ -1225,7 +1409,14 @@ pub(crate) fn global_names_of(interp: &Shared, vm: &VM) -> Vec<String> {
         .filter(|n| !n.starts_with('\u{0}'))
         .cloned()
         .collect();
-    for (slot, name) in vm.chunk.names.iter().enumerate() {
+    let overflow = overflow_names(&vm.chunk, &vm.globals);
+    let named = vm.chunk.names.iter().enumerate().chain(
+        overflow
+            .iter()
+            .enumerate()
+            .map(|(offset, name)| (overflow_value_index(&vm.chunk, offset), name)),
+    );
+    for (slot, name) in named {
         if name.starts_with('\u{0}') {
             continue;
         }
@@ -1243,9 +1434,23 @@ pub(crate) fn global_names_of(interp: &Shared, vm: &VM) -> Vec<String> {
 
 /// Whether the variable at `place` is set, for `info exists`.
 pub(crate) fn var_is_set(vm: &VM, place: Place) -> bool {
+    if let Place::Link(slot) = place {
+        // A link that was never made is not set, and a link to something unset
+        // is not set either — which is what tclsh answers for `upvar bogus b`
+        // followed by `info exists b`.
+        let Some(link) = crate::cmd_scope::link_at(vm, slot) else {
+            return false;
+        };
+        return !matches!(
+            crate::cmd_scope::read_link(vm, &link),
+            Some(Value::Undef) | None
+        );
+    }
     let value = match place {
         Place::Global(index) => vm.globals.get(index as usize),
-        Place::Slot(slot) => vm.frames.last().and_then(|f| f.slots.get(slot as usize)),
+        Place::Slot(slot) | Place::Link(slot) => {
+            vm.frames.last().and_then(|f| f.slots.get(slot as usize))
+        }
     };
     !matches!(value, Some(Value::Undef) | None)
 }
@@ -1256,8 +1461,7 @@ pub(crate) fn var_is_set(vm: &VM, place: Place) -> bool {
 /// that take the same operand.
 pub(crate) fn place_of_encoded(vm: &mut VM) -> Result<Place, String> {
     match vm.pop() {
-        Value::Int(raw) if raw < 0 => Ok(Place::Slot((-raw - 1) as u16)),
-        Value::Int(raw) => Ok(Place::Global(raw as u16)),
+        Value::Int(raw) => Ok(Place::decode(raw)),
         other => Err(format!("not a variable place: {other:?}")),
     }
 }
@@ -1274,7 +1478,7 @@ impl crate::cmd_package::ScriptHost for VmScriptHost<'_> {
     fn eval(&mut self, src: &str) -> Result<String, TclError> {
         flush(&self.vm.chunk, self.interp, &self.vm.globals);
         let result = run_source(self.interp, src);
-        self.vm.globals = seed(&self.vm.chunk, self.interp);
+        self.vm.globals = reproject(&self.vm.chunk, self.interp, &self.vm.globals);
         result.map(|v| to_tcl_string(&v))
     }
 }
@@ -2702,6 +2906,15 @@ pub(crate) fn var_cell(vm: &mut VM, place: Place) -> Option<&mut Value> {
             }
             Some(&mut frame.slots[slot])
         }
+        // A name `upvar` bound: the slot holds a descriptor, and the cell is
+        // wherever that descriptor points. Every op that reaches a variable
+        // itself follows the link here, which is what makes one `upvar` serve
+        // `set`, `$`, `incr`, `append`, `lappend`, `unset` and the `array`
+        // subcommands alike — see [`crate::cmd_scope`].
+        Place::Link(slot) => {
+            let link = crate::cmd_scope::link_at(vm, slot)?;
+            crate::cmd_scope::write_link(vm, &link)
+        }
     }
 }
 
@@ -2778,6 +2991,10 @@ pub(crate) fn place_of(vm: &mut VM, slot_form: bool) -> Result<Place, String> {
 /// The same, for an operand read where it sits on the stack.
 pub(crate) fn place_at(operand: &Value, slot_form: bool) -> Result<Place, String> {
     match operand {
+        // The frame form carries a third case in its sign: a link is written
+        // `-(slot + 1)`, which the non-negative slot range cannot reach. See
+        // [`Place::frame_operand`].
+        Value::Int(index) if slot_form && *index < 0 => Ok(Place::Link((-index - 1) as u16)),
         Value::Int(index) => Ok(if slot_form {
             Place::Slot(*index as u16)
         } else {
@@ -2810,7 +3027,7 @@ static TOLERANT_READS: Mutex<Option<HashSet<(u64, usize)>>> = Mutex::new(None);
 /// This must agree with `VM::chunk_identity`; the tests below run a script
 /// through both sides, so a drift in either shows up as a refusal where Tcl
 /// initialises rather than as a silent mismatch.
-fn chunk_identity(chunk: &fusevm::Chunk) -> u64 {
+pub(crate) fn chunk_identity(chunk: &fusevm::Chunk) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     chunk.op_hash.hash(&mut h);

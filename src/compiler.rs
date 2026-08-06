@@ -113,6 +113,26 @@ pub mod ext {
     /// `info complete` on a value the script computed. The literal form is
     /// answered while compiling and emits nothing.
     pub const INFO_COMPLETE: u16 = EVENT_BASE + 7;
+    /// `upvar ?level? otherVar localVar …`: `[(slot, local) …, level, other …]`
+    /// with the number of stack values in the inline operand → `""`, having
+    /// stored a [`crate::cmd_scope::Link`] descriptor in each local's frame slot.
+    /// The level rides as the empty string when the command gave none, which is
+    /// the `hasLevel` flag `Tcl_UpvarObjCmd` carries; a slot of `-1` means there
+    /// is no frame to hold a descriptor and the pair is an alias in the
+    /// interpreter's variable table instead.
+    ///
+    /// The one `upvar` whose target the script computes. `upvar #0 other local`
+    /// written out is bound while the script is read and emits nothing inside a
+    /// procedure body; outside one it emits this as well, because the pair has to
+    /// outlive the chunk that made it.
+    pub const UPVAR: u16 = EVENT_BASE + 8;
+    /// `[name, slot]` → what the link in that frame slot points at, or the
+    /// `no such variable` refusal for the name it was bound under. `arg` is 1
+    /// for a read that tolerates an unset target, which is what `incr` needs.
+    pub const LINK_GET: u16 = EVENT_BASE + 9;
+    /// `[value, name, slot]` → nothing, having stored the value where the link
+    /// points. A store, so it leaves the stack as it found it.
+    pub const LINK_SET: u16 = EVENT_BASE + 10;
 
     /// `[name, arg …]` with the count in the inline operand — call the function
     /// an inline `rust { ... }` block exported. Emitted only for a name
@@ -551,13 +571,16 @@ pub fn compile_debug(script: &Script) -> Result<fusevm::Chunk, CompileError> {
 
 fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
     let first = Compiler::run(script, ArrayNames::new(), HashSet::new(), debug)?;
-    let (mut chunk, tolerant) = if first.seen_arrays.is_empty() && first.seen_runtime.is_empty() {
-        (first.b.build(), first.tolerant_reads)
-    } else {
-        let second = Compiler::run(script, first.seen_arrays, first.seen_runtime, debug)?;
-        let reads = second.tolerant_reads.clone();
-        (second.b.build(), reads)
-    };
+    let (mut chunk, tolerant, slot_names) =
+        if first.seen_arrays.is_empty() && first.seen_runtime.is_empty() {
+            let names = first.slot_names.clone();
+            (first.b.build(), first.tolerant_reads, names)
+        } else {
+            let second = Compiler::run(script, first.seen_arrays, first.seen_runtime, debug)?;
+            let reads = second.tolerant_reads.clone();
+            let names = second.slot_names.clone();
+            (second.b.build(), reads, names)
+        };
     // Tcl's integers are arbitrary-precision, and so are this frontend's: an
     // `i64` that overflows promotes, in the numeric hook. Native codegen would
     // wrap instead, so ask fusevm for the overflow-checked lowering —
@@ -567,6 +590,10 @@ fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
     // 9223372036854775808.
     chunk.int_overflow_deopt = true;
     crate::runtime::note_tolerant_reads(&chunk, &tolerant);
+    // The one thing a built chunk did not carry: which name each frame slot was
+    // written as. `upvar` at a level that is a procedure activation and
+    // `uplevel` into one both need it — see [`crate::cmd_scope`].
+    crate::cmd_scope::note_slot_names(&chunk, &slot_names);
     Ok(chunk)
 }
 
@@ -590,11 +617,16 @@ pub(crate) struct LoopCtx {
 pub(crate) struct Scope {
     pub locals: HashMap<String, u16>,
     pub globals: HashSet<String>,
-    /// Local names `upvar #0` bound to a *differently named* global, which is
-    /// the one link this frontend can make while the script is read. Consulted
-    /// by [`Compiler::var_place`]; see [`crate::cmd_scope`] for why the level
-    /// has to be `#0` and both names have to be literals.
+    /// Local names `upvar #0 other local` bound to a *differently named*
+    /// global while the script was read, which is the one link that needs no
+    /// run-time indirection at all. Consulted by [`Compiler::var_place`]; see
+    /// [`crate::cmd_scope`].
     pub aliases: crate::cmd_scope::Aliases,
+    /// Local names bound by an `upvar` whose target only the running script
+    /// knows — a computed level, a computed name, an array element. The slot
+    /// holds a [`crate::cmd_scope::Link`] descriptor rather than a value, and
+    /// [`Compiler::var_place`] answers [`Place::Link`] for the name.
+    pub links: crate::cmd_scope::Links,
     pub next_slot: u16,
 }
 
@@ -612,11 +644,65 @@ pub(crate) enum Body {
 }
 
 /// Where a variable lives once the script is lowered: a frame slot inside a
-/// procedure body, a name index in the VM's global table anywhere else.
+/// procedure body, a name index in the VM's global table anywhere else, or —
+/// for a name `upvar` bound — a frame slot holding a *link* to one of those,
+/// resolved when the command ran rather than while the script was read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Place {
     Slot(u16),
     Global(u16),
+    /// A frame slot holding a [`crate::cmd_scope::Link`] descriptor. Every read
+    /// and write of the name goes through the descriptor, which is what lets
+    /// `upvar $level $other local` name its target when the command runs.
+    Link(u16),
+}
+
+impl Place {
+    /// The one integer form every op that reaches a variable itself takes: a
+    /// name index as itself, a frame slot as `-(slot + 1)`, and a link as
+    /// `-(slot + 1) - LINK_BIAS`.
+    ///
+    /// Three ranges in one signed operand rather than a second operand, because
+    /// the ops that take it already carry their argument count in the inline
+    /// operand and a place is one of the counted values. The bias is far outside
+    /// the `u16` slot range, so the three cannot collide.
+    pub(crate) const LINK_BIAS: i64 = 1 << 20;
+
+    pub(crate) fn encode(self) -> i64 {
+        match self {
+            Place::Global(idx) => i64::from(idx),
+            Place::Slot(slot) => -i64::from(slot) - 1,
+            Place::Link(slot) => -i64::from(slot) - 1 - Place::LINK_BIAS,
+        }
+    }
+
+    pub(crate) fn decode(raw: i64) -> Place {
+        if raw <= -Place::LINK_BIAS {
+            Place::Link((-(raw + Place::LINK_BIAS) - 1) as u16)
+        } else if raw < 0 {
+            Place::Slot((-raw - 1) as u16)
+        } else {
+            Place::Global(raw as u16)
+        }
+    }
+
+    /// Whether this place lives in the call frame rather than the global table —
+    /// which a link does, since the descriptor is a frame slot.
+    pub(crate) fn in_frame(self) -> bool {
+        matches!(self, Place::Slot(_) | Place::Link(_))
+    }
+
+    /// The operand for an op that already says "this is a frame place" some
+    /// other way — a `_SLOT`-flavoured op id, or a separate pushed flag. A slot
+    /// stays its own index and a link is written `-(slot + 1)`, which the
+    /// non-negative slot range cannot reach.
+    pub(crate) fn frame_operand(self) -> i64 {
+        match self {
+            Place::Slot(slot) => i64::from(slot),
+            Place::Link(slot) => -i64::from(slot) - 1,
+            Place::Global(idx) => i64::from(idx),
+        }
+    }
 }
 
 pub(crate) struct Compiler {
@@ -680,6 +766,14 @@ pub(crate) struct Compiler {
     /// How many command substitutions enclose the command being compiled. A
     /// debugger stops before a statement, and a substitution is part of one.
     pub(crate) subst_depth: usize,
+    /// Which name each frame slot was written as, per procedure body, published
+    /// by [`Compiler::publish_slot_names`] where the body's scope is discarded.
+    /// The half a built chunk was missing; see [`crate::cmd_scope`].
+    pub(crate) slot_names: crate::cmd_scope::SlotNames,
+    /// Global names an `upvar #0` *outside* a procedure bound to another global
+    /// while the script was read. The same compile-time binding `Scope::aliases`
+    /// is, for the scope that has no `Scope` — see [`crate::cmd_scope`].
+    pub(crate) top_aliases: crate::cmd_scope::Aliases,
     /// Whether the failure now propagating is one the reference interpreter
     /// only reports when the command runs, set where the failure is *raised*
     /// rather than guessed from its wording.
@@ -730,6 +824,8 @@ impl Compiler {
             subst_depth: 0,
             deferrable: false,
             ns: crate::cmd_namespace::NsCtx::default(),
+            slot_names: crate::cmd_scope::SlotNames::default(),
+            top_aliases: crate::cmd_scope::Aliases::default(),
         };
         // Signatures are collected before anything is emitted so a procedure
         // may call one that the script defines further down, which is legal in
@@ -922,6 +1018,12 @@ impl Compiler {
         {
             return Place::Global(self.b.add_name(&target));
         }
+        // An `upvar` whose target only the running script knows binds the name
+        // to a *slot holding a link*, and every access goes through it. Ahead of
+        // `slot_of` so the name is not also handed a plain slot.
+        if let Some(slot) = self.scope.as_ref().and_then(|s| s.links.get(name)).copied() {
+            return Place::Link(slot);
+        }
         match self.slot_of(name) {
             Some(slot) => Place::Slot(slot),
             // The one hook namespaces need in the variable path: a name that
@@ -931,6 +1033,14 @@ impl Compiler {
             // existed compiles differently now. See `crate::cmd_namespace`.
             None => {
                 let key = crate::cmd_namespace::global_key(self, name);
+                // Outside a procedure an `upvar #0` binding is between two
+                // globals, so it is followed here rather than at the top of this
+                // function: the name is resolved in its namespace first, and the
+                // binding is on the resolved spelling.
+                let key = match self.top_aliases.get(&key) {
+                    Some(target) => target.clone(),
+                    None => key,
+                };
                 Place::Global(self.b.add_name(&key))
             }
         }
@@ -944,10 +1054,8 @@ impl Compiler {
     /// `regexp`'s match variables and `gets`'s line variable are the two.
     /// [`crate::runtime::place_at`] reads it back.
     pub(crate) fn place_operand(&mut self, name: &str) -> i64 {
-        match self.var_place(name) {
-            Place::Slot(slot) => (i64::from(slot) << 1) | 1,
-            Place::Global(idx) => i64::from(idx) << 1,
-        }
+        let place = self.var_place(name);
+        (place.frame_operand() << 1) | i64::from(place.in_frame())
     }
 
     /// Read a variable onto the stack.
@@ -955,6 +1063,14 @@ impl Compiler {
         match self.var_place(name) {
             Place::Slot(slot) => self.emit(Op::GetSlot(slot), 1),
             Place::Global(idx) => self.emit(Op::GetVar(idx), 1),
+            // A link has no native op: the descriptor in the slot has to be
+            // followed, which only the frontend can do. See
+            // [`crate::cmd_scope::link_get`].
+            Place::Link(slot) => {
+                self.push_str(name);
+                self.emit(Op::LoadInt(i64::from(slot)), 1);
+                self.emit(Op::Extended(ext::LINK_GET, 0), -1)
+            }
         };
     }
 
@@ -963,6 +1079,11 @@ impl Compiler {
         match self.var_place(name) {
             Place::Slot(slot) => self.emit(Op::SetSlot(slot), -1),
             Place::Global(idx) => self.emit(Op::SetVar(idx), -1),
+            Place::Link(slot) => {
+                self.push_str(name);
+                self.emit(Op::LoadInt(i64::from(slot)), 1);
+                self.emit(Op::Extended(ext::LINK_SET, 0), -3)
+            }
         };
     }
 
@@ -1112,7 +1233,7 @@ impl Compiler {
     /// What a variable-name word names. `a(i)` is an array element even though
     /// the parser hands it over as ordinary text — the parentheses are only
     /// syntax inside a `$` substitution, so the interpretation happens here.
-    fn target_of(&self, word: &Word) -> Result<Target, CompileError> {
+    pub(crate) fn target_of(&self, word: &Word) -> Result<Target, CompileError> {
         assoc::target_of(word)
             .ok_or_else(|| self.err("variable name must be a literal in this phase".to_string()))
     }
@@ -1124,6 +1245,19 @@ impl Compiler {
         match self.target_of(word)? {
             Target::Scalar(name) => Ok(name),
             Target::Elem { .. } => self.error("this command does not take an array element yet"),
+        }
+    }
+
+    /// The name an array element's variable would be reported under: the whole
+    /// spelling the script wrote, `a(i)` and not `a`, which is the name tclsh
+    /// quotes in `can't read "a(i)": no such variable`. The index is only known
+    /// at compile time when it is literal; otherwise the array's own name stands,
+    /// which is all a diagnostic can honestly say about it.
+    pub(crate) fn elem_report_name(name: &str, index: &[Part]) -> String {
+        match index {
+            [] => format!("{name}()"),
+            [Part::Lit(text)] => format!("{name}({text})"),
+            _ => name.to_string(),
         }
     }
 
@@ -1515,10 +1649,18 @@ impl Compiler {
         // because the two are the same op on the same name; a guarded read
         // emits more than one op and owns its own diagnostic, so only the bare
         // single-op read is marked.
-        let read_at = self.b.current_pos();
-        self.scalar_get(&name);
-        if self.b.current_pos() == read_at + 1 {
-            self.tolerant_reads.push(read_at);
+        if let Place::Link(slot) = self.var_place(&name) {
+            // A linked name's read is not a single op, so the site-keyed
+            // tolerance below cannot mark it: the op carries the flag instead.
+            self.push_str(&name);
+            self.emit(Op::LoadInt(i64::from(slot)), 1);
+            self.emit(Op::Extended(ext::LINK_GET, 1), -1);
+        } else {
+            let read_at = self.b.current_pos();
+            self.scalar_get(&name);
+            if self.b.current_pos() == read_at + 1 {
+                self.tolerant_reads.push(read_at);
+            }
         }
         match by {
             Some(w) => self.word(w)?,
@@ -1646,12 +1788,7 @@ impl Compiler {
                 return self.error("foreach varlist is empty");
             }
             let count = vars.len();
-            for name in vars {
-                if name.ends_with(')') && name.contains('(') {
-                    return self.error("array variables are not supported yet");
-                }
-                names.push(name);
-            }
+            names.extend(vars);
             self.push_value(Value::Int(count as i64));
             self.word(&pair[1])?;
         }
@@ -1672,7 +1809,7 @@ impl Compiler {
             |c| {
                 c.emit(Op::Extended(ext::FOREACH_TAKE, width), i32::from(width));
                 for name in &taken {
-                    c.emit_set_var(name);
+                    c.store_named(name)?;
                 }
                 c.emit_body(&script)
             },

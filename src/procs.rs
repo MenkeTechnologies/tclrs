@@ -470,13 +470,20 @@ impl Compiler {
         self.depth = outer_depth;
         self.loops = outer_loops;
         self.catch_depth = outer_catch;
-        self.scope = outer_scope;
+        // The body's own scope, taken rather than dropped: which name each of
+        // its slots was written as is the half a built chunk was missing, and
+        // `upvar` at a level that is a procedure activation needs it. See
+        // [`Compiler::publish_slot_names`].
+        let body_scope = std::mem::replace(&mut self.scope, outer_scope);
         self.top_level = outer_top;
         self.static_ctx = outer_static;
         compiled?;
 
         let after = self.b.current_pos();
         self.b.patch_jump(skip, after);
+        if let Some(scope) = body_scope {
+            self.publish_slot_names(&scope, entry, after);
+        }
         if at_top {
             // The address book `Op::Call` and `coroutine` resolve through. Only
             // a top-level definition earns one: two conditional definitions may

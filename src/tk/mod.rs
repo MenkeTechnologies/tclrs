@@ -192,7 +192,13 @@
 //!
 //! `tk.tcl` is where Tk's class bindings live, so `bind Button` is empty in
 //! this host and a mouse click on a button reaches nothing. The gap between
-//! here and a `TCL_OK` is one Tcl language feature, not more of the Tk ABI.
+//! here and a `TCL_OK` is a handful of Tcl language features, not more of the Tk
+//! ABI. Measured by splitting `tk.tcl` into its 55 top-level commands with
+//! `info complete` and compiling each on its own: 37 of the 55 compile. `{*}` is
+//! six of the eighteen that do not, a command name the script computes is five,
+//! and the rest are one each. `upvar` was one of them — `::tk::SetFocusGrab`'s
+//! `upvar ::tk::FocusGrab($index) data`, which is a computed array element at the
+//! caller's level — and `src/cmd_scope.rs` now compiles it.
 //!
 //! The call and slot counts did not move as the refusal walked forward. The
 //! whole failure is on this side of the stub table, so Tk asked for exactly
