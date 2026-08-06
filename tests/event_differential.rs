@@ -86,6 +86,72 @@ const PROGRAMS: &[&str] = &[
     "proc p {} {upvar #0 a x b y\nset x 1\nset y 2}\np\nputs \"$a$b\"",
     "set g 1\nproc p {} {upvar #0 g l\nunset l\nreturn [info exists l]}\nputs [p]\nputs [info exists g]",
     "proc p {} {upvar #0 g l\nlappend l a b\nreturn $l}\nputs [p]\nputs $g",
+    // ── upvar at a level that is a procedure activation ──
+    // The default level is 1, which is the caller's frame. Every one of these
+    // used to be a refusal in `unreachable_scopes_are_refused` below; the
+    // slot-name table `src/cmd_scope.rs` publishes is what makes them answers.
+    "proc inner {} {upvar x y\nset y 99}\nproc outer {} {set x 1\ninner\nputs $x}\nouter",
+    "proc inner {} {upvar 1 x y\nreturn $y}\nproc outer {} {set x 7\nputs [inner]}\nouter",
+    "proc i {} {upvar #1 v c\nreturn $c}\nproc o {} {set v top\nputs [i]}\no",
+    // Two frames up, and two levels reached from one body.
+    "proc l3 {} {upvar 1 v a\nupvar 2 v b\nreturn \"$a$b\"}\nproc l2 {} {set v B\nreturn [l3]}\nproc l1 {} {set v A\nputs [l2]}\nl1",
+    // A write through the link reaches the caller's own local.
+    "proc i {} {upvar 1 q z\nincr z 41}\nproc o {} {set q 1\ni\nreturn $q}\nputs [o]",
+    // The level itself computed.
+    "proc c3 {} {set n 2\nupvar $n w u\nreturn $u}\nproc c2 {} {return [c3]}\nproc c1 {} {set w W\nputs [c2]}\nc1",
+    // `upvar 0` is the procedure's own frame, so the two names are one variable.
+    "proc p {} {set x 0\nupvar 0 x y\nset y 9\nreturn $x}\nputs [p]",
+    // ── upvar with a computed name ──
+    // `upvar #0 $win data`, which is how tk.tcl addresses per-widget state.
+    "proc p {w} {upvar #0 $w data\nset data hello}\nset win foo\np $win\nputs [set ::foo]",
+    "proc p {n} {upvar $n l\nset l 1}\np ::zz\nputs $zz",
+    // A qualified name resolves in the interpreter's variables whatever the
+    // level, which is `TclObjLookupVar`'s rule and not a special case here.
+    "proc p {n} {upvar 1 $n v\nreturn $v}\nset ::qq 4\nputs [p ::qq]",
+    // ── upvar to an array element ──
+    // `upvar ::tk::FocusGrab($index) data`, `library/tk.tcl:145`.
+    "proc ae {i} {upvar #0 arr($i) e\nlappend e p\nappend e q\nreturn $e}\nputs [ae k]\nputs [array get arr]",
+    "proc ae {i} {upvar #0 arr($i) e\nincr e 3\nreturn $e}\nputs [ae n]\nputs [array get arr]",
+    "proc ae {} {upvar #0 arr(z) e\nset e 1\nunset e\nreturn [info exists e]}\nputs [ae]\nputs [info exists arr(z)]",
+    "proc ae {i} {upvar 1 a($i) e\nreturn $e}\nproc caller {} {set a(k) v\nreturn [ae k]}\nputs [caller]",
+    // An element of a *caller's* local array, written through.
+    "proc w {i} {upvar 1 a($i) e\nset e W}\nproc caller {} {set a(k) v\nw k\nreturn [array get a]}\nputs [caller]",
+    // ── upvar outside a procedure ──
+    // Two globals made one variable, which is what `uplevel #0 [list upvar #0
+    // ::tk::Priv.$disp ::tk::Priv]` does at `library/tk.tcl:257`.
+    "upvar #0 a b\nset a 3\nputs $b",
+    "upvar #0 a b\nset b 4\nputs $a",
+    // The pair survives the chunk that made it, which is what `uplevel #0 [list
+    // upvar #0 …]` at `library/tk.tcl:257` relies on: the `upvar` runs in a chunk
+    // of its own and every later script sees one variable.
+    "uplevel #0 {upvar #0 src alias}\nuplevel #0 {set src 5}\nputs $alias\nuplevel #0 {set alias 6}\nuplevel #0 {puts [set src]}",
+    // ── uplevel into a procedure activation ──
+    "proc inner {} {uplevel 1 {set x 1}}\nproc outer {} {set x 0\ninner\nputs $x}\nouter",
+    "proc inner {} {uplevel #1 {set x 5}}\nproc outer {} {set x 0\ninner\nputs $x}\nouter",
+    "proc p {} {set x 0\nuplevel 0 {set x 9}\nputs $x}\np",
+    "proc inner {} {uplevel 1 {incr n 10}}\nproc outer {} {set n 1\ninner\nreturn $n}\nputs [outer]",
+    // The uplevel'd script sees the frame's locals and not a global of the same
+    // name, and the global is left as it was.
+    "set v global\nproc inner {} {uplevel 1 {set r $v}}\nproc outer {} {set v local\nset r {}\ninner\nreturn $r}\nputs [outer]\nputs $v",
+    // ── an array element as a command's variable ──
+    "lappend a(i) x y\nputs $a(i)",
+    "append b(j) hi there\nputs $b(j)",
+    "incr c(k) 5\nputs $c(k)",
+    "set a(i) x\nunset a(i)\nputs [info exists a(i)]",
+    "lassign {1 2} d(p) d(q)\nputs \"$d(p),$d(q)\"",
+    "set e(l) {1 2 3}\nlset e(l) 1 X\nputs $e(l)",
+    "set e(l) {1 2 3}\nputs [lpop e(l)]\nputs $e(l)",
+    "set e(l) {1 2 3}\nledit e(l) 0 0 Z\nputs $e(l)",
+    "foreach f(x) {1 2} {puts $f(x)}",
+    "puts [lmap g(y) {1 2} {expr {$g(y) * 3}}]",
+    // The same inside a procedure, where the array is a frame slot.
+    "proc p {} {lappend a(i) x\nappend a(i) !\nreturn [array get a]}\nputs [p]",
+    // A run-time link is a frame entry from the declaration on, so `info vars`
+    // lists it and `info locals` does not — which is what tclsh answers.
+    "proc p {} {upvar 1 x y\nset l 1\nreturn [lsort [info vars]]}\nproc o {} {set x 1\nputs [p]}\no",
+    "proc p {} {upvar 1 x y\nset l 1\nreturn [lsort [info locals]]}\nproc o {} {set x 1\nputs [p]}\no",
+    "proc p {} {upvar 1 nope y\nreturn [list [info vars] [info exists y]]}\nproc o {} {set nope 1\nputs [p]}\no",
+    "proc p {} {set a(i) {1 2}\nlset a(i) 0 Z\nreturn $a(i)}\nputs [p]",
     // ── variable ──
     "variable v 7\nputs $v",
     "variable a 1 b 2\nputs \"$a$b\"",
@@ -331,44 +397,62 @@ fn a_wait_that_could_never_end_is_reported_rather_than_entered() {
 
 /// What this frontend refuses, and the reason it gives.
 ///
-/// Each of these is a shape the reference interpreter accepts. The refusal is
-/// the point: a level that names a procedure activation, or a link that would
-/// have to be made when the command runs, cannot be served against frame slots
-/// the chunk addresses by index — see `src/cmd_scope.rs`. Refusing loudly is
-/// what keeps a script from being run against the wrong variables.
+/// **Seven entries left here when the slot-name table landed**, and each is
+/// recorded with what it answers now rather than dropped, because a refusal that
+/// quietly became an answer is the one thing a refusal test cannot notice on its
+/// own:
+///
+/// * `uplevel 1`, `uplevel #1` and `uplevel 0` into a procedure activation, all
+///   three `"uplevel" to level 1 is not supported` — now answers, through
+///   `cmd_scope::in_frame_context`.
+/// * `upvar 1 x y` (`"upvar 1" is not supported`) and `upvar x y` (`"upvar" with
+///   no level is not supported`) — now answers, through the run-time link.
+/// * `upvar #0 a b` outside a procedure (`"upvar" outside a procedure is not
+///   supported`) — now makes the two globals one variable, which is
+///   `runtime::alias_global`.
+/// * `upvar #0 $n l` (`variable name must be a literal in this phase`) — now
+///   answers; a computed name is what the run-time link exists for.
+///
+/// All seven are byte-compared against tclsh in `PROGRAMS` above. What stands
+/// here is what is still out of reach, for the reason `src/cmd_scope.rs` gives:
+/// another frame's variables are addressed through a table of the names its
+/// procedure *wrote*, so a name that procedure never mentions has no slot to be
+/// reached at. Refusing loudly is what keeps a script from being run against the
+/// wrong variables.
 #[test]
 fn unreachable_scopes_are_refused() {
     for (src, expected) in [
-        // The level resolves to a procedure activation.
+        // A caller's variable the caller itself never names. tclsh creates it in
+        // that frame; here there is no slot for it, because no op in the
+        // already-built body could have addressed one.
         (
-            "proc outer {} {inner}\nproc inner {} {uplevel 1 {set x 1}}\nouter",
-            "\"uplevel\" to level 1 is not supported",
+            "proc o {} {i}\nproc i {} {upvar 1 neverused z\nset z 1}\no",
+            "the procedure running there never names it",
         ),
         (
-            "proc outer {} {inner}\nproc inner {} {uplevel #1 {set x 1}}\nouter",
-            "\"uplevel\" to level 1 is not supported",
+            "proc o {} {i}\nproc i {} {uplevel 1 {set neverused 1}}\no",
+            "the procedure running there never names it",
         ),
-        // `uplevel 0` inside a procedure is that procedure's own frame, which is
-        // as unreachable by name as any other.
+        // Level 0 is the script's own, and *that* is name-addressed, so a level
+        // past the end of the stack is the ordinary bad-level report rather than
+        // this frontend's own refusal.
         (
-            "proc p {} {uplevel 0 {set x 1}}\np",
-            "\"uplevel\" to level 1 is not supported",
+            "proc o {} {i}\nproc i {} {upvar 3 x y}\no",
+            "bad level \"3\"",
         ),
-        // `upvar` at a level that is not `#0`.
-        ("proc p {} {upvar 1 x y}", "\"upvar 1\" is not supported"),
+        // An `upvar` outside a procedure is an alias between two entries of the
+        // interpreter's variable table, and one element of an array is not an
+        // entry of it.
         (
-            "proc p {} {upvar x y}",
-            "\"upvar\" with no level is not supported",
+            "upvar #0 arr(k) e",
+            "outside a procedure to the array element",
         ),
+        // A local name carrying `::` is refused by `ObjMakeUpvar` itself
+        // (`generic/tclVar.c:4544-4558`): the link would outlive the frame it
+        // points into.
         (
-            "upvar #0 a b",
-            "\"upvar\" outside a procedure is not supported",
-        ),
-        // A link whose names are computed cannot be bound while the script is
-        // read.
-        (
-            "proc p {n} {upvar #0 $n l}",
-            "variable name must be a literal in this phase",
+            "proc p {n} {upvar 1 $n ::q}",
+            "can't create namespace variable that refers to procedure variable",
         ),
         // A lambda that is a value.
         (
