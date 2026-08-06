@@ -15,21 +15,32 @@
 //!   `{a}x` and `set x "a"b` are all 1, and so is a trailing backslash. That
 //!   maps exactly onto which parse errors mean "more input would help".
 //!
-//! What a procedure's signature answers — `info args`, `info default` — comes
-//! from the table the compiler already builds to check arity, published by
-//! [`crate::runtime::note_procs`] so a computed name works as well as a literal.
+//! What a procedure's signature answers — `info args`, `info body`, `info
+//! default` — comes from the table the compiler already builds to check arity,
+//! published by [`crate::runtime::note_procs`] so a computed name works as well
+//! as a literal. The body text rides on the same table: `info body $n` is a
+//! computed name too.
 //!
-//! Subcommands that need a *frame* — `locals`, `level`, `frame` — and `info
-//! body`, which needs the body's source text, are refused by name. They are not
-//! unreachable, just not built here: see BUGS.md.
+//! `locals` and `vars` inside a procedure are answered in two halves, because
+//! neither half can answer alone. Which names the frame *has* is a property of
+//! the body, known only while compiling — a local is a slot, and a slot's name
+//! is not in the built chunk's variable table. Which of them are *set* is a
+//! property of the running frame. So the compiler bakes the candidates and their
+//! places into the chunk and [`ext::NAMES`] keeps the ones that are set, which is
+//! what tclsh answers (measured: `proc p {} {set l 1; info locals}` is `l`, and
+//! `proc p {} {info locals}` is empty).
+//!
+//! `info frame`, TclOO's queries, `constant`/`consts`, `loaded`, `cmdcount`,
+//! `cmdtype` and `errorstack` are refused by name — see [`why_refused`] and
+//! BUGS.md.
 
 use std::sync::Arc;
 
 use fusevm::{Op, Value, VM};
 
+use crate::assoc::{element_map, place_of};
 use crate::compiler::{CompileError, Compiler, Place};
 use crate::parser::Word;
-use crate::assoc::{element_map, place_of};
 use crate::runtime::to_tcl_string;
 
 /// Extension opcode ids owned by this module. The base is declared with every
@@ -54,13 +65,32 @@ pub mod ext {
     /// [`super::describe`].
     pub const ABOUT: u16 = BASE + 5;
     pub const SET_SCRIPT: u16 = BASE + 6;
+    /// `info level` → the number of procedure activations on the stack.
+    pub const LEVEL: u16 = BASE + 7;
+    /// `[procName]` → its body's source text.
+    pub const BODY: u16 = BASE + 8;
+    /// `expr`'s math functions, for `info functions`. A constant of the build,
+    /// but the list lives in [`crate::expr_math`] and is read from there rather
+    /// than copied, so it cannot fall behind that table.
+    pub const FUNCTIONS: u16 = BASE + 9;
 }
 
 /// Which set of names [`ext::NAMES`] reports.
-const COMMANDS: u8 = 0;
-const PROCS: u8 = 1;
-const GLOBALS: u8 = 2;
-const VARS: u8 = 3;
+pub(crate) const COMMANDS: u8 = 0;
+pub(crate) const PROCS: u8 = 1;
+pub(crate) const GLOBALS: u8 = 2;
+pub(crate) const VARS: u8 = 3;
+/// The candidates the compiler pushed, kept only where the variable each names
+/// is set right now — `info locals`, and `info vars` inside a procedure body.
+pub(crate) const SET_OF: u8 = 4;
+
+/// The place operand [`SET_OF`] uses for a candidate whose *existence* is not a
+/// question: a name `global`, `variable` or `upvar` bound into the frame is
+/// visible whether or not it holds anything yet.
+///
+/// `i64::MIN` cannot collide with a real place: the most negative one a slot
+/// encodes is `-65536`, and a link's is that less `Place::LINK_BIAS`.
+pub(crate) const ALWAYS: i64 = i64::MIN;
 
 /// Which string [`ext::ABOUT`] reports.
 const SCRIPT: u8 = 0;
@@ -133,11 +163,26 @@ impl Compiler {
             "exists" => self.info_exists(rest),
             "complete" => self.info_one(rest, ext::COMPLETE, "info complete command"),
             "args" => self.info_one(rest, ext::ARGS, "info args procname"),
+            "body" => self.info_one(rest, ext::BODY, "info body procname"),
             "default" => self.info_default(rest),
             "commands" => self.info_names(rest, COMMANDS, "info commands ?pattern?"),
             "procs" => self.info_names(rest, PROCS, "info procs ?pattern?"),
             "globals" => self.info_names(rest, GLOBALS, "info globals ?pattern?"),
+            // Inside a procedure the answer is what the *frame* can see: its
+            // locals and the names `global`, `variable` and `upvar` bound into
+            // it. At the script's own level it is every variable the interpreter
+            // holds, which is `info globals`.
+            "vars" if self.scope.is_some() => {
+                let visible = self.visible_names();
+                self.info_candidates(rest, visible, "info vars ?pattern?")
+            }
             "vars" => self.info_names(rest, VARS, "info vars ?pattern?"),
+            "locals" => {
+                let locals = self.local_names();
+                self.info_candidates(rest, locals, "info locals ?pattern?")
+            }
+            "level" => self.info_level(rest),
+            "functions" => self.info_about_list(rest, ext::FUNCTIONS, "info functions ?pattern?"),
             "tclversion" => self.info_literal(rest, TCL_VERSION, "info tclversion"),
             "patchlevel" => self.info_literal(rest, TCL_PATCHLEVEL, "info patchlevel"),
             "script" => match rest {
@@ -222,6 +267,114 @@ impl Compiler {
         Ok(())
     }
 
+    /// `info level` — the number of procedure activations on the stack.
+    ///
+    /// `info level N` answers with the *command* that entered level N. A call
+    /// site pushes the actual arguments and nothing that names the command, so
+    /// the record does not exist to be read back.
+    fn info_level(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        if !args.is_empty() {
+            return self.error(
+                "\"info level\" with a level number is not supported: no record of the command \
+                 that entered a level is kept",
+            );
+        }
+        self.emit(Op::Extended(ext::LEVEL, 0), 1);
+        Ok(())
+    }
+
+    /// `info functions ?pattern?` — a list this build knows, filtered at run
+    /// time so the pattern may be computed.
+    fn info_about_list(&mut self, args: &[Word], id: u16, usage: &str) -> Result<(), CompileError> {
+        match args {
+            [] => self.push_str("*"),
+            [pattern] => self.word(pattern)?,
+            _ => return self.error(format!("wrong # args: should be \"{usage}\"")),
+        }
+        self.emit(Op::Extended(id, 0), 0);
+        Ok(())
+    }
+
+    /// The locals of the body being lowered, for `info locals`.
+    ///
+    /// A local is allocated a slot the first time the body *mentions* it, so a
+    /// local whose only mention stands after this `info locals` is not listed —
+    /// tclsh lists it only once it is set, which is the same set for every body
+    /// that assigns before it asks. Recorded in BUGS.md.
+    fn local_names(&self) -> Vec<String> {
+        let Some(scope) = self.scope.as_ref() else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = scope
+            .locals
+            .keys()
+            .filter(|n| !n.starts_with('\u{0}'))
+            .cloned()
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Every name the running body can reach: its locals, plus the ones
+    /// `global`, `variable` and `upvar` bound into the frame.
+    fn visible_names(&self) -> Vec<String> {
+        let Some(scope) = self.scope.as_ref() else {
+            return Vec::new();
+        };
+        let mut names = self.local_names();
+        names.extend(scope.globals.iter().cloned());
+        names.extend(scope.aliases.keys().cloned());
+        names.extend(scope.links.keys().cloned());
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// `info locals ?pattern?` and `info vars ?pattern?` inside a body: the
+    /// candidate names and where each lives, then the pattern.
+    fn info_candidates(
+        &mut self,
+        args: &[Word],
+        candidates: Vec<String>,
+        usage: &str,
+    ) -> Result<(), CompileError> {
+        let declared = self.declared_names();
+        let places: Vec<String> = candidates
+            .iter()
+            .map(|name| {
+                if declared.contains(name) {
+                    ALWAYS.to_string()
+                } else {
+                    self.var_place(name).encode().to_string()
+                }
+            })
+            .collect();
+        self.push_str(&crate::list::join(&candidates));
+        self.push_str(&crate::list::join(&places));
+        match args {
+            [] => self.push_str("*"),
+            [pattern] => self.word(pattern)?,
+            _ => return self.error(format!("wrong # args: should be \"{usage}\"")),
+        }
+        self.emit(Op::Extended(ext::NAMES, SET_OF), -2);
+        Ok(())
+    }
+
+    /// The names the body *declared* rather than allocated a slot for. Their
+    /// visibility is not a question about a slot's contents.
+    fn declared_names(&self) -> std::collections::HashSet<String> {
+        let Some(scope) = self.scope.as_ref() else {
+            return std::collections::HashSet::new();
+        };
+        scope
+            .globals
+            .iter()
+            .cloned()
+            .chain(scope.aliases.keys().cloned())
+            .chain(scope.links.keys().cloned())
+            .collect()
+    }
+
     /// `info commands|procs|globals|vars ?pattern?`.
     fn info_names(&mut self, args: &[Word], which: u8, usage: &str) -> Result<(), CompileError> {
         match args {
@@ -240,12 +393,7 @@ impl Compiler {
     }
 
     /// A subcommand whose answer is a constant of this build.
-    fn info_literal(
-        &mut self,
-        args: &[Word],
-        text: &str,
-        usage: &str,
-    ) -> Result<(), CompileError> {
+    fn info_literal(&mut self, args: &[Word], text: &str, usage: &str) -> Result<(), CompileError> {
         if !args.is_empty() {
             return self.error(format!("wrong # args: should be \"{usage}\""));
         }
@@ -293,11 +441,11 @@ fn resolve(given: &str) -> Result<&'static str, String> {
 /// message says what is missing rather than that something is.
 fn why_refused(sub: &str) -> &'static str {
     match sub {
-        "body" => "a procedure's body is compiled into the enclosing chunk and its source text is not kept",
-        "locals" | "level" | "frame" => "it reports on the running call frame, which this frontend does not expose yet",
+        "frame" => {
+            "it reports on the stack of *commands*, and only the stack of call frames is kept"
+        }
         "class" | "object" => "TclOO is not implemented",
         "constant" | "consts" => "constant variables are not implemented",
-        "functions" => "math functions are not implemented",
         "loaded" => "loadable extensions are not implemented",
         "cmdcount" | "cmdtype" | "errorstack" => "the interpreter does not keep it",
         _ => "not built yet",
@@ -310,7 +458,11 @@ fn why_refused(sub: &str) -> &'static str {
 pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     match id {
         ext::EXISTS => {
-            let index = if arg == 1 { Some(to_tcl_string(&vm.pop())) } else { None };
+            let index = if arg == 1 {
+                Some(to_tcl_string(&vm.pop()))
+            } else {
+                None
+            };
             let operand = vm.pop();
             let place = place_of_operand(&operand)?;
             let set = is_set(vm, place, index.as_deref());
@@ -330,7 +482,34 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let name = to_tcl_string(&vm.pop());
             let params = crate::runtime::proc_params(vm, &name)
                 .ok_or_else(|| format!("\"{name}\" isn't a procedure"))?;
-            let names: Vec<String> = params.into_iter().map(|(n, _)| n).collect();
+            let names: Vec<String> = params.params.into_iter().map(|(n, _)| n).collect();
+            vm.push(Value::Str(Arc::new(crate::list::join(&names))));
+            Ok(())
+        }
+        ext::BODY => {
+            let name = to_tcl_string(&vm.pop());
+            // A procedure with no recorded body is one whose body the script
+            // computed (`proc p {} $b`) or one defined inside a `namespace eval`
+            // block, where the signature is prescanned and the text is not. Both
+            // report the same thing tclsh reports for a name that is no
+            // procedure at all, because from here they are the same absence.
+            let body = crate::runtime::proc_body(vm, &name)
+                .ok_or_else(|| format!("\"{name}\" isn't a procedure"))?;
+            vm.push(Value::Str(Arc::new(body)));
+            Ok(())
+        }
+        ext::LEVEL => {
+            vm.push(Value::Int(crate::runtime::current_level(vm)));
+            Ok(())
+        }
+        ext::FUNCTIONS => {
+            let pattern = to_tcl_string(&vm.pop());
+            let mut names: Vec<String> = crate::expr_math::names()
+                .iter()
+                .filter(|name| crate::list::glob_match(&pattern, name))
+                .map(|name| (*name).to_string())
+                .collect();
+            names.sort();
             vm.push(Value::Str(Arc::new(crate::list::join(&names))));
             Ok(())
         }
@@ -342,6 +521,7 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let params = crate::runtime::proc_params(vm, &proc_name)
                 .ok_or_else(|| format!("\"{proc_name}\" isn't a procedure"))?;
             let found = params
+                .params
                 .into_iter()
                 .find(|(n, _)| *n == arg_name)
                 .ok_or_else(|| {
@@ -387,8 +567,7 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
 /// [`place_of`] for an operand already off the stack.
 fn place_of_operand(operand: &Value) -> Result<Place, String> {
     match operand {
-        Value::Int(raw) if *raw < 0 => Ok(Place::Slot((-raw - 1) as u16)),
-        Value::Int(raw) => Ok(Place::Global(*raw as u16)),
+        Value::Int(raw) => Ok(Place::decode(*raw)),
         other => Err(format!("not a variable place: {other:?}")),
     }
 }
@@ -398,18 +577,15 @@ fn place_of_operand(operand: &Value) -> Result<Place, String> {
 /// A *peek*, never a read: `Value::Undef` is how an unset variable arrives, and
 /// growing the storage to look would make the question create its own answer.
 fn is_set(vm: &VM, place: Place, index: Option<&str>) -> bool {
-    let held = match place {
-        Place::Global(idx) => vm.globals.get(idx as usize),
-        Place::Slot(slot) => vm.frames.last().and_then(|f| f.slots.get(slot as usize)),
+    let Some(index) = index else {
+        // The whole variable, which is the same peek every other op that asks
+        // makes — including the one that follows an `upvar` link.
+        return crate::runtime::var_is_set(vm, place);
     };
-    match (held, index) {
-        (None | Some(Value::Undef), _) => false,
-        (Some(Value::Hash(map)), Some(key)) => map.contains_key(key),
-        // An array asked about by element name that is not an array at all, or a
-        // scalar asked about with an index: neither is set.
-        (Some(_), Some(_)) => false,
-        (Some(_), None) => true,
-    }
+    // One element, through the same peek `array exists` and `array names` make —
+    // which follows an `upvar` link, so `upvar 1 a b` followed by
+    // `info exists b(k)` asks about the caller's array.
+    crate::assoc::element_is_set(vm, place, index)
 }
 
 /// Whether `text` is a complete command — tclsh's rule, measured.

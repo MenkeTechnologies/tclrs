@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. Every one of the 228 names the current tclrs build implements: 52 commands, 87 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. Every one of the 335 names the current tclrs build implements: 77 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -111,7 +111,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/tclrs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">tclrs v0.3.0 &middot; generated from the compiler's own tables &middot; MIT</p>
+          <p class="docs-build-line">tclrs v0.4.0 &middot; generated from the compiler's own tables &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -126,15 +126,15 @@
 
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>LANGUAGE REFERENCE</h2>
-      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 52 commands,
-      87 ensemble subcommands, the <code>expr</code> ladder, the
+      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 77 commands,
+      169 ensemble subcommands, the <code>expr</code> ladder, the
       <code>string is</code> classes and the <code>format</code> conversions &mdash; each with the
       signature the compiler reports and a description written from what the code does.
-      228 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
+      335 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
       <section class="tutorial-section">
         <h2>Chapters</h2>
         <ul class="chapter-index">
-          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">52</span></li>
+          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">77</span></li>
           <li><a href="#ch-string">The <code>string</code> ensemble</a> <span class="chapter-count">23</span></li>
           <li><a href="#ch-array">The <code>array</code> ensemble</a> <span class="chapter-count">13</span></li>
           <li><a href="#ch-dict">The <code>dict</code> ensemble</a> <span class="chapter-count">22</span></li>
@@ -147,7 +147,7 @@
 
       <section class="tutorial-section" id="ch-commands">
         <h2>Commands</h2>
-        <p class="chapter-meta">52 entries</p>
+        <p class="chapter-meta">77 entries</p>
         <p>Every command the current build compiles. A name absent from this
         chapter is <code>invalid command name "&hellip;"</code> at <em>compile</em>
         time, not a runtime lookup that fails &mdash; resolving the name while
@@ -159,11 +159,11 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">52</div>
+            <div class="stat-val">77</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">56/87</div>
+            <div class="stat-val">130/169</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -176,6 +176,12 @@
           </div>
         </div>
 
+        <article class="doc-entry" id="doc-cmd-after">
+          <h3><a class="doc-anchor" href="#doc-cmd-after">#</a> <code>after</code></h3>
+          <pre><code class="lang-tcl">after ms|cancel|idle|info ?arg ...?
+</code></pre>
+          <p>Register a script to run after a delay or when nothing else is pending, cancel one, or list what is registered. See the module note in src/cmd_after.rs for which event sources a build has.</p>
+        </article>
         <article class="doc-entry" id="doc-cmd-append">
           <h3><a class="doc-anchor" href="#doc-cmd-append">#</a> <code>append</code></h3>
           <pre><code class="lang-tcl">append varName ?value ...?
@@ -186,7 +192,7 @@
           <h3><a class="doc-anchor" href="#doc-cmd-apply">#</a> <code>apply</code></h3>
           <pre><code class="lang-tcl">apply lambdaExpr ?arg ...?
 </code></pre>
-          <p>Run a lambda — a list of parameters, a body and an optional namespace — as what it is: a procedure body with a frame of its own. A wrong argument count is reported against the lambda, which has no name to report.</p>
+          <p>Run a lambda — a list of parameters, a body and an optional namespace — as what it is: a procedure body with a frame of its own. The lambda may be computed. A wrong argument count is reported against the lambda, which has no name to report.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-array">
           <h3><a class="doc-anchor" href="#doc-cmd-array">#</a> <code>array</code></h3>
@@ -205,6 +211,24 @@
           <pre><code class="lang-tcl">catch script ?resultVarName?
 </code></pre>
           <p>Run the script and trap an error from it, including one raised inside a procedure it called; yields the completion code.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-cd">
+          <h3><a class="doc-anchor" href="#doc-cmd-cd">#</a> <code>cd</code></h3>
+          <pre><code class="lang-tcl">cd ?dirName?
+</code></pre>
+          <p>Change the working directory; no argument means the home directory.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-clock">
+          <h3><a class="doc-anchor" href="#doc-cmd-clock">#</a> <code>clock</code></h3>
+          <pre><code class="lang-tcl">clock subcommand ?arg ...?
+</code></pre>
+          <p>The time ensemble: read the clock, and convert between an instant and a calendar.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-close">
+          <h3><a class="doc-anchor" href="#doc-cmd-close">#</a> <code>close</code></h3>
+          <pre><code class="lang-tcl">close channel ?direction?
+</code></pre>
+          <p>Drop a reference to a channel and close it once none is left; ?direction? half-closes a read-write channel.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-concat">
           <h3><a class="doc-anchor" href="#doc-cmd-concat">#</a> <code>concat</code></h3>
@@ -230,6 +254,18 @@
 </code></pre>
           <p>The dict ensemble, over a value: a dict is a list of alternating keys and values, so it can be passed and printed like any string.</p>
         </article>
+        <article class="doc-entry" id="doc-cmd-encoding">
+          <h3><a class="doc-anchor" href="#doc-cmd-encoding">#</a> <code>encoding</code></h3>
+          <pre><code class="lang-tcl">encoding subcommand ?arg ...?
+</code></pre>
+          <p>The transcoding ensemble: convert between a byte string and a string, and report which encodings and error profiles exist.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-eof">
+          <h3><a class="doc-anchor" href="#doc-cmd-eof">#</a> <code>eof</code></h3>
+          <pre><code class="lang-tcl">eof channel
+</code></pre>
+          <p>Whether the channel's device reported end of file and nothing decoded is still buffered.</p>
+        </article>
         <article class="doc-entry" id="doc-cmd-error">
           <h3><a class="doc-anchor" href="#doc-cmd-error">#</a> <code>error</code></h3>
           <pre><code class="lang-tcl">error message
@@ -248,6 +284,24 @@
 </code></pre>
           <p>Evaluate the arguments as an expression. A braced argument is compiled once, not re-parsed per evaluation.</p>
         </article>
+        <article class="doc-entry" id="doc-cmd-fconfigure">
+          <h3><a class="doc-anchor" href="#doc-cmd-fconfigure">#</a> <code>fconfigure</code></h3>
+          <pre><code class="lang-tcl">fconfigure channel ?-option value ...?
+</code></pre>
+          <p>Read or set a channel's generic options: -translation, -encoding, -buffering, -buffersize, -blocking.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-file">
+          <h3><a class="doc-anchor" href="#doc-cmd-file">#</a> <code>file</code></h3>
+          <pre><code class="lang-tcl">file subcommand ?arg ...?
+</code></pre>
+          <p>The path and filesystem ensemble; the path halves need nothing on disk.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-flush">
+          <h3><a class="doc-anchor" href="#doc-cmd-flush">#</a> <code>flush</code></h3>
+          <pre><code class="lang-tcl">flush channel
+</code></pre>
+          <p>Hand everything buffered for the channel to its device.</p>
+        </article>
         <article class="doc-entry" id="doc-cmd-for">
           <h3><a class="doc-anchor" href="#doc-cmd-for">#</a> <code>for</code></h3>
           <pre><code class="lang-tcl">for start test next body
@@ -265,6 +319,18 @@
           <pre><code class="lang-tcl">format formatString ?arg ...?
 </code></pre>
           <p>Format the arguments the way <code>sprintf</code> does, with Tcl's conversion set.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-gets">
+          <h3><a class="doc-anchor" href="#doc-cmd-gets">#</a> <code>gets</code></h3>
+          <pre><code class="lang-tcl">gets channel ?varName?
+</code></pre>
+          <p>The next line without its terminator; with a variable, the line goes there and the count is the result.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-glob">
+          <h3><a class="doc-anchor" href="#doc-cmd-glob">#</a> <code>glob</code></h3>
+          <pre><code class="lang-tcl">glob ?switches? ?pattern ...?
+</code></pre>
+          <p>Every existing name a pattern matches, walked one path component at a time.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-global">
           <h3><a class="doc-anchor" href="#doc-cmd-global">#</a> <code>global</code></h3>
@@ -288,7 +354,7 @@
           <h3><a class="doc-anchor" href="#doc-cmd-info">#</a> <code>info</code></h3>
           <pre><code class="lang-tcl">info subcommand ?arg ...?
 </code></pre>
-          <p>Interpreter introspection. Variables, procedure signatures, command names, whether text is a complete command, and the versions; the subcommands reporting on the running call frame, on TclOO and on loadable extensions are refused by name.</p>
+          <p>Interpreter introspection. Variables, procedure signatures and bodies, command names, the call frame's level and its locals, the math functions, whether text is a complete command, and the versions; the subcommands naming machinery this frontend has none of — <code>frame</code>, <code>errorstack</code>, <code>cmdcount</code>, <code>cmdtype</code>, the object-system queries, <code>constant</code>, <code>loaded</code> — are refused by name rather than mis-answered.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-join">
           <h3><a class="doc-anchor" href="#doc-cmd-join">#</a> <code>join</code></h3>
@@ -404,6 +470,24 @@
 </code></pre>
           <p>The list sorted by the reference merge sort — the algorithm, not just the ordering, because <code>-unique</code> observes it.</p>
         </article>
+        <article class="doc-entry" id="doc-cmd-namespace">
+          <h3><a class="doc-anchor" href="#doc-cmd-namespace">#</a> <code>namespace</code></h3>
+          <pre><code class="lang-tcl">namespace subcommand ?arg ...?
+</code></pre>
+          <p>The namespace ensemble. A namespace is resolved while compiling, so its variables and procedures take qualified names; the queries are answered from interpreter state.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-open">
+          <h3><a class="doc-anchor" href="#doc-cmd-open">#</a> <code>open</code></h3>
+          <pre><code class="lang-tcl">open fileName ?access? ?permissions?
+</code></pre>
+          <p>Open a file and return the channel's name. The command-pipeline form is refused.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-package">
+          <h3><a class="doc-anchor" href="#doc-cmd-package">#</a> <code>package</code></h3>
+          <pre><code class="lang-tcl">package option ?arg ...?
+</code></pre>
+          <p>The package ensemble: what a name is provided at, what would load it, and TIP 268's version arithmetic over both.</p>
+        </article>
         <article class="doc-entry" id="doc-cmd-proc">
           <h3><a class="doc-anchor" href="#doc-cmd-proc">#</a> <code>proc</code></h3>
           <pre><code class="lang-tcl">proc name args body
@@ -412,9 +496,21 @@
         </article>
         <article class="doc-entry" id="doc-cmd-puts">
           <h3><a class="doc-anchor" href="#doc-cmd-puts">#</a> <code>puts</code></h3>
-          <pre><code class="lang-tcl">puts ?-nonewline? string
+          <pre><code class="lang-tcl">puts ?-nonewline? ?channel? string
 </code></pre>
-          <p>Write the string to stdout.</p>
+          <p>Write the string to a channel, or to stdout when none is named.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-pwd">
+          <h3><a class="doc-anchor" href="#doc-cmd-pwd">#</a> <code>pwd</code></h3>
+          <pre><code class="lang-tcl">pwd
+</code></pre>
+          <p>The working directory, as the last cd was told it rather than as getcwd reports it.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-read">
+          <h3><a class="doc-anchor" href="#doc-cmd-read">#</a> <code>read</code></h3>
+          <pre><code class="lang-tcl">read channel ?numChars?
+</code></pre>
+          <p>Read the whole channel, or that many characters; -nonewline drops the trailing newlines.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-regexp">
           <h3><a class="doc-anchor" href="#doc-cmd-regexp">#</a> <code>regexp</code></h3>
@@ -428,17 +524,35 @@
 </code></pre>
           <p>Substitute for a regular expression's matches; the new string, or the count when a variable is named.</p>
         </article>
+        <article class="doc-entry" id="doc-cmd-rename">
+          <h3><a class="doc-anchor" href="#doc-cmd-rename">#</a> <code>rename</code></h3>
+          <pre><code class="lang-tcl">rename oldName newName
+</code></pre>
+          <p>Rename a command, or delete it when the new name is empty. A call the same chunk compiled is guarded so a deleted command still refuses.</p>
+        </article>
         <article class="doc-entry" id="doc-cmd-return">
           <h3><a class="doc-anchor" href="#doc-cmd-return">#</a> <code>return</code></h3>
           <pre><code class="lang-tcl">return ?-code code? ?result?
 </code></pre>
           <p>Return from the enclosing procedure with the result. <code>-code ok</code> and <code>-code error</code> are the codes implemented.</p>
         </article>
+        <article class="doc-entry" id="doc-cmd-seek">
+          <h3><a class="doc-anchor" href="#doc-cmd-seek">#</a> <code>seek</code></h3>
+          <pre><code class="lang-tcl">seek channel offset ?origin?
+</code></pre>
+          <p>Move the device's position, discarding what was buffered and clearing end of file.</p>
+        </article>
         <article class="doc-entry" id="doc-cmd-set">
           <h3><a class="doc-anchor" href="#doc-cmd-set">#</a> <code>set</code></h3>
           <pre><code class="lang-tcl">set varName ?newValue?
 </code></pre>
           <p>Read or write a variable; yields its value. A procedure's variables are slots, a script's are VM globals.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-source">
+          <h3><a class="doc-anchor" href="#doc-cmd-source">#</a> <code>source</code></h3>
+          <pre><code class="lang-tcl">source ?-encoding encoding? fileName
+</code></pre>
+          <p>Read a file and evaluate it against this interpreter; yields the value of its last command.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-split">
           <h3><a class="doc-anchor" href="#doc-cmd-split">#</a> <code>split</code></h3>
@@ -458,17 +572,53 @@
 </code></pre>
           <p>Run the body of the first pattern that matches, <code>-exact</code> or <code>-glob</code>.</p>
         </article>
+        <article class="doc-entry" id="doc-cmd-tcl-findLibrary">
+          <h3><a class="doc-anchor" href="#doc-cmd-tcl-findLibrary">#</a> <code>tcl_findLibrary</code></h3>
+          <pre><code class="lang-tcl">tcl_findLibrary basename version patch initScript enVarName varName
+</code></pre>
+          <p>Tcl's own library-directory search, ported from <code>library/auto.tcl</code>: find the initialisation script, set the library variable and source it.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-tell">
+          <h3><a class="doc-anchor" href="#doc-cmd-tell">#</a> <code>tell</code></h3>
+          <pre><code class="lang-tcl">tell channel
+</code></pre>
+          <p>The device's position, less whatever was read ahead of the script.</p>
+        </article>
         <article class="doc-entry" id="doc-cmd-unset">
           <h3><a class="doc-anchor" href="#doc-cmd-unset">#</a> <code>unset</code></h3>
           <pre><code class="lang-tcl">unset ?-nocomplain? ?--? ?name ...?
 </code></pre>
           <p>Remove variables or array elements.</p>
         </article>
+        <article class="doc-entry" id="doc-cmd-update">
+          <h3><a class="doc-anchor" href="#doc-cmd-update">#</a> <code>update</code></h3>
+          <pre><code class="lang-tcl">update ?idletasks?
+</code></pre>
+          <p>Service everything that is pending and return; idletasks services only the idle handlers.</p>
+        </article>
         <article class="doc-entry" id="doc-cmd-uplevel">
           <h3><a class="doc-anchor" href="#doc-cmd-uplevel">#</a> <code>uplevel</code></h3>
           <pre><code class="lang-tcl">uplevel ?level? arg ?arg ...?
 </code></pre>
-          <p>Concatenate the arguments and run the result as a script in the frame of a caller: #0 is the global level, a bare number counts calls outwards from this one. Only a procedure call is a level, so uplevel 1 at a script's top level is a bad level.</p>
+          <p>Concatenate the arguments and run the result as a script in the frame of a caller: #0 is the global level, a bare number counts calls outwards from this one. Which word is the level is decided when the command runs, so uplevel $n works. Only a procedure call is a level, so uplevel 1 at a script's top level is a bad level.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-upvar">
+          <h3><a class="doc-anchor" href="#doc-cmd-upvar">#</a> <code>upvar</code></h3>
+          <pre><code class="lang-tcl">upvar ?level? otherVar localVar ?otherVar localVar ...?
+</code></pre>
+          <p>Bind a local name to a variable at another level. The level and the target may both be computed, and an array element may be the target.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-variable">
+          <h3><a class="doc-anchor" href="#doc-cmd-variable">#</a> <code>variable</code></h3>
+          <pre><code class="lang-tcl">variable ?name value ...? name ?value?
+</code></pre>
+          <p>Declare a namespace variable. In a procedure body it links the local name to the namespace's variable rather than creating one.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-vwait">
+          <h3><a class="doc-anchor" href="#doc-cmd-vwait">#</a> <code>vwait</code></h3>
+          <pre><code class="lang-tcl">vwait ?varName?
+</code></pre>
+          <p>Service events until the named global is written. With no name it is update.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-while">
           <h3><a class="doc-anchor" href="#doc-cmd-while">#</a> <code>while</code></h3>
@@ -876,7 +1026,7 @@
 
       <section class="tutorial-section" id="ch-info">
         <h2>The <code>info</code> ensemble</h2>
-        <p class="chapter-meta">29 subcommands recognised &middot; 16 implemented &middot; 13 refused</p>
+        <p class="chapter-meta">29 subcommands recognised &middot; 20 implemented &middot; 9 refused</p>
         <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
         <article class="doc-entry" id="doc-info-args">
           <h3><a class="doc-anchor" href="#doc-info-args">#</a> <code>info args</code></h3>
@@ -888,8 +1038,7 @@
           <h3><a class="doc-anchor" href="#doc-info-body">#</a> <code>info body</code></h3>
           <pre><code class="lang-tcl">info body procname
 </code></pre>
-          <p>The source text of a procedure's body. Refused here: a body is lowered into the enclosing chunk while compiling and its text is not kept, so there is nothing to hand back — the bytecode is the only surviving form.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info body is not supported yet: a procedure's body is compiled into the enclosing chunk and its source text is not kept</code></p>
+          <p>The source text a procedure's body was written as, answered from the same table <code>info args</code> reads, so a computed procedure name works. A procedure whose body the script computed has no text and is reported as no procedure, which is what tclsh reports for a name that is none.</p>
         </article>
         <article class="doc-entry" id="doc-info-class">
           <h3><a class="doc-anchor" href="#doc-info-class">#</a> <code>info class</code></h3>
@@ -916,7 +1065,7 @@
           <h3><a class="doc-anchor" href="#doc-info-commands">#</a> <code>info commands</code></h3>
           <pre><code class="lang-tcl">info commands ?pattern?
 </code></pre>
-          <p>The command names matching the glob pattern — builtins and script-defined procedures alike — sorted. With no pattern, every name.</p>
+          <p>The command names matching the glob pattern — every name the frontend answers to, the command modules' included, together with the script-defined procedures — sorted. With no pattern, every name.</p>
         </article>
         <article class="doc-entry" id="doc-info-complete">
           <h3><a class="doc-anchor" href="#doc-info-complete">#</a> <code>info complete</code></h3>
@@ -968,14 +1117,13 @@
           <pre><code class="lang-tcl">info frame ?number?
 </code></pre>
           <p>The depth of the call stack, or a dictionary describing one frame — its type, the file and line it came from, and the command being run. Refused: this frontend does not expose the running call frame.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info frame is not supported yet: it reports on the running call frame, which this frontend does not expose yet</code></p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info frame is not supported yet: it reports on the stack of *commands*, and only the stack of call frames is kept</code></p>
         </article>
         <article class="doc-entry" id="doc-info-functions">
           <h3><a class="doc-anchor" href="#doc-info-functions">#</a> <code>info functions</code></h3>
           <pre><code class="lang-tcl">info functions ?pattern?
 </code></pre>
-          <p>The <code>expr</code> math function names matching the pattern — <code>abs</code>, <code>sin</code>, <code>pow</code> and the rest. Refused: math functions parse and are then refused individually, so there is no set to list.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info functions is not supported yet: math functions are not implemented</code></p>
+          <p>The <code>expr</code> math function names matching the pattern — <code>abs</code>, <code>sin</code>, <code>pow</code> and the rest — read from the same table that lowers a call to one, so the list cannot fall behind what <code>expr</code> accepts.</p>
         </article>
         <article class="doc-entry" id="doc-info-globals">
           <h3><a class="doc-anchor" href="#doc-info-globals">#</a> <code>info globals</code></h3>
@@ -993,8 +1141,7 @@
           <h3><a class="doc-anchor" href="#doc-info-level">#</a> <code>info level</code></h3>
           <pre><code class="lang-tcl">info level ?number?
 </code></pre>
-          <p>With no argument, how deep the current procedure call is (0 at the top level); with one, the command and arguments that entered that level. Refused: this frontend does not expose the running call frame.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info level is not supported yet: it reports on the running call frame, which this frontend does not expose yet</code></p>
+          <p>How deep the current procedure call is — 0 at a script's own level, one more per activation. Only a call is counted, not the frames the VM pushes for a scope or after a JIT side exit. The form taking a level number is refused: a call site pushes the actual arguments and nothing naming the command, so there is no record of what entered a level.</p>
         </article>
         <article class="doc-entry" id="doc-info-library">
           <h3><a class="doc-anchor" href="#doc-info-library">#</a> <code>info library</code></h3>
@@ -1013,8 +1160,7 @@
           <h3><a class="doc-anchor" href="#doc-info-locals">#</a> <code>info locals</code></h3>
           <pre><code class="lang-tcl">info locals ?pattern?
 </code></pre>
-          <p>The local variable names of the running procedure, matching the pattern. Refused: locals are frame <em>slots</em> here, addressed by index, and the names they were compiled from are not carried into the frame.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info locals is not supported yet: it reports on the running call frame, which this frontend does not expose yet</code></p>
+          <p>The local variable names of the running procedure that are set, matching the pattern. A local is a frame slot addressed by index, so which names the frame has is settled while compiling and which of them hold anything is settled by the frame — the answer is the two halves met. A local whose only mention stands after the <code>info locals</code> is not listed.</p>
         </article>
         <article class="doc-entry" id="doc-info-nameofexecutable">
           <h3><a class="doc-anchor" href="#doc-info-nameofexecutable">#</a> <code>info nameofexecutable</code></h3>
@@ -1063,7 +1209,541 @@
           <h3><a class="doc-anchor" href="#doc-info-vars">#</a> <code>info vars</code></h3>
           <pre><code class="lang-tcl">info vars ?pattern?
 </code></pre>
-          <p>The visible variable names matching the glob pattern, sorted — including the <code>argc</code>, <code>argv</code> and <code>argv0</code> the interpreter sets up. Diverges inside a procedure: tclsh answers with the frame's locals, and this answers with the globals, because a local is an unnamed frame slot here.</p>
+          <p>The visible variable names matching the glob pattern, sorted. At a script's own level that is every variable the interpreter holds, including the <code>argc</code>, <code>argv</code> and <code>argv0</code> it sets up; inside a procedure it is the frame's own — its set locals plus the names <code>global</code>, <code>variable</code> and <code>upvar</code> bound into it, which is what tclsh answers.</p>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-namespace">
+        <h2>The <code>namespace</code> ensemble</h2>
+        <p class="chapter-meta">19 subcommands recognised &middot; 16 implemented &middot; 3 refused</p>
+        <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
+        <article class="doc-entry" id="doc-namespace-children">
+          <h3><a class="doc-anchor" href="#doc-namespace-children">#</a> <code>namespace children</code></h3>
+          <pre><code class="lang-tcl">namespace children ?name? ?pattern?
+</code></pre>
+          <p>The child namespaces of a namespace, fully qualified.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-code">
+          <h3><a class="doc-anchor" href="#doc-namespace-code">#</a> <code>namespace code</code></h3>
+          <pre><code class="lang-tcl">namespace code script
+</code></pre>
+          <p>The script wrapped so that evaluating it later runs it in this namespace.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-current">
+          <h3><a class="doc-anchor" href="#doc-namespace-current">#</a> <code>namespace current</code></h3>
+          <pre><code class="lang-tcl">namespace current
+</code></pre>
+          <p>The namespace the command was written in. Folded while compiling, since that is where a namespace is decided.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-delete">
+          <h3><a class="doc-anchor" href="#doc-namespace-delete">#</a> <code>namespace delete</code></h3>
+          <pre><code class="lang-tcl">namespace delete ?name name...?
+</code></pre>
+          <p>Remove namespaces, their child namespaces and their commands.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-ensemble">
+          <h3><a class="doc-anchor" href="#doc-namespace-ensemble">#</a> <code>namespace ensemble</code></h3>
+          <pre><code class="lang-tcl">namespace ensemble subcommand ?arg ...?
+</code></pre>
+          <p><code>exists</code>, <code>create</code> and <code>configure</code>. Dispatching <em>through</em> an ensemble is not implemented: a call resolves its command while compiling.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-eval">
+          <h3><a class="doc-anchor" href="#doc-namespace-eval">#</a> <code>namespace eval</code></h3>
+          <pre><code class="lang-tcl">namespace eval name arg ?arg...?
+</code></pre>
+          <p>Lower the body with this namespace current, which is what gives its <code>proc</code>, <code>variable</code> and <code>$v</code> the namespace's names. The name and the body have to be written out.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-exists">
+          <h3><a class="doc-anchor" href="#doc-namespace-exists">#</a> <code>namespace exists</code></h3>
+          <pre><code class="lang-tcl">namespace exists name
+</code></pre>
+          <p>1 when the namespace exists.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-export">
+          <h3><a class="doc-anchor" href="#doc-namespace-export">#</a> <code>namespace export</code></h3>
+          <pre><code class="lang-tcl">namespace export ?-clear? ?pattern pattern...?
+</code></pre>
+          <p>Add patterns to the namespace's export list, or report it when no pattern is given.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-forget">
+          <h3><a class="doc-anchor" href="#doc-namespace-forget">#</a> <code>namespace forget</code></h3>
+          <pre><code class="lang-tcl">namespace forget ?pattern pattern...?
+</code></pre>
+          <p>Remove the imports of the commands a pattern names — not the commands themselves.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-import">
+          <h3><a class="doc-anchor" href="#doc-namespace-import">#</a> <code>namespace import</code></h3>
+          <pre><code class="lang-tcl">namespace import ?-force? ?pattern pattern...?
+</code></pre>
+          <p>Bring exported commands into this namespace under their tail names. A pattern that matches nothing is not an error.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-inscope">
+          <h3><a class="doc-anchor" href="#doc-namespace-inscope">#</a> <code>namespace inscope</code></h3>
+          <pre><code class="lang-tcl">namespace inscope ns script ?arg...?
+</code></pre>
+          <p>Evaluate the script in a namespace, with the extra arguments appended as list elements.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-origin">
+          <h3><a class="doc-anchor" href="#doc-namespace-origin">#</a> <code>namespace origin</code></h3>
+          <pre><code class="lang-tcl">namespace origin name
+</code></pre>
+          <p>Where an imported command was originally defined; the command's own name when it was not imported.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-parent">
+          <h3><a class="doc-anchor" href="#doc-namespace-parent">#</a> <code>namespace parent</code></h3>
+          <pre><code class="lang-tcl">namespace parent ?name?
+</code></pre>
+          <p>The namespace containing this one; empty for the root.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-path">
+          <h3><a class="doc-anchor" href="#doc-namespace-path">#</a> <code>namespace path</code></h3>
+          <pre><code class="lang-tcl">namespace path ?namespaceList?
+</code></pre>
+          <p>Refused: it changes how a later name resolves, which this frontend resolved while compiling.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>"namespace path" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out</code></p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-qualifiers">
+          <h3><a class="doc-anchor" href="#doc-namespace-qualifiers">#</a> <code>namespace qualifiers</code></h3>
+          <pre><code class="lang-tcl">namespace qualifiers string
+</code></pre>
+          <p>Everything before the last <code>::</code>, a port of <code>NamespaceQualifiersCmd</code>. Folded when the argument is written out.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-tail">
+          <h3><a class="doc-anchor" href="#doc-namespace-tail">#</a> <code>namespace tail</code></h3>
+          <pre><code class="lang-tcl">namespace tail string
+</code></pre>
+          <p>Everything after the last <code>::</code>, a port of <code>NamespaceTailCmd</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-unknown">
+          <h3><a class="doc-anchor" href="#doc-namespace-unknown">#</a> <code>namespace unknown</code></h3>
+          <pre><code class="lang-tcl">namespace unknown ?script?
+</code></pre>
+          <p>Refused, for the same reason <code>namespace path</code> is.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>"namespace unknown" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out</code></p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-upvar">
+          <h3><a class="doc-anchor" href="#doc-namespace-upvar">#</a> <code>namespace upvar</code></h3>
+          <pre><code class="lang-tcl">namespace upvar ns ?otherVar myVar ...?
+</code></pre>
+          <p>Refused, for the same reason <code>namespace path</code> is.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>"namespace upvar" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out</code></p>
+        </article>
+        <article class="doc-entry" id="doc-namespace-which">
+          <h3><a class="doc-anchor" href="#doc-namespace-which">#</a> <code>namespace which</code></h3>
+          <pre><code class="lang-tcl">namespace which ?-command? ?-variable? name
+</code></pre>
+          <p>The qualified name a command or variable resolves to, or the empty string.</p>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-package">
+        <h2>The <code>package</code> ensemble</h2>
+        <p class="chapter-meta">12 subcommands recognised &middot; 12 implemented &middot; 0 refused</p>
+        <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
+        <article class="doc-entry" id="doc-package-files">
+          <h3><a class="doc-anchor" href="#doc-package-files">#</a> <code>package files</code></h3>
+          <pre><code class="lang-tcl">package files package
+</code></pre>
+          <p>The files a package was loaded from. Always empty here: nothing records one, because this frontend has no package index.</p>
+        </article>
+        <article class="doc-entry" id="doc-package-forget">
+          <h3><a class="doc-anchor" href="#doc-package-forget">#</a> <code>package forget</code></h3>
+          <pre><code class="lang-tcl">package forget ?package ...?
+</code></pre>
+          <p>Drop everything known about each package — its version and every script that would load it. A name that is not known is not an error.</p>
+        </article>
+        <article class="doc-entry" id="doc-package-ifneeded">
+          <h3><a class="doc-anchor" href="#doc-package-ifneeded">#</a> <code>package ifneeded</code></h3>
+          <pre><code class="lang-tcl">package ifneeded package version ?script?
+</code></pre>
+          <p>Register the script that loads a version, or, with no script, report the one registered for exactly that version.</p>
+        </article>
+        <article class="doc-entry" id="doc-package-names">
+          <h3><a class="doc-anchor" href="#doc-package-names">#</a> <code>package names</code></h3>
+          <pre><code class="lang-tcl">package names
+</code></pre>
+          <p>Every package that is provided or has a loading script, in the order each was first mentioned.</p>
+        </article>
+        <article class="doc-entry" id="doc-package-prefer">
+          <h3><a class="doc-anchor" href="#doc-package-prefer">#</a> <code>package prefer</code></h3>
+          <pre><code class="lang-tcl">package prefer ?latest|stable?
+</code></pre>
+          <p>Whether an unqualified require takes the newest version or the newest stable one. Starts at stable and only ever moves to latest.</p>
+        </article>
+        <article class="doc-entry" id="doc-package-present">
+          <h3><a class="doc-anchor" href="#doc-package-present">#</a> <code>package present</code></h3>
+          <pre><code class="lang-tcl">package present ?-exact? package ?requirement ...?
+</code></pre>
+          <p>Like require for a package already provided, and an error rather than a load attempt for one that is not.</p>
+        </article>
+        <article class="doc-entry" id="doc-package-provide">
+          <h3><a class="doc-anchor" href="#doc-package-provide">#</a> <code>package provide</code></h3>
+          <pre><code class="lang-tcl">package provide package ?version?
+</code></pre>
+          <p>Declare this package present at a version, or report the version it was declared at. A second, different version is a conflict.</p>
+        </article>
+        <article class="doc-entry" id="doc-package-require">
+          <h3><a class="doc-anchor" href="#doc-package-require">#</a> <code>package require</code></h3>
+          <pre><code class="lang-tcl">package require ?-exact? package ?requirement ...?
+</code></pre>
+          <p>Make a package present, loading it if it is not, and yield the version that ended up provided.</p>
+        </article>
+        <article class="doc-entry" id="doc-package-unknown">
+          <h3><a class="doc-anchor" href="#doc-package-unknown">#</a> <code>package unknown</code></h3>
+          <pre><code class="lang-tcl">package unknown ?command?
+</code></pre>
+          <p>The script run when a required package is not known; the empty string clears it.</p>
+        </article>
+        <article class="doc-entry" id="doc-package-vcompare">
+          <h3><a class="doc-anchor" href="#doc-package-vcompare">#</a> <code>package vcompare</code></h3>
+          <pre><code class="lang-tcl">package vcompare version1 version2
+</code></pre>
+          <p>-1, 0 or 1 by TIP 268's ordering, in which 9.0 and 9.0.0 are equal and 1.2a3 sorts below 1.2.</p>
+        </article>
+        <article class="doc-entry" id="doc-package-versions">
+          <h3><a class="doc-anchor" href="#doc-package-versions">#</a> <code>package versions</code></h3>
+          <pre><code class="lang-tcl">package versions package
+</code></pre>
+          <p>The versions a loading script has been registered for.</p>
+        </article>
+        <article class="doc-entry" id="doc-package-vsatisfies">
+          <h3><a class="doc-anchor" href="#doc-package-vsatisfies">#</a> <code>package vsatisfies</code></h3>
+          <pre><code class="lang-tcl">package vsatisfies version ?requirement ...?
+</code></pre>
+          <p>Whether the version meets any of the requirements, each a version, a versionMin-versionMax range, or a versionMin- open range.</p>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-clock">
+        <h2>The <code>clock</code> ensemble</h2>
+        <p class="chapter-meta">7 subcommands recognised &middot; 7 implemented &middot; 0 refused</p>
+        <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
+        <article class="doc-entry" id="doc-clock-add">
+          <h3><a class="doc-anchor" href="#doc-clock-add">#</a> <code>clock add</code></h3>
+          <pre><code class="lang-tcl">clock add clockval ?number units?... ?-option value?
+</code></pre>
+          <p>Move an instant by calendar or fixed units; a day past the end of a month is clamped to it.</p>
+        </article>
+        <article class="doc-entry" id="doc-clock-clicks">
+          <h3><a class="doc-anchor" href="#doc-clock-clicks">#</a> <code>clock clicks</code></h3>
+          <pre><code class="lang-tcl">clock clicks ?-switch?
+</code></pre>
+          <p>A high-resolution counter, in microseconds unless -milliseconds is given.</p>
+        </article>
+        <article class="doc-entry" id="doc-clock-format">
+          <h3><a class="doc-anchor" href="#doc-clock-format">#</a> <code>clock format</code></h3>
+          <pre><code class="lang-tcl">clock format clockval ?-format string? ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE?
+</code></pre>
+          <p>An instant as text, in the root locale's catalogue.</p>
+        </article>
+        <article class="doc-entry" id="doc-clock-microseconds">
+          <h3><a class="doc-anchor" href="#doc-clock-microseconds">#</a> <code>clock microseconds</code></h3>
+          <pre><code class="lang-tcl">clock microseconds
+</code></pre>
+          <p>The current time in microseconds since the epoch.</p>
+        </article>
+        <article class="doc-entry" id="doc-clock-milliseconds">
+          <h3><a class="doc-anchor" href="#doc-clock-milliseconds">#</a> <code>clock milliseconds</code></h3>
+          <pre><code class="lang-tcl">clock milliseconds
+</code></pre>
+          <p>The current time in milliseconds since the epoch.</p>
+        </article>
+        <article class="doc-entry" id="doc-clock-scan">
+          <h3><a class="doc-anchor" href="#doc-clock-scan">#</a> <code>clock scan</code></h3>
+          <pre><code class="lang-tcl">clock scan string ?-format string? ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE?
+</code></pre>
+          <p>Text as an instant. The -format form only; the free-form parser is refused.</p>
+        </article>
+        <article class="doc-entry" id="doc-clock-seconds">
+          <h3><a class="doc-anchor" href="#doc-clock-seconds">#</a> <code>clock seconds</code></h3>
+          <pre><code class="lang-tcl">clock seconds
+</code></pre>
+          <p>The current time in seconds since the epoch.</p>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-file">
+        <h2>The <code>file</code> ensemble</h2>
+        <p class="chapter-meta">37 subcommands recognised &middot; 28 implemented &middot; 9 refused</p>
+        <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
+        <article class="doc-entry" id="doc-file-atime">
+          <h3><a class="doc-anchor" href="#doc-file-atime">#</a> <code>file atime</code></h3>
+          <pre><code class="lang-tcl">file atime name
+</code></pre>
+          <p>The last access time, in seconds since the epoch.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-attributes">
+          <h3><a class="doc-anchor" href="#doc-file-attributes">#</a> <code>file attributes</code></h3>
+          <pre><code class="lang-tcl">file attributes name
+</code></pre>
+          <p>Refused: the platform attribute set is not built.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file attributes is not supported yet: it needs an interface this frontend has not built</code></p>
+        </article>
+        <article class="doc-entry" id="doc-file-channels">
+          <h3><a class="doc-anchor" href="#doc-file-channels">#</a> <code>file channels</code></h3>
+          <pre><code class="lang-tcl">file channels
+</code></pre>
+          <p>Refused: this frontend has no channels.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file channels is not supported yet: it needs an interface this frontend has not built</code></p>
+        </article>
+        <article class="doc-entry" id="doc-file-copy">
+          <h3><a class="doc-anchor" href="#doc-file-copy">#</a> <code>file copy</code></h3>
+          <pre><code class="lang-tcl">file copy ?-force? ?--? source ?source ...? target
+</code></pre>
+          <p>Copy files or whole directories; an existing target is an error without -force.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-delete">
+          <h3><a class="doc-anchor" href="#doc-file-delete">#</a> <code>file delete</code></h3>
+          <pre><code class="lang-tcl">file delete ?-force? ?--? ?name ...?
+</code></pre>
+          <p>Remove names; one that does not exist is not an error.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-dirname">
+          <h3><a class="doc-anchor" href="#doc-file-dirname">#</a> <code>file dirname</code></h3>
+          <pre><code class="lang-tcl">file dirname name
+</code></pre>
+          <p>Everything but the last path component.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-executable">
+          <h3><a class="doc-anchor" href="#doc-file-executable">#</a> <code>file executable</code></h3>
+          <pre><code class="lang-tcl">file executable name
+</code></pre>
+          <p>1 when the name can be executed by this process.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-exists">
+          <h3><a class="doc-anchor" href="#doc-file-exists">#</a> <code>file exists</code></h3>
+          <pre><code class="lang-tcl">file exists name
+</code></pre>
+          <p>1 when the name resolves to something.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-extension">
+          <h3><a class="doc-anchor" href="#doc-file-extension">#</a> <code>file extension</code></h3>
+          <pre><code class="lang-tcl">file extension name
+</code></pre>
+          <p>From the last dot at or after the last separator to the end.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-home">
+          <h3><a class="doc-anchor" href="#doc-file-home">#</a> <code>file home</code></h3>
+          <pre><code class="lang-tcl">file home ?user?
+</code></pre>
+          <p>A home directory, this process's own when no user is named.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-isdirectory">
+          <h3><a class="doc-anchor" href="#doc-file-isdirectory">#</a> <code>file isdirectory</code></h3>
+          <pre><code class="lang-tcl">file isdirectory name
+</code></pre>
+          <p>1 when the name resolves to a directory.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-isfile">
+          <h3><a class="doc-anchor" href="#doc-file-isfile">#</a> <code>file isfile</code></h3>
+          <pre><code class="lang-tcl">file isfile name
+</code></pre>
+          <p>1 when the name resolves to an ordinary file.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-join">
+          <h3><a class="doc-anchor" href="#doc-file-join">#</a> <code>file join</code></h3>
+          <pre><code class="lang-tcl">file join name ?name ...?
+</code></pre>
+          <p>Join path elements; an element that is itself absolute discards the ones before it.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-link">
+          <h3><a class="doc-anchor" href="#doc-file-link">#</a> <code>file link</code></h3>
+          <pre><code class="lang-tcl">file link ?-linktype? linkName ?target?
+</code></pre>
+          <p>Refused: creating links is not built.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file link is not supported yet: it needs an interface this frontend has not built</code></p>
+        </article>
+        <article class="doc-entry" id="doc-file-lstat">
+          <h3><a class="doc-anchor" href="#doc-file-lstat">#</a> <code>file lstat</code></h3>
+          <pre><code class="lang-tcl">file lstat name varName
+</code></pre>
+          <p>Refused: it writes an array this frontend does not build for it.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file lstat is not supported yet: it needs an interface this frontend has not built</code></p>
+        </article>
+        <article class="doc-entry" id="doc-file-mkdir">
+          <h3><a class="doc-anchor" href="#doc-file-mkdir">#</a> <code>file mkdir</code></h3>
+          <pre><code class="lang-tcl">file mkdir ?dir ...?
+</code></pre>
+          <p>Create directories and every missing parent; an existing directory is not an error.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-mtime">
+          <h3><a class="doc-anchor" href="#doc-file-mtime">#</a> <code>file mtime</code></h3>
+          <pre><code class="lang-tcl">file mtime name
+</code></pre>
+          <p>The last modification time, in seconds since the epoch.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-nativename">
+          <h3><a class="doc-anchor" href="#doc-file-nativename">#</a> <code>file nativename</code></h3>
+          <pre><code class="lang-tcl">file nativename name
+</code></pre>
+          <p>The path in the platform's own form, which on unix drops duplicate separators.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-normalize">
+          <h3><a class="doc-anchor" href="#doc-file-normalize">#</a> <code>file normalize</code></h3>
+          <pre><code class="lang-tcl">file normalize name
+</code></pre>
+          <p>The absolute path with links resolved, except in the last component.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-owned">
+          <h3><a class="doc-anchor" href="#doc-file-owned">#</a> <code>file owned</code></h3>
+          <pre><code class="lang-tcl">file owned name
+</code></pre>
+          <p>1 when this process's effective user owns the name.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-pathtype">
+          <h3><a class="doc-anchor" href="#doc-file-pathtype">#</a> <code>file pathtype</code></h3>
+          <pre><code class="lang-tcl">file pathtype name
+</code></pre>
+          <p>absolute or relative; unix has no volume-relative paths.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-readable">
+          <h3><a class="doc-anchor" href="#doc-file-readable">#</a> <code>file readable</code></h3>
+          <pre><code class="lang-tcl">file readable name
+</code></pre>
+          <p>1 when the name can be read by this process.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-readlink">
+          <h3><a class="doc-anchor" href="#doc-file-readlink">#</a> <code>file readlink</code></h3>
+          <pre><code class="lang-tcl">file readlink name
+</code></pre>
+          <p>What a symbolic link points at, as it was written.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-rename">
+          <h3><a class="doc-anchor" href="#doc-file-rename">#</a> <code>file rename</code></h3>
+          <pre><code class="lang-tcl">file rename ?-force? ?--? source ?source ...? target
+</code></pre>
+          <p>Move names; an existing target is an error without -force.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-rootname">
+          <h3><a class="doc-anchor" href="#doc-file-rootname">#</a> <code>file rootname</code></h3>
+          <pre><code class="lang-tcl">file rootname name
+</code></pre>
+          <p>The path with its extension cut off.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-separator">
+          <h3><a class="doc-anchor" href="#doc-file-separator">#</a> <code>file separator</code></h3>
+          <pre><code class="lang-tcl">file separator ?name?
+</code></pre>
+          <p>The path separator, which on unix is always a slash.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-size">
+          <h3><a class="doc-anchor" href="#doc-file-size">#</a> <code>file size</code></h3>
+          <pre><code class="lang-tcl">file size name
+</code></pre>
+          <p>The size in bytes.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-split">
+          <h3><a class="doc-anchor" href="#doc-file-split">#</a> <code>file split</code></h3>
+          <pre><code class="lang-tcl">file split name
+</code></pre>
+          <p>The path's elements as a list; the root, when there is one, is a single element.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-stat">
+          <h3><a class="doc-anchor" href="#doc-file-stat">#</a> <code>file stat</code></h3>
+          <pre><code class="lang-tcl">file stat name varName
+</code></pre>
+          <p>Refused: it writes an array this frontend does not build for it.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file stat is not supported yet: it needs an interface this frontend has not built</code></p>
+        </article>
+        <article class="doc-entry" id="doc-file-system">
+          <h3><a class="doc-anchor" href="#doc-file-system">#</a> <code>file system</code></h3>
+          <pre><code class="lang-tcl">file system name
+</code></pre>
+          <p>Refused: there is one filesystem here and no way to name another.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file system is not supported yet: it needs an interface this frontend has not built</code></p>
+        </article>
+        <article class="doc-entry" id="doc-file-tail">
+          <h3><a class="doc-anchor" href="#doc-file-tail">#</a> <code>file tail</code></h3>
+          <pre><code class="lang-tcl">file tail name
+</code></pre>
+          <p>The last path component.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-tempdir">
+          <h3><a class="doc-anchor" href="#doc-file-tempdir">#</a> <code>file tempdir</code></h3>
+          <pre><code class="lang-tcl">file tempdir ?template?
+</code></pre>
+          <p>Refused: it is built on the channel layer.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file tempdir is not supported yet: it needs an interface this frontend has not built</code></p>
+        </article>
+        <article class="doc-entry" id="doc-file-tempfile">
+          <h3><a class="doc-anchor" href="#doc-file-tempfile">#</a> <code>file tempfile</code></h3>
+          <pre><code class="lang-tcl">file tempfile ?nameVar? ?template?
+</code></pre>
+          <p>Refused: it returns an open channel.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file tempfile is not supported yet: it needs an interface this frontend has not built</code></p>
+        </article>
+        <article class="doc-entry" id="doc-file-tildeexpand">
+          <h3><a class="doc-anchor" href="#doc-file-tildeexpand">#</a> <code>file tildeexpand</code></h3>
+          <pre><code class="lang-tcl">file tildeexpand name
+</code></pre>
+          <p>The one command in Tcl 9 that expands a leading ~ or ~user.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-type">
+          <h3><a class="doc-anchor" href="#doc-file-type">#</a> <code>file type</code></h3>
+          <pre><code class="lang-tcl">file type name
+</code></pre>
+          <p>file, directory, link, fifo, socket, blockSpecial or characterSpecial.</p>
+        </article>
+        <article class="doc-entry" id="doc-file-volumes">
+          <h3><a class="doc-anchor" href="#doc-file-volumes">#</a> <code>file volumes</code></h3>
+          <pre><code class="lang-tcl">file volumes
+</code></pre>
+          <p>Refused: there is no volume table here.</p>
+        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file volumes is not supported yet: it needs an interface this frontend has not built</code></p>
+        </article>
+        <article class="doc-entry" id="doc-file-writable">
+          <h3><a class="doc-anchor" href="#doc-file-writable">#</a> <code>file writable</code></h3>
+          <pre><code class="lang-tcl">file writable name
+</code></pre>
+          <p>1 when the name can be written by this process.</p>
+        </article>
+      </section>
+
+      <section class="tutorial-section" id="ch-encoding">
+        <h2>The <code>encoding</code> ensemble</h2>
+        <p class="chapter-meta">7 subcommands recognised &middot; 7 implemented &middot; 0 refused</p>
+        <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
+        <article class="doc-entry" id="doc-encoding-convertfrom">
+          <h3><a class="doc-anchor" href="#doc-encoding-convertfrom">#</a> <code>encoding convertfrom</code></h3>
+          <pre><code class="lang-tcl">encoding convertfrom ?-profile profile? ?-failindex var? encoding data
+</code></pre>
+          <p>A byte string in some encoding, as a string. The profile decides what an invalid sequence becomes; strict is the default.</p>
+        </article>
+        <article class="doc-entry" id="doc-encoding-convertto">
+          <h3><a class="doc-anchor" href="#doc-encoding-convertto">#</a> <code>encoding convertto</code></h3>
+          <pre><code class="lang-tcl">encoding convertto ?-profile profile? ?-failindex var? encoding data
+</code></pre>
+          <p>A string as a byte string in some encoding. The profile decides what an unrepresentable character becomes.</p>
+        </article>
+        <article class="doc-entry" id="doc-encoding-dirs">
+          <h3><a class="doc-anchor" href="#doc-encoding-dirs">#</a> <code>encoding dirs</code></h3>
+          <pre><code class="lang-tcl">encoding dirs ?dirList?
+</code></pre>
+          <p>The encoding search path. Starts empty here: the tables are inside the binary, so there is no directory to search.</p>
+        </article>
+        <article class="doc-entry" id="doc-encoding-names">
+          <h3><a class="doc-anchor" href="#doc-encoding-names">#</a> <code>encoding names</code></h3>
+          <pre><code class="lang-tcl">encoding names
+</code></pre>
+          <p>Every encoding this frontend can convert with, sorted. What it lists, it converts.</p>
+        </article>
+        <article class="doc-entry" id="doc-encoding-profiles">
+          <h3><a class="doc-anchor" href="#doc-encoding-profiles">#</a> <code>encoding profiles</code></h3>
+          <pre><code class="lang-tcl">encoding profiles
+</code></pre>
+          <p>The error profiles: replace, strict and tcl8.</p>
+        </article>
+        <article class="doc-entry" id="doc-encoding-system">
+          <h3><a class="doc-anchor" href="#doc-encoding-system">#</a> <code>encoding system</code></h3>
+          <pre><code class="lang-tcl">encoding system ?encoding?
+</code></pre>
+          <p>The encoding used for system calls, utf-8 unless it is set to another.</p>
+        </article>
+        <article class="doc-entry" id="doc-encoding-user">
+          <h3><a class="doc-anchor" href="#doc-encoding-user">#</a> <code>encoding user</code></h3>
+          <pre><code class="lang-tcl">encoding user
+</code></pre>
+          <p>The encoding the user prefers, which off Windows is the system encoding.</p>
         </article>
       </section>
 

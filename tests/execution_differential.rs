@@ -116,6 +116,12 @@ const PROGRAMS: &[&str] = &[
     // Comments and separators do not disturb execution.
     "# leading comment\nputs a ;# trailing\nputs b",
     "puts a; puts b",
+    // A loop exit from inside a word still being built. The pops such an exit
+    // emits are a run-time effect of a path that leaves, so they must not be
+    // charged to the compiler's static depth model — doing so underflowed it.
+    "while 1 {incr i; puts [list a [break]]}\nputs done-$i",
+    "set n 0\nforeach x {1 2 3} {incr n; puts [list v [continue]]}\nputs n-$n",
+    "for {set i 0} {$i<5} {incr i} {puts [string cat x [break]]}\nputs after-$i",
 ];
 
 fn tclsh() -> Option<PathBuf> {
@@ -192,12 +198,39 @@ fn script_value_is_the_last_command() {
 #[test]
 fn unsupported_constructs_are_refused() {
     for (src, expected) in [
-        // `proc`, `foreach`, `set a(1) x` and `uplevel` all stood here until the
-        // phases that built them landed — `uplevel 1 {set x 1}` now reports the
-        // `bad level "1"` that tclsh reports for it, compared against tclsh in
-        // `tests/frame_differential.rs`. `upvar` is a command this frontend has
-        // no implementation of at all, so it stands in now.
-        ("upvar 1 x y", "invalid command name \"upvar\""),
+        // `proc`, `foreach`, `set a(1) x`, `uplevel` and `rename` have all
+        // stood here in turn, each until the phase that built it landed.
+        // `interp create` stands in now: it is a command this frontend has no
+        // implementation of at all, which is what this entry is for — an
+        // *unknown name*, reported by the dispatcher's own fallthrough, as
+        // opposed to a command that exists and refuses something.
+        //
+        // `rename` was the entry until `src/cmd_namespace.rs` implemented it.
+        // It now answers `can't rename "a": command doesn't exist`, which comes
+        // from a command that exists, so it stopped measuring what this test
+        // measures. `uplevel` before it went the same way, to
+        // `src/cmd_scope.rs`; the entry below covers what is left of it.
+        //
+        // `interp` is chosen because a second interpreter is not on any current
+        // branch: `tclrs::Interp` is created by the host, never by a script.
+        ("interp create i", "invalid command name \"interp\""),
+        // `uplevel` exists now, and used to refuse a level it could not reach —
+        // `proc outer {} {inner}` / `proc inner {} {uplevel 1 {set x 1}}` was
+        // `"uplevel" to level 1 is not supported` here. It became an answer when
+        // the slot-name table landed, and `uplevel 1 {set brandnew 1}` — a *new*
+        // variable in the target frame — became one when the published line's
+        // frame projection was merged in: a projection carries every name at once,
+        // so a name with no slot is simply not read back rather than refused. Both
+        // are byte-compared against tclsh in `tests/event_differential.rs`.
+        //
+        // `upvar` still refuses that name, and refuses it for a reason a
+        // projection does not have: a link is the *address* of one slot, and a
+        // name the target procedure never wrote has none. So the entry moved
+        // there.
+        (
+            "proc outer {} {inner}\nproc inner {} {upvar 1 brandnew z\nset z 1}\nouter",
+            "the procedure running there never names it",
+        ),
         (
             "array startsearch a",
             "array startsearch is not supported yet",
@@ -208,9 +241,17 @@ fn unsupported_constructs_are_refused() {
             "return 1",
             "\"return\" outside of a procedure is not supported",
         ),
+        // This entry was `expr {sin(1)}` until `src/expr_math.rs` landed the
+        // whole of `mathfunc(n)`; `sin` is an answer now, so the entry moved
+        // to the part of `expr`'s function call that is still not built — a
+        // function a *script* defines. tclsh resolves `triple(2)` to the
+        // command `tcl::mathfunc::triple`, so a procedure of that name
+        // extends `expr`; here only the built-in table is consulted, and the
+        // name resolves to nothing. The wording is tclsh's own for a name
+        // that answers to no command.
         (
-            "puts [expr {sin(1)}]",
-            "math function \"sin\" is not supported yet",
+            "proc tcl::mathfunc::triple {x} {expr {3*$x}}\nputs [expr {triple(2)}]",
+            "invalid command name \"tcl::mathfunc::triple\"",
         ),
         ("break", "invoked \"break\" outside of a loop"),
     ] {

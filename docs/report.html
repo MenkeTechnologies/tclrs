@@ -82,7 +82,7 @@
 
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-val accent">17th</div><div class="stat-label">fusevm frontend</div></div>
-        <div class="stat-card"><div class="stat-val">44.4%</div><div class="stat-label">official suite, attempted cases</div></div>
+        <div class="stat-card"><div class="stat-val">60.9%</div><div class="stat-label">official suite, attempted cases</div></div>
         <div class="stat-card"><div class="stat-val">9.0.4</div><div class="stat-label">reference tclsh</div></div>
         <div class="stat-card"><div class="stat-val">MIT</div><div class="stat-label">license · free / OSS</div></div>
       </div>
@@ -134,7 +134,7 @@
             <tr><td>loop exits</td><td>Implemented</td><td><code>break</code> and <code>continue</code> unwind with a compile-time-known pop count rather than a runtime unwinder, in <code>foreach</code> as well as <code>while</code>.</td></tr>
             <tr><td>list syntax</td><td>Implemented</td><td>String ⇄ elements ported from <code>TclFindElement</code> and <code>TclScanElement</code>/<code>TclConvertElement</code>, with Tcl's index grammar and glob matcher (<code>src/list.rs</code>).</td></tr>
             <tr><td>list commands / <code>in</code> / <code>ni</code></td><td>Implemented</td><td>Each lowers to one extension op; <code>lsort</code> reproduces the reference merge sort so <code>-unique</code> keeps the element tclsh keeps (<code>src/cmd_list.rs</code>). Unbuilt options are errors, not no-ops.</td></tr>
-            <tr><td><code>{*}</code> expansion</td><td>Refused</td><td>Recorded on the word by the parser and still refused by the compiler, though the list splitter it needs exists.</td></tr>
+            <tr><td><code>{*}</code> expansion</td><td>Implemented</td><td>One <code>ext::EXPAND_CALL</code> per command that has one: the words are spliced by list rules when the command runs, and the callee is resolved then — a procedure of the interpreter, a command this frontend compiles, or a command Tk registered (<code>src/procs.rs</code>).</td></tr>
             <tr><td>the binary, the REPL, <code>eval</code></td><td>Implemented</td><td>A file, <code>-c script</code>, or stdin — a REPL when stdin is a terminal. An <code>Interp</code> holds the variables between evaluations over a source-keyed chunk cache; <code>eval</code> compiles a script built at run time against that state.</td></tr>
             <tr><td><code>regexp</code> / <code>regsub</code></td><td>Implemented</td><td><code>-nocase</code>, <code>-all</code>, <code>-inline</code>, <code>-indices</code>, <code>-line</code>, <code>-lineanchor</code>, <code>-linestop</code>, <code>-expanded</code>, <code>-start</code> and <code>--</code>, plus <code>switch -regexp</code> and <code>lsearch -regexp</code>. The engine is a finite automaton, so the two constructs that need backtracking — back-references and look-ahead — are refused by name rather than approximated (<code>src/regexp.rs</code>).</td></tr>
             <tr><td>arbitrary-precision integers</td><td>Implemented</td><td>Tcl 9's integers are unbounded and so are these: an <code>i64</code> overflow promotes through the numeric hook rather than raising, and every chunk carries <code>int_overflow_deopt</code> so the JIT and the ahead-of-time compiler deopt into the hook instead of wrapping (<code>src/runtime.rs</code>).</td></tr>

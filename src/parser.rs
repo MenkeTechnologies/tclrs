@@ -123,6 +123,34 @@ pub struct Script {
 /// is refused here.
 pub const MAX_NESTING_DEPTH: usize = 64_000;
 
+/// Whether `src` needs more input before it is a script.
+///
+/// `tclsh` asks `Tcl_CommandComplete`, a scanner written for the question.
+/// tclrs asks the parser instead and reads which failure it reports, because the
+/// parser already separates a construct left open at the end of the input from
+/// one that is malformed — and only the first can be fixed by typing more. A
+/// malformed script is *complete*: it is evaluated, and its error reported,
+/// rather than leaving the prompt waiting for input that cannot help.
+///
+/// Two callers, and they are asking the same question: the REPL, deciding
+/// whether to keep reading a line, and `info complete`, which is that question
+/// spelled as a command. `info complete "}"` is 1 in tclsh 9.0.4 — a lone close
+/// brace is not a script but nothing further would make it one — and that falls
+/// out of the rule rather than being special-cased.
+pub fn incomplete(src: &str) -> bool {
+    matches!(parse(src), Err(e) if UNTERMINATED.contains(&e.msg.as_str()))
+}
+
+/// The parser's messages for a construct still open at the end of the input.
+/// Every one of them is reached only by running out of text.
+const UNTERMINATED: &[&str] = &[
+    "missing close-brace",
+    "missing close-brace for variable name",
+    "missing close-bracket",
+    "missing \"",
+    "missing )",
+];
+
 /// Parse a complete script.
 pub fn parse(src: &str) -> Result<Script, ParseError> {
     let mut p = Parser {

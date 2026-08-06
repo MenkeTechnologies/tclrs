@@ -80,10 +80,168 @@ pub mod ext {
     /// `info coroutine`: the running coroutine's qualified name, or `""`.
     pub const CORO_INFO: u16 = 14;
 
+    // ── the event loop and the scope commands ────────────────────────────
+    //
+    // `crate::cmd_after`, `crate::cmd_info` and `crate::cmd_scope`, in the
+    // [`EVENT_BASE`] block. They were numbered into the two gaps below
+    // [`ASSOC_BASE`] — 35–39 and 58–60 — which is where `namespace`, `source`
+    // and `package` were each independently numbered too. Each has an explicit
+    // arm ahead of the range tests in `crate::runtime`, so the block only has
+    // to be disjoint, and being a block is what makes that checkable.
+
+    /// `after`: `[arg …]` with the count in the inline operand → the handle, or
+    /// the empty string. Everything the command decides — whether the first
+    /// word is a delay or a subcommand, what the scripts concatenate to — is
+    /// decided here, as the reference implementation decides it.
+    pub const AFTER: u16 = EVENT_BASE;
+    /// `update ?idletasks?`: `[arg …]` with the count in the inline operand.
+    pub const UPDATE: u16 = EVENT_BASE + 1;
+    /// `vwait ?varName?`: `[arg …]` with the count in the inline operand.
+    pub const VWAIT: u16 = EVENT_BASE + 2;
+    /// `uplevel ?level? arg …`: `[declared, arg …]` with the count in the inline
+    /// operand → the value of the script, run against the frame the first word
+    /// resolves to.
+    ///
+    /// Nothing about the level is settled while compiling. `uplevel $n {…}` is
+    /// ordinary Tcl and tclsh reads the level off the *substituted* word
+    /// (`Tcl_UplevelObjCmd` → `TclObjGetFrame`), so the word rides on the stack
+    /// in Tcl's own spelling and the handler decides whether it is a level at
+    /// all. Deciding it here instead answered `invalid command name "1"` where
+    /// tclsh answers the script's value (measured against tclsh 9.0.4).
+    ///
+    /// `declared` is the list of names the enclosing body gave to `global`, for
+    /// the reason [`EVAL_FRAME`] states.
+    pub const UPLEVEL: u16 = EVENT_BASE + 3;
+    // `info exists`, `info commands`/`procs`/`globals`/`locals`/`vars`,
+    // `info level` and `info complete` had ids at `EVENT_BASE + 4` through `+ 7`
+    // while `info` was lowered from this block. The whole ensemble is
+    // [`crate::cmd_info`]'s now and its ids are that module's, in
+    // [`INFO_BASE`]'s block — so `EVENT_BASE + 4` through `+ 7` are free, and
+    // are left free rather than reused, because a chunk cached on disk carries
+    // the id and not the name.
+    /// `upvar ?level? otherVar localVar …`: `[(slot, local) …, level, other …]`
+    /// with the number of stack values in the inline operand → `""`, having
+    /// stored a [`crate::cmd_scope::Link`] descriptor in each local's frame slot.
+    /// The level rides as the empty string when the command gave none, which is
+    /// the `hasLevel` flag `Tcl_UpvarObjCmd` carries; a slot of `-1` means there
+    /// is no frame to hold a descriptor and the pair is an alias in the
+    /// interpreter's variable table instead.
+    ///
+    /// The one `upvar` whose target the script computes. `upvar #0 other local`
+    /// written out is bound while the script is read and emits nothing inside a
+    /// procedure body; outside one it emits this as well, because the pair has to
+    /// outlive the chunk that made it.
+    pub const UPVAR: u16 = EVENT_BASE + 8;
+    /// `[name, slot]` → what the link in that frame slot points at, or the
+    /// `no such variable` refusal for the name it was bound under. `arg` is 1
+    /// for a read that tolerates an unset target, which is what `incr` needs.
+    pub const LINK_GET: u16 = EVENT_BASE + 9;
+    /// `[value, name, slot]` → nothing, having stored the value where the link
+    /// points. A store, so it leaves the stack as it found it.
+    pub const LINK_SET: u16 = EVENT_BASE + 10;
+    /// `[declared, arg …]` with the count in the inline operand — `eval` inside a
+    /// procedure body, whose script runs against that procedure's *frame*.
+    ///
+    /// `declared` is the list of names the body gave to `global`, pushed by the
+    /// compiler because only it knows them: tclsh runs an `eval`'s script in
+    /// exactly the calling frame's variable context, so a bare read of a global
+    /// refuses there unless `global` linked it, and the projection the handler
+    /// builds is the frame's own names plus those.
+    ///
+    /// In this block rather than in the core space it arrived in, because it and
+    /// the two ids around it run a nested script through the interpreter — which
+    /// is what this block is for — and because 58 through 60 were three of the
+    /// core ids `proc`, `{*}` and the event loop had already taken.
+    pub const EVAL_FRAME: u16 = EVENT_BASE + 11;
+    /// `[lambda, arg …]` with the count in the inline operand — `apply`.
+    pub const APPLY: u16 = EVENT_BASE + 12;
+
     /// `[name, arg …]` with the count in the inline operand — call the function
     /// an inline `rust { ... }` block exported. Emitted only for a name
     /// [`crate::rust_ffi::is_exported`] answered for while compiling.
     pub const FFI_CALL: u16 = 63;
+
+    /// `[name, spec, entry]` → `""`, having registered the procedure `name`
+    /// with the formal-argument list `spec` and the body entry point `entry` in
+    /// the interpreter's run-time command table.
+    ///
+    /// What a `proc` outside a script's top level lowers to. Its body is
+    /// compiled in place, behind a jump, exactly as a top-level one's is — the
+    /// difference is entirely in *when the name starts answering*, and this op
+    /// is that moment. `if {0} {proc f {} {}}` compiles the body and never runs
+    /// this, so `f` is `invalid command name "f"`, which is what tclsh 9.0.4
+    /// answers (measured).
+    ///
+    /// 60 rather than 35: nothing between 48 and 61 without an explicit arm in
+    /// [`crate::runtime::install_hooks`] reaches this module at all — the range
+    /// test below it routes to [`crate::cmd_list`] — so this id and
+    /// [`DYN_CALL`] each need one, and keeping them adjacent keeps that pair
+    /// visible.
+    pub const PROC_DEFINE: u16 = 60;
+
+    /// `[line, name, arg …]` with the count in the inline operand — call the
+    /// command `name`, resolving it in the run-time command table when the call
+    /// happens rather than while the script is compiled.
+    ///
+    /// The one op in this table whose callee is not known while compiling, and
+    /// there are two reasons a callee can fail to be known:
+    ///
+    /// * a procedure defined by a `proc` that is not at the script's top level
+    ///   ([`PROC_DEFINE`]) — the name exists only once the defining code has
+    ///   run, so a call site cannot be lowered to `Op::Call`;
+    /// * a command Tk registered. Tk registers `button`, `pack`, `wm` and the
+    ///   rest during `Tk_Init`, long after a script that says `button .b` was
+    ///   compiled; see [`crate::tk::dispatch`].
+    ///
+    /// The two are one lookup, in that order: a procedure the script defined
+    /// shadows a foreign command of the same name, which is the order tclsh
+    /// resolves in.
+    ///
+    /// The line rides on the stack because the failure this op can raise —
+    /// `invalid command name`, `wrong # args` — is located, and dropping the
+    /// line would change a diagnostic that is pinned against tclsh.
+    ///
+    /// 61 rather than 64: [`ASSOC_BASE`] is 64, and an id at or above it is
+    /// dispatched to [`crate::assoc`] by range.
+    pub const DYN_CALL: u16 = 61;
+
+    /// `[line, flag, word, flag, word, …]` with the number of stack values in
+    /// the inline operand — call the command those words spell, after splicing
+    /// every word whose `flag` is 1 into the arguments it lists.
+    ///
+    /// What a command containing a `{*}` word lowers to (rule 5 of the
+    /// dodekalogue). Such a command has no argument count until it runs: `n
+    /// {*}$list` passes as many arguments as `$list` has elements, and the
+    /// *name* may be expanded too — `{*}{n x} y` calls `n` with `x y` in tclsh
+    /// 9.0.4 (measured). Both are things this compiler decides for every other
+    /// command while it reads the script, so neither the built-in lowerings nor
+    /// `Op::Call` can be reached: the whole dispatch happens in
+    /// [`crate::procs::expand_call_op`], which is [`DYN_CALL`]'s resolution with
+    /// the builtins added under it.
+    ///
+    /// The reference implementation makes the same division. `CompileExpanded`
+    /// (`generic/tclCompile.c:1883-1941`) is reached for *any* command with an
+    /// expanded word, ahead of the per-command compile procedures, and emits an
+    /// `INST_EXPAND_STKTOP` per expanded word followed by one
+    /// `INST_INVOKE_EXPANDED` — because, as the comment there says, "the stack
+    /// depth during argument expansion can only be managed at runtime, as the
+    /// number of elements in the expanded lists is not known at compile time".
+    /// `set {*}{a b}` therefore does not reach `TclCompileSetCmd` in tclsh
+    /// either; it reaches the generic invoke, which is what this op is.
+    ///
+    /// The flags ride on the stack beside the words rather than in the operand
+    /// because the operand is the value count the op consumes — the one number
+    /// the VM needs in order to balance the stack — and a mask there would cap a
+    /// command at 64 words while making that cap invisible. One `Op::LoadInt`
+    /// per word is the whole cost, and only a command that contains a `{*}` pays
+    /// it.
+    ///
+    /// 59 rather than a fresh block: 58 and 59 are the last two free ids under
+    /// [`PROC_DEFINE`], and this op belongs beside the other two the call
+    /// machinery owns. Like them it needs an explicit arm in
+    /// [`crate::runtime::install_hooks`], since the range test below 61 routes to
+    /// [`crate::cmd_list`].
+    pub const EXPAND_CALL: u16 = 59;
 
     /// Pop a value and push Tcl's boolean reading of it — 1 or 0 — or refuse it.
     /// `arg` is 0 for a condition and 1 for `!`, which differ in how they word
@@ -114,22 +272,6 @@ pub mod ext {
     /// Tcl's for a double or a boolean. Same trade as [`PUTS`]: those ops are
     /// not JIT-eligible either, so comparing here costs a frontend op only
     /// where one was already going to stop a trace.
-    /// `[declared, arg …]` with the count in the inline operand — `eval` inside a
-    /// procedure body, whose script runs against that procedure's *frame*.
-    ///
-    /// `declared` is the list of names the body gave to `global`, pushed by the
-    /// compiler because only it knows them: tclsh runs an `eval`'s script in
-    /// exactly the calling frame's variable context, so a bare read of a global
-    /// refuses there unless `global` linked it, and the projection the handler
-    /// builds is the frame's own names plus those.
-    pub const EVAL_FRAME: u16 = 58;
-    /// `[declared, level, arg …]` — `uplevel`, which is [`EVAL_FRAME`] against a
-    /// frame further out. `level` is the level word, still in Tcl's spelling so
-    /// the handler reports `bad level "…"` in tclsh's words.
-    pub const UPLEVEL: u16 = 59;
-    /// `[lambda, arg …]` with the count in the inline operand — `apply`.
-    pub const APPLY: u16 = 60;
-
     pub const STR_CMP: u16 = 62;
 
     /// Where the list commands' ops begin. Everything at or above this id is
@@ -170,8 +312,9 @@ pub mod ext {
 
     // The list commands that name a variable or build one, 48–57. They are in
     // the range `runtime::extension` routes to [`crate::cmd_list`] by id, and
-    // nothing between 48 and 61 has an explicit arm ahead of that range test —
-    // one there would shadow this block silently.
+    // between 48 and 61 only [`PROC_DEFINE`] and [`DYN_CALL`] have an explicit
+    // arm ahead of that range test — another one there would shadow this block
+    // silently.
 
     /// `[list, count]` → the unassigned remainder, then one value per variable
     /// in reverse, so that a `SetVar` per variable pops them in order.
@@ -306,13 +449,107 @@ pub mod ext {
     /// range is a wrong answer at run time, not a compile error.
     pub const REGEXP_BASE: u16 = 192;
 
-    /// Where the `info` ensemble begins, dispatched to [`crate::cmd_info`].
+    // ── the command modules' id blocks ───────────────────────────────────
+    //
+    // Everything from [`SUBSYSTEM_BASE`] up belongs to exactly one command
+    // module, and each module's ids are a block of its own. The blocks exist
+    // because the alternative — picking whichever id under 64 happened to be
+    // free — is how two modules come to claim the same number, and a duplicate
+    // id is not a build error: the first arm that matches it wins, so the op
+    // silently calls the wrong handler. That has happened in this tree once
+    // already. `tests/ext_ids.rs` fails the build if any two of these overlap
+    // or if a module allocates outside its own block.
+    //
+    // A block is dispatched by the module's own `is_op`, or by an exact arm,
+    // *before* control reaches `runtime::extension` — whose guard chain tests
+    // `id >= REGEXP_BASE` first and would otherwise swallow every one of them.
+
+    /// The first id belonging to a command module's block rather than to the
+    /// core op space of 0–63 and the three ranges above it.
+    pub const SUBSYSTEM_BASE: u16 = 256;
+    /// How wide every module's block is. Wide enough that no module has yet
+    /// filled one, and a power of two so a block's owner is `id / BLOCK`.
+    pub const BLOCK: u16 = 64;
+
+    /// Channels — `open`, `close`, `gets`, `read`, `puts` to a channel, and the
+    /// rest of the ensemble ([`crate::cmd_channel`]). Dispatched from the
+    /// extension *closure* rather than from `runtime::extension`, because these
+    /// are the ops that need the running interpreter's output sink.
+    pub const CHANNEL_BASE: u16 = SUBSYSTEM_BASE;
+    /// One past the channel block, so the dispatcher can test a bounded range
+    /// rather than `id >= CHANNEL_BASE` — which would swallow every block
+    /// below.
+    pub const CHANNEL_END: u16 = CHANNEL_BASE + BLOCK;
+    /// `open fileName ?access?` → the channel's name.
+    pub const OPEN: u16 = CHANNEL_BASE;
+    /// `close channelId ?direction?`.
+    pub const CLOSE: u16 = CHANNEL_BASE + 1;
+    /// `gets channel ?varName?`. With a variable the operand is where it lives,
+    /// as `regexp`'s match variables are, and the result is the count.
+    pub const GETS: u16 = CHANNEL_BASE + 2;
+    /// `read channel ?numChars?` and `read ?-nonewline? channel`.
+    pub const READ: u16 = CHANNEL_BASE + 3;
+    /// `puts ?-nonewline? channelId string`. [`PUTS`] stays the lowering for
+    /// the form with no channel, so a script that never names one pays nothing.
+    pub const CH_PUTS: u16 = CHANNEL_BASE + 4;
+    /// `flush channelId`.
+    pub const FLUSH: u16 = CHANNEL_BASE + 5;
+    /// `eof channelId`.
+    pub const EOF: u16 = CHANNEL_BASE + 6;
+    /// `seek channelId offset ?origin?`.
+    pub const SEEK: u16 = CHANNEL_BASE + 7;
+    /// `tell channelId`.
+    pub const TELL: u16 = CHANNEL_BASE + 8;
+    /// `fconfigure channelId ?-option value ...?`.
+    pub const FCONFIGURE: u16 = CHANNEL_BASE + 9;
+    /// `namespace`, `variable` and `rename` ([`crate::cmd_namespace`]), and
+    /// `source` and `tcl_findLibrary` ([`crate::cmd_source`]), which share a
+    /// block because they are one feature: a namespace-aware `source`.
+    pub const NS_BASE: u16 = SUBSYSTEM_BASE + BLOCK;
+    /// `after`, `update`, `vwait`, `uplevel` and the `info` queries that need
+    /// the interpreter ([`crate::cmd_after`], [`crate::cmd_scope`],
+    /// [`crate::cmd_info`]).
+    pub const EVENT_BASE: u16 = SUBSYSTEM_BASE + 2 * BLOCK;
+    /// `package`, whose `require Tk` drives Tk's initialisation.
+    pub const PKG_BASE: u16 = SUBSYSTEM_BASE + 3 * BLOCK;
+    /// `[line, name, arg …]` with the count in the inline operand — the
+    /// `package` command, whole.
     ///
-    /// Above [`REGEXP_BASE`] for the reason that one is above `STRING_BASE`.
-    /// Ids 66–79 look free in this list and are not: they are `ASSOC_BASE + 2`
-    /// through `+ 15`, every array and `dict` op, and an id landing in the wrong
-    /// module's range is a wrong answer at run time rather than a compile error.
-    pub const INFO_BASE: u16 = 208;
+    /// Nothing about it is decided while compiling, not even the argument
+    /// count: every answer depends on a registry that only exists at run time,
+    /// and a `package require` may run an `ifneeded` script, so the op is
+    /// handed the same evaluator [`EVAL`] gets. See [`crate::cmd_package`].
+    pub const PACKAGE: u16 = PKG_BASE;
+    /// `expr`'s math functions, dispatched to [`crate::expr_math`]. The id past
+    /// this base is the function's index in that module's table and the inline
+    /// operand is the actual argument count, which is what lets arity be
+    /// reported when the call runs rather than while it compiles.
+    ///
+    /// This block and the two below it are dispatched by
+    /// `crate::runtime::extension`'s range chain rather than from the closure,
+    /// because none of them needs the interpreter — which is why the chain
+    /// tests them ahead of [`REGEXP_BASE`].
+    pub const MATH_BASE: u16 = SUBSYSTEM_BASE + 4 * BLOCK;
+    /// The `clock` ensemble, dispatched to [`crate::cmd_clock`].
+    pub const CLOCK_BASE: u16 = SUBSYSTEM_BASE + 5 * BLOCK;
+    /// `file`, `glob`, `pwd` and `cd`, dispatched to [`crate::cmd_file`].
+    pub const FILE_BASE: u16 = SUBSYSTEM_BASE + 6 * BLOCK;
+    // ── the encoding block ───────────────────────────────────────────────
+    /// The `encoding` ensemble, dispatched to [`crate::cmd_encoding`].
+    pub const ENCODING_BASE: u16 = SUBSYSTEM_BASE + 7 * BLOCK;
+    // ── end of the encoding block ────────────────────────────────────────
+    /// The `info` ensemble's own ops, dispatched to [`crate::cmd_info`].
+    ///
+    /// `info` arrived on the published line with its ids based at 208, which is
+    /// inside the range `crate::runtime::extension`'s guard chain reads as
+    /// [`REGEXP_BASE`]'s. It gets a block of its own here instead, because a
+    /// block is what `tests/ext_ids.rs` can assert and a bare 208 is what it
+    /// cannot.
+    pub const INFO_BASE: u16 = SUBSYSTEM_BASE + 8 * BLOCK;
+    /// One past the `info` block, so the dispatcher tests a bounded range
+    /// rather than `id >= INFO_BASE` — which would claim whatever block is
+    /// added above it next.
+    pub const INFO_END: u16 = INFO_BASE + BLOCK;
 }
 
 /// Wide extension opcode ids, whose payload is a `usize` rather than a byte.
@@ -397,12 +634,23 @@ impl std::error::Error for CompileError {}
 
 /// Compile a parsed script into a chunk whose result is the script's value.
 ///
-/// Two passes. Reading `$x` lowers to a bare `GetVar`, which cannot fail, but
-/// reading a variable that holds an array must — and the `set a(i) v` that makes
-/// it one may be compiled after the `$a` that reads it. The first pass records
-/// every name used as an array; the second, knowing them, guards just those
-/// names. Nothing else differs between the passes, so a script with no arrays
-/// compiles exactly as it did before and pays nothing.
+/// Two passes, for two things a single forward walk cannot know.
+///
+/// Reading `$x` lowers to a bare `GetVar`, which cannot fail, but reading a
+/// variable that holds an array must — and the `set a(i) v` that makes it one
+/// may be compiled after the `$a` that reads it. The first pass records every
+/// name used as an array; the second, knowing them, guards just those names.
+///
+/// A `proc` that is not at the script's top level defines its procedure only
+/// when the enclosing code runs, so every call to that name has to resolve at
+/// run time — including the calls written *above* the definition, and including
+/// the ones that would otherwise have found a top-level `proc` of the same name
+/// at compile time. The first pass records those names; the second, knowing
+/// them, lowers their call sites through [`ext::DYN_CALL`].
+///
+/// Nothing else differs between the passes, so a script with neither an array
+/// nor a nested `proc` compiles in one pass exactly as it did before and pays
+/// nothing.
 pub fn compile(script: &Script) -> Result<fusevm::Chunk, CompileError> {
     lower(script, false)
 }
@@ -415,22 +663,29 @@ pub fn compile_debug(script: &Script) -> Result<fusevm::Chunk, CompileError> {
 }
 
 fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
-    let first = Compiler::run(script, ArrayNames::new(), debug)?;
-    let (mut chunk, tolerant, incr_sites, procs) = if first.seen_arrays.is_empty() {
-        let procs = signature_table(&first);
-        (
-            first.b.build(),
-            first.tolerant_reads,
-            first.incr_sites,
-            procs,
-        )
-    } else {
-        let second = Compiler::run(script, first.seen_arrays, debug)?;
-        let reads = second.tolerant_reads.clone();
-        let incrs = second.incr_sites.clone();
-        let procs = signature_table(&second);
-        (second.b.build(), reads, incrs, procs)
-    };
+    // Both extra passes, and both reasons a second one is needed: a name used
+    // as an array, and a `proc` whose definition only happens when the
+    // enclosing code runs.
+    let first = Compiler::run(script, ArrayNames::new(), HashSet::new(), debug)?;
+    let (mut chunk, tolerant, incr_sites, procs, slot_names) =
+        if first.seen_arrays.is_empty() && first.seen_runtime.is_empty() {
+            let procs = signature_table(&first);
+            let names = first.slot_names.clone();
+            (
+                first.b.build(),
+                first.tolerant_reads,
+                first.incr_sites,
+                procs,
+                names,
+            )
+        } else {
+            let second = Compiler::run(script, first.seen_arrays, first.seen_runtime, debug)?;
+            let reads = second.tolerant_reads.clone();
+            let incrs = second.incr_sites.clone();
+            let procs = signature_table(&second);
+            let names = second.slot_names.clone();
+            (second.b.build(), reads, incrs, procs, names)
+        };
     // Tcl's integers are arbitrary-precision, and so are this frontend's: an
     // `i64` that overflows promotes, in the numeric hook. Native codegen would
     // wrap instead, so ask fusevm for the overflow-checked lowering —
@@ -442,6 +697,12 @@ fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
     crate::runtime::note_tolerant_reads(&chunk, &tolerant);
     crate::runtime::note_incr_sites(&chunk, &incr_sites);
     crate::runtime::note_procs(&chunk, &procs);
+    // Which name each frame slot was written as, for the frames a *lambda*
+    // occupies. A procedure's are carried by the chunk itself
+    // (`fusevm::Chunk::sub_slot_names`, 0.17.0); a lambda body is emitted inside
+    // the enclosing chunk and attributed by op range instead — see
+    // [`crate::cmd_scope`].
+    crate::cmd_scope::note_slot_names(&chunk, &slot_names);
     Ok(chunk)
 }
 
@@ -459,7 +720,13 @@ fn signature_table(c: &Compiler) -> Vec<(String, crate::runtime::ProcParams)> {
                 .iter()
                 .map(|p| (p.name.clone(), p.default.clone()))
                 .collect();
-            (name.clone(), params)
+            (
+                name.clone(),
+                crate::runtime::ProcParams {
+                    params,
+                    body: sig.body.clone(),
+                },
+            )
         })
         .collect()
 }
@@ -484,6 +751,16 @@ pub(crate) struct LoopCtx {
 pub(crate) struct Scope {
     pub locals: HashMap<String, u16>,
     pub globals: HashSet<String>,
+    /// Local names `upvar #0 other local` bound to a *differently named*
+    /// global while the script was read, which is the one link that needs no
+    /// run-time indirection at all. Consulted by [`Compiler::var_place`]; see
+    /// [`crate::cmd_scope`].
+    pub aliases: crate::cmd_scope::Aliases,
+    /// Local names bound by an `upvar` whose target only the running script
+    /// knows — a computed level, a computed name, an array element. The slot
+    /// holds a [`crate::cmd_scope::Link`] descriptor rather than a value, and
+    /// [`Compiler::var_place`] answers [`Place::Link`] for the name.
+    pub links: crate::cmd_scope::Links,
     pub next_slot: u16,
 }
 
@@ -501,11 +778,65 @@ pub(crate) enum Body {
 }
 
 /// Where a variable lives once the script is lowered: a frame slot inside a
-/// procedure body, a name index in the VM's global table anywhere else.
+/// procedure body, a name index in the VM's global table anywhere else, or —
+/// for a name `upvar` bound — a frame slot holding a *link* to one of those,
+/// resolved when the command ran rather than while the script was read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Place {
     Slot(u16),
     Global(u16),
+    /// A frame slot holding a [`crate::cmd_scope::Link`] descriptor. Every read
+    /// and write of the name goes through the descriptor, which is what lets
+    /// `upvar $level $other local` name its target when the command runs.
+    Link(u16),
+}
+
+impl Place {
+    /// The one integer form every op that reaches a variable itself takes: a
+    /// name index as itself, a frame slot as `-(slot + 1)`, and a link as
+    /// `-(slot + 1) - LINK_BIAS`.
+    ///
+    /// Three ranges in one signed operand rather than a second operand, because
+    /// the ops that take it already carry their argument count in the inline
+    /// operand and a place is one of the counted values. The bias is far outside
+    /// the `u16` slot range, so the three cannot collide.
+    pub(crate) const LINK_BIAS: i64 = 1 << 20;
+
+    pub(crate) fn encode(self) -> i64 {
+        match self {
+            Place::Global(idx) => i64::from(idx),
+            Place::Slot(slot) => -i64::from(slot) - 1,
+            Place::Link(slot) => -i64::from(slot) - 1 - Place::LINK_BIAS,
+        }
+    }
+
+    pub(crate) fn decode(raw: i64) -> Place {
+        if raw <= -Place::LINK_BIAS {
+            Place::Link((-(raw + Place::LINK_BIAS) - 1) as u16)
+        } else if raw < 0 {
+            Place::Slot((-raw - 1) as u16)
+        } else {
+            Place::Global(raw as u16)
+        }
+    }
+
+    /// Whether this place lives in the call frame rather than the global table —
+    /// which a link does, since the descriptor is a frame slot.
+    pub(crate) fn in_frame(self) -> bool {
+        matches!(self, Place::Slot(_) | Place::Link(_))
+    }
+
+    /// The operand for an op that already says "this is a frame place" some
+    /// other way — a `_SLOT`-flavoured op id, or a separate pushed flag. A slot
+    /// stays its own index and a link is written `-(slot + 1)`, which the
+    /// non-negative slot range cannot reach.
+    pub(crate) fn frame_operand(self) -> i64 {
+        match self {
+            Place::Slot(slot) => i64::from(slot),
+            Place::Link(slot) => -i64::from(slot) - 1,
+            Place::Global(idx) => i64::from(idx),
+        }
+    }
 }
 
 pub(crate) struct Compiler {
@@ -546,6 +877,13 @@ pub(crate) struct Compiler {
     pub(crate) procs: HashMap<String, Signature>,
     /// Procedures whose body has been compiled, so a redefinition is caught.
     pub(crate) defined: HashSet<String>,
+    /// Names a `proc` outside the script's top level defines, from the previous
+    /// pass. A call to one of them cannot be lowered to `Op::Call`: the name
+    /// only starts answering once the defining code has run, so it resolves in
+    /// the run-time command table instead. See [`compile`].
+    pub(crate) runtime: HashSet<String>,
+    /// The same, found during this pass — what the next one is given.
+    pub(crate) seen_runtime: HashSet<String>,
     /// Names the script's own `coroutine` commands create. A call to one of
     /// them resumes the coroutine instead of calling a procedure.
     pub(crate) coros: HashSet<String>,
@@ -570,6 +908,14 @@ pub(crate) struct Compiler {
     /// How many command substitutions enclose the command being compiled. A
     /// debugger stops before a statement, and a substitution is part of one.
     pub(crate) subst_depth: usize,
+    /// Which name each frame slot was written as, per procedure body, published
+    /// by [`Compiler::publish_slot_names`] where the body's scope is discarded.
+    /// The half a built chunk was missing; see [`crate::cmd_scope`].
+    pub(crate) slot_names: crate::cmd_scope::SlotNames,
+    /// Global names an `upvar #0` *outside* a procedure bound to another global
+    /// while the script was read. The same compile-time binding `Scope::aliases`
+    /// is, for the scope that has no `Scope` — see [`crate::cmd_scope`].
+    pub(crate) top_aliases: crate::cmd_scope::Aliases,
     /// Whether the failure now propagating is one the reference interpreter
     /// only reports when the command runs, set where the failure is *raised*
     /// rather than guessed from its wording.
@@ -583,12 +929,20 @@ pub(crate) struct Compiler {
     /// through a command that could not absorb it, so an enclosing one still
     /// can.
     pub(crate) deferrable: bool,
+    /// Which namespace the code being lowered belongs to, and what `variable`
+    /// has linked inside a procedure body. See `crate::cmd_namespace`.
+    pub(crate) ns: crate::cmd_namespace::NsCtx,
 }
 
 impl Compiler {
-    /// One compilation pass over the script, with the array names the previous
-    /// pass discovered.
-    fn run(script: &Script, arrays: ArrayNames, debug: bool) -> Result<Compiler, CompileError> {
+    /// One compilation pass over the script, with the array names and the
+    /// run-time procedure names the previous pass discovered.
+    fn run(
+        script: &Script,
+        arrays: ArrayNames,
+        runtime: HashSet<String>,
+        debug: bool,
+    ) -> Result<Compiler, CompileError> {
         let mut c = Compiler {
             b: ChunkBuilder::new(),
             tolerant_reads: Vec::new(),
@@ -602,6 +956,8 @@ impl Compiler {
             scope: None,
             procs: HashMap::new(),
             defined: HashSet::new(),
+            runtime,
+            seen_runtime: HashSet::new(),
             coros: HashSet::new(),
             catch_depth: 0,
             body_depth: 0,
@@ -610,11 +966,17 @@ impl Compiler {
             debug,
             subst_depth: 0,
             deferrable: false,
+            ns: crate::cmd_namespace::NsCtx::default(),
+            slot_names: crate::cmd_scope::SlotNames::default(),
+            top_aliases: crate::cmd_scope::Aliases::default(),
         };
         // Signatures are collected before anything is emitted so a procedure
         // may call one that the script defines further down, which is legal in
         // Tcl as long as the call is not reached first.
         crate::procs::prescan(&mut c.procs, script);
+        // The same, for the procedures a `namespace eval` block defines, under
+        // the qualified names they take.
+        crate::cmd_namespace::prescan_script(&mut c.procs, script, "::");
         crate::coro::prescan(&mut c.coros, script);
         c.script_value(script)?;
         Ok(c)
@@ -798,10 +1160,56 @@ impl Compiler {
     /// through `GetVar` / `SetVar` — [`crate::cmd_list`]'s `lappend` is the one
     /// that does, so that it can extend the list in place.
     pub(crate) fn var_place(&mut self, name: &str) -> Place {
+        // `upvar #0 other local` binds `local` to the global `other` for the
+        // rest of the body. Every command reaches a variable through here, so
+        // the link is made once and `set`, `$`, `unset`, `incr`, `lappend` and
+        // `info exists` all follow it — see [`crate::cmd_scope`].
+        if let Some(target) = self
+            .scope
+            .as_ref()
+            .and_then(|s| s.aliases.get(name))
+            .cloned()
+        {
+            return Place::Global(self.b.add_name(&target));
+        }
+        // An `upvar` whose target only the running script knows binds the name
+        // to a *slot holding a link*, and every access goes through it. Ahead of
+        // `slot_of` so the name is not also handed a plain slot.
+        if let Some(slot) = self.scope.as_ref().and_then(|s| s.links.get(name)).copied() {
+            return Place::Link(slot);
+        }
         match self.slot_of(name) {
             Some(slot) => Place::Slot(slot),
-            None => Place::Global(self.b.add_name(name)),
+            // The one hook namespaces need in the variable path: a name that
+            // reaches the global table is the *namespace's* variable when the
+            // code being lowered belongs to one. At the root namespace the key
+            // is the name unchanged, so nothing that compiled before namespaces
+            // existed compiles differently now. See `crate::cmd_namespace`.
+            None => {
+                let key = crate::cmd_namespace::global_key(self, name);
+                // Outside a procedure an `upvar #0` binding is between two
+                // globals, so it is followed here rather than at the top of this
+                // function: the name is resolved in its namespace first, and the
+                // binding is on the resolved spelling.
+                let key = match self.top_aliases.get(&key) {
+                    Some(target) => target.clone(),
+                    None => key,
+                };
+                Place::Global(self.b.add_name(&key))
+            }
         }
+    }
+
+    /// Where a variable lives, as one integer operand: the index shifted up by
+    /// one with the frame-slot bit at the bottom.
+    ///
+    /// An op that *assigns* to a variable named by the script takes it this
+    /// way rather than as a value, so the operand count stays the arity —
+    /// `regexp`'s match variables and `gets`'s line variable are the two.
+    /// [`crate::runtime::place_at`] reads it back.
+    pub(crate) fn place_operand(&mut self, name: &str) -> i64 {
+        let place = self.var_place(name);
+        (place.frame_operand() << 1) | i64::from(place.in_frame())
     }
 
     /// Read a variable onto the stack.
@@ -809,6 +1217,14 @@ impl Compiler {
         match self.var_place(name) {
             Place::Slot(slot) => self.emit(Op::GetSlot(slot), 1),
             Place::Global(idx) => self.emit(Op::GetVar(idx), 1),
+            // A link has no native op: the descriptor in the slot has to be
+            // followed, which only the frontend can do. See
+            // [`crate::cmd_scope::link_get`].
+            Place::Link(slot) => {
+                self.push_str(name);
+                self.emit(Op::LoadInt(i64::from(slot)), 1);
+                self.emit(Op::Extended(ext::LINK_GET, 0), -1)
+            }
         };
     }
 
@@ -817,6 +1233,11 @@ impl Compiler {
         match self.var_place(name) {
             Place::Slot(slot) => self.emit(Op::SetSlot(slot), -1),
             Place::Global(idx) => self.emit(Op::SetVar(idx), -1),
+            Place::Link(slot) => {
+                self.push_str(name);
+                self.emit(Op::LoadInt(i64::from(slot)), 1);
+                self.emit(Op::Extended(ext::LINK_SET, 0), -3)
+            }
         };
     }
 
@@ -894,10 +1315,23 @@ impl Compiler {
     // ── words ────────────────────────────────────────────────────────────
 
     /// Emit a word, leaving its value on the stack.
+    ///
+    /// A `{*}` word is refused here rather than expanded: what it expands into
+    /// is a *number of arguments*, which only the command assembling them can
+    /// act on — [`Compiler::command`] routes such a command to
+    /// [`Compiler::call_expanded`] before any handler sees its words. Reaching
+    /// this with one means a word was used somewhere expansion has no meaning.
     pub(crate) fn word(&mut self, word: &Word) -> Result<(), CompileError> {
         if word.expand {
-            return self.error("{*} argument expansion is not supported yet");
+            return self.error("{*} argument expansion is only meaningful in a command's words");
         }
+        self.word_value(word)
+    }
+
+    /// The same, for the one caller that has already accounted for expansion:
+    /// the value of the word's text, with the `{*}` prefix's meaning left to
+    /// [`ext::EXPAND_CALL`].
+    pub(crate) fn word_value(&mut self, word: &Word) -> Result<(), CompileError> {
         match word.parts.len() {
             0 => self.push_empty(),
             1 => self.part(&word.parts[0])?,
@@ -981,6 +1415,19 @@ impl Compiler {
         }
     }
 
+    /// The name an array element's variable would be reported under: the whole
+    /// spelling the script wrote, `a(i)` and not `a`, which is the name tclsh
+    /// quotes in `can't read "a(i)": no such variable`. The index is only known
+    /// at compile time when it is literal; otherwise the array's own name stands,
+    /// which is all a diagnostic can honestly say about it.
+    pub(crate) fn elem_report_name(name: &str, index: &[Part]) -> String {
+        match index {
+            [] => format!("{name}()"),
+            [Part::Lit(text)] => format!("{name}({text})"),
+            _ => name.to_string(),
+        }
+    }
+
     // ── commands ─────────────────────────────────────────────────────────
 
     /// The command names [`Compiler::command`] matches before it consults
@@ -1018,6 +1465,23 @@ impl Compiler {
         "yield",
         "yieldto",
         "info",
+        // ── the namespace block's own names ──────────────────────────────
+        "namespace",
+        // `variable` is listed once, here. Both the namespace block and the
+        // scope block lower it; the namespace one wins, because it is the same
+        // command with the namespace case filled in — see `Compiler::variable`.
+        "variable",
+        "rename",
+        "source",
+        "tcl_findLibrary",
+        // ── cmd_after / cmd_scope (the event loop and the scope commands) ──
+        "after",
+        "update",
+        "vwait",
+        "uplevel",
+        "upvar",
+        "apply",
+        "package",
     ];
 
     fn command(&mut self, cmd: &Command) -> Result<(), CompileError> {
@@ -1039,6 +1503,13 @@ impl Compiler {
             self.push_empty();
             return Ok(());
         };
+        // A `{*}` anywhere in the command — including on the name — is decided
+        // when the command runs, so nothing below this point applies: there is no
+        // name to dispatch on and no argument count to check. See
+        // [`Compiler::call_expanded`].
+        if cmd.words.iter().any(|w| w.expand) {
+            return self.call_expanded(&cmd.words);
+        }
         let name = self.literal_of(first, "command name")?.to_string();
         let args = &cmd.words[1..];
 
@@ -1083,8 +1554,6 @@ impl Compiler {
         match name {
             "set" => self.cmd_set(args),
             "eval" => self.cmd_eval(args),
-            "uplevel" => self.cmd_uplevel(args),
-            "apply" => self.cmd_apply(args),
             "puts" => self.cmd_puts(args),
             "expr" => self.cmd_expr(args),
             "incr" => self.cmd_incr(args),
@@ -1096,9 +1565,12 @@ impl Compiler {
             "string" | "append" | "format" => self.cmd_string_family(name, args),
             "break" => self.cmd_loop_exit(args, true),
             "continue" => self.cmd_loop_exit(args, false),
-            "proc" => self.cmd_proc(args),
+            // `ns_proc` and `ns_global` are one-line wrappers in
+            // `crate::cmd_namespace` that record which namespace the definition
+            // or the declaration belongs to and then call the handler below.
+            "proc" => self.ns_proc(args),
             "return" => self.cmd_return(args),
-            "global" => self.cmd_global(args),
+            "global" => self.ns_global(args),
             "catch" => self.cmd_catch(args),
             "error" => self.cmd_error(args),
             "array" => self.cmd_array(args),
@@ -1107,13 +1579,77 @@ impl Compiler {
             "coroutine" => self.cmd_coroutine(args),
             "yield" => self.cmd_yield(args),
             "yieldto" => self.cmd_yieldto(args),
+            // ── the event loop and the scope commands ───────────────────
+            // One block, so that the modules behind it merge as one change.
+            // `info` moved here from `crate::coro`, which owned it when
+            // `info coroutine` was the only subcommand; `crate::cmd_info`
+            // still lowers that one to `crate::coro`'s own op.
             "info" => self.cmd_info(args),
+            "after" => self.cmd_event_op(ext::AFTER, "after", args),
+            "update" => self.cmd_event_op(ext::UPDATE, "update", args),
+            "vwait" => self.cmd_event_op(ext::VWAIT, "vwait", args),
+            "uplevel" => self.cmd_uplevel(args),
+            "upvar" => self.cmd_upvar(args),
+            "apply" => self.cmd_apply(args),
+            // ── end of the block ────────────────────────────────────────
+            // Asked before the Tk arm below, so that a `--tk` session — where
+            // every unmatched name is lowered as a run-time lookup — still
+            // gets this frontend's own `package` rather than looking for one
+            // Tk never registered.
+            "package" => crate::cmd_package::compile(self, args),
             "regexp" | "regsub" => crate::regexp::compile(self, name, args),
+            // The channel ensemble. Ahead of the namespace block below for the
+            // same reason every other builtin above is: a builtin name wins
+            // over a namespace procedure of that name in this frontend.
+            name if crate::cmd_channel::COMMANDS.contains(&name) => {
+                crate::cmd_channel::compile(self, name, args)
+            }
+            // ── clock and the filesystem commands ────────────────────────
+            // One block, as `regexp` above is: the name is claimed here and
+            // the whole of the lowering lives in the module named. Absent
+            // from `BUILTINS` for the same reason `regexp` is — these are not
+            // names `proc` refuses. Ahead of the namespace block below, like
+            // every other builtin.
+            "clock" => crate::cmd_clock::compile(self, args),
+            "file" | "glob" | "pwd" | "cd" => crate::cmd_file::compile(self, name, args),
+            // ── end of the clock/file block ──────────────────────────────
+            // ── the encoding ensemble ────────────────────────────────────
+            // One arm, as `clock` above is: the name is claimed here and the
+            // whole of the lowering — argument parsing included, because which
+            // argument is an option is decided by their count — lives in
+            // [`crate::cmd_encoding`]. Ahead of the namespace block below,
+            // like every other builtin.
+            "encoding" => crate::cmd_encoding::compile(self, args),
+            // ── end of the encoding ensemble ─────────────────────────────
+            // ── namespaces, `rename` and `source` ────────────────────────
+            // One block, so that the module owning them merges as one hunk.
+            // It sits here — after every builtin, before the procedures —
+            // because a name written inside a namespace resolves to that
+            // namespace's procedure before it resolves to a global one, which
+            // is `TclGetNamespaceForQualName`'s two-step search. See
+            // `crate::cmd_namespace`.
+            "namespace" => self.cmd_namespace(args),
+            "variable" => self.cmd_variable(args),
+            "rename" => self.cmd_rename(args),
+            "source" => self.cmd_source(args),
+            "tcl_findLibrary" => self.cmd_find_library(args),
+            other if self.ns_resolves(other).is_some() => {
+                crate::cmd_namespace::call(self, other, args)
+            }
+            // ── end of the namespace block ───────────────────────────────
             // The command an inline `rust { ... }` block was rewritten into.
             name if name == crate::rust_ffi::COMPILE_COMMAND => self.cmd_rust_compile(args),
             // A coroutine's context command. Its name is refused to `proc`, so
             // there is never both a procedure and a coroutine to choose from.
             other if self.coros.contains(other) => self.call_coro(other, args),
+            // A name some `proc` outside the script's top level defines. It
+            // answers only once that `proc` has run, so the call resolves in
+            // the run-time command table — even when a top-level `proc` of the
+            // same name also exists, because in tclsh the later definition
+            // wins and only run time knows which ran last (measured: `proc f
+            // {} {return one}` then `if {1} {proc f {} {return two}}` then `f`
+            // answers `two`).
+            other if self.runtime.contains(other) => self.call_runtime(other, args),
             // A procedure the script defines shadows nothing built in: the
             // names above are refused to `proc` at its definition.
             other if self.procs.contains_key(other) => self.call_proc(other, args),
@@ -1122,8 +1658,24 @@ impl Compiler {
             // a script's own definition is never shadowed by a library it
             // loaded.
             other if crate::rust_ffi::is_exported(other) => self.call_ffi(other, args),
-            // The list commands own the tail of the dispatch, and report the
-            // unknown-command error for anything no module claims.
+            // A name no module claims: it is looked up in the interpreter's
+            // run-time command table when the command runs, because that is the
+            // only moment it can be known.
+            //
+            // Two things register a name there after this compiler has finished
+            // with the script. A `proc` — in another chunk, or in a branch of
+            // this one — is one; Tk is the other, which registers `button`,
+            // `pack`, `wm` and the rest during `Tk_Init`, long after a script
+            // saying `button .b` was compiled (see `crate::tk::dispatch`).
+            // Nothing registered under the name by then and the op raises the
+            // same `invalid command name`, on the same line, that the arm below
+            // would have deferred — which is why this needs no feature gate and
+            // costs a script that calls no such command nothing.
+            other if !crate::cmd_list::COMMANDS.contains(&other) => self.call_runtime(other, args),
+            // The list commands own the tail of the dispatch. Reached by name
+            // rather than by trying them, so that `llength` with three arguments
+            // stays a `wrong # args` on `llength` instead of becoming a lookup
+            // for a command called `llength`.
             other => crate::cmd_list::compile(self, other, args),
         }
     }
@@ -1205,29 +1757,17 @@ impl Compiler {
         if args.is_empty() {
             return self.error("wrong # args: should be \"uplevel ?level? command ?arg ...?\"");
         }
-        // A literal first word that looks like a level, with a script after it.
-        let has_level = args.len() > 1
-            && args[0]
-                .as_literal()
-                .is_some_and(looks_like_a_level);
         let declared = self.declared_globals().unwrap_or_default();
-        let count = u8::try_from(args.len() + if has_level { 1 } else { 2 })
+        let count = u8::try_from(args.len() + 1)
             .map_err(|_| self.err("too many arguments for \"uplevel\"".to_string()))?;
+        // The declared globals, then every word as the script wrote it. Which
+        // word is the level is not decided here: `uplevel $n {…}` is ordinary
+        // Tcl, and tclsh reads the level off the substituted word.
         self.push_str(&declared);
-        if has_level {
-            self.word(&args[0])?;
-            for arg in &args[1..] {
-                self.word(arg)?;
-            }
-        } else {
-            // No level given: the default is one frame out.
-            self.push_str("1");
-            for arg in args {
-                self.word(arg)?;
-            }
+        for arg in args {
+            self.word(arg)?;
         }
-        let pushed = if has_level { args.len() + 1 } else { args.len() + 2 };
-        self.emit(Op::Extended(ext::UPLEVEL, count), 1 - pushed as i32);
+        self.emit(Op::Extended(ext::UPLEVEL, count), 1 - count as i32);
         Ok(())
     }
 
@@ -1246,10 +1786,20 @@ impl Compiler {
     }
 
     fn cmd_puts(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        // The channel forms go to `cmd_channel`; the two without one keep the
+        // lowering they had, so a script that never names a channel is
+        // unchanged. tclsh 9 has no third form: `puts stdout hi nonewline` is
+        // `wrong # args` there, not the 8.x legacy spelling.
         let (newline, value) = match args {
             [v] => (true, v),
             [flag, v] if flag.as_literal() == Some("-nonewline") => (false, v),
-            _ => return self.error("wrong # args: should be \"puts ?-nonewline? string\""),
+            [chan, v] => return crate::cmd_channel::compile_puts(self, chan, v, true),
+            [flag, chan, v] if flag.as_literal() == Some("-nonewline") => {
+                return crate::cmd_channel::compile_puts(self, chan, v, false)
+            }
+            _ => {
+                return self.error("wrong # args: should be \"puts ?-nonewline? ?channel? string\"")
+            }
         };
         self.word(value)?;
         // The op writes and leaves `puts`'s own empty result, so the stack is
@@ -1337,10 +1887,18 @@ impl Compiler {
         // because the two are the same op on the same name; a guarded read
         // emits more than one op and owns its own diagnostic, so only the bare
         // single-op read is marked.
-        let read_at = self.b.current_pos();
-        self.scalar_get(&name);
-        if self.b.current_pos() == read_at + 1 {
-            self.tolerant_reads.push(read_at);
+        if let Place::Link(slot) = self.var_place(&name) {
+            // A linked name's read is not a single op, so the site-keyed
+            // tolerance below cannot mark it: the op carries the flag instead.
+            self.push_str(&name);
+            self.emit(Op::LoadInt(i64::from(slot)), 1);
+            self.emit(Op::Extended(ext::LINK_GET, 1), -1);
+        } else {
+            let read_at = self.b.current_pos();
+            self.scalar_get(&name);
+            if self.b.current_pos() == read_at + 1 {
+                self.tolerant_reads.push(read_at);
+            }
         }
         match by {
             Some(w) => self.word(w)?,
@@ -1469,12 +2027,7 @@ impl Compiler {
                 return self.error("foreach varlist is empty");
             }
             let count = vars.len();
-            for name in vars {
-                if name.ends_with(')') && name.contains('(') {
-                    return self.error("array variables are not supported yet");
-                }
-                names.push(name);
-            }
+            names.extend(vars);
             self.push_value(Value::Int(count as i64));
             self.word(&pair[1])?;
         }
@@ -1495,7 +2048,7 @@ impl Compiler {
             |c| {
                 c.emit(Op::Extended(ext::FOREACH_TAKE, width), i32::from(width));
                 for name in &taken {
-                    c.emit_set_var(name);
+                    c.store_named(name)?;
                 }
                 c.emit_body(&script)
             },
@@ -1531,7 +2084,8 @@ impl Compiler {
         }
         // Discard whatever this iteration pushed before jumping, so the exit
         // point sees the depth it was compiled for.
-        let surplus = self.depth.saturating_sub(ctx.depth);
+        let before = self.depth;
+        let surplus = before.saturating_sub(ctx.depth);
         for _ in 0..surplus {
             self.emit(Op::Pop, -1);
         }
@@ -1542,7 +2096,15 @@ impl Compiler {
         } else {
             ctx.continues.push(jump);
         }
-        // The jump leaves; the value keeps the sequencer's arithmetic honest.
+        // Those pops are a run-time effect of a path that leaves, so they must
+        // not follow the enclosing command into the compiler's model. `break`
+        // inside a word being built — `puts [list a [break]]` — sits above the
+        // loop's entry depth, and charging its pops to the model would leave the
+        // enclosing command short by exactly that much: its next negative delta
+        // then underflows, which is the `rotated loop body is unbalanced`
+        // assertion. Restore the depth the enclosing command was compiled
+        // against, then give it the one value it is waiting for.
+        self.depth = before;
         self.push_empty();
         Ok(())
     }
@@ -1831,7 +2393,8 @@ impl Compiler {
             Expr::Ternary(_, then, other) => {
                 Self::yields_number(then) && Self::yields_number(other)
             }
-            // Refused when lowered; the answer here does not matter.
+            // Every math function answers with a number — an integer of some
+            // width, a double, or the 1/0 of a classification.
             Expr::Call(_, _) => true,
         }
     }
@@ -1872,7 +2435,11 @@ impl Compiler {
             Expr::Ternary(_, then, other) => {
                 Self::may_be_non_finite(then) || Self::may_be_non_finite(other)
             }
-            Expr::Call(_, _) => false,
+            // A math function answers with whatever the C library did, and an
+            // infinity is one of the answers: `expr {pow(10,400) * 0}` is
+            // `domain error: argument not in valid range` in tclsh 9.0.4,
+            // which is [`ext::CANON`]'s refusal and needs this to be true.
+            Expr::Call(_, _) => true,
         }
     }
 
@@ -1967,7 +2534,7 @@ impl Compiler {
 
     // ── expressions ──────────────────────────────────────────────────────
 
-    fn expr(&mut self, e: &Expr) -> Result<(), CompileError> {
+    pub(crate) fn expr(&mut self, e: &Expr) -> Result<(), CompileError> {
         match e {
             Expr::Int(v, _) => {
                 self.emit(Op::LoadInt(*v), 1);
@@ -2116,9 +2683,7 @@ impl Compiler {
                 self.b.patch_jump(to_end, end);
                 Ok(())
             }
-            Expr::Call(name, _) => {
-                self.error(format!("math function \"{name}\" is not supported yet"))
-            }
+            Expr::Call(name, args) => crate::expr_math::compile(self, name, args),
         }
     }
 
@@ -2167,10 +2732,17 @@ impl Compiler {
 /// bare integer. Only the shape — whether the level *exists* is a run-time
 /// question, and answering it here would refuse `uplevel 2 …` while compiling a
 /// procedure that is only ever called two deep.
-fn looks_like_a_level(word: &str) -> bool {
+pub(crate) fn looks_like_a_level(word: &str) -> bool {
     match word.strip_prefix('#') {
         Some(rest) => !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()),
-        None => !word.is_empty() && word.bytes().all(|b| b.is_ascii_digit()),
+        // `Tcl_GetIntFromObj`, which is what `TclObjGetFrame` reads a bare level
+        // word with, accepts a sign: `uplevel +1 {…}` is level 1 and
+        // `uplevel -1 {…}` is `bad level "-1"` — a level word that resolves to
+        // nothing, not a script. `1.5` is neither, and runs as a script.
+        None => {
+            let digits = word.strip_prefix(['+', '-']).unwrap_or(word);
+            !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+        }
     }
 }
 

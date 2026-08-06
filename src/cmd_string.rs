@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use fusevm::{Op, Value, VM};
 
-use crate::compiler::{CompileError, Compiler, Place};
+use crate::compiler::{CompileError, Compiler};
 use crate::parser::Word;
 use crate::runtime::{place_at, take_var, tcl_str, to_tcl_string, var_cell};
 
@@ -161,7 +161,7 @@ pub const CLASSES: &[&str] = &[
 
 /// Resolve a name against a table the way `Tcl_GetIndexFromObj` does: an exact
 /// match wins, otherwise a prefix that fits exactly one entry.
-fn resolve<'t>(name: &str, table: &[&'t str]) -> Option<&'t str> {
+pub(crate) fn resolve<'t>(name: &str, table: &[&'t str]) -> Option<&'t str> {
     if let Some(exact) = table.iter().find(|c| **c == name) {
         return Some(exact);
     }
@@ -178,7 +178,7 @@ fn resolve<'t>(name: &str, table: &[&'t str]) -> Option<&'t str> {
 }
 
 /// The interpreter's rendering of a table in an error message.
-fn listing(table: &[&str]) -> String {
+pub(crate) fn listing(table: &[&str]) -> String {
     let mut out = String::new();
     for (i, name) in table.iter().enumerate() {
         if i > 0 {
@@ -437,15 +437,12 @@ impl Compiler {
         self.push_str(class);
         self.push_flag(strict);
         self.push_str(&name);
-        let id = match self.var_place(&name) {
-            Place::Slot(slot) => {
-                self.emit(Op::LoadInt(slot as i64), 1);
-                ext::IS_FAILINDEX_SLOT
-            }
-            Place::Global(idx) => {
-                self.emit(Op::LoadInt(idx as i64), 1);
-                ext::IS_FAILINDEX
-            }
+        let place = self.var_place(&name);
+        self.emit(Op::LoadInt(place.frame_operand()), 1);
+        let id = if place.in_frame() {
+            ext::IS_FAILINDEX_SLOT
+        } else {
+            ext::IS_FAILINDEX
         };
         self.word(&args[args.len() - 1])?;
         self.string_op(id, 5)
@@ -465,6 +462,18 @@ impl Compiler {
         let Some(target) = args.first() else {
             return self.error("wrong # args: should be \"append varName ?value ...?\"");
         };
+        // An array element appends in place too: the element is read, the values
+        // are concatenated onto it, and it is stored back. `append b(j) hi there`
+        // is `hithere`, which tclsh answers and this compiler used to refuse.
+        if let crate::assoc::Target::Elem { name, index } = self.target_of(target)? {
+            self.push_str(&name);
+            self.elem_get_tolerant(&name, &index)?;
+            for w in &args[1..] {
+                self.word(w)?;
+            }
+            self.string_op(ext::APPEND, args.len() + 1)?;
+            return self.elem_store(&name, &index);
+        }
         let name = self.var_name_of(target)?;
 
         if self.is_array(&name) {
@@ -491,15 +500,15 @@ impl Compiler {
     /// values and emits `id` with `2 + values` operands.
     pub(crate) fn append_target(&mut self, name: &str) -> u16 {
         self.push_str(name);
-        match self.var_place(name) {
-            Place::Slot(slot) => {
-                self.emit(Op::LoadInt(slot as i64), 1);
-                ext::APPEND_SLOT
-            }
-            Place::Global(idx) => {
-                self.emit(Op::LoadInt(idx as i64), 1);
-                ext::APPEND_VAR
-            }
+        let place = self.var_place(name);
+        self.emit(Op::LoadInt(place.frame_operand()), 1);
+        // The `_SLOT` id says "the operand is a frame place"; which of the two
+        // frame places it is rides in the operand's sign, so a linked name
+        // appends in place exactly as a local does. See [`Place::frame_operand`].
+        if place.in_frame() {
+            ext::APPEND_SLOT
+        } else {
+            ext::APPEND_VAR
         }
     }
 

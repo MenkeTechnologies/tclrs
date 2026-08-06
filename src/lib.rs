@@ -21,8 +21,21 @@ pub mod aot;
 pub mod aot_runtime;
 pub mod assoc;
 pub mod cache;
+/// `after`, `update` and `vwait` — the event loop a Tk script lives inside.
+pub mod cmd_after;
+pub mod cmd_channel;
+pub mod cmd_clock;
+/// `encoding` — transcoding, and the tables it is done with.
+pub mod cmd_encoding;
+pub mod cmd_file;
+/// `info` — what the interpreter knows about itself.
 pub mod cmd_info;
 pub mod cmd_list;
+pub mod cmd_namespace;
+pub mod cmd_package;
+/// `uplevel`, `upvar`, `variable` and `apply` — reaching another scope.
+pub mod cmd_scope;
+pub mod cmd_source;
 pub mod cmd_string;
 pub mod compiler;
 pub mod control;
@@ -30,7 +43,10 @@ pub mod coro;
 pub mod cursor;
 pub mod dap;
 pub mod dump;
+/// The `.enc` tables, generated. See `scripts/gen_encoding_tables.py`.
+pub mod encoding_tables;
 pub mod expr;
+pub mod expr_math;
 pub mod list;
 pub mod lsp;
 pub mod names;
@@ -40,6 +56,9 @@ pub mod regexp;
 pub mod runtime;
 pub mod rust_ffi;
 pub mod tiers;
+/// Hosting the real Tk toolkit. Behind the `tk` feature; see `src/tk/mod.rs`.
+#[cfg(feature = "tk")]
+pub mod tk;
 
 pub use parser::{parse, Command, ParseError, Part, Script, Word};
 pub use runtime::{eval, eval_captured, Interp, Outcome, TclError};

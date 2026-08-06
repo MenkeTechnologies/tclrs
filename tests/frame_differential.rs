@@ -213,13 +213,14 @@ fn a_write_through_a_nested_script_is_visible_immediately() {
 /// coroutine`, which would be false — the yield *is* in a coroutine.
 #[test]
 fn a_yield_inside_a_nested_script_is_refused_and_says_why() {
-    let err = tclrs::eval(
-        "proc gen {} {eval {yield first}\nreturn done}\ncoroutine c gen\nputs [c]",
-    )
-    .expect_err("a yield inside an eval should be refused");
+    let err =
+        tclrs::eval("proc gen {} {eval {yield first}\nreturn done}\ncoroutine c gen\nputs [c]")
+            .expect_err("a yield inside an eval should be refused");
     assert!(
-        err.contains("yield inside a script run by \"eval\", \"uplevel\" or \"apply\" is not \
-                      supported"),
+        err.contains(
+            "yield inside a script run by \"eval\", \"uplevel\" or \"apply\" is not \
+                      supported"
+        ),
         "got {err:?}"
     );
 
@@ -243,21 +244,37 @@ fn a_yield_inside_a_nested_script_is_refused_and_says_why() {
 
 /// What these three commands still refuse, and in which words.
 ///
-/// `upvar` is absent rather than refused: it reports `invalid command name`,
-/// which is what a Tcl interpreter says for a command it does not have, and is
-/// the truth here. It is pinned so that the day it is implemented this test is
-/// what says so.
+/// `upvar` used to be absent rather than refused — `invalid command name`, which
+/// is what a Tcl interpreter says for a command it does not have, and was the
+/// truth here. Two entries pinned that, and this is the test that says the day
+/// came: `upvar` is implemented, its computed-name form included
+/// (`proc f {n} {upvar 1 $n v}` sets the caller's variable, as tclsh does), and a
+/// lambda's body reaches it like any procedure body's. Both entries moved to what
+/// `upvar` still refuses, which is a name the target procedure never wrote — a
+/// link is the address of one frame slot, and such a name has none — and, for the
+/// lambda, to what any procedure body refuses.
 #[test]
 fn what_the_frame_commands_do_not_do_yet() {
     for (src, expected) in [
-        // An alias needs a live link to another frame's variable; a variable
-        // here is a frame slot holding a value, with nothing to point through.
-        // See BUGS.md.
-        ("proc f {n} {upvar 1 $n v\nset v 2}\nset x 1\nf x", "invalid command name \"upvar\""),
-        ("proc f {} {return [uplevel 1 {return x}]}\nputs [f]", "\"return\" outside of a procedure"),
+        // A caller's variable the caller itself never names.
+        (
+            "proc f {} {upvar 1 neverused v\nset v 2}\nproc g {} {f}\ng",
+            "the procedure running there never names it",
+        ),
+        (
+            "proc f {} {return [uplevel 1 {return x}]}\nputs [f]",
+            "\"return\" outside of a procedure",
+        ),
         // A lambda's body is a procedure body, so what a body refuses it
-        // refuses.
-        ("puts [apply {{} {upvar 1 x y}}]", "invalid command name \"upvar\""),
+        // refuses. `upvar 1 x y` stood here while `upvar` was absent; from a
+        // lambda, level 1 is the chunk the synthesised procedure was called from
+        // and that level is name-addressed, so `upvar` reaches it. What a lambda
+        // body refuses is what any body refuses — here, a `namespace eval` whose
+        // unqualified names would become frame slots.
+        (
+            "puts [apply {{} {namespace eval foo {set x 1}}}]",
+            "\"namespace eval\" inside a procedure is not supported yet",
+        ),
     ] {
         let err = tclrs::eval(src).expect_err(&format!("{src:?} should fail"));
         assert!(

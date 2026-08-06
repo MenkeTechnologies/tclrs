@@ -1,6 +1,6 @@
 .\" Manpage for tclrs.
 .\" Contact https://github.com/MenkeTechnologies/tclrs to correct errors or omissions.
-.TH TCLRS 1 "2026-07-28" "tclrs 0.3.0" "User Commands"
+.TH TCLRS 1 "2026-08-06" "tclrs 0.4.0" "User Commands"
 .SH NAME
 tclrs \- Tcl compiled to fusevm bytecode (a tclsh-compatible driver)
 .SH SYNOPSIS
@@ -80,6 +80,29 @@ substitution nested inside the word containing it \(em and exit.
 .B \-\-disasm
 Print the compiled fusevm bytecode instead of running it.
 .TP
+.B \-\-tk
+Run the interpreter on the process main thread, on a stack the binary maps
+itself, and open a Tk session before the script is compiled. Nothing is loaded
+until the script runs
+.BR "package require Tk" ,
+which opens the Tk shared library, initialises it and registers its commands
+into the interpreter the script is running in. Tk's script library is looked for
+beside the shared library that was actually loaded, so
+.B tk.tcl
+is found without
+.B TK_LIBRARY
+in the environment;
+.B TK_LIBRARY
+and
+.B TCL_LIBRARY
+still take precedence. When the script has finished
+successfully the binary enters Tk's own main loop, as
+.BR wish (1)
+does, and returns when the last window is gone. Present only in a build with
+the
+.B tk
+feature; refused as an unknown option otherwise.
+.TP
 .BR \-h ", " \-\-help
 Print the usage and exit.
 .TP
@@ -108,7 +131,10 @@ Commands:
 .BR format ", " if ", " while ", " for ", " foreach ", " switch ", " break ", "
 .BR continue ", " proc ", " return ", " global ", " catch ", " error ", "
 .BR array ", " dict ", " coroutine ", " yield ", " yieldto ", " uplevel ", "
-.BR apply ", " regexp ", " regsub ,
+.BR upvar ", " apply ", " regexp ", " regsub ", " namespace ", " variable ", "
+.BR rename ", " source ", " tcl_findLibrary ", " after ", " update ", "
+.BR vwait ", " clock ", " file ", " glob ", " pwd ", " cd ", " encoding ", "
+.BR package ,
 the
 .B string
 and
@@ -116,12 +142,19 @@ and
 ensembles, and the list commands
 .RB ( list ", " llength ", " lindex ", " lappend ", " lrange ", " lreverse ", "
 .BR linsert ", " lreplace ", " lsearch ", " lsort ", " join ", " split ", "
-.BR concat ).
+.BR concat ),
+and the channel commands
+.RB ( open ", " close ", " gets ", " read ", " flush ", " eof ", " seek ", "
+.BR tell ", " fconfigure ),
+which
+.B puts
+also takes a channel for.
 .PP
 All twelve parsing rules: braces, quotes, backslash substitution, command
 substitution, variable and array-element substitution, and comments. Rule 5,
-\fB{*}\fR argument expansion, is parsed and recorded on the word but refused when
-the command is lowered.
+\fB{*}\fR argument expansion, is lowered whole: the flagged words are spliced by
+list rules when the command runs, which is the only moment its argument count
+exists.
 .PP
 What is not built yet is refused with a message naming the construct, never
 silently misread.
@@ -161,6 +194,19 @@ instead of beside the running binary.
 .TP
 .BR FUSEVM_JIT_BLOCK_THRESHOLD ", " FUSEVM_JIT_TRACE_THRESHOLD ", " FUSEVM_JIT_CACHE_DIR ", " FUSEVM_FFI_DIR
 fusevm's own knobs, unchanged.
+.TP
+.B TCLRS_LIBTK
+The Tk shared library
+.B \-\-tk
+opens, instead of the paths tried by default. Read only by a build with the
+.B tk
+feature.
+.TP
+.BR TCLRS_TK_TRACE ", " TCLRS_TK_STRINGS
+Put the host's stub-call log, and the strings that crossed the boundary, back
+on standard error. Both are off in a session, because
+.B Tk_Init
+alone serves thousands of calls.
 .SH FILES
 .TP
 .B ~/.tclrs/history

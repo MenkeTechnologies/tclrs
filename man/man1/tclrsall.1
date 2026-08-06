@@ -66,7 +66,7 @@ instead of being re-parsed on every evaluation.
 .SH COMMANDS
 .TP
 .B Variables
-.BR set ", " unset ", " incr ", " append ", " global .
+.BR set ", " unset ", " incr ", " append ", " global ", " variable .
 A procedure's variables are frame slots; a script's are VM globals.
 .TP
 .B Control flow
@@ -83,9 +83,48 @@ Parameters and locals are frame slots; defaults and a trailing
 are resolved at the call site.
 .TP
 .B Coroutines
-.BR coroutine ", " yield ", " yieldto ", " "info coroutine" .
+.BR coroutine ", " yield ", " yieldto .
 A coroutine is a second VM over the same chunk, with the transfer owned by the
 driver.
+.TP
+.B "The event loop"
+.BR after ", " update ", " vwait .
+The registry of pending scripts belongs to the interpreter, as Tcl's does. A
+default build's only event sources are those scripts; a
+.B \-\-features\ tk
+build also pumps the ported notifier, where Tk's window and file events arrive.
+.TP
+.B Scope
+.BR uplevel ", " upvar ", " apply .
+.B uplevel
+resolves its level when the command runs and serves a target that is the global
+level;
+.B upvar
+binds
+.B #0
+while the script is read; a written-out lambda is compiled as an anonymous
+procedure with its own frame slots. A level that is another procedure's
+activation is refused rather than served against the wrong variables.
+.TP
+.B Introspection
+.BR info .
+Most subcommands are answered while compiling, because most of what
+.B info
+asks has a compile-time answer here.
+.TP
+.B Packages
+.BR package ,
+whole: \fBfiles\fR, \fBforget\fR, \fBifneeded\fR, \fBnames\fR, \fBprefer\fR,
+\fBpresent\fR, \fBprovide\fR, \fBrequire\fR, \fBunknown\fR, \fBvcompare\fR,
+\fBversions\fR and \fBvsatisfies\fR, with TIP 268's version normalisation and
+comparison ported from \fBgeneric/tclPkg.c\fR. The registry is shared with the
+\fBTcl_PkgProvideEx\fR a hosted extension calls, so
+.B package require Tk
+in a
+.B \-\-tk
+session is answered by what
+.B Tk_Init
+provided.
 .TP
 .B Lists
 .BR list ", " llength ", " lindex ", " lappend ", " lrange ", " lreverse ", "
@@ -124,7 +163,29 @@ The
 ensemble.
 .TP
 .B Another frame
-.BR eval ", " uplevel ", " apply .
+.BR eval ", " uplevel ", " upvar " and " apply .
+An
+.B eval
+in a procedure body, and an
+.B uplevel
+into a procedure activation, run their script against a projection of that
+frame; an
+.B upvar
+binds a live link to one of its slots, at any level, with the level and the
+target both allowed to be computed.
+.B apply
+runs a lambda as the procedure it is, whether its text was written out or
+computed.
+.TP
+.B Channels
+.BR open ", " close ", " gets ", " read ", " flush ", " eof ", " seek ", "
+.BR tell " and " fconfigure ,
+over the generic layer of Tcl's own
+.BR tclIO.c ,
+with
+.BR stdin ", " stdout " and " stderr .
+.B puts
+takes a channel too.
 .PP
 .BR puts " and " expr
 complete the set. The generated reference at
