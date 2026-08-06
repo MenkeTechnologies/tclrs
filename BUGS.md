@@ -1205,8 +1205,8 @@ than an unexamined one. Measured against the 2000-program run above.
 - **Commands tclrs does not have.** `interp`, `binary`, `trace`, `socket` and
   `exec` are outside the command set entirely, so a generated use of one is
   `invalid command name` and says nothing about parity. `{*}` expansion,
-  `namespace`, `rename`, `source` and file I/O were on this list until each
-  landed; the generator should reach them now. `uplevel`,
+  `namespace`, `rename`, `source`, `encoding` and file I/O were on this list
+  until each landed; the generator should reach them now. `uplevel`,
   `upvar`, `variable` and `apply` were on this list until `src/cmd_scope.rs`
   landed; what they now refuse is the entry above, and what they answer is
   `tests/event_differential.rs`. They are deliberately not generated, and belong

@@ -1199,6 +1199,12 @@ Apple M5 Max, macOS 26.5.2, rustc 1.97.0, `--release` (`lto = true`,
 `codegen-units = 1`), tclsh 9.0.4 from `/opt/homebrew/bin`, fusevm 0.15.0,
 20 runs after 5 warmup runs, `hyperfine -N` — each command exec'd directly.
 
+The `integer_arith` row predates the shift-distance check. A shift is an
+extension op wherever it appears and an extension op in a loop body costs that
+loop its trace, so that row's JIT and AOT columns are now interpreter-speed;
+`BUGS.md` records the measurement and the two candidate lowerings that would
+give it back. The other rows do not shift and are unaffected.
+
 `-N` matters at this scale. With a shell in the way, hyperfine measures the
 shell's own startup and subtracts it, and on a loaded machine that correction
 once came out larger than the command itself: an ahead-of-time row that runs in
@@ -1404,11 +1410,11 @@ reimplementation: it is the same `libtcl9tk9.0.dylib` the reference loads,
 running against tclrs's own Tcl stub table, so what is being measured is how
 much of the real toolkit this frontend can host.
 
-**1580 of 5040 attempted cases pass — 31.3%.** Over every case the suite
-contains that is 1580 of 10046.
+**1655 of 5069 attempted cases pass — 32.6%.** Over every case the suite
+contains that is 1655 of 10046 — 16.5%.
 [`tk-conformance/REPORT.md`](tk-conformance/REPORT.md) has the breakdown,
 including a ranked list of the stub slots that ended a run — `Tcl_SplitList`
-alone stops 1845 cases — which is what the number is waiting on.
+alone stops 1893 cases — which is what the number is waiting on.
 
 One classification rule differs from the Tcl harness, and it is the stricter
 one: a call to a stub slot with no body ends the process, and that counts as a
@@ -1417,9 +1423,12 @@ saying so; a trap is the process dying, and a process that died measured
 nothing.
 
 The report also runs Tk's own `demos/widget` — the sample application `wish`
-ships with — one statement at a time. It gets one statement in before
-`package require` stops it; attempted individually, 25 of its 65 statements
-complete.
+ships with — one statement at a time. It gets 2 of its 65 statements in before
+`package require msgcat` stops it; attempted individually, 28 complete and 37 do
+not. The largest remaining refusal there is a command name the script computes
+(`$w insert`, `$w configure`), which stops five of the 37; `{*} argument
+expansion` stopped four of them until `ext::EXPAND_CALL` landed and no longer
+appears.
 
 ```sh
 tk-conformance/run.sh
