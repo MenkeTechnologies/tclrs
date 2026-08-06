@@ -38,22 +38,19 @@
 //! procedure would see the globals too, which is the one place this differs
 //! from Tcl and is stated here rather than hidden.
 //!
-//! # The other five variadic slots
+//! # The other three variadic slots
 //!
-//! Two of the seven are marshalled by `trampoline.c` because their variadic
-//! arguments carry the payload. The rest are not, and the reason is the same
-//! for each: Tk calls them only to build text that a *script* would read, and
-//! no script reads it during initialisation.
+//! Four of the seven are marshalled by `trampoline.c` because their variadic
+//! arguments carry the payload: `Tcl_AppendStringsToObj` (15), `Tcl_Panic` (2),
+//! `Tcl_ObjPrintf` (578) and `Tcl_AppendPrintfToObj` (579). The rest are not,
+//! and the reason is the same for each: Tk calls them only to build text that a
+//! *script* would read, and no script reads it during initialisation.
 //!
 //! * `Tcl_SetErrorCode` (slot 228) — sets `::errorCode`, read by `catch`
 //!   handlers. Tk sets one where it is about to fail
 //!   (`tk9.0.4/generic/tkWindow.c:2795`).
 //! * `Tcl_AppendResult` (slot 70) — appends to the interpreter result, and Tk
 //!   uses it for error text only.
-//! * `Tcl_ObjPrintf` (slot 578) and `Tcl_AppendPrintfToObj` (slot 579) — build
-//!   a formatted message. Tk's 443 and 93 call sites are all error wording;
-//!   the object still comes back valid, carrying the format string with its
-//!   `%` directives unexpanded.
 //! * `Tcl_VarEval` (slot 260) — Tk never calls it. `grep -r Tcl_VarEval` over
 //!   `tk9.0.4/{generic,macosx,unix,ttk}` finds no call site.
 //!
@@ -63,6 +60,13 @@
 //! the fixed arguments stay in registers, so reading the fixed ones is
 //! unaffected. What is lost is only the text — never the control flow, and
 //! never the validity of a returned object.
+//!
+//! The two printf slots were once on that list, on the argument that Tk's 443
+//! and 93 call sites are all error wording. They are not: `wm geometry .`
+//! answers with `Tcl_ObjPrintf("%dx%d+%d+%d", …)`, and `bind Button` rebuilds
+//! every pattern it reports through `Tcl_AppendPrintfToObj`
+//! (`tk9.0.4/generic/tkBind.c:5190,5212`). Both are ordinary results a script
+//! reads, so both are marshalled.
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -282,6 +286,39 @@ pub unsafe extern "C" fn tclrs_tk_new_string_obj(
     super::obj::new_string(bytes)
 }
 
+/// What `tclrs_tk_append_printf_to_obj` hands back: the finished text, to be
+/// appended the way `Tcl_AppendPrintfToObj` appends
+/// (`generic/tclStringObj.c:2904-2915`, which is `Tcl_ObjPrintf`'s body over a
+/// caller's value rather than a fresh one).
+///
+/// A NULL value is Tk's own precondition rather than this side's: every one of
+/// its 93 call sites passes an object it has just built, and Tcl's body
+/// dereferences without a check. It is refused here anyway, because the
+/// alternative is a wild write.
+///
+/// # Safety
+/// Called only from that function, with `length` readable bytes at `text`.
+#[no_mangle]
+pub unsafe extern "C" fn tclrs_tk_append_printf(
+    obj: *mut TclObj,
+    text: *const c_char,
+    length: usize,
+) {
+    super::trace::record(
+        super::trace::Table::Tcl,
+        host::slot_index("tcl_AppendPrintfToObj"),
+    );
+    if obj.is_null() {
+        return;
+    }
+    let bytes = std::slice::from_raw_parts(text as *const u8, length);
+    host::append_bytes_to_obj(obj, bytes);
+    super::trace::note(
+        "AppendPrintfToObj",
+        &String::from_utf8_lossy(host::obj_bytes_of(obj)),
+    );
+}
+
 extern "C" {
     /// `void tclrs_tk_append_strings_to_obj(void *objPtr, ...)`, the body
     /// installed at slot 15.
@@ -292,4 +329,7 @@ extern "C" {
     /// `void *tclrs_tk_obj_printf(const char *format, ...)`, the body installed
     /// at slot 578.
     pub fn tclrs_tk_obj_printf(format: *const c_char, ...) -> *mut TclObj;
+    /// `void tclrs_tk_append_printf_to_obj(void *objPtr, const char *format,
+    /// ...)`, the body installed at slot 579.
+    pub fn tclrs_tk_append_printf_to_obj(obj: *mut TclObj, format: *const c_char, ...);
 }
