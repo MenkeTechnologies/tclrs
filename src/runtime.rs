@@ -49,6 +49,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fusevm::{Chunk, Frame, NumOp, VMResult, Value, VM};
@@ -162,7 +163,7 @@ pub const RECOMMENDED_STACK: usize = 256 * 1024 * 1024;
 /// they were produced. The stdout form buffers: a script that prints in a loop
 /// should not be measuring one syscall per line.
 #[derive(Clone)]
-enum Output {
+pub(crate) enum Output {
     Capture(Arc<Mutex<String>>),
     Stdout(Arc<Mutex<std::io::BufWriter<std::io::Stdout>>>),
 }
@@ -174,7 +175,7 @@ impl Output {
         ))))
     }
 
-    fn write(&self, s: &str) {
+    pub(crate) fn write(&self, s: &str) {
         match self {
             Output::Capture(buf) => buf.lock().expect("output lock").push_str(s),
             Output::Stdout(out) => {
@@ -186,7 +187,7 @@ impl Output {
     /// Push what is buffered out to the operating system. Called at the end of
     /// every evaluation, so an error the caller prints afterwards cannot
     /// overtake the output of the script that raised it.
-    fn flush(&self) {
+    pub(crate) fn flush(&self) {
         if let Output::Stdout(out) = self {
             let _ = out.lock().expect("output lock").flush();
         }
@@ -199,10 +200,40 @@ impl Output {
 /// it: the `eval` command compiles and runs a nested script from inside the
 /// extension handler of the chunk that invoked it. No lock is ever held across
 /// a `VM::run`, so that nesting can go as deep as `limit` allows.
-struct State {
+pub(crate) struct State {
     /// The variables, keyed by name. This is the authority, not the VM's slot
-    /// vector — see `seed`.
-    globals: HashMap<String, Value>,
+    /// vector — see `seed`. A namespace variable is one of these under its
+    /// qualified name; `crate::cmd_namespace::store_key` is the spelling.
+    pub(crate) globals: HashMap<String, Value>,
+    /// Procedures whose name was bound while a script was running, which is
+    /// every `proc` that is not at its script's top level. A name here answers
+    /// from the moment the defining code ran and not before, which is what
+    /// separates it from the procedures the compiler resolves — see
+    /// [`crate::procs`]. Held on the interpreter rather than per evaluation, so
+    /// a definition survives into the next `eval` the way a variable does.
+    pub(crate) commands: HashMap<String, crate::procs::RuntimeProc>,
+    /// The namespaces and commands the running script has created, which is
+    /// what `namespace exists`, `children`, `which` and `origin` answer from.
+    /// Per interpreter rather than per process, because two interpreters have
+    /// separate namespaces. See `crate::cmd_namespace::Registry`.
+    pub(crate) ns: crate::cmd_namespace::Registry,
+    /// The chunks whose runs are in progress, outermost first.
+    ///
+    /// A procedure's body is an op index, which means nothing outside the chunk
+    /// it was compiled into — so the chunk has to be recorded with it, and it
+    /// has to be recorded as something a later call can *run*. The running one
+    /// is only reachable from the VM as a `Chunk` by value, and copying one per
+    /// `proc` would copy the whole program; this is where the `Arc` the chunk
+    /// arrived as is kept so that [`crate::procs::define_op`] can take a handle
+    /// to it instead. Pushed and popped by [`Machine::start`], so the last entry
+    /// is the chunk of the innermost run — which is the one whose extension
+    /// handler is executing.
+    pub(crate) running: Vec<Arc<Chunk>>,
+    /// Global names an `upvar` outside a procedure made one variable: the alias,
+    /// and the name it stands for. Empty for almost every script, and one hash
+    /// lookup per name at a chunk's entry and exit when it is not — see
+    /// [`alias_global`].
+    aliases: HashMap<String, String>,
     cache: ChunkCache,
     /// Where the scripts of this interpreter write.
     output: Output,
@@ -216,10 +247,18 @@ struct State {
     /// that started it. This is what lets a `yield` in an `eval`'d script tell
     /// that it is inside a coroutine, and say so, rather than report the
     /// reference interpreter's message for a `yield` that is in no coroutine.
-    running: Vec<Option<String>>,
+    ///
+    /// Parallel to [`Interpreter::running`], which is the same stack of runs seen
+    /// as chunks rather than as coroutine contexts.
+    contexts: Vec<Option<String>>,
+    /// The `after` scripts this interpreter has registered and not yet run.
+    /// Tcl keeps them on the interpreter too (`Tcl_SetAssocData(interp,
+    /// "tclAfter", …)`, `generic/tclTimer.c:801-807`); see
+    /// [`crate::cmd_after`].
+    pub(crate) afters: crate::cmd_after::Afters,
 }
 
-type Shared = Arc<Mutex<State>>;
+pub(crate) type Shared = Arc<Mutex<State>>;
 
 /// A Tcl interpreter: the variables of a session, and the chunks compiled for
 /// it.
@@ -247,11 +286,16 @@ impl Interp {
         Interp {
             shared: Arc::new(Mutex::new(State {
                 globals: HashMap::new(),
+                commands: HashMap::new(),
+                ns: crate::cmd_namespace::Registry::default(),
+                running: Vec::new(),
+                aliases: HashMap::new(),
                 cache: ChunkCache::new(),
                 output,
                 depth: 0,
                 limit: DEFAULT_RECURSION_LIMIT,
-                running: Vec::new(),
+                contexts: Vec::new(),
+                afters: crate::cmd_after::Afters::default(),
             })),
         }
     }
@@ -276,7 +320,7 @@ impl Interp {
     /// [`crate::compiler::compile_debug`]'s output, which is the same script
     /// with a line marker before every command.
     pub fn run_chunk(&mut self, chunk: fusevm::Chunk) -> Result<String, TclError> {
-        Machine::run(&self.shared, chunk).map(|v| to_tcl_string(&v))
+        Machine::run(&self.shared, Arc::new(chunk)).map(|v| to_tcl_string(&v))
     }
 
     /// Set a variable from the host — how the binary supplies `argv0`, `argc`
@@ -299,6 +343,28 @@ impl Interp {
         let mut names: Vec<String> = self.lock().globals.keys().cloned().collect();
         names.sort();
         names
+    }
+
+    /// The handle a foreign caller re-enters this interpreter through.
+    ///
+    /// [`Interp`] takes `&mut self` to evaluate, which a C callback re-entering
+    /// through a stub table cannot produce: the same interpreter may already be
+    /// part-way through an evaluation further down the stack. The state behind
+    /// it is an `Arc<Mutex<…>>` and no lock is held while a script runs, which
+    /// is what makes that re-entry sound — the `eval` command relies on the
+    /// same property. Handing out the handle is how `crate::tk::interp` keeps
+    /// one interpreter per `Tcl_Interp *` without owning it.
+    #[cfg(feature = "tk")]
+    pub(crate) fn into_shared(self) -> Shared {
+        self.shared
+    }
+
+    /// The same handle, without giving up ownership: a Tk session hands it to
+    /// the host it builds and then goes on running scripts through this
+    /// interpreter, which is the point — the two are one interpreter.
+    #[cfg(feature = "tk")]
+    pub(crate) fn shared_handle(&self) -> Shared {
+        Arc::clone(&self.shared)
     }
 
     /// Take everything captured so far, leaving the buffer empty. Always empty
@@ -328,7 +394,7 @@ impl Default for Interp {
 
 /// Compile `src` — reusing the cached chunk when the same text has been
 /// evaluated before — and run it against `shared`.
-fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> {
+pub(crate) fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> {
     let compiled = {
         let mut state = shared.lock().expect("interpreter lock");
         // The limit counts nested evaluations, so the outermost script — the
@@ -344,12 +410,46 @@ fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> {
     };
     // The depth is given back however this returns, including the compile
     // failure above, which is why it is not a `?` in the block.
-    let result = compiled.and_then(|chunk| {
-        // `VM::new` takes the chunk by value, so the cached one is cloned
-        // rather than moved out; the parse and the lowering are what the cache
-        // saves.
-        Machine::run(shared, (*chunk).clone())
-    });
+    //
+    // The cached `Arc` is handed over rather than cloned out of: `VM::new` takes
+    // a chunk by value and copies it either way, and keeping the handle is what
+    // lets a `proc` this run defines record the chunk it belongs to without a
+    // second copy of the program. See [`State::running`].
+    let result = compiled.and_then(|chunk| Machine::run(shared, chunk));
+    shared.lock().expect("interpreter lock").depth -= 1;
+    result
+}
+
+/// Enter a procedure body compiled into `chunk`, which is not the chunk the
+/// caller is running.
+///
+/// A procedure is an op index into one chunk's op stream, so a call from
+/// anywhere else cannot be a jump: the body runs on a VM of its own over the
+/// chunk it was compiled into, positioned the way [`Machine::create`] positions
+/// a coroutine's. The interpreter's variables are the same ones either way —
+/// every chunk projects them through [`seed`] and writes them back through
+/// [`flush`] — which is what makes the two runs one interpreter.
+///
+/// Counted against the recursion limit for the same reason [`run_source`] is: a
+/// procedure that calls itself across a chunk boundary spends native stack per
+/// call, and the limit is what turns a runaway one into a Tcl error rather than
+/// a signal.
+pub(crate) fn call_in_chunk(
+    shared: &Shared,
+    chunk: &Arc<Chunk>,
+    entry: usize,
+    actuals: Vec<Value>,
+) -> Result<Value, TclError> {
+    {
+        let mut state = shared.lock().expect("interpreter lock");
+        if state.depth > state.limit {
+            return Err(TclError::plain(
+                "too many nested evaluations (infinite loop?)",
+            ));
+        }
+        state.depth += 1;
+    }
+    let result = Machine::start(shared, Arc::clone(chunk), Some((entry, actuals)));
     shared.lock().expect("interpreter lock").depth -= 1;
     result
 }
@@ -359,18 +459,55 @@ fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> {
 /// to the next. The interpreter's map is the authority; a chunk's slots are a
 /// projection of it, built here on entry and read back by `flush` on exit.
 fn seed(chunk: &Chunk, shared: &Shared) -> Vec<Value> {
-    let state = shared.lock().expect("interpreter lock");
-    chunk
-        .names
-        .iter()
-        .map(|name| state.globals.get(name).cloned().unwrap_or(Value::Undef))
-        .collect()
+    let traced = TracedIn::of(chunk);
+    // A read trace exists to let its owner put the current value in place
+    // before anything reads it, so it runs before the projection is taken
+    // rather than after.
+    let mut values: Vec<Value> = {
+        let state = shared.lock().expect("interpreter lock");
+        chunk
+            .names
+            .iter()
+            .map(|name| {
+                let key = state.alias_of(name);
+                state.globals.get(key).cloned().unwrap_or(Value::Undef)
+            })
+            .collect()
+    };
+    traced.blank_reads(&mut values);
+    values
 }
 
 /// Write a finished chunk's slots back into the interpreter's variables. A slot
 /// left `Undef` — never assigned, or unset — removes the variable rather than
 /// storing an empty value, so `unset` survives into the next evaluation.
 fn flush(chunk: &Chunk, shared: &Shared, globals: &[Value]) {
+    let traced = TracedIn::of(chunk);
+    let fired = write_back(chunk, shared, globals, &traced, Boundary::End);
+    // Whatever a trace on the way out wants to do it does after the value is
+    // stored, exactly as `TclCallVarTraces` runs a write trace after the write
+    // (`generic/tclTrace.c:2616-2655`). Its refusal has nowhere to go here —
+    // the command that wrote is already over — so it is dropped; the sync
+    // points inside a run report it, see [`sync_traced`].
+    for (name, op) in fired {
+        let _ = TracedIn::fire_one(&name, op);
+    }
+}
+
+/// Store a chunk's slots into the interpreter's variables, and say which traces
+/// that write should fire.
+///
+/// Split out from [`flush`] because a trace runs foreign code that can write
+/// variables of its own, and this holds the interpreter lock. Nothing is called
+/// back into while it is held.
+fn write_back(
+    chunk: &Chunk,
+    shared: &Shared,
+    globals: &[Value],
+    traced: &TracedIn,
+    boundary: Boundary,
+) -> Vec<(String, TraceOp)> {
+    let mut fired = Vec::new();
     let mut state = shared.lock().expect("interpreter lock");
     for (slot, name) in chunk.names.iter().enumerate() {
         // The compiler's own loop state is named with a leading NUL so that no
@@ -379,15 +516,501 @@ fn flush(chunk: &Chunk, shared: &Shared, globals: &[Value]) {
         if name.starts_with('\u{0}') {
             continue;
         }
-        match globals.get(slot) {
-            Some(Value::Undef) | None => {
+        // An aliased name is not its own variable: `upvar` outside a procedure
+        // made it another spelling of one, and the write goes where that one is.
+        // Resolved only when some alias exists, so a script that made none pays
+        // one `is_empty` for the whole write-back rather than a copy per name.
+        let aliased = (!state.aliases.is_empty()).then(|| state.alias_of(name).to_string());
+        let name: &str = aliased.as_deref().unwrap_or(name);
+        let value = globals.get(slot).unwrap_or(&Value::Undef);
+        let watched = traced.at(slot);
+        match value {
+            // A slot [`TracedIn::blank_reads`] emptied so that reads of it
+            // would reach the hook is not an `unset`, and neither is a slot a
+            // partly-run chunk has not written yet — see [`Boundary`]. The
+            // interpreter's copy stands in both cases.
+            Value::Undef if watched.reads || boundary == Boundary::Sync => {}
+            Value::Undef => {
+                if state.globals.remove(name).is_some() && watched.unsets {
+                    fired.push((name.to_string(), TraceOp::Unset));
+                }
+            }
+            value => {
+                let changed = state.globals.get(name) != Some(value);
+                state.globals.insert(name.to_string(), value.clone());
+                if changed && watched.writes {
+                    fired.push((name.to_string(), TraceOp::Write));
+                }
+            }
+        }
+    }
+    // The names the chunk's own table does not carry, which a run-time `upvar`
+    // interned past the end of it. They are ordinary globals in every other
+    // respect, so they are written back on the same terms — including an empty
+    // slot at the end of a chunk being an `unset`. No trace is consulted: a
+    // trace is registered against a name the chunk *names*, and these are
+    // exactly the names it does not.
+    for (offset, name) in overflow_names(chunk, globals).iter().enumerate() {
+        let value = globals.get(overflow_value_index(chunk, offset));
+        match value {
+            Some(Value::Undef) | None if boundary == Boundary::End => {
                 state.globals.remove(name);
             }
+            Some(Value::Undef) | None => {}
             Some(value) => {
                 state.globals.insert(name.clone(), value.clone());
             }
         }
     }
+    fired
+}
+
+/// The overflow directory of a running chunk: the names a run-time `upvar`
+/// reached that the chunk's own name table does not carry.
+///
+/// It lives in the projection it describes — at the index one past the chunk's
+/// last name — rather than beside the interpreter, and that is deliberate. A
+/// projection travels with the VM: it is moved in and out of a parked coroutine,
+/// handed across an `eval`, and flushed by whichever code holds it. A directory
+/// held anywhere else would have to be kept in step with all of that; held here
+/// it cannot fall out of step, because it *is* part of the thing being moved.
+fn overflow_names(chunk: &Chunk, globals: &[Value]) -> Vec<String> {
+    match globals.get(chunk.names.len()) {
+        Some(Value::Array(names)) => names.iter().map(to_tcl_string).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Where the value of the `offset`th overflow name sits: past the directory.
+fn overflow_value_index(chunk: &Chunk, offset: usize) -> usize {
+    chunk.names.len() + 1 + offset
+}
+
+impl State {
+    /// The name an alias stands for, or the name itself. One step is enough for
+    /// every alias this frontend makes — a chain would need `upvar` to an alias,
+    /// which registers the target it resolved to — and a bounded walk is what
+    /// keeps a cycle from being a hang.
+    fn alias_of<'a>(&'a self, name: &'a str) -> &'a str {
+        let mut at = name;
+        if self.aliases.is_empty() {
+            return at;
+        }
+        for _ in 0..8 {
+            match self.aliases.get(at) {
+                Some(target) if target != at => at = target,
+                _ => break,
+            }
+        }
+        at
+    }
+}
+
+/// Make the global `alias` another spelling of the global `target`, which is
+/// what `upvar` outside a procedure does.
+///
+/// The pair lives on the interpreter rather than in a chunk, because that is the
+/// lifetime it has: `tk.tcl` binds `::tk::Priv` once and every later script sees
+/// one variable. `seed` and `write_back` resolve through it, so a chunk that
+/// mentions either name reaches the same storage without any op knowing.
+pub(crate) fn alias_global(interp: &Shared, alias: &str, target: &str) -> Result<(), String> {
+    let alias = crate::cmd_namespace::store_key(alias).to_string();
+    let target = crate::cmd_namespace::store_key(target).to_string();
+    if alias == target {
+        // `TclPtrObjMakeUpvarIdx` refuses this outright
+        // (`generic/tclVar.c`: "can't upvar from variable to itself").
+        return Err("can't upvar from variable to itself".to_string());
+    }
+    let mut state = interp.lock().expect("interpreter lock");
+    // The alias takes the target's value: they are one variable from here on, and
+    // the target's is the one that survives — which is what tclsh does, since the
+    // link is to the target's storage.
+    if let Some(value) = state.globals.get(&target).cloned() {
+        state.globals.insert(alias.clone(), value);
+    } else {
+        state.globals.remove(&alias);
+    }
+    state.aliases.insert(alias, target);
+    Ok(())
+}
+
+/// The index in the running chunk's projection that holds the global `key`,
+/// adding it to the overflow area when the chunk's name table has no entry for
+/// it. The value is seeded from the interpreter, as `seed` seeds a named one.
+///
+/// This is what lets `upvar #0 ::tk::Priv.$disp priv` reach a variable whose
+/// name no op in the chunk could have mentioned: after this the link is an
+/// ordinary [`Place::Global`], and every element, `array`, `lappend` and `unset`
+/// op reaches it the way it reaches any other global.
+pub(crate) fn intern_overflow(interp: &Shared, vm: &mut VM, key: &str) -> Result<u16, String> {
+    let base = vm.chunk.names.len();
+    let mut names = overflow_names(&vm.chunk, &vm.globals);
+    if let Some(offset) = names.iter().position(|n| n == key) {
+        return index_of(base + 1 + offset);
+    }
+    names.push(key.to_string());
+    let offset = names.len() - 1;
+    let value_at = base + 1 + offset;
+    if vm.globals.len() <= value_at {
+        vm.globals.resize(value_at + 1, Value::Undef);
+    }
+    vm.globals[base] = Value::Array(
+        names
+            .iter()
+            .map(|n| Value::Str(Arc::new(n.clone())))
+            .collect(),
+    );
+    vm.globals[value_at] = interp
+        .lock()
+        .expect("interpreter lock")
+        .globals
+        .get(key)
+        .cloned()
+        .unwrap_or(Value::Undef);
+    index_of(value_at)
+}
+
+fn index_of(index: usize) -> Result<u16, String> {
+    u16::try_from(index).map_err(|_| "too many variables in one chunk".to_string())
+}
+
+/// Take the projection again, keeping whatever overflow names the old one had.
+///
+/// Every place a chunk's projection is rebuilt part-way through a run goes
+/// through this rather than through `seed` directly: an `upvar` made before the
+/// rebuild must still point somewhere after it.
+fn reproject(chunk: &Chunk, shared: &Shared, old: &[Value]) -> Vec<Value> {
+    let mut values = seed(chunk, shared);
+    let names = overflow_names(chunk, old);
+    if names.is_empty() {
+        return values;
+    }
+    let base = chunk.names.len();
+    values.resize(base + 1 + names.len(), Value::Undef);
+    values[base] = Value::Array(
+        names
+            .iter()
+            .map(|n| Value::Str(Arc::new(n.clone())))
+            .collect(),
+    );
+    let state = shared.lock().expect("interpreter lock");
+    for (offset, name) in names.iter().enumerate() {
+        values[base + 1 + offset] = state.globals.get(name).cloned().unwrap_or(Value::Undef);
+    }
+    values
+}
+
+/// Which kind of write-back this is, which is the whole of what an empty slot
+/// means.
+///
+/// At the **end** of a chunk every global it names has been through `seed`, so
+/// an empty slot is a variable the chunk unset — that is the rule `flush` has
+/// always had, and removing the entry is what makes `unset` survive into the
+/// next evaluation.
+///
+/// **Part-way through** a chunk it is not. A global the chunk has not reached
+/// yet is empty too, and so is one whose value only arrived while a Tk command
+/// was running: a widget created with `-textvariable v` sets `v` from C, and
+/// the slot for `v` in the calling chunk is still empty because nothing has
+/// assigned it. Treating that as an unset fired an unset trace at the widget
+/// that had just been told about the variable, which is how this distinction
+/// was found. An unset the chunk really did make is seen at the end instead —
+/// later than Tcl would, never lost.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Boundary {
+    Sync,
+    End,
+}
+
+// ── variable traces ──────────────────────────────────────────────────────────
+
+/// Which operations on a variable something is watching for.
+///
+/// Tcl keeps this as bits on the variable itself (`VAR_TRACED_READ` and its
+/// neighbours, `generic/tclInt.h`), consulted before the trace list is walked
+/// at all (`generic/tclTrace.c:2624`). The same shape, for the same reason: the
+/// common answer is "nothing", and it has to be cheap.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Traced {
+    pub reads: bool,
+    pub writes: bool,
+    pub unsets: bool,
+}
+
+impl Traced {
+    pub fn any(self) -> bool {
+        self.reads || self.writes || self.unsets
+    }
+}
+
+/// What happened to a variable, in the three kinds Tcl's `Tcl_VarTraceProc`
+/// distinguishes: `TCL_TRACE_READS`, `TCL_TRACE_WRITES` and `TCL_TRACE_UNSETS`
+/// (`generic/tcl.h`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TraceOp {
+    Read,
+    Write,
+    Unset,
+}
+
+/// Where a variable trace registered outside this module is answered.
+///
+/// tclrs has no `trace` command of its own, so the only implementation is
+/// [`crate::tk::linkvar`], which holds the traces `Tcl_TraceVar2` created and
+/// calls the C procedures behind them. Keeping the interface here rather than
+/// reaching into `crate::tk` is what lets the whole mechanism compile away in a
+/// build without the feature: nothing ever installs a sink, so
+/// [`traces_armed`] is false and every call site below is one relaxed atomic
+/// load.
+pub trait VarTraceSink: Send + Sync {
+    /// Which operations on `name` are traced. Called for every global a chunk
+    /// names, so it must be cheap for the overwhelmingly common "none".
+    fn traced(&self, name: &str) -> Traced;
+
+    /// Run the traces on `name` for `op`. The error is the message a trace
+    /// procedure returned, which Tcl turns into the failure of the access
+    /// (`generic/tclTrace.c:2663-2700`).
+    fn fire(&self, name: &str, op: TraceOp) -> Result<(), String>;
+}
+
+/// False until something installs a sink *and* that sink holds at least one
+/// trace, so the cost of the whole mechanism on a script that traces nothing is
+/// this load.
+static TRACES_ARMED: AtomicBool = AtomicBool::new(false);
+static TRACE_SINK: Mutex<Option<Arc<dyn VarTraceSink>>> = Mutex::new(None);
+
+/// Install the sink variable traces are answered through. Replacing one is
+/// allowed and is what a test does; there is one per process, as there is one
+/// Tk host per process.
+pub fn set_var_trace_sink(sink: Arc<dyn VarTraceSink>) {
+    *TRACE_SINK.lock().expect("trace sink lock") = Some(sink);
+}
+
+/// Tell the runtime whether the sink currently holds any trace at all. The sink
+/// calls this as its registry fills and empties, so a script that runs after
+/// every trace has been removed pays nothing.
+pub fn arm_var_traces(armed: bool) {
+    TRACES_ARMED.store(armed, Ordering::Relaxed);
+}
+
+/// Whether any variable in this process is traced.
+pub fn traces_armed() -> bool {
+    TRACES_ARMED.load(Ordering::Relaxed)
+}
+
+fn trace_sink() -> Option<Arc<dyn VarTraceSink>> {
+    if !traces_armed() {
+        return None;
+    }
+    TRACE_SINK.lock().expect("trace sink lock").clone()
+}
+
+/// The traced globals of one chunk: which of its name-table entries carry a
+/// trace, and which operations that trace watches.
+///
+/// Recomputed wherever it is needed rather than carried, because the trace list
+/// changes while a chunk runs — a Tk command that creates a widget with a
+/// `-textvariable` adds one — and a copy taken at entry would miss it. The
+/// recomputation is skipped entirely when nothing is traced.
+struct TracedIn {
+    entries: Vec<(usize, String, Traced)>,
+}
+
+impl TracedIn {
+    fn of(chunk: &Chunk) -> TracedIn {
+        let Some(sink) = trace_sink() else {
+            return TracedIn {
+                entries: Vec::new(),
+            };
+        };
+        let entries = chunk
+            .names
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| !name.starts_with('\u{0}'))
+            .filter_map(|(slot, name)| {
+                let watched = sink.traced(name);
+                watched.any().then(|| (slot, name.clone(), watched))
+            })
+            .collect();
+        TracedIn { entries }
+    }
+
+    #[cfg(feature = "tk")]
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// What is watched at a chunk name-table index.
+    fn at(&self, slot: usize) -> Traced {
+        self.entries
+            .iter()
+            .find(|(i, _, _)| *i == slot)
+            .map_or(Traced::default(), |(_, _, w)| *w)
+    }
+
+    fn fire_one(name: &str, op: TraceOp) -> Result<(), String> {
+        match trace_sink() {
+            Some(sink) => sink.fire(name, op),
+            None => Ok(()),
+        }
+    }
+
+    /// Empty the slot of every read-traced global, so that each read of one
+    /// reaches the undef hook and fires its trace there.
+    ///
+    /// fusevm calls the hook for a `GetVar` that finds `Undef` and pushes what
+    /// the hook answers *without storing it*
+    /// (`fusevm-0.16.0/src/vm.rs:1749-1768`), so the slot stays empty and every
+    /// read goes the same way. That is what makes a read trace fire at the read
+    /// rather than at a boundary near it.
+    ///
+    /// The cost is that the slot no longer distinguishes "blanked" from
+    /// "unset", which [`write_back`] resolves by leaving the interpreter's copy
+    /// alone. An `unset` of a read-traced variable inside a chunk that never
+    /// otherwise touches it is therefore not seen as an unset — the one place
+    /// this projection is lossy, and the reason `Tcl_UnsetVar2` fires its
+    /// traces itself.
+    fn blank_reads(&self, values: &mut [Value]) {
+        for (slot, _, watched) in &self.entries {
+            if watched.reads {
+                if let Some(cell) = values.get_mut(*slot) {
+                    *cell = Value::Undef;
+                }
+            }
+        }
+    }
+}
+
+/// Store what the running chunk has written into traced variables, and fire the
+/// traces that costs. Called *before* control leaves the chunk.
+///
+/// This is the boundary a Tk command crosses. Tcl fires a trace at the access
+/// itself; a chunk here reaches its globals through native `GetVar`/`SetVar`
+/// ops that fusevm gives no hook for, so a write inside a chunk is seen when
+/// the chunk next hands control to something that could observe it. Calling a
+/// registered Tk command is that moment, and it is the only one: no C code runs
+/// between two ops of a chunk otherwise, so nothing can tell the difference.
+///
+/// The chunk's copy is read back afterwards, because a trace may have rewritten
+/// the variable it was told about — a read-only linked variable does exactly
+/// that — and the command about to run must see one value, not two.
+#[cfg(feature = "tk")]
+pub(crate) fn sync_out(shared: &Shared, vm: &mut VM) -> Result<(), String> {
+    if !traces_armed() {
+        return Ok(());
+    }
+    let traced = TracedIn::of(&vm.chunk);
+    if traced.is_empty() {
+        return Ok(());
+    }
+    let fired = write_back(&vm.chunk, shared, &vm.globals, &traced, Boundary::Sync);
+    for (name, op) in fired {
+        TracedIn::fire_one(&name, op)?;
+    }
+    project(shared, vm, &traced);
+    Ok(())
+}
+
+/// Take up whatever the interpreter's variables now hold. Called *after*
+/// control comes back.
+///
+/// Strictly one-way: the chunk's slot for a variable a Tk command just wrote is
+/// stale by definition, and writing it back would undo the write. `.c select`
+/// on a checkbutton sets its `-variable` from C, and a two-way sync here put the
+/// slot's older value back over it — which is how the direction was found.
+#[cfg(feature = "tk")]
+pub(crate) fn sync_in(shared: &Shared, vm: &mut VM) {
+    if !traces_armed() {
+        return;
+    }
+    let traced = TracedIn::of(&vm.chunk);
+    if traced.is_empty() {
+        return;
+    }
+    project(shared, vm, &traced);
+}
+
+/// Copy every traced variable from the interpreter into the chunk's slots, and
+/// re-empty the read-traced ones so the next read of one fires its trace.
+#[cfg(feature = "tk")]
+fn project(shared: &Shared, vm: &mut VM, traced: &TracedIn) {
+    let state = shared.lock().expect("interpreter lock");
+    for (slot, name, _) in &traced.entries {
+        if let Some(cell) = vm.globals.get_mut(*slot) {
+            *cell = state.globals.get(name).cloned().unwrap_or(Value::Undef);
+        }
+    }
+    drop(state);
+    traced.blank_reads(&mut vm.globals);
+}
+
+// ── reaching the variables through a handle ──────────────────────────────────
+//
+// [`Interp`] takes `&mut self` to set a variable and `&self` to read one, which
+// a C stub re-entering through the host cannot produce: the same interpreter
+// may already be part-way through an evaluation further down the stack. These
+// take the handle instead, which is the same thing `eval` and the Tk evaluator
+// already do. The lock is taken and released inside each, so nothing is held
+// while a trace runs.
+
+/// A global's value, or `None` when it is unset. Read traces are *not* fired:
+/// the caller says whether this read is one a script made.
+#[cfg(feature = "tk")]
+pub(crate) fn global_of(shared: &Shared, name: &str) -> Option<Value> {
+    shared
+        .lock()
+        .expect("interpreter lock")
+        .globals
+        .get(name)
+        .cloned()
+}
+
+/// Store a global and fire its write traces. Returns the trace's refusal, which
+/// is what `Tcl_ObjSetVar2` reports by answering NULL.
+#[cfg(feature = "tk")]
+pub(crate) fn set_global_of(shared: &Shared, name: &str, value: Value) -> Result<(), String> {
+    let changed = {
+        let mut state = shared.lock().expect("interpreter lock");
+        let changed = state.globals.get(name) != Some(&value);
+        state.globals.insert(name.to_string(), value);
+        changed
+    };
+    if changed && traces_armed() {
+        TracedIn::fire_one(name, TraceOp::Write)?;
+    }
+    Ok(())
+}
+
+/// Remove a global and fire its unset traces. Answers whether it was set.
+///
+/// This is the one unset the projection in [`TracedIn::blank_reads`] cannot
+/// see, so it fires its own traces rather than waiting for a boundary.
+#[cfg(feature = "tk")]
+pub(crate) fn unset_global_of(shared: &Shared, name: &str) -> bool {
+    let had = shared
+        .lock()
+        .expect("interpreter lock")
+        .globals
+        .remove(name)
+        .is_some();
+    if had && traces_armed() {
+        let _ = TracedIn::fire_one(name, TraceOp::Unset);
+    }
+    had
+}
+
+/// The value a read of `name` should answer with, after its read traces have
+/// run. `None` when the variable is genuinely unset, which is the error the
+/// undef hook reports.
+fn traced_read(shared: &Shared, name: &str) -> Option<Value> {
+    let sink = trace_sink()?;
+    if !sink.traced(name).reads {
+        return None;
+    }
+    sink.fire(name, TraceOp::Read).ok()?;
+    let state = shared.lock().expect("interpreter lock");
+    state.globals.get(name).cloned()
 }
 
 // ── the hooks ────────────────────────────────────────────────────────────
@@ -503,7 +1126,20 @@ impl Hooks {
         // through a frontend op is what keeps the read a native op, and a
         // counted loop traced — an extension op in a loop body costs that loop
         // its JIT trace.
-        vm.set_undef_hook(Arc::new(|read: fusevm::UndefRead<'_>| {
+        let undef_interp = Arc::clone(&self.interp);
+        vm.set_undef_hook(Arc::new(move |read: fusevm::UndefRead<'_>| {
+            // A read-traced global is left empty by `TracedIn::blank_reads` so
+            // that every read of it arrives here; its traces run and the value
+            // they leave is the answer. Checked before the tolerant-site rule
+            // below, because such a variable is not absent — it was emptied on
+            // purpose, and `incr` on one must see what the trace put there.
+            if traces_armed() {
+                if let Some(name) = read.name {
+                    if let Some(value) = traced_read(&undef_interp, name) {
+                        return Ok(value);
+                    }
+                }
+            }
             if tolerates_undef(read.chunk, read.ip) {
                 // `incr x` on a variable that does not exist creates it at
                 // zero. It is the same read op on the same name as `$x`, so
@@ -561,17 +1197,91 @@ impl Hooks {
                 return;
             }
             let outcome = match id {
-                ext::EVAL => eval_op(&interp, vm, arg),
+                // The ops that reach back out of the chunk: a nested script, a
+                // function an inline `rust` block exported, and the two halves
+                // of a procedure whose name is bound at run time. One grouped
+                // pattern rather than four arms, so the ops that do not — every
+                // operator and every command module, which is what a hot loop
+                // is made of — fall through on one test.
+                //
+                // A Tk command is one of these too: `runtime-proc` folded the
+                // old `TK_DISPATCH` into `DYN_CALL`, so `crate::procs::call_op`
+                // resolves a script's procedure and a command Tk registered
+                // through the same table, with `crate::tk::dispatch` as the
+                // fallback half.
+                //
+                // A command with a `{*}` word is one of these as well: its
+                // words are only a list of arguments once they have been
+                // spliced, so which command is being called — and whether it is
+                // a procedure, a Tk command or a builtin — is decided here.
+                ext::EVAL | ext::FFI_CALL | ext::PROC_DEFINE | ext::DYN_CALL | ext::EXPAND_CALL => {
+                    interpreter_op(&interp, vm, id, arg)
+                }
+                // ── the namespace block's runtime ops ────────────────────
+                // Their handlers need the interpreter itself — a registry to
+                // query, a file to evaluate — which the plain `extension`
+                // below is not given.
+                id if crate::cmd_namespace::is_op(id) => {
+                    crate::cmd_namespace::extension(&interp, vm, id, arg)
+                }
+                id if crate::cmd_source::is_op(id) => {
+                    crate::cmd_source::extension(&interp, vm, id, arg)
+                }
+                // ── end of the namespace block ───────────────────────────
+                // ── the event loop and the scope commands ────────────────
+                // Their own arms rather than the plain one below because each
+                // needs the interpreter the running chunk belongs to: an
+                // `after` script, a `vwait`'s variable and an `uplevel`'s
+                // script are all state that lives across chunks, not inside
+                // this one.
+                ext::AFTER => crate::cmd_after::after_op(&interp, vm, arg),
+                ext::UPDATE => crate::cmd_after::update_op(&interp, vm, arg),
+                ext::VWAIT => crate::cmd_after::vwait_op(&interp, vm, arg),
+                // `upvar` with a computed target needs the interpreter for the
+                // same reason `uplevel` does: a name the chunk's table does not
+                // carry is interned against the interpreter's variables.
+                ext::UPVAR => crate::cmd_scope::upvar_op(&interp, vm, arg),
+                // Following a link needs nothing but the VM, but it raises the
+                // located `TclError` the arms above raise rather than the plain
+                // string the module below returns, so it is dispatched here.
+                ext::LINK_GET => crate::cmd_scope::link_get(vm, arg == 1),
+                ext::LINK_SET => crate::cmd_scope::link_set(vm),
+                // ── end of the event block ───────────────────────────────
+                // ── the ops that run a script in another frame ───────────
+                // `eval` inside a body, `uplevel` and `apply`. Each needs the
+                // interpreter, and each is the same exchange: the running
+                // chunk's variables out, a projection of the target frame in,
+                // the script, and the frame's slots written back.
+                ext::EVAL_FRAME => eval_frame_op(&interp, vm, arg),
+                ext::UPLEVEL => uplevel_op(&interp, vm, arg),
+                ext::APPLY => apply_op(&interp, vm, arg),
                 // `info globals` / `vars` answer from the interpreter's own
                 // table, not the chunk's name pool: `argc`, `argv` and `argv0`
                 // are set by the host and are interned only if the script
                 // happens to mention them, so a chunk-only answer omits exactly
                 // the variables every script starts with.
                 crate::cmd_info::ext::NAMES => info_names_op(&interp, vm, arg),
-                ext::EVAL_FRAME => eval_frame_op(&interp, vm, arg),
-                ext::UPLEVEL => uplevel_op(&interp, vm, arg),
-                ext::APPLY => apply_op(&interp, vm, arg),
-                ext::FFI_CALL => ffi_op(vm, arg).map_err(TclError::plain),
+                // ── end of the frame ops ─────────────────────────────────
+                // The channel ops write through the running interpreter's own
+                // output, so that `puts stdout x` reaches wherever `puts x`
+                // does — including an `Output::Capture`. That sink is only in
+                // scope here, which is why they are dispatched from the closure
+                // rather than from `extension` below.
+                //
+                // A bounded range rather than `id >= CHANNEL_BASE`: the blocks
+                // above it — namespaces, the event loop, `package` — are all
+                // higher ids, and an open-ended test here would claim every one
+                // of them. Their arms happen to stand earlier, but that would
+                // make arm order the only thing keeping `after` out of the
+                // channel handler, and arm order is not what the block map
+                // promises.
+                id if (ext::CHANNEL_BASE..ext::CHANNEL_END).contains(&id) => {
+                    crate::cmd_channel::run(vm, id, arg, &out).map_err(TclError::plain)
+                }
+                // Its own arm because `package require` may run a script — the
+                // `ifneeded` one, or `package unknown` — and a script needs
+                // the interpreter, which only this closure holds.
+                ext::PACKAGE => package_op(&interp, vm, arg),
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
             if let Err(e) = outcome {
@@ -642,6 +1352,36 @@ fn jit_enabled() -> bool {
     )
 }
 
+/// The five extension ops that need something the chunk does not carry: the
+/// interpreter itself, or a table living beside it.
+///
+/// They are dispatched together, behind one test in the extension handler,
+/// because every other op — the operators, the list, string, `dict` and array
+/// modules — is answerable from the stack alone and is what a loop is made of.
+/// Three of the five are *located*: their failures stand in for refusals the
+/// compiler would otherwise have deferred with the command's line attached,
+/// which is why they carry a [`TclError`] and not a bare message.
+fn interpreter_op(interp: &Shared, vm: &mut VM, id: u16, arg: u8) -> Result<(), TclError> {
+    match id {
+        ext::EVAL => eval_op(interp, vm, arg),
+        ext::FFI_CALL => ffi_op(vm, arg).map_err(TclError::plain),
+        // A `proc` outside its script's top level binds its name here, when the
+        // command runs, rather than while it is compiled.
+        ext::PROC_DEFINE => crate::procs::define_op(interp, vm),
+        // A call whose name only a run-time table can resolve: such a procedure,
+        // or a command Tk registered.
+        ext::DYN_CALL => crate::procs::call_op(interp, vm, arg),
+        // A call whose *argument list* only exists at run time, because one of
+        // its words was written `{*}…`.
+        ext::EXPAND_CALL => crate::procs::expand_call_op(interp, vm, arg),
+        // The caller's pattern sends only the five ids above here. Answering
+        // the rest the way the caller's other arm would is what keeps a sixth
+        // id added there and forgotten here a wrong *answer* rather than a call
+        // to whichever of these happened to be last.
+        _ => extension(vm, id, arg).map_err(TclError::plain),
+    }
+}
+
 /// A call to a function an inline `rust { ... }` block exported: the name was
 /// pushed first, then the arguments. The library is already loaded — the
 /// compiler registered it while lowering the block — so this only marshals.
@@ -670,43 +1410,56 @@ fn ffi_op(vm: &mut VM, argc: u8) -> Result<(), String> {
 /// answered from [`State::globals`], which the extension handler reaches and a
 /// bare `&mut VM` does not.
 fn info_names_op(interp: &Shared, vm: &mut VM, which: u8) -> Result<(), TclError> {
-    let given = matches!(vm.pop(), Value::Int(1));
-    let pattern = to_tcl_string(&vm.pop());
-    let filter = given.then_some(pattern.as_str());
+    // `info locals` and in-body `info vars` push a candidate list and a place per
+    // candidate ahead of the pattern; every other kind pushes the pattern and a
+    // flag saying whether the command gave one. The kind says which shape is on
+    // the stack, so the two are read apart here rather than made uniform — a
+    // pattern-only kind must not pay for two pushes it has no use for.
+    let (filter, candidates) = if which == crate::cmd_info::SET_OF {
+        let pattern = to_tcl_string(&vm.pop());
+        let places = crate::list::split(&to_tcl_string(&vm.pop())).map_err(TclError::plain)?;
+        let names = crate::list::split(&to_tcl_string(&vm.pop())).map_err(TclError::plain)?;
+        (Some(pattern), Some((names, places)))
+    } else {
+        let given = matches!(vm.pop(), Value::Int(1));
+        let pattern = to_tcl_string(&vm.pop());
+        (given.then_some(pattern), None)
+    };
 
     let mut names: Vec<String> = match which {
-        // commands: every builtin the compiler dispatches, plus this chunk's
-        // procedures.
-        0 => crate::compiler::Compiler::BUILTINS
-            .iter()
-            .map(|s| (*s).to_string())
+        // commands: every command name the frontend answers to, plus this
+        // chunk's procedures. `crate::names::commands` is the same assembly the
+        // REPL's completer uses, built from the modules' own tables — a command
+        // module added to the tree is listed here without a second list to keep.
+        crate::cmd_info::COMMANDS => crate::names::commands()
+            .into_iter()
+            .map(|s| s.to_string())
             .chain(chunk_procs(vm))
             .collect(),
-        1 => chunk_procs(vm).collect(),
-        // globals and vars: the union of both halves of where a global lives
-        // mid-run. The interpreter's table is the authority *between*
-        // evaluations and holds what the host set — `argc`, `argv`, `argv0`;
-        // the values a running script has assigned are in the VM and are only
-        // flushed back when the run ends. Asking either alone omits the other's.
-        // A hidden loop-state global is not a script's variable.
-        _ => {
-            let held: Vec<String> = interp
-                .lock()
-                .expect("interpreter lock")
-                .globals
-                .keys()
-                .cloned()
-                .collect();
-            held.into_iter()
-                .chain(vm.chunk.names.iter().enumerate().filter_map(|(i, name)| {
-                    let set = !matches!(vm.globals.get(i), None | Some(Value::Undef));
-                    set.then(|| name.clone())
-                }))
-                .filter(|name| !name.starts_with('\u{0}'))
+        crate::cmd_info::PROCS => chunk_procs(vm).collect(),
+        // The candidates the compiler pushed, kept where the variable each names
+        // is set — or unconditionally for a name `global`, `variable` or `upvar`
+        // bound into the frame, whose visibility is not a question about a slot.
+        crate::cmd_info::SET_OF => {
+            let (names, places) = candidates.expect("SET_OF pushed its candidates");
+            names
+                .iter()
+                .zip(places.iter())
+                .filter(|(_, place)| match place.parse::<i64>() {
+                    Ok(crate::cmd_info::ALWAYS) => true,
+                    Ok(raw) => var_is_set(vm, Place::decode(raw)),
+                    Err(_) => false,
+                })
+                .map(|(name, _)| name.clone())
                 .collect()
         }
+        // globals and vars: both halves of where a global lives mid-run — the
+        // interpreter's table, which holds what the host set and what an earlier
+        // evaluation left, and the running chunk's slot vector, which holds what
+        // this one has assigned and not yet written back.
+        _ => global_names_of(interp, vm),
     };
-    if let Some(p) = filter {
+    if let Some(p) = filter.as_deref() {
         names.retain(|name| crate::list::glob_match(p, name));
     }
     names.sort();
@@ -731,7 +1484,7 @@ fn eval_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
 
     flush(&vm.chunk, interp, &vm.globals);
     let result = run_source(interp, &src);
-    let globals = seed(&vm.chunk, interp);
+    let globals = reproject(&vm.chunk, interp, &vm.globals);
     vm.globals = globals;
     vm.push(result?);
     Ok(())
@@ -755,10 +1508,18 @@ fn eval_frame_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError>
     run_in_frame(interp, vm, &src, up, &declared)
 }
 
-/// `uplevel ?level? arg …`: `[declared, level, arg …]`.
+/// `uplevel ?level? arg …`: `[declared, arg …]`.
 ///
 /// `#0` is the global level, which is what an ordinary `eval` already runs
 /// against; any other level is a frame, counted outwards from this one.
+///
+/// Which word is the level is decided here rather than while compiling, because
+/// `uplevel $n {…}` is ordinary Tcl: `Tcl_UplevelObjCmd` hands the *substituted*
+/// first word to `TclObjGetFrame`, and takes it as a level when it has the shape
+/// of one and a script follows it. Deciding it from the literal text instead
+/// answered `invalid command name "1"` for `uplevel $n {set v}` where tclsh
+/// answers the script's value, and ran `uplevel 1` with no script where tclsh
+/// reports `wrong # args` — both measured against tclsh 9.0.4.
 fn uplevel_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     let mut args = Vec::with_capacity(argc as usize);
     for _ in 0..argc {
@@ -766,7 +1527,21 @@ fn uplevel_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     }
     args.reverse();
     let declared = args.remove(0);
-    let level = args.remove(0);
+    // A level word is `#n` or a bare unsigned integer, and nothing else: `uplevel
+    // 1.5 …` runs `1.5 …` as a script in tclsh, and `uplevel 5 {…}` five levels
+    // deeper than the stack goes is `bad level "5"` rather than a script called
+    // `5`. So the *shape* selects the word and resolving it is allowed to fail.
+    let takes_level = args.len() > 1 && crate::compiler::looks_like_a_level(&args[0]);
+    if args.len() == 1 && crate::compiler::looks_like_a_level(&args[0]) {
+        return Err(TclError::plain(
+            "wrong # args: should be \"uplevel ?level? command ?arg ...?\"".to_string(),
+        ));
+    }
+    let level = if takes_level {
+        args.remove(0)
+    } else {
+        "1".to_string()
+    };
     let src = script_of(args);
 
     // The levels this context has: one per active procedure call, which is what
@@ -801,7 +1576,7 @@ fn uplevel_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
 /// Counting VM frames instead is what made `uplevel 1` at the top level find the
 /// base frame and answer, where tclsh reports `bad level "1"` — there is no level
 /// above the global one.
-fn levels(vm: &VM) -> Vec<usize> {
+pub(crate) fn levels(vm: &VM) -> Vec<usize> {
     let n = vm.frames.len();
     (0..n)
         .filter(|&up| vm.frames[n - 1 - up].entry_ip.is_some())
@@ -954,8 +1729,7 @@ fn apply_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     args.reverse();
     let lambda = args.remove(0);
 
-    let parts = crate::list::split(&lambda)
-        .map_err(|_| TclError::plain(bad_lambda(&lambda)))?;
+    let parts = crate::list::split(&lambda).map_err(|_| TclError::plain(bad_lambda(&lambda)))?;
     let (params, body) = match parts.as_slice() {
         [params, body] => (params, body),
         // The third element is a namespace. This frontend has one namespace, so
@@ -1003,6 +1777,166 @@ fn rename_lambda(msg: &str) -> String {
     msg.replace("\u{0}apply", "apply lambdaExpr")
 }
 
+// ── reaching the interpreter from a running chunk ────────────────────────
+//
+// Windows onto the interpreter's variables for an op that has to run a script,
+// or wait for one, in the middle of a chunk. `eval` opens and closes the same
+// two windows inline above; `after`, `vwait` and `uplevel` need them named,
+// because they cross the boundary more than once per command, and `source` and
+// the `namespace` queries need both at once — see [`with_written_back`].
+
+/// Write the running chunk's variables back into the interpreter, so a nested
+/// script sees what the chunk has done.
+pub(crate) fn flush_globals(vm: &VM, interp: &Shared) {
+    flush(&vm.chunk, interp, &vm.globals);
+}
+
+/// Project the interpreter's variables back into the running chunk, so the
+/// chunk sees what a nested script did.
+pub(crate) fn reseed_globals(vm: &mut VM, interp: &Shared) {
+    vm.globals = reproject(&vm.chunk, interp, &vm.globals);
+}
+
+/// Run `body` with the chunk's variables written back to the interpreter and
+/// re-read afterwards — both windows above, opened and closed around one call.
+///
+/// A chunk addresses its variables through a slot vector it owns for the
+/// duration of one run, so a command that reaches interpreter state from inside
+/// that run — `source`, `namespace which -variable`, `namespace inscope` —
+/// would otherwise see the values the *previous* run left. This is the same
+/// exchange [`eval_op`] performs, factored out so that every such command makes
+/// it the same way.
+pub(crate) fn with_written_back<T>(
+    interp: &Shared,
+    vm: &mut VM,
+    body: impl FnOnce(&Shared) -> T,
+) -> T {
+    flush_globals(vm, interp);
+    let out = body(interp);
+    reseed_globals(vm, interp);
+    out
+}
+
+/// What the interpreter holds for `name`, or `None` when it holds nothing.
+/// Only correct once [`flush_globals`] has run, which is what `vwait` does
+/// before it starts waiting.
+///
+/// The name arrives as a script wrote it, and the map is keyed the way
+/// [`crate::cmd_namespace::store_key`] spells a qualified name — `::done` is
+/// stored as `done`. `vwait ::done` is the ordinary spelling, so without the
+/// normalisation the wait watches a name nothing ever writes and ends as
+/// `would wait forever`.
+pub(crate) fn global_value(interp: &Shared, name: &str) -> Option<Value> {
+    interp
+        .lock()
+        .expect("interpreter lock")
+        .globals
+        .get(crate::cmd_namespace::store_key(name))
+        .cloned()
+}
+
+/// Every variable that is set, for `info globals` and `info vars`.
+///
+/// Two sources, because neither is complete on its own: the interpreter's map
+/// holds what earlier evaluations left behind, and the running chunk's slot
+/// vector holds what *this* one has assigned and not yet written back. A name
+/// the compiler generated for its own loop state is not a script's variable and
+/// is left out, as it is everywhere else.
+pub(crate) fn global_names_of(interp: &Shared, vm: &VM) -> Vec<String> {
+    let mut names: Vec<String> = interp
+        .lock()
+        .expect("interpreter lock")
+        .globals
+        .keys()
+        .filter(|n| !n.starts_with('\u{0}'))
+        .cloned()
+        .collect();
+    let overflow = overflow_names(&vm.chunk, &vm.globals);
+    let named = vm.chunk.names.iter().enumerate().chain(
+        overflow
+            .iter()
+            .enumerate()
+            .map(|(offset, name)| (overflow_value_index(&vm.chunk, offset), name)),
+    );
+    for (slot, name) in named {
+        if name.starts_with('\u{0}') {
+            continue;
+        }
+        if matches!(vm.globals.get(slot), Some(Value::Undef) | None) {
+            // Unset in the chunk is unset, whatever an earlier evaluation left
+            // in the map: this chunk's `unset x` has to be visible before the
+            // write-back happens.
+            names.retain(|n| n != name);
+            continue;
+        }
+        names.push(name.clone());
+    }
+    names
+}
+
+/// Whether the variable at `place` is set, for `info exists`.
+pub(crate) fn var_is_set(vm: &VM, place: Place) -> bool {
+    if let Place::Link(slot) = place {
+        // A link that was never made is not set, and a link to something unset
+        // is not set either — which is what tclsh answers for `upvar bogus b`
+        // followed by `info exists b`.
+        let Some(link) = crate::cmd_scope::link_at(vm, slot) else {
+            return false;
+        };
+        return !matches!(
+            crate::cmd_scope::read_link(vm, &link),
+            Some(Value::Undef) | None
+        );
+    }
+    let value = match place {
+        Place::Global(index) => vm.globals.get(index as usize),
+        Place::Slot(slot) | Place::Link(slot) => {
+            vm.frames.last().and_then(|f| f.slots.get(slot as usize))
+        }
+    };
+    !matches!(value, Some(Value::Undef) | None)
+}
+
+/// The evaluator [`crate::cmd_package`] runs an `ifneeded` or `package unknown`
+/// script through: [`eval_op`]'s write-back and re-read, with the concatenation
+/// left out because a package script is one string.
+struct VmScriptHost<'a> {
+    interp: &'a Shared,
+    vm: &'a mut VM,
+}
+
+impl crate::cmd_package::ScriptHost for VmScriptHost<'_> {
+    fn eval(&mut self, src: &str) -> Result<String, TclError> {
+        flush(&self.vm.chunk, self.interp, &self.vm.globals);
+        let result = run_source(self.interp, src);
+        self.vm.globals = reproject(&self.vm.chunk, self.interp, &self.vm.globals);
+        result.map(|v| to_tcl_string(&v))
+    }
+}
+
+/// The `package` command. The arguments come off the stack before the script
+/// host is built, because the host borrows the VM for as long as it lives.
+fn package_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
+    let (line, argv) = crate::cmd_package::take_args(vm, argc);
+    let outcome = {
+        let mut host = VmScriptHost { interp, vm };
+        crate::cmd_package::run(&argv, &mut host)
+    };
+    match outcome {
+        Ok(result) => {
+            vm.push(Value::Str(Arc::new(result)));
+            Ok(())
+        }
+        // A failure raised by a script this command ran already carries the
+        // line it happened on; only a failure of `package` itself takes the
+        // line of the `package` command.
+        Err(e) => Err(TclError {
+            msg: e.msg,
+            line: e.line.or(Some(line)),
+        }),
+    }
+}
+
 // ── the driver ───────────────────────────────────────────────────────────
 
 /// How a context is suspended, which decides what resuming it may pass in.
@@ -1034,8 +1968,10 @@ struct Context {
 /// the loop that runs them.
 struct Machine {
     hooks: Hooks,
-    /// The compiled program, from which each coroutine's VM is built.
-    chunk: Chunk,
+    /// The compiled program, from which each coroutine's VM is built. Held as
+    /// the handle it arrived as, because a `proc` this run defines records it —
+    /// see [`State::running`].
+    chunk: Arc<Chunk>,
     contexts: Vec<Context>,
     /// Live coroutines by name. A name leaves as soon as its body ends, which
     /// is what makes a later call report `invalid command name`.
@@ -1053,11 +1989,51 @@ struct Machine {
 impl Machine {
     /// Run one chunk against the interpreter's variables, from the first op to
     /// the end of the main context.
-    fn run(shared: &Shared, chunk: Chunk) -> Result<Value, TclError> {
+    fn run(shared: &Shared, chunk: Arc<Chunk>) -> Result<Value, TclError> {
+        Machine::start(shared, chunk, None)
+    }
+
+    /// The same, optionally entering a procedure body inside the chunk instead
+    /// of running it from the top.
+    ///
+    /// `at` is the body's entry point and its actual arguments, arranged the way
+    /// the prologue expects them. They sit below a frame that returns past the
+    /// end of the program, so the body's `Op::ReturnValue` ends this run with
+    /// the procedure's result — which is how [`Machine::create`] enters a
+    /// coroutine's body, and the reason both go through one function.
+    fn start(
+        shared: &Shared,
+        chunk: Arc<Chunk>,
+        at: Option<(usize, Vec<Value>)>,
+    ) -> Result<Value, TclError> {
         let hooks = Hooks::new(Arc::clone(shared));
-        let mut main = VM::new(chunk.clone());
+        let mut main = VM::new((*chunk).clone());
         hooks.install(&mut main);
         let globals = seed(&chunk, shared);
+        if let Some((entry, actuals)) = at {
+            let base = main.stack.len();
+            for value in actuals {
+                main.stack.push(value);
+            }
+            main.frames.push(Frame {
+                return_ip: chunk.ops.len(),
+                stack_base: base,
+                slots: Vec::new(),
+                // The same fusevm 0.17.0 obligation `crate::procs::call_op` has:
+                // this frame is a subroutine activation entered without an
+                // `Op::Call`, so it names its own entry point or it is not a Tcl
+                // level as far as `levels` is concerned.
+                entry_ip: Some(entry),
+            });
+            main.ip = entry;
+        }
+        // Recorded for as long as this chunk is the running one, so that a
+        // `proc` it defines can be called from another chunk later.
+        shared
+            .lock()
+            .expect("interpreter lock")
+            .running
+            .push(Arc::clone(&chunk));
 
         let mut machine = Machine {
             hooks,
@@ -1078,6 +2054,7 @@ impl Machine {
         // The variables a failing script did set are still set, as they are in
         // the reference interpreter, so the write-back happens either way.
         flush(&machine.chunk, shared, &machine.globals);
+        shared.lock().expect("interpreter lock").running.pop();
         // Likewise the output: an error the caller prints must not overtake
         // what the failing script had already written.
         machine.hooks.output.flush();
@@ -1148,7 +2125,7 @@ impl Machine {
             .interp
             .lock()
             .expect("interpreter lock")
-            .running
+            .contexts
             .push(name);
 
         let vm = self.vm(current);
@@ -1160,7 +2137,7 @@ impl Machine {
             .interp
             .lock()
             .expect("interpreter lock")
-            .running
+            .contexts
             .pop();
 
         self.globals = globals;
@@ -1298,7 +2275,7 @@ impl Machine {
             .and_then(|idx| self.chunk.find_sub(idx as u16))
             .ok_or_else(|| format!("invalid command name \"{command}\""))?;
 
-        let mut vm = VM::new(self.chunk.clone());
+        let mut vm = VM::new((*self.chunk).clone());
         self.hooks.install(&mut vm);
         let base = vm.stack.len();
         for a in args {
@@ -1389,7 +2366,7 @@ impl Machine {
             .interp
             .lock()
             .expect("interpreter lock")
-            .running
+            .contexts
             .iter()
             .any(Option::is_some);
         if nested {
@@ -1450,7 +2427,7 @@ impl Num {
 /// the nearest double, which makes distinct integers compare equal, and it
 /// cannot represent one larger than `f64::MAX` at all. `None` only for a NaN,
 /// which has no ordering.
-fn big_cmp(p: &Num, q: &Num) -> Option<std::cmp::Ordering> {
+pub(crate) fn big_cmp(p: &Num, q: &Num) -> Option<std::cmp::Ordering> {
     match (p, q) {
         (Num::Float(f), _) | (_, Num::Float(f)) if f.is_nan() => None,
         // An infinity is beyond every integer, so its side decides outright.
@@ -1507,7 +2484,7 @@ pub(crate) enum NotNumeric {
 
 /// Interpret a value as a Tcl number. Leading and trailing whitespace is
 /// allowed, as are the radix prefixes `0x`, `0o` and `0b`.
-fn tcl_num(v: &Value) -> Result<Num, NotNumeric> {
+pub(crate) fn tcl_num(v: &Value) -> Result<Num, NotNumeric> {
     match v {
         Value::Int(i) => Ok(Num::Int(*i)),
         Value::Float(f) => Ok(Num::Float(*f)),
@@ -2210,7 +3187,25 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         ext::ERROR => Err(to_tcl_string(&vm.pop())),
         // The ranges are tested from the highest base down, so that a lower
         // one's `id >= BASE` does not swallow a higher module's ops.
-        id if id >= ext::INFO_BASE => crate::cmd_info::extension(vm, id, arg),
+        //
+        // Every block above [`ext::REGEXP_BASE`] is tested as a bounded range,
+        // not as `id >= BASE` — the `info` block's arm below is what would
+        // otherwise claim `encoding`'s ids, and `regexp`'s would claim all of
+        // them. `tests/ext_ids.rs` pins the map they are numbered from.
+        // ── the info block ───────────────────────────────────────────────
+        // A bounded range for the same reason the encoding one below is bounded:
+        // this is now the highest block allocated, and an open-ended
+        // `id >= INFO_BASE` would claim whatever block is added above it next.
+        id if (ext::INFO_BASE..ext::INFO_END).contains(&id) => {
+            crate::cmd_info::extension(vm, id, arg)
+        }
+        // ── end of the info block ────────────────────────────────────────
+        // ── the encoding block ───────────────────────────────────────────
+        id if crate::cmd_encoding::is_op(id) => crate::cmd_encoding::extension(vm, id, arg),
+        // ── end of the encoding block ────────────────────────────────────
+        id if id >= ext::FILE_BASE => crate::cmd_file::extension(vm, id, arg),
+        id if id >= ext::CLOCK_BASE => crate::cmd_clock::extension(vm, id, arg),
+        id if id >= ext::MATH_BASE => crate::expr_math::extension(vm, id, arg),
         id if id >= ext::REGEXP_BASE => crate::regexp::extension(vm, id, arg),
         id if id >= ext::STRING_BASE => crate::cmd_string::extension(vm, id, arg),
         id if id >= ext::ASSOC_BASE => crate::assoc::extension(vm, id, arg),
@@ -2250,9 +3245,7 @@ fn int_operand(v: &Value, side: Side, op: &str) -> Result<i64, String> {
         // is an operator with no bignum meaning; none can answer from a
         // truncation, so reaching here with one is a bug rather than a script
         // error.
-        BigOperand::Big(b) => Err(format!(
-            "integer value too large to represent: {b}"
-        )),
+        BigOperand::Big(b) => Err(format!("integer value too large to represent: {b}")),
     }
 }
 
@@ -2374,9 +3367,7 @@ fn big_arith(id: u16, p: BigInt, q: BigInt) -> Result<Value, String> {
                 // zero, and only ±1 survives it — the same rule the `i64` arm
                 // applies, and a bignum base is never ±1.
                 return match () {
-                    _ if p.is_zero() => {
-                        Err("exponentiation of zero by negative power".to_string())
-                    }
+                    _ if p.is_zero() => Err("exponentiation of zero by negative power".to_string()),
                     _ => Ok(Value::Int(0)),
                 };
             }
@@ -2408,9 +3399,7 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
         }
         // `i64::MIN / -1` is the one integer division whose true quotient does
         // not fit an `i64`; Tcl's answer is the bignum, and now so is this one.
-        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => {
-            Ok(from_big(-BigInt::from(i64::MIN)))
-        }
+        (ext::DIV, Num::Int(i64::MIN), Num::Int(-1)) => Ok(from_big(-BigInt::from(i64::MIN))),
         (ext::DIV, Num::Int(i), Num::Int(j)) => Ok(Value::Int(
             i.div_euclid(j)
                 - i64::from(
@@ -2494,6 +3483,15 @@ pub(crate) fn var_cell(vm: &mut VM, place: Place) -> Option<&mut Value> {
             }
             Some(&mut frame.slots[slot])
         }
+        // A name `upvar` bound: the slot holds a descriptor, and the cell is
+        // wherever that descriptor points. Every op that reaches a variable
+        // itself follows the link here, which is what makes one `upvar` serve
+        // `set`, `$`, `incr`, `append`, `lappend`, `unset` and the `array`
+        // subcommands alike — see [`crate::cmd_scope`].
+        Place::Link(slot) => {
+            let link = crate::cmd_scope::link_at(vm, slot)?;
+            crate::cmd_scope::write_link(vm, &link)
+        }
     }
 }
 
@@ -2570,6 +3568,10 @@ pub(crate) fn place_of(vm: &mut VM, slot_form: bool) -> Result<Place, String> {
 /// The same, for an operand read where it sits on the stack.
 pub(crate) fn place_at(operand: &Value, slot_form: bool) -> Result<Place, String> {
     match operand {
+        // The frame form carries a third case in its sign: a link is written
+        // `-(slot + 1)`, which the non-negative slot range cannot reach. See
+        // [`Place::frame_operand`].
+        Value::Int(index) if slot_form && *index < 0 => Ok(Place::Link((-index - 1) as u16)),
         Value::Int(index) => Ok(if slot_form {
             Place::Slot(*index as u16)
         } else {
@@ -2602,7 +3604,7 @@ static TOLERANT_READS: Mutex<Option<HashSet<(u64, usize)>>> = Mutex::new(None);
 /// This must agree with `VM::chunk_identity`; the tests below run a script
 /// through both sides, so a drift in either shows up as a refusal where Tcl
 /// initialises rather than as a silent mismatch.
-fn chunk_identity(chunk: &fusevm::Chunk) -> u64 {
+pub(crate) fn chunk_identity(chunk: &fusevm::Chunk) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     chunk.op_hash.hash(&mut h);
@@ -2621,9 +3623,16 @@ fn chunk_identity(chunk: &fusevm::Chunk) -> u64 {
 /// was lowered.
 static INCR_SITES: Mutex<Option<HashSet<(u64, usize)>>> = Mutex::new(None);
 
-/// What `info args` and `info default` need about one procedure: each formal's
-/// name and its default, in declaration order.
-pub(crate) type ProcParams = Vec<(String, Option<String>)>;
+/// What `info args`, `info default` and `info body` need about one procedure:
+/// each formal's name and its default, in declaration order, and the body's
+/// source text.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ProcParams {
+    pub(crate) params: Vec<(String, Option<String>)>,
+    /// `None` when the definition computed its body — see
+    /// [`crate::procs::Signature::body`].
+    pub(crate) body: Option<String>,
+}
 
 /// Every procedure a chunk defines, keyed by chunk identity.
 ///
@@ -2645,6 +3654,35 @@ pub(crate) fn note_procs(chunk: &fusevm::Chunk, procs: &[(String, ProcParams)]) 
     for (name, params) in procs {
         table.insert((id, name.clone()), params.clone());
     }
+}
+
+/// The body text of `name` as the running chunk declared it — `info body`.
+pub(crate) fn proc_body(vm: &VM, name: &str) -> Option<String> {
+    proc_params(vm, name)?.body
+}
+
+/// Tcl's level number for the code that is running: 0 at the script's own level
+/// and one more per procedure activation.
+///
+/// [`levels`] rather than `vm.frames.len()`, because fusevm pushes frames that
+/// are not Tcl levels — the base frame, an `Op::PushFrame` scope frame, and one
+/// materialized after a JIT side exit. Counting those made `uplevel 1` at the
+/// top level find the base frame and answer where tclsh reports `bad level "1"`,
+/// and it is the same count `info level`, `uplevel` and `upvar` must agree on.
+pub(crate) fn current_level(vm: &VM) -> i64 {
+    levels(vm).len() as i64
+}
+
+/// The absolute VM frame index of Tcl level `level`, or `None` when there is no
+/// such level. Level 0 is the script's own, which is no frame at all.
+///
+/// The inverse of [`current_level`]: level `current` is the innermost activation
+/// and level 1 the outermost, so level `n` is `current - n` steps further out.
+pub(crate) fn frame_of_level(vm: &VM, level: i64) -> Option<usize> {
+    let ups = levels(vm);
+    let out = usize::try_from(ups.len() as i64 - level).ok()?;
+    let up = *ups.get(out)?;
+    vm.frames.len().checked_sub(up + 1)
 }
 
 /// The formals of `name` as the running chunk declared it, or `None` when the

@@ -332,8 +332,12 @@ fn every_subcommand_is_answered_or_refused_by_name() {
 /// A refusal for something tclsh *supports* is catchable, and silent where the
 /// script never reaches it.
 ///
-/// This is the shape of every "not supported yet" refusal, and `info locals` is
-/// the one to hang it on: tclsh answers it, so tclsh never raises anything.
+/// This is the shape of every "not supported yet" refusal, and it has to hang on
+/// a subcommand tclsh answers, so that tclsh never raises anything. `info locals`
+/// was that subcommand until it was implemented — the compiler bakes the frame's
+/// candidate names in and the run keeps the ones that are set — so `info frame`
+/// carries it now: tclsh answers a description of a call frame and nothing here
+/// records the stack of *commands* that would be needed to.
 /// While the refusal was a compile-time verdict, `catch {info locals}` killed
 /// the whole script and `if {0} {info locals}` refused a branch tclsh runs — a
 /// script was punished for *mentioning* a construct. Reporting earlier than
@@ -343,7 +347,8 @@ fn every_subcommand_is_answered_or_refused_by_name() {
 /// `survived` and nothing else. The `catch` half cannot be — tclsh succeeds
 /// there and tclrs still lacks the subcommand — so it pins that the refusal is
 /// *reachable by a script* rather than fatal to it, which is the part that
-/// changed.
+/// changed. Whoever implements `info frame` should swap in whatever is refused
+/// then rather than delete the test.
 #[test]
 fn a_refusal_for_something_tclsh_has_is_catchable_and_skippable() {
     let Some(tclsh) = tclsh() else {
@@ -352,12 +357,16 @@ fn a_refusal_for_something_tclsh_has_is_catchable_and_skippable() {
     };
 
     // Never executed: both engines run the script to completion.
-    compare(&tclsh, &["if {0} {info locals}\nputs survived"]);
-    compare(&tclsh, &["proc p {} {if {0} {info locals}; return ok}\nputs [p]"]);
+    compare(&tclsh, &["if {0} {info frame}\nputs survived"]);
+    compare(
+        &tclsh,
+        &["proc p {} {if {0} {info frame}; return ok}\nputs [p]"],
+    );
 
     // Executed: catchable here, where it used to end the program.
-    let out = tclrs::eval("puts [catch {info locals} e]\nputs [string match {*not supported yet*} $e]")
-        .expect("the script runs to completion");
+    let out =
+        tclrs::eval("puts [catch {info frame} e]\nputs [string match {*not supported yet*} $e]")
+            .expect("the script runs to completion");
     assert_eq!(
         out.output, "1\n1\n",
         "the refusal should reach the script's own catch: {:?}",

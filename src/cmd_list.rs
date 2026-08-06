@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use fusevm::{Op, Value, VM};
 
+use crate::assoc::Target;
 use crate::compiler::{ext, CompileError, Compiler, Place};
 use crate::list;
 use crate::parser::Word;
@@ -106,6 +107,18 @@ fn lappend(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     let Some((name, values)) = args.split_first() else {
         return c.error("wrong # args: should be \"lappend varName ?value ...?\"");
     };
+    // An array element is the read-extend-store shape below, with the element
+    // read and written in place of the variable: `lappend a(i) x` extends one
+    // element, which tclsh takes and this compiler used to refuse.
+    if let Target::Elem { name, index } = c.target_of(name)? {
+        let count = arg_count(c, values.len() + 1)?;
+        c.elem_get_tolerant(&name, &index)?;
+        for value in values {
+            c.word(value)?;
+        }
+        c.emit(Op::Extended(ext::LAPPEND, count), -(values.len() as i32));
+        return c.elem_store(&name, &index);
+    }
     let name = c.var_name_of(name)?;
     let count = arg_count(c, values.len() + 1)?;
 
@@ -120,11 +133,13 @@ fn lappend(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
         return Ok(());
     }
 
-    let (id, place) = match c.var_place(&name) {
-        Place::Slot(slot) => (ext::LAPPEND_SLOT, slot),
-        Place::Global(idx) => (ext::LAPPEND_VAR, idx),
+    let place = c.var_place(&name);
+    let id = if place.in_frame() {
+        ext::LAPPEND_SLOT
+    } else {
+        ext::LAPPEND_VAR
     };
-    c.emit(Op::LoadInt(place as i64), 1);
+    c.emit(Op::LoadInt(place.frame_operand()), 1);
     for value in values {
         c.word(value)?;
     }
@@ -146,36 +161,57 @@ fn lassign(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     };
     // Every name is resolved before anything is emitted, so a bad one is a
     // compile error rather than a half-run command.
-    let names: Vec<String> = vars
+    let targets: Vec<Target> = vars
         .iter()
-        .map(|w| c.var_name_of(w))
+        .map(|w| c.target_of(w))
         .collect::<Result<_, _>>()?;
 
     c.word(list)?;
-    let count = arg_count(c, names.len())?;
+    let count = arg_count(c, targets.len())?;
     // Consumes the list, leaves the remainder plus one value per variable.
-    c.emit(Op::Extended(ext::LASSIGN, count), names.len() as i32);
-    for name in &names {
-        c.emit_set_var(name);
+    c.emit(Op::Extended(ext::LASSIGN, count), targets.len() as i32);
+    for target in &targets {
+        match target {
+            Target::Scalar(name) => c.emit_set_var(name),
+            Target::Elem { name, index } => {
+                c.elem_store(name, index)?;
+                c.emit(Op::Pop, -1);
+            }
+        }
     }
     Ok(())
 }
 
 /// The operands every variable-reaching list op starts with: the name, for the
-/// unset-variable message, and where the variable lives.
-fn var_target(c: &mut Compiler, name: &str) -> usize {
-    c.push_str(name);
-    match c.var_place(name) {
-        Place::Slot(slot) => {
-            c.push_value(Value::Int(1));
-            c.emit(Op::LoadInt(slot as i64), 1);
-        }
-        Place::Global(idx) => {
+/// unset-variable message; where the variable lives; and the array element the
+/// op works on, empty when the variable is not one.
+///
+/// The element rides beside the place rather than inside it, because a [`Place`]
+/// is a *variable*: `Place::Global(3)` names the whole array, and which element
+/// of it is a second question. Keeping them apart is what lets `lset a(i) 0 v`
+/// reuse the same read-rewrite-store handler `lset l 0 v` uses.
+fn var_target(c: &mut Compiler, target: &Target) -> Result<usize, CompileError> {
+    match target {
+        Target::Scalar(name) => {
+            c.push_str(name);
+            let place = c.var_place(name);
+            c.push_value(Value::Int(i64::from(place.in_frame())));
+            c.emit(Op::LoadInt(place.frame_operand()), 1);
+            c.push_str("");
             c.push_value(Value::Int(0));
-            c.emit(Op::LoadInt(idx as i64), 1);
+        }
+        Target::Elem { name, index } => {
+            // The name in the diagnostic is the one the script wrote, elements
+            // and all: tclsh reports `can't read "a(i)": no such variable`.
+            let place = c.array_place_of(name);
+            c.push_str(&Compiler::elem_report_name(name, index));
+            c.push_value(Value::Int(i64::from(place.in_frame())));
+            c.emit(Op::LoadInt(place.frame_operand()), 1);
+            c.index_value(index)?;
+            c.push_value(Value::Int(1));
         }
     }
-    3
+    Ok(4)
 }
 
 /// `lset listVar ?index ...? value`.
@@ -184,8 +220,8 @@ fn lset(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     if args.len() < 2 {
         return c.error(USAGE);
     }
-    let name = c.var_name_of(&args[0])?;
-    let operands = var_target(c, &name);
+    let target = c.target_of(&args[0])?;
+    let operands = var_target(c, &target)?;
     for arg in &args[1..] {
         c.word(arg)?;
     }
@@ -203,8 +239,8 @@ fn lpop(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     if args.is_empty() {
         return c.error("wrong # args: should be \"lpop listvar ?index?\"");
     }
-    let name = c.var_name_of(&args[0])?;
-    let operands = var_target(c, &name);
+    let target = c.target_of(&args[0])?;
+    let operands = var_target(c, &target)?;
     for arg in &args[1..] {
         c.word(arg)?;
     }
@@ -221,8 +257,8 @@ fn ledit(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     if args.len() < 3 {
         return c.error("wrong # args: should be \"ledit listVar first last ?element ...?\"");
     }
-    let name = c.var_name_of(&args[0])?;
-    let operands = var_target(c, &name);
+    let target = c.target_of(&args[0])?;
+    let operands = var_target(c, &target)?;
     for arg in &args[1..] {
         c.word(arg)?;
     }
@@ -259,12 +295,7 @@ fn lmap(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
             return c.error("lmap varlist is empty");
         }
         let width = vars.len();
-        for name in vars {
-            if name.ends_with(')') && name.contains('(') {
-                return c.error("array variables are not supported yet");
-            }
-            names.push(name);
-        }
+        names.extend(vars);
         c.push_value(Value::Int(width as i64));
         c.word(&pair[1])?;
     }
@@ -280,7 +311,7 @@ fn lmap(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
         |c| {
             c.emit(Op::Extended(ext::FOREACH_TAKE, width), i32::from(width));
             for name in &taken {
-                c.emit_set_var(name);
+                c.store_named(name)?;
             }
             // The body's value, then straight into the accumulator.
             c.emit_body_value(&script)?;
@@ -859,7 +890,9 @@ fn lsearch(args: &[String]) -> Result<String, String> {
             // is "stride length must be at least 2".
             "-stride" => {
                 if i + 2 > args.len() - 2 {
-                    return Err("\"-stride\" option must be followed by a stride length".to_string());
+                    return Err(
+                        "\"-stride\" option must be followed by a stride length".to_string()
+                    );
                 }
                 i += 1;
                 let n = list::wide(&args[i])?;
@@ -1075,7 +1108,9 @@ fn lsort(args: &[String]) -> Result<String, String> {
             // element, and both refusals are the interpreter's own wording.
             "-stride" => {
                 let Some(value) = args.get(i + 1) else {
-                    return Err("\"-stride\" option must be followed by a stride length".to_string());
+                    return Err(
+                        "\"-stride\" option must be followed by a stride length".to_string()
+                    );
                 };
                 let n = list::wide(value)?;
                 if n < 2 {
@@ -1305,16 +1340,23 @@ fn lassign_op(vm: &mut VM, arg: u8) -> Result<(), String> {
 /// be reported by name, which is what tclsh does and what a plain read of the
 /// empty string would not.
 fn list_var_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
-    let count = arg as usize - 3;
+    let count = arg as usize - 4;
     let mut rest: Vec<String> = (0..count).map(|_| to_tcl_string(&vm.pop())).collect();
     rest.reverse();
-    // The three the compiler pushed, innermost last: name, slot flag, place.
+    // The four the compiler pushed, innermost last: name, slot flag, place,
+    // element index — the last of which is empty unless the variable is one.
+    let is_elem = matches!(vm.pop(), Value::Int(1));
+    let index = to_tcl_string(&vm.pop());
     let operand = vm.pop();
     let slot_form = matches!(vm.pop(), Value::Int(1));
     let place = place_at(&operand, slot_form)?;
     let name = to_tcl_string(&vm.pop());
 
-    let current = take_var(vm, place);
+    let current = if is_elem {
+        take_element(vm, place, &index)
+    } else {
+        take_var(vm, place)
+    };
     if current == Value::Undef {
         return Err(format!("can't read \"{name}\": no such variable"));
     }
@@ -1341,11 +1383,26 @@ fn list_var_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
     };
 
-    if let Some(cell) = var_cell(vm, place) {
-        *cell = Value::Str(Arc::new(stored));
+    let stored = Value::Str(Arc::new(stored));
+    if is_elem {
+        if let Some(map) = crate::assoc::elements_of(vm, place) {
+            map.insert(index, stored);
+        }
+    } else if let Some(cell) = var_cell(vm, place) {
+        *cell = stored;
     }
     vm.push(Value::Str(Arc::new(yielded)));
     Ok(())
+}
+
+/// Take one element out of the array at `place`, leaving it absent — the
+/// element-flavoured [`take_var`], so that `lset a(i) …` rewrites the element's
+/// own string rather than a copy of it.
+fn take_element(vm: &mut VM, place: Place, index: &str) -> Value {
+    match crate::assoc::elements_of(vm, place) {
+        Some(map) => map.remove(index).unwrap_or(Value::Undef),
+        None => Value::Undef,
+    }
 }
 
 /// `lset`'s replacement, down an index path.

@@ -476,14 +476,23 @@ mod tests {
     /// running the file would report — the editor learns this interpreter's
     /// answer, not full Tcl's.
     ///
-    /// The construct here only has to be *something still refused*: it was
-    /// `string wordend` until that was implemented. Whoever lands `{*}` should
-    /// swap in whatever is refused then rather than delete the test.
+    /// The construct here only has to be *something still refused while
+    /// compiling*: it was `string wordend` until that was implemented,
+    /// `{*}{a b}` until argument expansion landed, an array element as a
+    /// `foreach` variable until `Compiler::elem_store` landed, and
+    /// `dict set a(1) k v` until that refusal became a *deferred* one — still
+    /// refused when it runs, but no longer an error the compiler reports, so no
+    /// longer a diagnostic an editor can be shown. Whoever implements
+    /// `source -encoding` for a second encoding should swap in whatever is
+    /// refused then rather than delete the test.
     #[test]
     fn a_refused_construct_is_reported_on_its_line() {
-        let found = diagnostics("set x 1\nputs {*}{a b}\n");
+        let found = diagnostics("set x 1\nsource -encoding shiftjis other.tcl\n");
         assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].message.contains("not supported"), "{found:?}");
+        assert!(
+            found[0].message.contains("only supported for utf-8"),
+            "{found:?}"
+        );
         assert_eq!(found[0].range.start.line, 1);
     }
 
@@ -522,8 +531,10 @@ mod tests {
         let HoverContents::Markup(markup) = on_command.contents else {
             panic!("expected markup");
         };
+        // `puts`'s synopsis is tclsh 9.0.4's own `wrong # args` wording, and it
+        // names the channel argument: `puts ?-nonewline? ?channel? string`.
         assert!(
-            markup.value.contains("puts ?-nonewline? string"),
+            markup.value.contains("puts ?-nonewline? ?channel? string"),
             "{markup:?}"
         );
 

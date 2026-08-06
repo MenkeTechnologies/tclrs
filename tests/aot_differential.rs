@@ -57,14 +57,21 @@ const PROGRAMS: &[&str] = &[
     // Output shapes.
     "puts -nonewline a\nputs b",
     "puts {}",
+    // A `proc` away from the top level. Both of its ops are extension ops that
+    // *move control*: the definition binds a body entry point and the call
+    // pushes a frame and jumps to it, from inside a handler. Native code has no
+    // lowering for either, so both deopt — and the interpreter has to resume at
+    // the instruction pointer the handler left behind rather than the one after
+    // the op. A run that resumed at the wrong place would print nothing here,
+    // or the wrong number.
+    "if {1} {proc double {x} {expr {$x * 2}}}\nputs [double 21]",
+    "if {1} {proc sum {a {b 10} args} {expr {$a + $b + [llength $args]}}}\nputs [sum 1]\nputs [sum 1 2 x y]",
+    "if {1} {proc count {n} {set i 0\nwhile {$i < $n} {incr i}\nreturn $i}}\nputs [count 1000]",
 ];
 
 /// Programs whose *failure* must survive AOT: an error raised by the frontend
 /// mid-run has to reach the caller the same way it does interpreted.
-const FAILING: &[&str] = &[
-    "puts [expr {1 / 0}]",
-    "puts [expr {\"abc\" + 1}]",
-];
+const FAILING: &[&str] = &["puts [expr {1 / 0}]", "puts [expr {\"abc\" + 1}]"];
 
 #[test]
 fn aot_codegen_matches_the_interpreter() {

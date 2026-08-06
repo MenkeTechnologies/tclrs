@@ -11,24 +11,50 @@
 //! offered at the prompt is a name the compiler knows.
 
 use crate::assoc::{ARRAY_SUBCOMMANDS, DICT_SUBCOMMANDS};
+use crate::cmd_clock;
+use crate::cmd_file;
 use crate::cmd_info;
 use crate::cmd_list;
 use crate::cmd_string;
 use crate::compiler::Compiler;
 
-/// Every command name the compiler accepts: the ones it lowers itself, then
-/// the list commands it forwards. Sorted and free of duplicates, because a
-/// completion menu is read by eye.
+/// Every table a command name can come from: the ones the compiler lowers
+/// itself, then each command module's own list.
+///
+/// One list, read by both [`commands`] and [`is_command`], because they are the
+/// same question asked twice and the two had already drifted: `encoding` was in
+/// the vocabulary the completer offers and not in the one
+/// [`crate::procs::expand_call_op`] dispatches through, so `encoding {*}$a`
+/// answered `invalid command name "encoding"` where tclsh answers `utf-8`. A
+/// module added here is added to both.
+const TABLES: &[&[&str]] = &[
+    Compiler::BUILTINS,
+    cmd_list::COMMANDS,
+    crate::cmd_channel::COMMANDS,
+    crate::regexp::COMMANDS,
+    cmd_clock::COMMANDS,
+    cmd_file::COMMANDS,
+    crate::cmd_encoding::COMMANDS,
+];
+
+/// Every command name the compiler accepts. Sorted and free of duplicates,
+/// because a completion menu is read by eye.
 pub fn commands() -> Vec<&'static str> {
-    let mut all: Vec<&'static str> = Compiler::BUILTINS
-        .iter()
-        .copied()
-        .chain(cmd_list::COMMANDS.iter().copied())
-        .chain(crate::regexp::COMMANDS.iter().copied())
-        .collect();
+    let mut all: Vec<&'static str> = TABLES.iter().flat_map(|t| t.iter().copied()).collect();
     all.sort_unstable();
     all.dedup();
     all
+}
+
+/// Whether the compiler lowers a command of this name.
+///
+/// [`commands`] answers the same question by building the whole sorted
+/// vocabulary, which is what a completion menu wants and what a dispatch decision
+/// must not do: [`crate::procs::expand_call_op`] asks this per call, for a name
+/// only the running script knows. Both read [`TABLES`], so neither can be the
+/// only one that knows about a command.
+pub fn is_command(name: &str) -> bool {
+    TABLES.iter().any(|t| t.contains(&name))
 }
 
 /// One command: its name, the synopsis the compiler reports when the argument
@@ -51,6 +77,11 @@ pub struct Entry {
 /// it accepts. Nothing in the compile path reads it; `gen-docs` renders it.
 pub const CORPUS: &[Entry] = &[
     Entry {
+        name: "after",
+        synopsis: "after ms|cancel|idle|info ?arg ...?",
+        summary: "Register a script to run after a delay or when nothing else is pending, cancel one, or list what is registered. See the module note in src/cmd_after.rs for which event sources a build has.",
+    },
+    Entry {
         name: "append",
         synopsis: "append varName ?value ...?",
         summary: "Append every value to the variable's string; yields the new value.",
@@ -58,7 +89,7 @@ pub const CORPUS: &[Entry] = &[
     Entry {
         name: "apply",
         synopsis: "apply lambdaExpr ?arg ...?",
-        summary: "Run a lambda — a list of parameters, a body and an optional namespace — as what it is: a procedure body with a frame of its own. A wrong argument count is reported against the lambda, which has no name to report.",
+        summary: "Run a lambda — a list of parameters, a body and an optional namespace — as what it is: a procedure body with a frame of its own. The lambda may be computed. A wrong argument count is reported against the lambda, which has no name to report.",
     },
     Entry {
         name: "array",
@@ -74,6 +105,21 @@ pub const CORPUS: &[Entry] = &[
         name: "catch",
         synopsis: "catch script ?resultVarName?",
         summary: "Run the script and trap an error from it, including one raised inside a procedure it called; yields the completion code.",
+    },
+    Entry {
+        name: "cd",
+        synopsis: "cd ?dirName?",
+        summary: "Change the working directory; no argument means the home directory.",
+    },
+    Entry {
+        name: "clock",
+        synopsis: "clock subcommand ?arg ...?",
+        summary: "The time ensemble: read the clock, and convert between an instant and a calendar.",
+    },
+    Entry {
+        name: "close",
+        synopsis: "close channel ?direction?",
+        summary: "Drop a reference to a channel and close it once none is left; ?direction? half-closes a read-write channel.",
     },
     Entry {
         name: "concat",
@@ -96,6 +142,16 @@ pub const CORPUS: &[Entry] = &[
         summary: "The dict ensemble, over a value: a dict is a list of alternating keys and values, so it can be passed and printed like any string.",
     },
     Entry {
+        name: "encoding",
+        synopsis: "encoding subcommand ?arg ...?",
+        summary: "The transcoding ensemble: convert between a byte string and a string, and report which encodings and error profiles exist.",
+    },
+    Entry {
+        name: "eof",
+        synopsis: "eof channel",
+        summary: "Whether the channel's device reported end of file and nothing decoded is still buffered.",
+    },
+    Entry {
         name: "error",
         synopsis: "error message",
         summary: "Raise an error carrying the message.",
@@ -111,6 +167,21 @@ pub const CORPUS: &[Entry] = &[
         summary: "Evaluate the arguments as an expression. A braced argument is compiled once, not re-parsed per evaluation.",
     },
     Entry {
+        name: "fconfigure",
+        synopsis: "fconfigure channel ?-option value ...?",
+        summary: "Read or set a channel's generic options: -translation, -encoding, -buffering, -buffersize, -blocking.",
+    },
+    Entry {
+        name: "file",
+        synopsis: "file subcommand ?arg ...?",
+        summary: "The path and filesystem ensemble; the path halves need nothing on disk.",
+    },
+    Entry {
+        name: "flush",
+        synopsis: "flush channel",
+        summary: "Hand everything buffered for the channel to its device.",
+    },
+    Entry {
         name: "for",
         synopsis: "for start test next body",
         summary: "Run start, then the body while test holds, running next after each iteration. Emitted rotated, like every loop here.",
@@ -124,6 +195,16 @@ pub const CORPUS: &[Entry] = &[
         name: "format",
         synopsis: "format formatString ?arg ...?",
         summary: "Format the arguments the way `sprintf` does, with Tcl's conversion set.",
+    },
+    Entry {
+        name: "gets",
+        synopsis: "gets channel ?varName?",
+        summary: "The next line without its terminator; with a variable, the line goes there and the count is the result.",
+    },
+    Entry {
+        name: "glob",
+        synopsis: "glob ?switches? ?pattern ...?",
+        summary: "Every existing name a pattern matches, walked one path component at a time.",
     },
     Entry {
         name: "global",
@@ -143,7 +224,7 @@ pub const CORPUS: &[Entry] = &[
     Entry {
         name: "info",
         synopsis: "info subcommand ?arg ...?",
-        summary: "Interpreter introspection. Variables, procedure signatures, command names, whether text is a complete command, and the versions; the subcommands reporting on the running call frame, on TclOO and on loadable extensions are refused by name.",
+        summary: "Interpreter introspection. Variables, procedure signatures and bodies, command names, the call frame's level and its locals, the math functions, whether text is a complete command, and the versions; the subcommands naming machinery this frontend has none of — `frame`, `errorstack`, `cmdcount`, `cmdtype`, the object-system queries, `constant`, `loaded` — are refused by name rather than mis-answered.",
     },
     Entry {
         name: "join",
@@ -241,14 +322,39 @@ pub const CORPUS: &[Entry] = &[
         summary: "The list sorted by the reference merge sort — the algorithm, not just the ordering, because `-unique` observes it.",
     },
     Entry {
+        name: "namespace",
+        synopsis: "namespace subcommand ?arg ...?",
+        summary: "The namespace ensemble. A namespace is resolved while compiling, so its variables and procedures take qualified names; the queries are answered from interpreter state.",
+    },
+    Entry {
+        name: "open",
+        synopsis: "open fileName ?access? ?permissions?",
+        summary: "Open a file and return the channel's name. The command-pipeline form is refused.",
+    },
+    Entry {
+        name: "package",
+        synopsis: "package option ?arg ...?",
+        summary: "The package ensemble: what a name is provided at, what would load it, and TIP 268's version arithmetic over both.",
+    },
+    Entry {
         name: "proc",
         synopsis: "proc name args body",
         summary: "Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.",
     },
     Entry {
         name: "puts",
-        synopsis: "puts ?-nonewline? string",
-        summary: "Write the string to stdout.",
+        synopsis: "puts ?-nonewline? ?channel? string",
+        summary: "Write the string to a channel, or to stdout when none is named.",
+    },
+    Entry {
+        name: "pwd",
+        synopsis: "pwd",
+        summary: "The working directory, as the last cd was told it rather than as getcwd reports it.",
+    },
+    Entry {
+        name: "read",
+        synopsis: "read channel ?numChars?",
+        summary: "Read the whole channel, or that many characters; -nonewline drops the trailing newlines.",
     },
     Entry {
         name: "regexp",
@@ -261,14 +367,29 @@ pub const CORPUS: &[Entry] = &[
         summary: "Substitute for a regular expression's matches; the new string, or the count when a variable is named.",
     },
     Entry {
+        name: "rename",
+        synopsis: "rename oldName newName",
+        summary: "Rename a command, or delete it when the new name is empty. A call the same chunk compiled is guarded so a deleted command still refuses.",
+    },
+    Entry {
         name: "return",
         synopsis: "return ?-code code? ?result?",
         summary: "Return from the enclosing procedure with the result. `-code ok` and `-code error` are the codes implemented.",
     },
     Entry {
+        name: "seek",
+        synopsis: "seek channel offset ?origin?",
+        summary: "Move the device's position, discarding what was buffered and clearing end of file.",
+    },
+    Entry {
         name: "set",
         synopsis: "set varName ?newValue?",
         summary: "Read or write a variable; yields its value. A procedure's variables are slots, a script's are VM globals.",
+    },
+    Entry {
+        name: "source",
+        synopsis: "source ?-encoding encoding? fileName",
+        summary: "Read a file and evaluate it against this interpreter; yields the value of its last command.",
     },
     Entry {
         name: "split",
@@ -286,14 +407,44 @@ pub const CORPUS: &[Entry] = &[
         summary: "Run the body of the first pattern that matches, `-exact` or `-glob`.",
     },
     Entry {
+        name: "tcl_findLibrary",
+        synopsis: "tcl_findLibrary basename version patch initScript enVarName varName",
+        summary: "Tcl's own library-directory search, ported from `library/auto.tcl`: find the initialisation script, set the library variable and source it.",
+    },
+    Entry {
+        name: "tell",
+        synopsis: "tell channel",
+        summary: "The device's position, less whatever was read ahead of the script.",
+    },
+    Entry {
         name: "unset",
         synopsis: "unset ?-nocomplain? ?--? ?name ...?",
         summary: "Remove variables or array elements.",
     },
     Entry {
+        name: "update",
+        synopsis: "update ?idletasks?",
+        summary: "Service everything that is pending and return; idletasks services only the idle handlers.",
+    },
+    Entry {
         name: "uplevel",
         synopsis: "uplevel ?level? arg ?arg ...?",
-        summary: "Concatenate the arguments and run the result as a script in the frame of a caller: #0 is the global level, a bare number counts calls outwards from this one. Only a procedure call is a level, so uplevel 1 at a script's top level is a bad level.",
+        summary: "Concatenate the arguments and run the result as a script in the frame of a caller: #0 is the global level, a bare number counts calls outwards from this one. Which word is the level is decided when the command runs, so uplevel $n works. Only a procedure call is a level, so uplevel 1 at a script's top level is a bad level.",
+    },
+    Entry {
+        name: "upvar",
+        synopsis: "upvar ?level? otherVar localVar ?otherVar localVar ...?",
+        summary: "Bind a local name to a variable at another level. The level and the target may both be computed, and an array element may be the target.",
+    },
+    Entry {
+        name: "variable",
+        synopsis: "variable ?name value ...? name ?value?",
+        summary: "Declare a namespace variable. In a procedure body it links the local name to the namespace's variable rather than creating one.",
+    },
+    Entry {
+        name: "vwait",
+        synopsis: "vwait ?varName?",
+        summary: "Service events until the named global is written. With no name it is update.",
     },
     Entry {
         name: "while",
@@ -322,6 +473,11 @@ pub fn subcommands(command: &str) -> &'static [&'static str] {
         "array" => ARRAY_SUBCOMMANDS,
         "dict" => DICT_SUBCOMMANDS,
         "info" => cmd_info::SUBCOMMANDS,
+        "namespace" => crate::cmd_namespace::SUBCOMMANDS,
+        "package" => crate::cmd_package::SUBCOMMANDS,
+        "clock" => cmd_clock::SUBCOMMANDS,
+        "file" => cmd_file::SUBCOMMANDS,
+        "encoding" => crate::cmd_encoding::SUBCOMMANDS,
         _ => &[],
     }
 }
@@ -339,10 +495,286 @@ pub fn subcommand_corpus(command: &str) -> &'static [Entry] {
         "string" => STRING_CORPUS,
         "array" => ARRAY_CORPUS,
         "dict" => DICT_CORPUS,
+        "clock" => CLOCK_CORPUS,
+        "file" => FILE_CORPUS,
+        "encoding" => ENCODING_CORPUS,
         "info" => INFO_CORPUS,
+        "namespace" => NAMESPACE_CORPUS,
+        "package" => PACKAGE_CORPUS,
         _ => &[],
     }
 }
+
+/// The `encoding` subcommands, in the order [`subcommands`] lists them.
+const ENCODING_CORPUS: &[Entry] = &[
+    Entry {
+        name: "convertfrom",
+        synopsis: "encoding convertfrom ?-profile profile? ?-failindex var? encoding data",
+        summary: "A byte string in some encoding, as a string. The profile decides what an invalid sequence becomes; strict is the default.",
+    },
+    Entry {
+        name: "convertto",
+        synopsis: "encoding convertto ?-profile profile? ?-failindex var? encoding data",
+        summary: "A string as a byte string in some encoding. The profile decides what an unrepresentable character becomes.",
+    },
+    Entry {
+        name: "dirs",
+        synopsis: "encoding dirs ?dirList?",
+        summary: "The encoding search path. Starts empty here: the tables are inside the binary, so there is no directory to search.",
+    },
+    Entry {
+        name: "names",
+        synopsis: "encoding names",
+        summary: "Every encoding this frontend can convert with, sorted. What it lists, it converts.",
+    },
+    Entry {
+        name: "profiles",
+        synopsis: "encoding profiles",
+        summary: "The error profiles: replace, strict and tcl8.",
+    },
+    Entry {
+        name: "system",
+        synopsis: "encoding system ?encoding?",
+        summary: "The encoding used for system calls, utf-8 unless it is set to another.",
+    },
+    Entry {
+        name: "user",
+        synopsis: "encoding user",
+        summary: "The encoding the user prefers, which off Windows is the system encoding.",
+    },
+];
+
+/// The `clock` subcommands, in the order [`subcommands`] lists them.
+const CLOCK_CORPUS: &[Entry] = &[
+    Entry {
+        name: "add",
+        synopsis: "clock add clockval ?number units?... ?-option value?",
+        summary: "Move an instant by calendar or fixed units; a day past the end of a month is clamped to it.",
+    },
+    Entry {
+        name: "clicks",
+        synopsis: "clock clicks ?-switch?",
+        summary: "A high-resolution counter, in microseconds unless -milliseconds is given.",
+    },
+    Entry {
+        name: "format",
+        synopsis: "clock format clockval ?-format string? ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE?",
+        summary: "An instant as text, in the root locale's catalogue.",
+    },
+    Entry {
+        name: "microseconds",
+        synopsis: "clock microseconds",
+        summary: "The current time in microseconds since the epoch.",
+    },
+    Entry {
+        name: "milliseconds",
+        synopsis: "clock milliseconds",
+        summary: "The current time in milliseconds since the epoch.",
+    },
+    Entry {
+        name: "scan",
+        synopsis: "clock scan string ?-format string? ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE?",
+        summary: "Text as an instant. The -format form only; the free-form parser is refused.",
+    },
+    Entry {
+        name: "seconds",
+        synopsis: "clock seconds",
+        summary: "The current time in seconds since the epoch.",
+    },
+];
+
+/// The `file` subcommands, in the order [`subcommands`] lists them. The ones
+/// this frontend refuses are listed for the same reason the `string` ensemble's
+/// are: their presence is what makes an abbreviation ambiguous.
+const FILE_CORPUS: &[Entry] = &[
+    Entry {
+        name: "atime",
+        synopsis: "file atime name",
+        summary: "The last access time, in seconds since the epoch.",
+    },
+    Entry {
+        name: "attributes",
+        synopsis: "file attributes name",
+        summary: "Refused: the platform attribute set is not built.",
+    },
+    Entry {
+        name: "channels",
+        synopsis: "file channels",
+        summary: "Refused: this frontend has no channels.",
+    },
+    Entry {
+        name: "copy",
+        synopsis: "file copy ?-force? ?--? source ?source ...? target",
+        summary: "Copy files or whole directories; an existing target is an error without -force.",
+    },
+    Entry {
+        name: "delete",
+        synopsis: "file delete ?-force? ?--? ?name ...?",
+        summary: "Remove names; one that does not exist is not an error.",
+    },
+    Entry {
+        name: "dirname",
+        synopsis: "file dirname name",
+        summary: "Everything but the last path component.",
+    },
+    Entry {
+        name: "executable",
+        synopsis: "file executable name",
+        summary: "1 when the name can be executed by this process.",
+    },
+    Entry {
+        name: "exists",
+        synopsis: "file exists name",
+        summary: "1 when the name resolves to something.",
+    },
+    Entry {
+        name: "extension",
+        synopsis: "file extension name",
+        summary: "From the last dot at or after the last separator to the end.",
+    },
+    Entry {
+        name: "home",
+        synopsis: "file home ?user?",
+        summary: "A home directory, this process's own when no user is named.",
+    },
+    Entry {
+        name: "isdirectory",
+        synopsis: "file isdirectory name",
+        summary: "1 when the name resolves to a directory.",
+    },
+    Entry {
+        name: "isfile",
+        synopsis: "file isfile name",
+        summary: "1 when the name resolves to an ordinary file.",
+    },
+    Entry {
+        name: "join",
+        synopsis: "file join name ?name ...?",
+        summary:
+            "Join path elements; an element that is itself absolute discards the ones before it.",
+    },
+    Entry {
+        name: "link",
+        synopsis: "file link ?-linktype? linkName ?target?",
+        summary: "Refused: creating links is not built.",
+    },
+    Entry {
+        name: "lstat",
+        synopsis: "file lstat name varName",
+        summary: "Refused: it writes an array this frontend does not build for it.",
+    },
+    Entry {
+        name: "mkdir",
+        synopsis: "file mkdir ?dir ...?",
+        summary:
+            "Create directories and every missing parent; an existing directory is not an error.",
+    },
+    Entry {
+        name: "mtime",
+        synopsis: "file mtime name",
+        summary: "The last modification time, in seconds since the epoch.",
+    },
+    Entry {
+        name: "nativename",
+        synopsis: "file nativename name",
+        summary: "The path in the platform's own form, which on unix drops duplicate separators.",
+    },
+    Entry {
+        name: "normalize",
+        synopsis: "file normalize name",
+        summary: "The absolute path with links resolved, except in the last component.",
+    },
+    Entry {
+        name: "owned",
+        synopsis: "file owned name",
+        summary: "1 when this process's effective user owns the name.",
+    },
+    Entry {
+        name: "pathtype",
+        synopsis: "file pathtype name",
+        summary: "absolute or relative; unix has no volume-relative paths.",
+    },
+    Entry {
+        name: "readable",
+        synopsis: "file readable name",
+        summary: "1 when the name can be read by this process.",
+    },
+    Entry {
+        name: "readlink",
+        synopsis: "file readlink name",
+        summary: "What a symbolic link points at, as it was written.",
+    },
+    Entry {
+        name: "rename",
+        synopsis: "file rename ?-force? ?--? source ?source ...? target",
+        summary: "Move names; an existing target is an error without -force.",
+    },
+    Entry {
+        name: "rootname",
+        synopsis: "file rootname name",
+        summary: "The path with its extension cut off.",
+    },
+    Entry {
+        name: "separator",
+        synopsis: "file separator ?name?",
+        summary: "The path separator, which on unix is always a slash.",
+    },
+    Entry {
+        name: "size",
+        synopsis: "file size name",
+        summary: "The size in bytes.",
+    },
+    Entry {
+        name: "split",
+        synopsis: "file split name",
+        summary: "The path's elements as a list; the root, when there is one, is a single element.",
+    },
+    Entry {
+        name: "stat",
+        synopsis: "file stat name varName",
+        summary: "Refused: it writes an array this frontend does not build for it.",
+    },
+    Entry {
+        name: "system",
+        synopsis: "file system name",
+        summary: "Refused: there is one filesystem here and no way to name another.",
+    },
+    Entry {
+        name: "tail",
+        synopsis: "file tail name",
+        summary: "The last path component.",
+    },
+    Entry {
+        name: "tempdir",
+        synopsis: "file tempdir ?template?",
+        summary: "Refused: it is built on the channel layer.",
+    },
+    Entry {
+        name: "tempfile",
+        synopsis: "file tempfile ?nameVar? ?template?",
+        summary: "Refused: it returns an open channel.",
+    },
+    Entry {
+        name: "tildeexpand",
+        synopsis: "file tildeexpand name",
+        summary: "The one command in Tcl 9 that expands a leading ~ or ~user.",
+    },
+    Entry {
+        name: "type",
+        synopsis: "file type name",
+        summary: "file, directory, link, fifo, socket, blockSpecial or characterSpecial.",
+    },
+    Entry {
+        name: "volumes",
+        synopsis: "file volumes",
+        summary: "Refused: there is no volume table here.",
+    },
+    Entry {
+        name: "writable",
+        synopsis: "file writable name",
+        summary: "1 when the name can be written by this process.",
+    },
+];
 
 const STRING_CORPUS: &[Entry] = &[
     Entry {
@@ -652,7 +1084,7 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "body",
         synopsis: "info body procname",
-        summary: "The source text of a procedure's body. Refused here: a body is lowered into the enclosing chunk while compiling and its text is not kept, so there is nothing to hand back — the bytecode is the only surviving form.",
+        summary: "The source text a procedure's body was written as, answered from the same table `info args` reads, so a computed procedure name works. A procedure whose body the script computed has no text and is reported as no procedure, which is what tclsh reports for a name that is none.",
     },
     Entry {
         name: "class",
@@ -672,7 +1104,7 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "commands",
         synopsis: "info commands ?pattern?",
-        summary: "The command names matching the glob pattern — builtins and script-defined procedures alike — sorted. With no pattern, every name.",
+        summary: "The command names matching the glob pattern — every name the frontend answers to, the command modules' included, together with the script-defined procedures — sorted. With no pattern, every name.",
     },
     Entry {
         name: "complete",
@@ -717,7 +1149,7 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "functions",
         synopsis: "info functions ?pattern?",
-        summary: "The `expr` math function names matching the pattern — `abs`, `sin`, `pow` and the rest. Refused: math functions parse and are then refused individually, so there is no set to list.",
+        summary: "The `expr` math function names matching the pattern — `abs`, `sin`, `pow` and the rest — read from the same table that lowers a call to one, so the list cannot fall behind what `expr` accepts.",
     },
     Entry {
         name: "globals",
@@ -732,7 +1164,7 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "level",
         synopsis: "info level ?number?",
-        summary: "With no argument, how deep the current procedure call is (0 at the top level); with one, the command and arguments that entered that level. Refused: this frontend does not expose the running call frame.",
+        summary: "How deep the current procedure call is — 0 at a script's own level, one more per activation. Only a call is counted, not the frames the VM pushes for a scope or after a JIT side exit. The form taking a level number is refused: a call site pushes the actual arguments and nothing naming the command, so there is no record of what entered a level.",
     },
     Entry {
         name: "library",
@@ -747,7 +1179,7 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "locals",
         synopsis: "info locals ?pattern?",
-        summary: "The local variable names of the running procedure, matching the pattern. Refused: locals are frame *slots* here, addressed by index, and the names they were compiled from are not carried into the frame.",
+        summary: "The local variable names of the running procedure that are set, matching the pattern. A local is a frame slot addressed by index, so which names the frame has is settled while compiling and which of them hold anything is settled by the frame — the answer is the two halves met. A local whose only mention stands after the `info locals` is not listed.",
     },
     Entry {
         name: "nameofexecutable",
@@ -787,7 +1219,173 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "vars",
         synopsis: "info vars ?pattern?",
-        summary: "The visible variable names matching the glob pattern, sorted — including the `argc`, `argv` and `argv0` the interpreter sets up. Diverges inside a procedure: tclsh answers with the frame's locals, and this answers with the globals, because a local is an unnamed frame slot here.",
+        summary: "The visible variable names matching the glob pattern, sorted. At a script's own level that is every variable the interpreter holds, including the `argc`, `argv` and `argv0` it sets up; inside a procedure it is the frame's own — its set locals plus the names `global`, `variable` and `upvar` bound into it, which is what tclsh answers.",
+    },
+];
+
+/// `namespace`'s subcommands, in the order `cmd_namespace::SUBCOMMANDS` lists
+/// them — which is the order tclsh's own `unknown or ambiguous subcommand`
+/// message lists them in, so the two agree.
+const NAMESPACE_CORPUS: &[Entry] = &[
+    Entry {
+        name: "children",
+        synopsis: "namespace children ?name? ?pattern?",
+        summary: "The child namespaces of a namespace, fully qualified.",
+    },
+    Entry {
+        name: "code",
+        synopsis: "namespace code script",
+        summary: "The script wrapped so that evaluating it later runs it in this namespace.",
+    },
+    Entry {
+        name: "current",
+        synopsis: "namespace current",
+        summary: "The namespace the command was written in. Folded while compiling, since that is where a namespace is decided.",
+    },
+    Entry {
+        name: "delete",
+        synopsis: "namespace delete ?name name...?",
+        summary: "Remove namespaces, their child namespaces and their commands.",
+    },
+    Entry {
+        name: "ensemble",
+        synopsis: "namespace ensemble subcommand ?arg ...?",
+        summary: "`exists`, `create` and `configure`. Dispatching *through* an ensemble is not implemented: a call resolves its command while compiling.",
+    },
+    Entry {
+        name: "eval",
+        synopsis: "namespace eval name arg ?arg...?",
+        summary: "Lower the body with this namespace current, which is what gives its `proc`, `variable` and `$v` the namespace's names. The name and the body have to be written out.",
+    },
+    Entry {
+        name: "exists",
+        synopsis: "namespace exists name",
+        summary: "1 when the namespace exists.",
+    },
+    Entry {
+        name: "export",
+        synopsis: "namespace export ?-clear? ?pattern pattern...?",
+        summary: "Add patterns to the namespace's export list, or report it when no pattern is given.",
+    },
+    Entry {
+        name: "forget",
+        synopsis: "namespace forget ?pattern pattern...?",
+        summary: "Remove the imports of the commands a pattern names — not the commands themselves.",
+    },
+    Entry {
+        name: "import",
+        synopsis: "namespace import ?-force? ?pattern pattern...?",
+        summary: "Bring exported commands into this namespace under their tail names. A pattern that matches nothing is not an error.",
+    },
+    Entry {
+        name: "inscope",
+        synopsis: "namespace inscope ns script ?arg...?",
+        summary: "Evaluate the script in a namespace, with the extra arguments appended as list elements.",
+    },
+    Entry {
+        name: "origin",
+        synopsis: "namespace origin name",
+        summary: "Where an imported command was originally defined; the command's own name when it was not imported.",
+    },
+    Entry {
+        name: "parent",
+        synopsis: "namespace parent ?name?",
+        summary: "The namespace containing this one; empty for the root.",
+    },
+    Entry {
+        name: "path",
+        synopsis: "namespace path ?namespaceList?",
+        summary: "Refused: it changes how a later name resolves, which this frontend resolved while compiling.",
+    },
+    Entry {
+        name: "qualifiers",
+        synopsis: "namespace qualifiers string",
+        summary: "Everything before the last `::`, a port of `NamespaceQualifiersCmd`. Folded when the argument is written out.",
+    },
+    Entry {
+        name: "tail",
+        synopsis: "namespace tail string",
+        summary: "Everything after the last `::`, a port of `NamespaceTailCmd`.",
+    },
+    Entry {
+        name: "unknown",
+        synopsis: "namespace unknown ?script?",
+        summary: "Refused, for the same reason `namespace path` is.",
+    },
+    Entry {
+        name: "upvar",
+        synopsis: "namespace upvar ns ?otherVar myVar ...?",
+        summary: "Refused, for the same reason `namespace path` is.",
+    },
+    Entry {
+        name: "which",
+        synopsis: "namespace which ?-command? ?-variable? name",
+        summary: "The qualified name a command or variable resolves to, or the empty string.",
+    },
+];
+/// `package`'s subcommands, in `pkgOptions`' order
+/// (`generic/tclPkg.c:1067-1071`) — which is [`crate::cmd_package`]'s order,
+/// and the order the `bad option` message lists them in.
+const PACKAGE_CORPUS: &[Entry] = &[
+    Entry {
+        name: "files",
+        synopsis: "package files package",
+        summary: "The files a package was loaded from. Always empty here: nothing records one, because this frontend has no package index.",
+    },
+    Entry {
+        name: "forget",
+        synopsis: "package forget ?package ...?",
+        summary: "Drop everything known about each package — its version and every script that would load it. A name that is not known is not an error.",
+    },
+    Entry {
+        name: "ifneeded",
+        synopsis: "package ifneeded package version ?script?",
+        summary: "Register the script that loads a version, or, with no script, report the one registered for exactly that version.",
+    },
+    Entry {
+        name: "names",
+        synopsis: "package names",
+        summary: "Every package that is provided or has a loading script, in the order each was first mentioned.",
+    },
+    Entry {
+        name: "prefer",
+        synopsis: "package prefer ?latest|stable?",
+        summary: "Whether an unqualified require takes the newest version or the newest stable one. Starts at stable and only ever moves to latest.",
+    },
+    Entry {
+        name: "present",
+        synopsis: "package present ?-exact? package ?requirement ...?",
+        summary: "Like require for a package already provided, and an error rather than a load attempt for one that is not.",
+    },
+    Entry {
+        name: "provide",
+        synopsis: "package provide package ?version?",
+        summary: "Declare this package present at a version, or report the version it was declared at. A second, different version is a conflict.",
+    },
+    Entry {
+        name: "require",
+        synopsis: "package require ?-exact? package ?requirement ...?",
+        summary: "Make a package present, loading it if it is not, and yield the version that ended up provided.",
+    },
+    Entry {
+        name: "unknown",
+        synopsis: "package unknown ?command?",
+        summary: "The script run when a required package is not known; the empty string clears it.",
+    },
+    Entry {
+        name: "vcompare",
+        synopsis: "package vcompare version1 version2",
+        summary: "-1, 0 or 1 by TIP 268's ordering, in which 9.0 and 9.0.0 are equal and 1.2a3 sorts below 1.2.",
+    },
+    Entry {
+        name: "versions",
+        synopsis: "package versions package",
+        summary: "The versions a loading script has been registered for.",
+    },
+    Entry {
+        name: "vsatisfies",
+        synopsis: "package vsatisfies version ?requirement ...?",
+        summary: "Whether the version meets any of the requirements, each a version, a versionMin-versionMax range, or a versionMin- open range.",
     },
 ];
 
@@ -1334,10 +1932,8 @@ mod tests {
     #[test]
     fn subcommand_corpora_match_the_ensemble_tables() {
         for ensemble in ["string", "array", "dict", "info"] {
-            let documented: Vec<&str> = subcommand_corpus(ensemble)
-                .iter()
-                .map(|e| e.name)
-                .collect();
+            let documented: Vec<&str> =
+                subcommand_corpus(ensemble).iter().map(|e| e.name).collect();
             assert_eq!(
                 documented,
                 subcommands(ensemble),
@@ -1429,6 +2025,7 @@ mod tests {
         assert!(subcommands("array").contains(&"names"));
         assert!(subcommands("dict").contains(&"keys"));
         assert!(subcommands("info").contains(&"coroutine"));
+        assert!(subcommands("namespace").contains(&"eval"));
         assert!(subcommands("puts").is_empty());
     }
 }

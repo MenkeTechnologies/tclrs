@@ -127,7 +127,35 @@ tclrs -c SCRIPT ?arg ...?   run SCRIPT
 tclrs                       read from stdin; a REPL when stdin is a terminal
 tclrs --version             print the version    (also -V)
 tclrs --help                print the usage      (also -h)
+tclrs --tk FILE ?arg ...?   run on the main thread, with Tk available
 ```
+
+`--tk` exists only in a build with the `tk` feature (`cargo build --features
+tk`), and is refused as an unknown option in a default build. It does two
+things: it runs the interpreter on the process main thread — Tk on macOS
+panics otherwise (`tk9.0.4/macosx/tkMacOSXNotify.c:258-272`) — on a 256 MiB
+stack the binary maps itself, and it opens a Tk session before the script is
+compiled, so that a widget command Tk has not registered yet is lowered as a
+run-time lookup rather than as `invalid command name`.
+
+`package require Tk` in a default build is `can't find package Tk`, which is
+what `tclsh` says about a package it cannot locate. In a `--features tk` build
+outside a `--tk` session it names the reason instead — the toolkit is present
+but cannot be initialised off the main thread — rather than claiming it is
+missing.
+
+Nothing is loaded until the script says `package require Tk`. That is what
+`dlopen`s the toolkit, calls `Tk_Init` and registers Tk's commands into the
+interpreter the script is running in; a `--tk` run of a script that never asks
+for Tk never opens the dylib. Tk's script library is found from that dylib
+rather than from this binary: the directory the dynamic linker mapped it into is
+put on `auto_path` before `Tk_Init` runs, so `tcl_findLibrary tk` reaches the
+`tk9.0/tk.tcl` of the install actually in use with no `TK_LIBRARY` in the
+environment. `TK_LIBRARY` and `TCL_LIBRARY` still outrank it. When the script
+has finished, the binary enters
+Tk's own main loop if Tk registered one — the same thing `wish` does, and under
+the same condition, which is that the script succeeded
+(`generic/tclMain.c:589-598`).
 
 Shell completion is [`completions/_tclrs`](completions/_tclrs) — put that
 directory on `fpath`. The manual pages are [`man/man1/tclrs.1`](man/man1/tclrs.1) and the all-in-one
@@ -246,11 +274,16 @@ cached under `~/.cache/fusevm/ffi` by the SHA-256 of the block's body
 rustc.
 
 **Registration happens while compiling, not while running.** This frontend
-resolves dispatch at compile time — a name is a builtin, a procedure, a
-coroutine, or an error before the VM starts — so the block is compiled and
+resolves dispatch at compile time wherever the script's own text decides it — a
+name is a builtin, a top-level procedure, a coroutine, an exported Rust
+function, or unknown before the VM starts — so the block is compiled and
 registered as its command is lowered, which is what makes `add` a known name by
 the next line. A procedure of the same name still wins: dispatch asks the
-script's own definitions first.
+script's own definitions first. The names the text cannot decide — a procedure
+defined by a `proc` away from the top level, a procedure another chunk defined, a
+command Tk registers during `Tk_Init`, and a command whose own name is written
+`{*}$cmd` — resolve in a run-time command table instead; see
+[Procedures](#procedures).
 
 Signatures are fusevm's marshalling set: up to four `i64` arguments returning
 `i64`, up to three `f64` returning `f64`, and `*const c_char` returning either
@@ -293,6 +326,13 @@ the same binary. `TCLRS_REPL_MODE=vi` picks the REPL's keymap.
 
 fusevm's own knobs work unchanged: `FUSEVM_JIT_BLOCK_THRESHOLD`,
 `FUSEVM_JIT_TRACE_THRESHOLD`, `FUSEVM_JIT_CACHE_DIR` and `FUSEVM_FFI_DIR`.
+
+A `--features tk` build reads three more. `TCLRS_LIBTK` is the Tk dylib to
+open, instead of the Homebrew paths tried by default. `TCLRS_TK_TRACE` puts the
+stub-call log back on stderr — one line per call into the host, which is the
+probe's instrument and is off in a session because `Tk_Init` alone serves 2737
+of them — along with one `tkinit` line reporting what `Tk_Init` returned.
+`TCLRS_TK_STRINGS` logs the strings that crossed the boundary.
 
 ---
 
@@ -342,21 +382,44 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 
 | Group | Commands |
 | --- | --- |
-| Variables | `set`, `incr`, `unset`, `append`, array variables (`a(k)`), `global` |
-| Output | `puts`, with `-nonewline` |
+| Variables | `set`, `incr`, `unset`, `append`, array variables (`a(k)`), `global`, `variable`, `upvar #0` |
+| Output | `puts`, with `-nonewline` and an optional channel |
 | Expressions | `expr` |
 | Control flow | `if` / `elseif` / `else`, `while`, `for`, `foreach`, `switch` (`-exact`, `-glob`), `break`, `continue` |
 | Procedures | `proc`, `return` (with `-code ok` / `-code error`), `apply` |
 | Errors | `catch`, `error` |
 | Coroutines | `coroutine`, `yield`, `yieldto`, `info coroutine` |
-| Introspection | `info` — `args`, `commands`, `complete`, `coroutine`, `default`, `exists`, `globals`, `hostname`, `library`, `nameofexecutable`, `patchlevel`, `procs`, `script`, `sharedlibextension`, `tclversion`, `vars` |
-| Run-time evaluation | `eval`, `uplevel` |
+| Namespaces | `namespace` — `eval`, `current`, `qualifiers`, `tail`, `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`, `import`, `forget`, `origin`, `which`, `ensemble exists` / `create` / `configure`; `variable`; `rename` |
+| The event loop | `after` — `ms`, `ms script`, `idle script`, `cancel`, `info`; `update`, `update idletasks`; `vwait` |
+| Scope | `uplevel`, `upvar`, `apply` |
+| Introspection | `info` — `args`, `body`, `commands`, `complete`, `coroutine`, `default`, `exists`, `functions`, `globals`, `hostname`, `level`, `library`, `locals`, `nameofexecutable`, `patchlevel`, `procs`, `script`, `sharedlibextension`, `tclversion`, `vars` |
+| Packages | `package` — `files`, `forget`, `ifneeded`, `names`, `prefer`, `present`, `provide`, `require`, `unknown`, `vcompare`, `versions`, `vsatisfies` |
+| Run-time evaluation | `eval`, `source`, `tcl_findLibrary` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
 | Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `incr`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
 | Regular expressions | `regexp`, `regsub` — with `-nocase`, `-all`, `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`, `-start` and `--`; `switch -regexp` and `lsearch -regexp` take one too |
 | Strings | `format`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright`, `wordend`, `wordstart` |
+| Channels | `open`, `close`, `gets`, `read`, `flush`, `eof`, `seek`, `tell`, `fconfigure`, and `puts` to a channel; `stdin`, `stdout` and `stderr` |
+| Math functions | The whole of `mathfunc(n)` inside `expr`: `abs`, `acos`, `asin`, `atan`, `atan2`, `bool`, `ceil`, `cos`, `cosh`, `double`, `entier`, `exp`, `floor`, `fmod`, `hypot`, `int`, `isfinite`, `isinf`, `isnan`, `isnormal`, `isqrt`, `issubnormal`, `isunordered`, `log`, `log10`, `max`, `min`, `pow`, `rand`, `round`, `sin`, `sinh`, `sqrt`, `srand`, `tan`, `tanh`, `wide` |
+| Time | `clock` — `seconds`, `milliseconds`, `microseconds`, `clicks`, `format`, `scan` (with `-format`), `add`; `-gmt`, `-timezone` (a numeric offset or any zone with a `TZif` file) and the root locale |
+| Encodings | `encoding` — `convertfrom`, `convertto` (with `-profile tcl8` / `strict` / `replace` and `-failindex`), `dirs`, `names`, `profiles`, `system`, `user`; see [Encodings](#encodings) for which |
+| Filesystem | `file` — `atime`, `copy`, `delete`, `dirname`, `executable`, `exists`, `extension`, `home`, `isdirectory`, `isfile`, `join`, `mkdir`, `mtime`, `nativename`, `normalize`, `owned`, `pathtype`, `readable`, `readlink`, `rename`, `rootname`, `separator`, `size`, `split`, `tail`, `tildeexpand`, `type`, `writable`; `glob` with `-directory`, `-join`, `-nocomplain`, `-path`, `-tails` and `-types`; `pwd`; `cd` |
 
 Command substitution works on any of them.
+
+`package` is ported from `generic/tclPkg.c`, version arithmetic included: TIP
+268's normalisation and comparison, so `9.0` and `9.0.0` are the same version,
+`010` and `10` are the same number, `1.2a3` sorts below `1.2`, and a component
+wider than 64 bits still compares correctly. `tests/package_differential.rs`
+runs a hundred cases through `tclsh` and through this binary and requires the
+completion code and the result string to agree on every one.
+
+Two answers differ from a freshly started `tclsh`, and both are `init.tcl`'s
+doing rather than the command's: `package names` starts empty, because this
+frontend provides nothing about itself, and `package unknown` starts unset,
+because there is no `auto_path` to search. `package files` always answers the
+empty string for the same reason — nothing records which file provided a
+package, since there is no package index to record.
 
 `docs/reference.html` is the same surface as a page, generated rather than
 written: `cargo run --bin gen-docs` renders every command, ensemble subcommand,
@@ -457,6 +520,62 @@ one value per formal — filling in defaults and collecting a trailing `args`
 there rather than in the body. `global` moves a named variable back to the
 global table for the body that declared it.
 
+A `proc` that is **not** at the script's top level — inside an `if`, a loop, a
+command substitution, or another procedure's body — is compiled the same way and
+bound differently. Its body is lowered where it stands, behind a jump, with the
+same prologue and the same slots; what changes is that the *name* is bound when
+the `proc` command runs, by an extension op, rather than while the script is
+compiled. So `if {0} {proc f {} {}}` leaves `f` an `invalid command name`, a
+definition inside a taken branch replaces whatever the name meant before it, and
+a procedure that defines another defines it for good once it has run — which is
+what tclsh does, and what `tests/proc_differential.rs` compares against tclsh
+line by line.
+
+Calls follow the definition. A name the compiler can resolve keeps its direct
+`Op::Call`; a name some conditional `proc` defines resolves in a run-time
+command table instead, at every call site in the script — including the ones
+written above the definition, and including a name a top-level `proc` also
+claims, because only run time knows which definition ran last. The compiler
+learns which names those are in its first pass and lowers their call sites in
+the second, so a script with no conditional `proc` compiles in one pass and its
+call sites are byte-identical to what they were. `bench/counted_loop_proc.tcl`
+is unchanged by all of it: one `Op::Call`, `traced=true`.
+
+**A procedure is callable from any chunk of the interpreter.** `source`, `eval`,
+an `after` script and a Tk binding script are each a chunk of their own, and an
+entry point is an op index that means nothing outside the chunk it came from —
+so every `proc` binds its name in the interpreter's run-time table as well as in
+its own chunk's address book, and the table holds the chunk with the entry point.
+A call that finds a procedure of the running chunk jumps to it; one that finds a
+procedure of another chunk runs that chunk's body on a VM of its own, positioned
+the way a coroutine's is, against the same interpreter variables. Four ops per
+definition, run once where the definition stands; nothing on a call path pays for
+it. `rename` moves the table's entry with the registry's, so a name taken away
+stops answering in every chunk.
+
+### `{*}` argument expansion
+
+A word written `{*}$list` supplies a *number* of arguments, which the script
+decides while it runs. Every other command in this frontend has its callee and
+its argument count settled while the script is read — the count is an inline
+operand of the op the call lowers to — so a command containing a `{*}` is lowered
+whole instead: the line, then one flag and one value per word, then
+`ext::EXPAND_CALL`, which splices the flagged words by list rules and calls what
+the result spells. That covers the name as well, since `{*}{n x} y` calls `n`.
+
+Three kinds of callee, in the order tclsh resolves them: a procedure of the
+interpreter, entered exactly as any run-time call enters one; a command this
+frontend compiles, which is rebuilt as a *list* and evaluated — a list evaluated
+as a script is one command whose words are its elements, with no substitution left
+to do, which is why `set {*}{a b}` assigns and `if {*}{1 {puts yes}}` runs its
+body; and anything else, which is a command Tk registered or an `invalid command
+name`. A command whose words all expand to nothing runs nothing and answers the
+empty string, as tclsh does.
+
+Only a command that has a `{*}` pays anything: one `LoadInt` per word of that
+command, and the op instead of the call. `tests/expand_differential.rs` compares
+41 programs against tclsh byte for byte.
+
 ### Coroutines
 
 A coroutine is a second `fusevm::VM` over the same chunk. `coroutine name cmd
@@ -503,7 +622,129 @@ flow does not cross one: `break`, `continue` and `return` belong to the script
 `apply {params body ?ns?} ?arg …?` runs a lambda as what it is — a procedure
 body with a frame of its own, its own locals, the same defaults and variadic
 `args` rules, and `return` returning from it. A wrong argument count is reported
-against `apply lambdaExpr`, because a lambda has no name to report.
+against `apply lambdaExpr`, because a lambda has no name to report. The lambda
+itself may be computed: the op writes it out as a `proc` under a name no Tcl name
+can be, runs that, and renames the synthesised name out of any diagnostic — so
+`set f {{x} {expr {$x+1}}}; apply $f 1` works, and works through the same frame
+machinery a written-out lambda does.
+
+`upvar ?level? otherVar localVar …` is the third way into another frame, and the
+only one that is not a script: an alias, which every later command of the body
+reads and writes through. The level and the target may both be computed, and the
+target may be an array element. It resolves to one of three homes — a global at
+its index in the chunk's projection, a global whose computed name the chunk's
+table does not carry, or a frame slot by frame and slot index — which is why the
+one thing it refuses is a name the procedure running at that level never wrote:
+a link is a slot's *address*, and such a name has no slot. `uplevel` is not
+limited that way, projecting the whole frame rather than addressing one slot.
+
+### Namespaces
+
+A namespace is resolved where everything else in this frontend is resolved:
+while compiling. `namespace eval foo { … }` lowers its body into the enclosing
+chunk with the compiler's current namespace switched, and that one switch is
+what every name in the body is resolved against.
+
+| Written inside `::foo` | Reaches |
+| --- | --- |
+| `set v 1` | the interpreter variable `foo::v` |
+| `proc p {…} {…}` | a procedure registered as `foo::p` |
+| `p` | `::foo::p` if there is one, otherwise `::p` — `TclGetNamespaceForQualName`'s two-step search |
+| `variable v` inside a procedure | links the local name `v` to `::foo::v` |
+| `global v` inside a procedure | the root namespace's `v`, even when `::foo` has one |
+
+The root namespace is the empty prefix, so a global variable keeps the name it
+always had and a script that uses no namespace compiles to exactly the bytecode
+it compiled to before. The queries — `namespace exists`, `children`, `which`,
+`origin`, `parent` — read a registry the interpreter holds and the compiled code
+fills in as it runs, so they answer for what the script actually created.
+
+Because the resolution happens while compiling, a namespace this compiler cannot
+read is refused rather than guessed at: `namespace eval $n {…}`, a computed body,
+and `namespace path` / `unknown` / `upvar`, which would change a resolution after
+it was made.
+
+### `source` and `tcl_findLibrary`
+
+`source` reads a file and evaluates it through the same path `eval` takes, so it
+shares the interpreter's variables in both directions — including namespace
+variables, which are interpreter variables under their qualified names. Its
+procedures are its own chunk's, and do not survive it; [`BUGS.md`](BUGS.md) has
+the entry.
+
+`tcl_findLibrary` is not a C command in Tcl either — it is a procedure of Tcl's
+own library, `library/auto.tcl`, and `src/cmd_source.rs` is a port of it. It
+walks the same directories in the same order: the package's environment
+variable, then `$auto_path` with the macOS `Resources/Scripts` case under each,
+then three directories relative to the executable; the first that holds the
+initialisation script sets the library variable and is sourced.
+`tclrs::cmd_source::seed_library_environment` sets the `tcl_library`,
+`tcl_libPath` and `auto_path` that Tcl's own `init.tcl` sets from C state this
+crate has no equivalent of.
+
+### Encodings
+
+`encoding convertfrom` and `encoding convertto` are table lookups, and the
+tables are the specification: a mapping one code point out produces output that
+looks exactly as plausible as the right output. So none of them is typed into
+this crate. Every table is a byte-for-byte copy of a `library/encoding/*.enc`
+file from the Tcl source release that `conformance/fetch-suite.sh` verifies
+against a pinned SHA-256, vendored into `src/encodings/` by
+`scripts/gen_encoding_tables.py`, and `src/cmd_encoding.rs` reads them with a
+port of the reader they were written for — `LoadTableEncoding`,
+`generic/tclEncoding.c`. `diff -r src/encodings conformance/vendor/tcl*/library/encoding`
+is the whole provenance check. There is no new dependency: the data is data, and
+the conversion is a port of `TableToUtfProc` and `TableFromUtfProc`.
+
+That covers every table encoding the release ships — the `iso8859-*` family, the
+`cp*` code pages, the `mac*` set, `koi8-*`, `ascii`, `ebcdic`, the
+`symbol`/`dingbats` fonts, and the double- and multi-byte CJK encodings
+(`big5`, `cp932`, `cp936`, `cp949`, `cp950`, `euc-cn`, `euc-jp`, `euc-kr`,
+`gb2312`, `gb2312-raw`, `gb12345`, `jis0208`, `jis0212`, `ksc5601`, `macJapan`,
+`shiftjis`, `cns11643`), including the prefix-byte machinery a double-byte
+encoding decodes through and the trailing reverse-mapping section four of the
+Japanese tables carry. The rest — `utf-8`, `cesu-8`, `utf-16`/`utf-16le`/
+`utf-16be`/`unicode`, `ucs-2`/`ucs-2le`/`ucs-2be` and
+`utf-32`/`utf-32le`/`utf-32be` — are ports of the corresponding procs.
+
+`encoding names` answers exactly the set that converts, sorted. It is *not*
+tclsh's list: tclsh answers in its hash table's order and includes the three
+escape-sequence encodings, which are state machines rather than tables and are
+refused here by name. A script can therefore trust the list — what it offers,
+it converts.
+
+The profiles are `tcl8`, `strict` and `replace`, with `strict` the default, and
+they are ported rather than approximated, down to the parts the manual page gets
+wrong. Two examples, both measured against tclsh 9.0.4:
+
+* `encoding(n)` says the `tcl8` profile maps an invalid byte to "its numerically
+  equivalent code point" outside utf-8, and gives `encoding convertfrom -profile
+  tcl8 ascii A\x80` as U+0041 U+0080. It is U+0041 U+20AC: tclsh reads a stray
+  byte as the cp1252 character of that number where cp1252 defines one, for the
+  table encodings as much as for utf-8.
+* the same page states that `strict` is the default and then shows `encoding
+  convertto iso8859-1 A\u0141` answering `A?`, which is what `tcl8` does. With
+  no `-profile` it raises `unexpected character at index 1: 'U+000141'`.
+
+`-failindex` and the error message do not report the same number for
+`convertto`: the variable gets a byte offset into the string's UTF-8 form and
+the message gets a character index. For `éé€` in `iso8859-1` they are 4 and 2.
+Both are reproduced.
+
+`fconfigure -encoding` takes the same set, through the same tables, and a
+character split across two reads is still one character — the channel holds an
+incomplete sequence until the rest arrives, which is what
+`TCL_CONVERT_MULTIBYTE` means. A channel's profile is `strict`, as tclsh's is,
+so a byte sequence it cannot decode or a character it cannot encode is `error
+reading "fileN": invalid or incomplete multibyte or wide character` rather than
+a substitution.
+
+Two answers differ deliberately. `encoding dirs` starts empty, because the
+tables are inside the binary and there is no directory to search — tclsh's
+initial value is where its own library was installed. And `identity` and
+`binary` are not encodings: measured, tclsh 9.0.4 answers `unknown encoding
+"identity"` for both, so this frontend does too rather than reviving a Tcl 8
+spelling.
 
 ---
 
@@ -516,8 +757,10 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | Refused | Message |
 | --- | --- |
 | Any command outside [the list above](#0x04-language-surface) | `invalid command name "X"` |
-| `{*}` argument expansion | `{*} argument expansion is not supported yet` |
-| Every `expr` math function | `math function "sin" is not supported yet` |
+| An `expr` math function a *script* defines under `tcl::mathfunc::` | `invalid command name "tcl::mathfunc::triple"` |
+| `clock scan` without `-format`, and `clock`'s `-locale` outside the root catalogue | `clock scan: the free-form parser is not supported yet; use -format` |
+| A `clock` instant before the Gregorian changeover, where the calendar depends on the locale | `clock: dates before the Gregorian changeover of 1752-09-14 are not supported yet` |
+| `file attributes`, `link`, `stat`, `lstat`, `channels`, `system`, `tempfile`, `tempdir`, `volumes` | `file stat is not supported yet: it needs an interface this frontend has not built` |
 | A variable or body word that is not literal (`set $name …`) | the word is refused where a literal is required |
 | An array variable in a `foreach` variable list | `array variables are not supported yet` |
 | `array startsearch` and the other search subcommands | `array startsearch is not supported yet` |
@@ -525,13 +768,27 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `string wordend` / `wordstart` past ASCII | `string wordend/wordstart: characters beyond ASCII need Unicode category tables, which are not built yet` |
 | `format %a` / `%A`; any other letter is `bad field specifier "n"` instead | `the "%a" conversion is not supported yet` |
 | `lsearch -sorted` / `-dictionary` / `-nocase` / `-index` / `-subindices` / `-bisect`; `lsort -command` / `-dictionary` / `-index` / `-nocase`. `-regexp` and `-stride` are built for both. `-increasing` and `-decreasing` *are* taken: they only describe the order `-sorted` and `-bisect` search in, so the two that read it name it — `lsearch -sorted -increasing is not supported yet` | `lsearch -dictionary is not supported yet` |
-| `proc` anywhere but a script's top level; redefining a built-in; redefining a procedure; a procedure and a coroutine of the same name | `"proc" is only supported at the top level of a script` |
+| Redefining a built-in — including from a `proc` away from the top level; redefining a procedure *at the top level*; a procedure and a coroutine of the same name. A `proc` away from the top level is *not* refused: it binds its name when it runs | `redefining the built-in command "set" is not supported` |
 | `return` outside a procedure; `return` or `break` or `continue` out of a `catch` script; `return -code` other than `ok` or `error`; `return`'s other options | `"return" outside of a procedure is not supported` |
 | `catch`'s third (options-variable) argument; `error`'s `info` and `code` arguments | `… the options variable is not supported` |
 | `yield` or `yieldto` inside a script run by `eval`, `uplevel` or `apply`. tclsh suspends the coroutine from inside the nested script; here that script runs a machine of its own, below the VM that would have to park, and that VM saves only its own state — so resuming could not return to the middle of the script | `yield inside a script run by "eval", "uplevel" or "apply" is not supported: a coroutine cannot suspend across one` |
-| `upvar`. An alias has to be a live link to a variable of another frame, and a variable here is a frame slot holding a value, with no indirection for one to point through. Reported as the command this frontend does not have, which is what it is | `invalid command name "upvar"` |
 | `coroutine` anywhere but a script's top level or a command substitution in one; a coroutine of a built-in or of anything but one of the script's procedures; `yieldto` at a command that is not a coroutine of the script | `"coroutine" is only supported at the top level of a script, or in a command substitution in one` |
-| `info body`; `info locals` / `level` / `frame`; `info class` / `object`; `info constant` / `consts`; `info functions`; `info loaded`; `info cmdcount` / `cmdtype` / `errorstack` | `info body is not supported yet: a procedure's body is compiled into the enclosing chunk and its source text is not kept` |
+| A computed `namespace eval` name or body, or a computed `namespace import` pattern | `a computed "namespace eval" name is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out` |
+| `namespace path`, `namespace unknown`, `namespace upvar` | `"namespace path" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out` |
+| Calling a command `namespace ensemble create` made; `variable` naming a qualified name inside a procedure | `bad variable name "a::b": can't create a local variable with a namespace separator` |
+| `source -encoding` for anything but UTF-8 | `"source -encoding" is only supported for utf-8: this frontend reads a script as UTF-8` |
+| `namespace eval` inside a procedure body, where an unqualified name in its body would take a frame slot rather than the namespace's variable | `"namespace eval" inside a procedure is not supported yet: an unqualified name in its body would take a frame slot rather than the namespace's variable` |
+| `info` subcommands that need machinery this frontend has none of: `frame`, `errorstack`, `cmdcount`, `cmdtype`, `class`, `object`, `consts`, `constant`, `loaded`; and `info level N`, which needs a record of the command that entered a level | `info frame is not supported yet` |
+| `info library` — a raise rather than a refusal, carrying tclsh's own message for an interpreter with no script library, which this one permanently is | `no library has been specified for Tcl` |
+| `upvar` to a variable the procedure running at that level never names. A link is one slot's address, and such a name has no slot. `uplevel` is not limited that way | `"upvar" to the variable "neverused" at level 1 is not supported: the procedure running there never names it, so it has no frame slot` |
+| A `return` inside a script `eval`, `uplevel` or `apply` runs, where the script is a chunk of its own and that chunk is no procedure | `"return" outside of a procedure is not supported` |
+| A lambda naming a namespace other than `::`, written out or computed | `the namespace "::ns" of a lambda is not supported yet: this frontend has only "::"` |
+| `vwait` on more than one variable, and its `-timeout` / `-readable` / `-writable` / `-all` options | `"vwait" takes at most one variable name in this phase` |
+| `open \|command` — the pipeline form — and the POSIX list form of an access mode (`{WRONLY CREAT}`) | `opening a command pipeline is not implemented in this frontend; …` |
+| A channel encoding `encoding names` does not list; `fconfigure -blocking 0`; `fconfigure -eofchar` and `-profile` when set; half-closing a read-write channel | `unknown encoding "iso2022-jp"` |
+| The escape-sequence encodings `iso2022`, `iso2022-jp` and `iso2022-kr`. These are state machines with a file format of their own, not tables, and they are absent from `encoding names` so a script can see that before it converts | `encoding: the escape-sequence encoding "iso2022-jp" is not supported yet; …` |
+| A decode whose result would be an unpaired surrogate, which only `-profile tcl8` produces. tclsh's strings can hold one and this frontend's cannot, so the code point is named rather than substituted | `encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+D800, which a string in this frontend cannot hold` |
+| A non-literal option *name* in `encoding convertfrom` / `convertto` (`encoding convertfrom $opt tcl8 …`). Which argument is an option is decided by their count, which is known while compiling; which option it is, is not | the word is refused where a literal is required |
 | Input nesting past `parser::MAX_NESTING_DEPTH` — 64_000 command substitutions or array indices deep, well past anything the reference interpreter survives | `too many nested substitutions (infinite loop?)` |
 | Ahead-of-time compilation of a script using `catch` or a coroutine | `ahead-of-time compilation of a script using "catch" is not supported: it needs the driver that only the interpreter has` |
 
@@ -549,7 +806,7 @@ not implemented; a coroutine goes away when its body ends.
 | 1 Commands, 3 Words | command and word splitting, line tracking |
 | 2 Evaluation | words retained in order for the compiler |
 | 4 Double quotes | quoted words with substitution |
-| 5 Argument expansion | `{*}` recorded on the word |
+| 5 Argument expansion | `{*}` recorded on the word, spliced by `ext::EXPAND_CALL` when the command runs |
 | 6 Braces | nesting, literal text, backslash retention |
 | 7 Command substitution | nested scripts parsed eagerly |
 | 8 Variable substitution | `$name`, `$name(index)`, `${name}`, `${name(index)}` |
@@ -600,9 +857,13 @@ Tcl script → parser (Script/Command/Word) → fusevm bytecode → Interp → M
 Extension op ids are laid out so `runtime`'s dispatch can test ranges from the
 highest base down: the arithmetic ops and `puts` at 0–5, `eval` at 6,
 control flow at 7–9, the coroutine ops at 10–14, the boolean conversion at 15,
-the list commands from 16, the associative ones from 64, and the string ones
-from 128. `catch` is the one op
-whose payload is an op index, so it is an extension-*wide* op.
+the list commands from 16, the associative ones from 64, the string ones
+from 128, the regular-expression ones from 192 and the channel commands from
+256. `catch` is the one op
+whose payload is an op index, so it is an extension-*wide* op. The channel ops
+are the one family dispatched from the hook closure rather than from
+`runtime::extension`, because they need the running interpreter's output sink:
+`puts stdout` has to reach wherever `puts` reaches, including a capture.
 
 Static stack tracking is what keeps the lowering cheap: each command leaves its
 result on the stack and the compiler tracks that depth as it goes, so `break`
@@ -979,6 +1240,12 @@ Apple M5 Max, macOS 26.5.2, rustc 1.97.0, `--release` (`lto = true`,
 `codegen-units = 1`), tclsh 9.0.4 from `/opt/homebrew/bin`, fusevm 0.15.0,
 20 runs after 5 warmup runs, `hyperfine -N` — each command exec'd directly.
 
+The `integer_arith` row predates the shift-distance check. A shift is an
+extension op wherever it appears and an extension op in a loop body costs that
+loop its trace, so that row's JIT and AOT columns are now interpreter-speed;
+`BUGS.md` records the measurement and the two candidate lowerings that would
+give it back. The other rows do not shift and are unaffected.
+
 `-N` matters at this scale. With a shell in the way, hyperfine measures the
 shell's own startup and subtracts it, and on a loaded machine that correction
 once came out larger than the command itself: an ahead-of-time row that runs in
@@ -1136,10 +1403,10 @@ The differential suites test what tclrs claims to do. `conformance/` measures th
 opposite: how much of *real Tcl* it does, by running the Tcl project's own test
 suite against it.
 
-**2248 of 5066 attempted cases pass — 44.4%.** Over every case the suite
-contains, including the ones that cannot be run here, that is 2248 of 69424.
-[`conformance/REPORT.md`](conformance/REPORT.md) has the breakdown behind the
-number: attempted, passed, failed and skipped per suite file, why each skipped
+**29335 of 48201 attempted cases pass — 60.9%.** Over every case the suite
+contains, including the ones that cannot be run here, that is 29335 of 69424 —
+42.3%. [`conformance/REPORT.md`](conformance/REPORT.md) has the breakdown behind
+the number: attempted, passed, failed and skipped per suite file, why each skipped
 case could not be run, and the failure causes ranked.
 
 Regenerate it:
@@ -1158,14 +1425,66 @@ byte for byte; the suite's own `-result` values are not consulted, because
 tclsh is the specification and comparing against what it actually does is
 stricter than comparing against what the suite says it should.
 
-The share fell as the tree grew, and that is the rule working rather than a
-regression. The previous report — taken before `proc`, the `string` ensemble,
-coroutines and `eval` landed — passed 1404 of 2941. Those commands existing is
-what moved 2,125 cases out of the skip column and into the attempted one, and a
-case that was previously skipped for a missing `proc` is now attempted against
-everything *else* it uses. Passes went 1404 → 2248; the denominator went 2941 →
-5066 faster. A number that only ever rises is a number measuring the wrong
-thing.
+Read the denominator with the numerator, always. A command landing moves cases
+out of the skip column and into the attempted one, so the share can fall while
+the tree gets better, and it has: an earlier report — taken before `proc`, the
+`string` ensemble, coroutines and `eval` — passed 1404 of 2941, or 47.7%, and
+the report after them passed more cases at a lower share. A number that only
+ever rises is measuring the wrong thing.
+
+`encoding` landing moved the number the other way, because it was the single
+largest blocker in the suite: it alone was the first command refused in 16,856
+cases. Before it, 12720 of 31524 attempted passed — 40.4% — with 37900 of the
+69424 extracted cases skipped, 19486 of those for a command tclrs did not have.
+After it, 29229 of 48324 passed — 60.5% — with 21100 skipped and 2686 of those
+for a missing command. So the denominator grew by 16,800 *and* the share rose
+20.1 points; `encoding` no longer appears in the blocking table at all.
+
+Merging the published line's `info`, `uplevel` and `apply` in moved it again, and
+in both directions at once: 29335 of 48201 pass now — 60.9%, 106 more cases and
+229 fewer failures — while the skip column grew by 123, to 21223. That is the
+same effect read from the other end. A case is attributed to the *first* command
+tclrs refused, so a body that used to fail on `info body` or on a computed
+`uplevel` level now runs further into itself and reaches whatever it needs next:
+`oo::class` went from blocking 171 cases to 259, `trace` from 259 to 264. No new
+command appeared in the blocking table; the largest entry is still `binary`, at
+690 cases. The skip breakdown is 2809 / 13663 / 4751 / 0 (missing command, unmet
+constraint, a command plain tclsh has not got, no reference outcome) — the two
+middle rows are properties of the suite and this machine, and neither has ever
+moved.
+
+### The Tk suite
+
+`tk-conformance/` is the same measurement pointed at Tk. The candidate is not a
+reimplementation: it is the same `libtcl9tk9.0.dylib` the reference loads,
+running against tclrs's own Tcl stub table, so what is being measured is how
+much of the real toolkit this frontend can host.
+
+**1655 of 5055 attempted cases pass — 32.7%.** Over every case the suite
+contains that is 1655 of 10046 — 16.5%.
+[`tk-conformance/REPORT.md`](tk-conformance/REPORT.md) has the breakdown,
+including a ranked list of the stub slots that ended a run — `Tcl_SplitList`
+alone stops 1893 cases — which is what the number is waiting on.
+
+One classification rule differs from the Tcl harness, and it is the stricter
+one: a call to a stub slot with no body ends the process, and that counts as a
+failure rather than a skip. `invalid command name` is tclrs declining and
+saying so; a trap is the process dying, and a process that died measured
+nothing.
+
+The report also runs Tk's own `demos/widget` — the sample application `wish`
+ships with — one statement at a time. It gets 2 of its 65 statements in before
+`package require msgcat` stops it; attempted individually, 28 complete and 37 do
+not. The largest remaining refusal there is a command name the script computes
+(`$w insert`, `$w configure`), which stops five of the 37; `{*} argument
+expansion` stopped four of them until `ext::EXPAND_CALL` landed and no longer
+appears.
+
+```sh
+tk-conformance/run.sh
+```
+
+That needs a window server: both sides open real windows, which is the point.
 
 ---
 
@@ -1181,8 +1500,19 @@ and the outputs compared byte for byte. The suites cover the twelve parse rules,
 word splitting character for character, whole programs, the list commands, the
 associative commands, the string ensemble, procedures and control flow,
 coroutines, the interpreter's state across evaluations, the binary's stdout /
-stderr / exit status in each of its input modes, and the ahead-of-time path
-against the interpreter.
+stderr / exit status in each of its input modes, transcoding, and the
+ahead-of-time path against the interpreter.
+
+[`tests/encoding_differential.rs`](tests/encoding_differential.rs) is the widest
+of them, because tables are what it is checking: two of its cases are sweeps
+that put every single byte through every encoding under every profile, in both
+directions and with `-failindex`, and every two-byte sequence through the
+encodings where the second byte decides the character. Both are generated in Tcl
+so that the two interpreters run identical text, and both compare line for line.
+The sweep that found the bugs during development was wider still — every
+two-byte sequence in all 92 encodings, 10.7 million comparisons — and it agreed
+byte for byte up to the point where tclsh could no longer write its own answer
+to a UTF-8 channel.
 
 Three suites drive the binary rather than the library:
 [`tests/lsp_session.rs`](tests/lsp_session.rs) and
@@ -1207,7 +1537,7 @@ no `cc`.
 
 [`examples/`](examples) holds runnable programs, one per slice of the language —
 variables and substitution, `expr`, control flow, procedures, lists, strings,
-`dict` and `array`, errors, coroutines, `eval`, and a FizzBuzz that prints. Run
+`dict` and `array`, errors, coroutines, `eval`, the event loop and the scope commands, and a FizzBuzz that prints. Run
 one directly:
 
 ```sh

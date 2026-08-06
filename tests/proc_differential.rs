@@ -70,6 +70,45 @@ const PROGRAMS: &[&str] = &[
     "proc outer {} {return [inner]}\nproc inner {} {return 42}\nputs [outer]",
     "proc add {a b} {expr {$a+$b}}\nproc triple {x} {add $x [add $x $x]}\nputs [triple 5]",
     "proc even {n} {if {$n == 0} {return 1}\nreturn [odd [expr {$n-1}]]}\nproc odd {n} {if {$n == 0} {return 0}\nreturn [even [expr {$n-1}]]}\nputs [even 10]\nputs [even 7]",
+    // ── proc: away from the top level ──
+    // The definition is an event at run time, so what these check is *when* the
+    // name starts answering. Everything a top-level definition supports has to
+    // survive the move: defaults, a variadic tail, recursion, a forward call
+    // from a procedure compiled above the definition, and the body's own locals.
+    "if {1} {proc f {} {return hit}}\nputs A[f]",
+    "puts [proc f {} {return hit}]|\nputs B[f]",
+    "if {0} {proc f {} {}}\nputs [catch {f} m]\nputs $m",
+    "proc f {} {return one}\nif {1} {proc f {} {return two}}\nputs [f]",
+    "set x 2\nif {$x == 1} {proc f {} {return a}} else {proc f {} {return b}}\nputs [f]",
+    "if {1} {proc f {a {b B} args} {puts \"$a-$b-<$args>\"}}\nf 1\nf 1 2\nf 1 2 3 4",
+    "if {1} {proc fact {n} {if {$n<2} {return 1}\nexpr {$n*[fact [expr {$n-1}]]}}}\nputs [fact 10]",
+    "proc caller {} {return [helper 3]}\nif {1} {proc helper {n} {expr {$n*2}}}\nputs [caller]",
+    "set v outer\nif {1} {proc f {} {set v inner\nreturn $v}}\nputs [f]\nputs $v",
+    "set g 5\nif {1} {proc f {} {global g\nincr g}}\nf\nf\nputs $g",
+    "while {1} {proc f {} {return loop}\nbreak}\nputs [f]",
+    "for {set i 0} {$i < 3} {incr i} {proc f {} {return v}\nputs [f]}",
+    "foreach x {1 2} {proc f {} {return e}\nputs [f]}",
+    // A procedure defined by another procedure's body, which is the shape
+    // `Tk_Init`'s last statement is made of.
+    "proc outer {} {proc inner {} {return in}\nreturn out}\nputs [catch {inner} m]\nputs $m\nputs [outer]\nputs [inner]",
+    "if {1} {proc f {} {error boom}}\nputs [catch {f} m]\nputs $m",
+    "if {1} {proc f {} {return early}}\nputs [f]",
+    // A body that will not parse is still a definition, and the failure waits
+    // for the call — the same rule a top-level definition follows.
+    "if {0} {proc f {} {puts \"unterminated}}\nputs done",
+    // The `args` tail is collected and quoted at run time here rather than by
+    // the call site, so the canonical list quoting is worth checking again on
+    // this path: a braced element, an empty one, an embedded space, a tab and a
+    // newline, and a double that has to reach its Tcl string form.
+    "if {1} {proc f args {puts \"<$args>\"}}\nf {x y} z\nf {} a\nf \"a b\" c\nf {a{b}c}",
+    "if {1} {proc f args {puts \"<$args>\"}}\nf {[foo]} {$x} {a;b}\nf \"x\\ty\" \"p\\nq\"\nf 1.50 [expr {3.0/2}]",
+    // A coroutine's body calling a procedure a conditional `proc` defined, and
+    // a conditional `proc` reached from inside a coroutine defining one the
+    // main context then calls. Both run on a VM of their own over the same
+    // chunk, which is what the run-time table's entry points are indexed
+    // against.
+    "proc gen {n} {for {set i 0} {$i < $n} {incr i} {yield [helper $i]}\nreturn done}\nif {1} {proc helper {x} {return v$x}}\ncoroutine c gen 3\nputs [c]\nputs [c]\nputs [c]",
+    "proc mk {} {proc made {x} {return m$x}\nreturn ok}\ncoroutine c mk\nputs [made 7]",
     // ── return ──
     "proc f {} {return}\nputs \"<[f]>\"",
     "proc f {} {return 7\nputs unreached}\nputs [f]",
@@ -292,14 +331,19 @@ fn an_uncaught_error_escapes_and_a_caught_one_does_not() {
 #[test]
 fn unsupported_procedure_constructs_are_refused() {
     for (src, expected) in [
-        // A nested `proc` defines its procedure only when reached.
+        // A `proc` away from the top level is no longer refused — see
+        // `a_proc_away_from_the_top_level_binds_its_name_when_it_runs` below,
+        // which pins what it does instead. What a *conditional* definition
+        // still may not do is take a built-in command's name, because the
+        // built-in lowering would go on winning at every call site: the same
+        // refusal the top-level form gets, from the same place.
         (
-            "if {1} {proc f {} {}}",
-            "\"proc\" is only supported at the top level",
+            "if {1} {proc set {a b} {}}",
+            "redefining the built-in command \"set\"",
         ),
         (
-            "puts [proc f {} {}]",
-            "\"proc\" is only supported at the top level",
+            "puts [proc while {a b} {}]",
+            "redefining the built-in command \"while\"",
         ),
         ("proc f {} {}\nproc f {} {}", "procedure \"f\" is redefined"),
         (
@@ -371,4 +415,139 @@ fn unsupported_procedure_constructs_are_refused() {
             .output,
         "one\n"
     );
+}
+
+/// The run-time table is the fallback, never the rule: a name the compiler can
+/// resolve keeps its direct `Op::Call`.
+///
+/// This is the half of the run-time-`proc` work that a differential run against
+/// tclsh cannot see, because both engines give the same answer either way. What
+/// it costs is the thing to pin: an `Op::Extended` in a loop body is what stops
+/// fusevm's tracing tier taking it (`is_trace_op_allowed_at` rejects
+/// `Op::Extended`), so a call that quietly became dynamic would show up as a
+/// benchmark regression and nowhere else. `tclrs --tiers
+/// bench/counted_loop_proc.tcl` is the measurement; this is the same check on
+/// every `cargo test`.
+#[test]
+fn a_name_the_compiler_resolves_keeps_its_direct_call() {
+    use tclrs::compiler::ext;
+    let dynamic = |src: &str| {
+        let chunk = tclrs::runtime::compile(src).expect("lowers");
+        let calls = chunk
+            .ops
+            .iter()
+            .filter(|op| matches!(op, fusevm::Op::Call(_, _)))
+            .count();
+        let dyn_calls = chunk
+            .ops
+            .iter()
+            .filter(|op| matches!(op, fusevm::Op::Extended(ext::DYN_CALL, _)))
+            .count();
+        let defines = chunk
+            .ops
+            .iter()
+            .filter(|op| matches!(op, fusevm::Op::Extended(ext::PROC_DEFINE, _)))
+            .count();
+        (calls, dyn_calls, defines)
+    };
+
+    // The benchmark whose trace eligibility the tiers report measures: one
+    // direct call, no run-time lookup, and the one registration every `proc`
+    // now makes.
+    //
+    // The registration count moved from 0 to 1 when procedures became callable
+    // across chunks: a chunk's own address book answers only inside that chunk,
+    // so a `proc` at a script's top level binds its name in the interpreter's
+    // run-time table as well, which is what lets a `source`d file, an `eval` or
+    // a Tk binding script call it. The op runs once, where the definition
+    // stands — never on a call path, which is what this test is really pinning.
+    // The `--tiers` report still says `traced=true` and `reaches native code
+    // true` for this file, because the loop body is unchanged: `Op::Call` is
+    // still the call, and the loop still contains no `Op::Extended`.
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/bench/counted_loop_proc.tcl"
+    ))
+    .expect("read the benchmark");
+    assert_eq!(dynamic(&src), (1, 0, 1), "the benchmark's lowering moved");
+
+    // A script whose procedures are all top-level pays nothing on a call: three
+    // direct calls and no lookup. One registration per definition is what makes
+    // two names reachable from another chunk — one per definition, not one per call.
+    assert_eq!(
+        dynamic("proc a {} {return 1}\nproc b {} {return [a]}\nputs [b][a]"),
+        (3, 0, 2)
+    );
+
+    // One conditional definition makes that name — and only that name —
+    // dynamic. `a` keeps its two direct calls; `b` has two lookups, one of them
+    // written above the definition. Both definitions register, as every `proc`
+    // does now.
+    assert_eq!(
+        dynamic("proc a {} {return 1}\nputs [b]\nif {1} {proc b {} {return [a]}}\nputs [b][a]"),
+        (2, 2, 2)
+    );
+
+    // A top-level definition that some conditional one also claims registers
+    // itself in the table as well, because every call to the name is a lookup
+    // now and the table has to be able to answer with this body too.
+    assert_eq!(
+        dynamic("proc f {} {return one}\nif {1} {proc f {} {return two}}\nputs [f]"),
+        (0, 1, 2)
+    );
+}
+
+/// `proc` away from a script's top level: the command exists once the defining
+/// code has **run**, and not before.
+///
+/// This is the assertion the two entries above used to make, repointed at what
+/// tclsh 9.0.4 actually does. The old refusal existed because this compiler
+/// resolves a command name while compiling, so a procedure defined in a branch
+/// that is never taken would have answered anyway; the run-time command table
+/// is what removed the reason for it, and this is the behaviour that replaced
+/// it. Every expectation below was measured against
+/// `/usr/local/bin/tclsh 9.0.4` first, and `PROGRAMS` compares the same shapes
+/// against it on every run.
+#[test]
+fn a_proc_away_from_the_top_level_binds_its_name_when_it_runs() {
+    // A taken branch defines it.
+    assert_eq!(
+        tclrs::eval("if {1} {proc f {} {return hit}}\nputs A[f]")
+            .expect("the definition ran")
+            .output,
+        "Ahit\n"
+    );
+    // An untaken one does not, and the call site says so at run time — the
+    // wording and the exit status tclsh gives, not a compile-time verdict on
+    // the script.
+    let err = tclrs::eval("if {0} {proc f {} {return hit}}\nputs C[f]")
+        .expect_err("the definition never ran");
+    assert!(err.contains("invalid command name \"f\""), "got {err:?}");
+    // So a `catch` around it traps, which is what makes the failure a run-time
+    // one rather than a refusal to compile.
+    assert_eq!(
+        tclrs::eval("puts [catch {if {0} {proc f {} {}}; f} m]\nputs $m")
+            .expect("the script itself is fine")
+            .output,
+        "1\ninvalid command name \"f\"\n"
+    );
+    // The definition is a command like any other: it runs inside a command
+    // substitution, and evaluates to the empty string there too.
+    assert_eq!(
+        tclrs::eval("puts [proc f {} {return hit}]|\nputs B[f]")
+            .expect("the definition ran")
+            .output,
+        "|\nBhit\n"
+    );
+    // The later definition wins, because it is the one that ran last.
+    assert_eq!(
+        tclrs::eval("proc f {} {return one}\nif {1} {proc f {} {return two}}\nputs [f]")
+            .expect("the second definition ran")
+            .output,
+        "two\n"
+    );
+    // The signature travels with the body: the argument count is checked when
+    // the call runs, in the usage wording tclsh reports.
+    let err = tclrs::eval("if {1} {proc f {a b} {}}\nf 1").expect_err("too few arguments");
+    assert!(err.contains("wrong # args: should be \"f a b\""), "{err:?}");
 }

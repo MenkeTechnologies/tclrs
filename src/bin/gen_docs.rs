@@ -20,10 +20,22 @@ use tclrs::names::{self, Entry};
 
 fn main() {
     let commands = names::commands();
-    let ensembles: Vec<Ensemble> = ["string", "array", "dict", "info"]
-        .iter()
-        .map(|name| Ensemble::probe(name))
-        .collect();
+    // Appended rather than sorted, so that adding one to this list adds a
+    // section to the page instead of reordering the ones already there.
+    let ensembles: Vec<Ensemble> = [
+        "string",
+        "array",
+        "dict",
+        "info",
+        "namespace",
+        "package",
+        "clock",
+        "file",
+        "encoding",
+    ]
+    .iter()
+    .map(|name| Ensemble::probe(name))
+    .collect();
     let conversions = conversions();
 
     let operator_count: usize = tclrs::expr::LEVELS.iter().map(|l| l.len()).sum();
@@ -67,7 +79,9 @@ fn main() {
             entry(prefix, e, e.name, None)
         })
         .collect::<String>();
-    let other_entries = entries("doc-expr-un", names::OTHER_OPERATORS, |e| e.name.to_string());
+    let other_entries = entries("doc-expr-un", names::OTHER_OPERATORS, |e| {
+        e.name.to_string()
+    });
     let operand_entries = entries("doc-expr-val", names::OPERANDS, |e| e.name.to_string());
     let class_entries = entries("doc-class", names::CLASS_CORPUS, |e| e.name.to_string());
     let modifier_entries = entries("doc-format-size", names::MODIFIER_CORPUS, |e| {
@@ -80,10 +94,7 @@ fn main() {
         .iter()
         .map(|e| {
             let conv = e.name.chars().nth(1).expect("a %x name");
-            let state = conversions
-                .iter()
-                .find(|(c, _)| *c == conv)
-                .map(|(_, s)| s);
+            let state = conversions.iter().find(|(c, _)| *c == conv).map(|(_, s)| s);
             entry("doc-format-conv", e, e.name, state)
         })
         .collect::<String>();
@@ -92,20 +103,40 @@ fn main() {
     let expr_count =
         names::BINARY_OPERATORS.len() + names::OTHER_OPERATORS.len() + names::OPERANDS.len();
     let format_count = names::CONVERSION_CORPUS.len() + names::MODIFIER_CORPUS.len();
-    let entry_total = count
-        + sub_total
-        + expr_count
-        + names::CLASS_CORPUS.len()
-        + format_count;
+    let entry_total = count + sub_total + expr_count + names::CLASS_CORPUS.len() + format_count;
 
     let index = chapter_index(&[
         ("ch-commands", "Commands", count),
-        ("ch-string", "The <code>string</code> ensemble", ensembles[0].subs.len()),
-        ("ch-array", "The <code>array</code> ensemble", ensembles[1].subs.len()),
-        ("ch-dict", "The <code>dict</code> ensemble", ensembles[2].subs.len()),
-        ("ch-info", "The <code>info</code> ensemble", ensembles[3].subs.len()),
-        ("ch-expr", "<code>expr</code> operators and operands", expr_count),
-        ("ch-classes", "<code>string is</code> classes", names::CLASS_CORPUS.len()),
+        (
+            "ch-string",
+            "The <code>string</code> ensemble",
+            ensembles[0].subs.len(),
+        ),
+        (
+            "ch-array",
+            "The <code>array</code> ensemble",
+            ensembles[1].subs.len(),
+        ),
+        (
+            "ch-dict",
+            "The <code>dict</code> ensemble",
+            ensembles[2].subs.len(),
+        ),
+        (
+            "ch-info",
+            "The <code>info</code> ensemble",
+            ensembles[3].subs.len(),
+        ),
+        (
+            "ch-expr",
+            "<code>expr</code> operators and operands",
+            expr_count,
+        ),
+        (
+            "ch-classes",
+            "<code>string is</code> classes",
+            names::CLASS_CORPUS.len(),
+        ),
         ("ch-format", "<code>format</code> conversions", format_count),
     ]);
 
@@ -442,12 +473,7 @@ impl Ensemble {
             .zip(self.subs.iter())
             .map(|(e, (_, state))| {
                 let heading = format!("{} {}", self.name, e.name);
-                entry(
-                    &format!("doc-{}", self.name),
-                    e,
-                    &heading,
-                    Some(state),
-                )
+                entry(&format!("doc-{}", self.name), e, &heading, Some(state))
             })
             .collect::<String>();
         format!(

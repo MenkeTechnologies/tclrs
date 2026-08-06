@@ -41,7 +41,7 @@ use std::sync::Arc;
 use fusevm::{Op, Value, VM};
 use regex::Regex;
 
-use crate::compiler::{ext as base_ext, CompileError, Compiler, Place};
+use crate::compiler::{ext as base_ext, CompileError, Compiler};
 use crate::parser::Word;
 use crate::runtime::{place_at, to_tcl_string, var_cell};
 
@@ -175,10 +175,7 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
     // the frame-slot bit at the bottom — so the operand count stays the arity.
     for word in vars {
         let name = c.var_name_of(word)?;
-        let encoded = match c.var_place(&name) {
-            Place::Slot(slot) => (i64::from(slot) << 1) | 1,
-            Place::Global(idx) => i64::from(idx) << 1,
-        };
+        let encoded = c.place_operand(&name);
         c.emit(Op::LoadInt(encoded), 1);
     }
 

@@ -131,7 +131,7 @@ fn method(out: &mut String) {
     );
     let _ = out.write_str(
         "Everything else is attempted, and anything attempted either matches or fails. A \
-         *feature* tclrs declines inside a command it does have — `{*}` expansion, a missing \
+         *feature* tclrs declines inside a command it does have — a missing \
          math function, an `lsort` option, an integer too wide for `i64` — counts as a \
          failure, not a skip. Those failures are also counted on their own below, so the \
          effect of the looser rule is visible rather than assumed.\n\n\
