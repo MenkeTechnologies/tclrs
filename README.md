@@ -396,6 +396,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Channels | `open`, `close`, `gets`, `read`, `flush`, `eof`, `seek`, `tell`, `fconfigure`, and `puts` to a channel; `stdin`, `stdout` and `stderr` |
 | Math functions | The whole of `mathfunc(n)` inside `expr`: `abs`, `acos`, `asin`, `atan`, `atan2`, `bool`, `ceil`, `cos`, `cosh`, `double`, `entier`, `exp`, `floor`, `fmod`, `hypot`, `int`, `isfinite`, `isinf`, `isnan`, `isnormal`, `isqrt`, `issubnormal`, `isunordered`, `log`, `log10`, `max`, `min`, `pow`, `rand`, `round`, `sin`, `sinh`, `sqrt`, `srand`, `tan`, `tanh`, `wide` |
 | Time | `clock` — `seconds`, `milliseconds`, `microseconds`, `clicks`, `format`, `scan` (with `-format`), `add`; `-gmt`, `-timezone` (a numeric offset or any zone with a `TZif` file) and the root locale |
+| Encodings | `encoding` — `convertfrom`, `convertto` (with `-profile tcl8` / `strict` / `replace` and `-failindex`), `dirs`, `names`, `profiles`, `system`, `user`; see [Encodings](#encodings) for which |
 | Filesystem | `file` — `atime`, `copy`, `delete`, `dirname`, `executable`, `exists`, `extension`, `home`, `isdirectory`, `isfile`, `join`, `mkdir`, `mtime`, `nativename`, `normalize`, `owned`, `pathtype`, `readable`, `readlink`, `rename`, `rootname`, `separator`, `size`, `split`, `tail`, `tildeexpand`, `type`, `writable`; `glob` with `-directory`, `-join`, `-nocomplain`, `-path`, `-tails` and `-types`; `pwd`; `cd` |
 
 Command substitution works on any of them.
@@ -598,6 +599,70 @@ initialisation script sets the library variable and is sourced.
 `tcl_libPath` and `auto_path` that Tcl's own `init.tcl` sets from C state this
 crate has no equivalent of.
 
+### Encodings
+
+`encoding convertfrom` and `encoding convertto` are table lookups, and the
+tables are the specification: a mapping one code point out produces output that
+looks exactly as plausible as the right output. So none of them is typed into
+this crate. Every table is a byte-for-byte copy of a `library/encoding/*.enc`
+file from the Tcl source release that `conformance/fetch-suite.sh` verifies
+against a pinned SHA-256, vendored into `src/encodings/` by
+`scripts/gen_encoding_tables.py`, and `src/cmd_encoding.rs` reads them with a
+port of the reader they were written for — `LoadTableEncoding`,
+`generic/tclEncoding.c`. `diff -r src/encodings conformance/vendor/tcl*/library/encoding`
+is the whole provenance check. There is no new dependency: the data is data, and
+the conversion is a port of `TableToUtfProc` and `TableFromUtfProc`.
+
+That covers every table encoding the release ships — the `iso8859-*` family, the
+`cp*` code pages, the `mac*` set, `koi8-*`, `ascii`, `ebcdic`, the
+`symbol`/`dingbats` fonts, and the double- and multi-byte CJK encodings
+(`big5`, `cp932`, `cp936`, `cp949`, `cp950`, `euc-cn`, `euc-jp`, `euc-kr`,
+`gb2312`, `gb2312-raw`, `gb12345`, `jis0208`, `jis0212`, `ksc5601`, `macJapan`,
+`shiftjis`, `cns11643`), including the prefix-byte machinery a double-byte
+encoding decodes through and the trailing reverse-mapping section four of the
+Japanese tables carry. The rest — `utf-8`, `cesu-8`, `utf-16`/`utf-16le`/
+`utf-16be`/`unicode`, `ucs-2`/`ucs-2le`/`ucs-2be` and
+`utf-32`/`utf-32le`/`utf-32be` — are ports of the corresponding procs.
+
+`encoding names` answers exactly the set that converts, sorted. It is *not*
+tclsh's list: tclsh answers in its hash table's order and includes the three
+escape-sequence encodings, which are state machines rather than tables and are
+refused here by name. A script can therefore trust the list — what it offers,
+it converts.
+
+The profiles are `tcl8`, `strict` and `replace`, with `strict` the default, and
+they are ported rather than approximated, down to the parts the manual page gets
+wrong. Two examples, both measured against tclsh 9.0.4:
+
+* `encoding(n)` says the `tcl8` profile maps an invalid byte to "its numerically
+  equivalent code point" outside utf-8, and gives `encoding convertfrom -profile
+  tcl8 ascii A\x80` as U+0041 U+0080. It is U+0041 U+20AC: tclsh reads a stray
+  byte as the cp1252 character of that number where cp1252 defines one, for the
+  table encodings as much as for utf-8.
+* the same page states that `strict` is the default and then shows `encoding
+  convertto iso8859-1 A\u0141` answering `A?`, which is what `tcl8` does. With
+  no `-profile` it raises `unexpected character at index 1: 'U+000141'`.
+
+`-failindex` and the error message do not report the same number for
+`convertto`: the variable gets a byte offset into the string's UTF-8 form and
+the message gets a character index. For `éé€` in `iso8859-1` they are 4 and 2.
+Both are reproduced.
+
+`fconfigure -encoding` takes the same set, through the same tables, and a
+character split across two reads is still one character — the channel holds an
+incomplete sequence until the rest arrives, which is what
+`TCL_CONVERT_MULTIBYTE` means. A channel's profile is `strict`, as tclsh's is,
+so a byte sequence it cannot decode or a character it cannot encode is `error
+reading "fileN": invalid or incomplete multibyte or wide character` rather than
+a substitution.
+
+Two answers differ deliberately. `encoding dirs` starts empty, because the
+tables are inside the binary and there is no directory to search — tclsh's
+initial value is where its own library was installed. And `identity` and
+`binary` are not encodings: measured, tclsh 9.0.4 answers `unknown encoding
+"identity"` for both, so this frontend does too rather than reviving a Tcl 8
+spelling.
+
 ---
 
 ## [0x05] WHAT IS REFUSED
@@ -638,7 +703,10 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `apply` of a lambda that is a value rather than written out, and a lambda naming a namespace other than `::` | `"apply" of a computed lambda is not supported: the body would be compiled as a chunk of its own, which cannot reach frame slots` |
 | `vwait` on more than one variable, and its `-timeout` / `-readable` / `-writable` / `-all` options | `"vwait" takes at most one variable name in this phase` |
 | `open \|command` — the pipeline form — and the POSIX list form of an access mode (`{WRONLY CREAT}`) | `opening a command pipeline is not implemented in this frontend; …` |
-| A channel encoding other than `utf-8` and `iso8859-1`; `fconfigure -blocking 0`; `fconfigure -eofchar` and `-profile` when set; half-closing a read-write channel | `encoding "shiftjis" is not implemented in this frontend; utf-8 and iso8859-1 are` |
+| A channel encoding `encoding names` does not list; `fconfigure -blocking 0`; `fconfigure -eofchar` and `-profile` when set; half-closing a read-write channel | `unknown encoding "iso2022-jp"` |
+| The escape-sequence encodings `iso2022`, `iso2022-jp` and `iso2022-kr`. These are state machines with a file format of their own, not tables, and they are absent from `encoding names` so a script can see that before it converts | `encoding: the escape-sequence encoding "iso2022-jp" is not supported yet; …` |
+| A decode whose result would be an unpaired surrogate, which only `-profile tcl8` produces. tclsh's strings can hold one and this frontend's cannot, so the code point is named rather than substituted | `encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+D800, which a string in this frontend cannot hold` |
+| A non-literal option *name* in `encoding convertfrom` / `convertto` (`encoding convertfrom $opt tcl8 …`). Which argument is an option is decided by their count, which is known while compiling; which option it is, is not | the word is refused where a literal is required |
 | Arbitrary-precision integers. An `i64` that overflows is an error, and so is the one integer division whose true quotient does not fit (`i64::MIN / -1`) and an integer *literal* or operand that does not fit at all (`expr {99999999999999999999 + 1}`) | `integer value too large to represent` |
 | Input nesting past `parser::MAX_NESTING_DEPTH` — 64_000 command substitutions or array indices deep, well past anything the reference interpreter survives | `too many nested substitutions (infinite loop?)` |
 | Ahead-of-time compilation of a script using `catch` or a coroutine | `ahead-of-time compilation of a script using "catch" is not supported: it needs the driver that only the interpreter has` |
@@ -1248,10 +1316,10 @@ The differential suites test what tclrs claims to do. `conformance/` measures th
 opposite: how much of *real Tcl* it does, by running the Tcl project's own test
 suite against it.
 
-**2248 of 5066 attempted cases pass — 44.4%.** Over every case the suite
-contains, including the ones that cannot be run here, that is 2248 of 69424.
-[`conformance/REPORT.md`](conformance/REPORT.md) has the breakdown behind the
-number: attempted, passed, failed and skipped per suite file, why each skipped
+**29023 of 48353 attempted cases pass — 60.0%.** Over every case the suite
+contains, including the ones that cannot be run here, that is 29023 of 69424 —
+41.8%. [`conformance/REPORT.md`](conformance/REPORT.md) has the breakdown behind
+the number: attempted, passed, failed and skipped per suite file, why each skipped
 case could not be run, and the failure causes ranked.
 
 Regenerate it:
@@ -1270,14 +1338,24 @@ byte for byte; the suite's own `-result` values are not consulted, because
 tclsh is the specification and comparing against what it actually does is
 stricter than comparing against what the suite says it should.
 
-The share fell as the tree grew, and that is the rule working rather than a
-regression. The previous report — taken before `proc`, the `string` ensemble,
-coroutines and `eval` landed — passed 1404 of 2941. Those commands existing is
-what moved 2,125 cases out of the skip column and into the attempted one, and a
-case that was previously skipped for a missing `proc` is now attempted against
-everything *else* it uses. Passes went 1404 → 2248; the denominator went 2941 →
-5066 faster. A number that only ever rises is a number measuring the wrong
-thing.
+Read the denominator with the numerator, always. A command landing moves cases
+out of the skip column and into the attempted one, so the share can fall while
+the tree gets better, and it has: an earlier report — taken before `proc`, the
+`string` ensemble, coroutines and `eval` — passed 1404 of 2941, or 47.7%, and
+the report after them passed more cases at a lower share. A number that only
+ever rises is measuring the wrong thing.
+
+`encoding` landing moved the number the other way, because it was the single
+largest blocker in the suite: it alone was the first command refused in 16,856
+cases. Before it, 12720 of 31524 attempted passed — 40.4% — with 37900 of the
+69424 extracted cases skipped, 19486 of those for a command tclrs did not have.
+After it, 29023 of 48353 pass — 60.0% — with 21071 skipped and 2657 of those for
+a missing command. So the denominator grew by 16,829 *and* the share rose 19.6
+points; `encoding` no longer appears in the blocking table at all, and the
+largest remaining entry is `binary` at 689 cases. The skip breakdown moved from
+19486 / 13663 / 4751 / 1 (missing command, unmet constraint, a command plain
+tclsh has not got, no reference outcome) to 2657 / 13663 / 4751 / 0 — the two
+middle rows are properties of the suite and this machine, and neither changed.
 
 ### The Tk suite
 
@@ -1323,8 +1401,19 @@ and the outputs compared byte for byte. The suites cover the twelve parse rules,
 word splitting character for character, whole programs, the list commands, the
 associative commands, the string ensemble, procedures and control flow,
 coroutines, the interpreter's state across evaluations, the binary's stdout /
-stderr / exit status in each of its input modes, and the ahead-of-time path
-against the interpreter.
+stderr / exit status in each of its input modes, transcoding, and the
+ahead-of-time path against the interpreter.
+
+[`tests/encoding_differential.rs`](tests/encoding_differential.rs) is the widest
+of them, because tables are what it is checking: two of its cases are sweeps
+that put every single byte through every encoding under every profile, in both
+directions and with `-failindex`, and every two-byte sequence through the
+encodings where the second byte decides the character. Both are generated in Tcl
+so that the two interpreters run identical text, and both compare line for line.
+The sweep that found the bugs during development was wider still — every
+two-byte sequence in all 92 encodings, 10.7 million comparisons — and it agreed
+byte for byte up to the point where tclsh could no longer write its own answer
+to a UTF-8 channel.
 
 Three suites drive the binary rather than the library:
 [`tests/lsp_session.rs`](tests/lsp_session.rs) and

@@ -2,7 +2,7 @@
 
 Reference interpreter: **tclsh 9.0.4**. Suite: `tcl9.0.4/tests` — the `tests/` directory of the matching Tcl source release, fetched and checksum-verified by `conformance/fetch-suite.sh`.
 
-**12720 of 31523 attempted cases pass — 40.4%.** Over every case the suite contains, including the ones that cannot be run here, that is 12720 of 69424 — 18.3%.
+**29023 of 48353 attempted cases pass — 60.0%.** Over every case the suite contains, including the ones that cannot be run here, that is 29023 of 69424 — 41.8%.
 
 ## How the number is produced
 
@@ -31,21 +31,20 @@ Three things about the extraction are worth stating plainly. First, suite files 
 | | Cases | Share |
 | --- | ---: | ---: |
 | Extracted from the suite | 69424 | 100% |
-| Skipped — cannot be run | 37901 | 54.6% |
-| Attempted | 31523 | 45.4% |
-| ⤷ passed | 12720 | 40.4% of attempted |
-| ⤷ failed | 18803 | 59.6% of attempted |
+| Skipped — cannot be run | 21071 | 30.4% |
+| Attempted | 48353 | 69.6% |
+| ⤷ passed | 29023 | 60.0% of attempted |
+| ⤷ failed | 19330 | 40.0% of attempted |
 
-Of the 18803 failures, 16394 are a feature tclrs documents as not built yet rather than a wrong answer. Counting those as skips instead would give 12720 of 15129 — 84.1% — and that looser number is stated here only so the choice of rule is visible. The headline above uses the strict rule.
+Of the 19330 failures, 16407 are a feature tclrs documents as not built yet rather than a wrong answer. Counting those as skips instead would give 29023 of 31946 — 90.9% — and that looser number is stated here only so the choice of rule is visible. The headline above uses the strict rule.
 
 ## Why cases were skipped
 
 | Reason | Cases |
 | --- | ---: |
-| tclrs has no such command | 19486 |
 | tcltest constraint not met | 13663 |
 | needs a command plain tclsh has not got | 4751 |
-| tclsh produced no reference outcome | 1 |
+| tclrs has no such command | 2657 |
 
 ### Commands tclrs does not have, by how many cases they block
 
@@ -53,11 +52,10 @@ A case is attributed to the first command tclrs refused, so a body using several
 
 | Command | Cases |
 | --- | ---: |
-| `encoding` | 16856 |
-| `binary` | 670 |
-| `interp` | 339 |
+| `binary` | 689 |
+| `interp` | 340 |
 | `trace` | 243 |
-| `scan` | 177 |
+| `scan` | 184 |
 | `oo::class` | 166 |
 | `socket` | 115 |
 | `subst` | 101 |
@@ -93,16 +91,17 @@ A case is attributed to the first command tclrs refused, so a body using several
 | `::tcl::mathop::le` | 9 |
 | `::tcl::mathop::lt` | 9 |
 | `auto_qualify` | 8 |
-| *51 further commands* | 124 |
+| `tcl::tm::path` | 8 |
+| *50 further commands* | 116 |
 
 ## Why cases failed
 
 | Cause | Cases | Share of failures | For example |
 | --- | ---: | ---: | --- |
-| tclrs raised an error, tclsh did not | 11110 | 59.1% | `append.test` append-4.19, `append.test` append-4.20, `append.test` append-7.1 |
-| both raised an error, messages differ | 6783 | 36.1% | `append.test` append-3.1, `append.test` append-3.2, `append.test` append-6.1 |
-| results differ | 798 | 4.2% | `append.test` append-3.4, `append.test` append-3.5, `append.test` append-3.6 |
-| tclsh raised an error, tclrs did not | 95 | 0.5% | `clock-ivm.test` clock-11.1.vm:0, `clock-ivm.test` clock-11.2.vm:0, `clock-ivm.test` clock-11.3.vm:0 |
+| tclrs raised an error, tclsh did not | 11463 | 59.3% | `append.test` append-4.19, `append.test` append-4.20, `append.test` append-7.1 |
+| both raised an error, messages differ | 6819 | 35.3% | `append.test` append-3.1, `append.test` append-3.2, `append.test` append-6.1 |
+| results differ | 898 | 4.6% | `append.test` append-3.4, `append.test` append-3.5, `append.test` append-3.6 |
+| tclsh raised an error, tclrs did not | 133 | 0.7% | `clock-ivm.test` clock-11.1.vm:0, `clock-ivm.test` clock-11.2.vm:0, `clock-ivm.test` clock-11.3.vm:0 |
 | tclrs was killed or crashed | 17 | 0.1% | `clock-ivm.test` clock-6.0.vm:0, `clock.test` clock-6.0.vm:1, `compile.test` compile-21.1 |
 
 Every failing case is written out in full — its program, the tclsh outcome and the tclrs outcome — to `conformance/work/failures.txt` by the same run that produced this table.
@@ -115,14 +114,16 @@ Error text with the quoted part elided and tclrs's trailing `(line N)` removed, 
 | --- | ---: |
 | clock: the locale "…" is not supported yet; only the root locale is built in | 13374 |
 | command name must be a literal in this phase | 1157 |
-| can't read "…": no such variable | 257 |
+| can't read "…": no such variable | 254 |
 | "…" outside of a procedure is not supported | 206 |
 | {*} argument expansion is not supported yet | 205 |
 | wrong # args: should be "…"; the options variable is not supported | 193 |
+| encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+D800, which a string in this frontend cannot hold | 181 |
 | clock scan: the free-form parser is not supported yet; use -format | 160 |
+| identical text apart from tclrs's trailing (line N) | 160 |
 | clock scan: -base is not supported yet | 157 |
 | expression must be a literal in this phase | 150 |
-| identical text apart from tclrs's trailing (line N) | 128 |
+| encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+DC00, which a string in this frontend cannot hold | 116 |
 | invalid bareword "…" | 110 |
 | info object is not supported yet | 74 |
 | clock scan: the format token "…" is not supported yet | 59 |
@@ -139,16 +140,14 @@ Error text with the quoted part elided and tclrs's trailing `(line N)` removed, 
 | lsearch -index is not supported yet | 35 |
 | lsort -dictionary is not supported yet | 35 |
 | lsort -index is not supported yet | 33 |
+| encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+DBFF, which a string in this frontend cannot hold | 32 |
 | "…" with no level is not supported: the default level 1 is the caller's frame, whose variables are slots this frontend cannot address by name | 31 |
-| array startsearch is not supported yet | 31 |
-| input string does not match supplied format | 30 |
-| lsearch -subindices is not supported yet | 29 |
 
 ## Command coverage
 
-Independently of the suite: of the 109 commands the reference interpreter defines in the global namespace, tclrs answers to 75 — 68.8%. A name counts as answered when tclrs does not refuse it with `invalid command name`.
+Independently of the suite: of the 109 commands the reference interpreter defines in the global namespace, tclrs answers to 76 — 69.7%. A name counts as answered when tclrs does not refuse it with `invalid command name`.
 
-Implemented: `after`, `append`, `apply`, `array`, `break`, `catch`, `cd`, `clock`, `close`, `concat`, `continue`, `coroutine`, `dict`, `eof`, `error`, `eval`, `expr`, `fconfigure`, `file`, `flush`, `for`, `foreach`, `format`, `gets`, `glob`, `global`, `if`, `incr`, `info`, `join`, `lappend`, `lassign`, `ledit`, `lindex`, `linsert`, `list`, `llength`, `lmap`, `lpop`, `lrange`, `lremove`, `lrepeat`, `lreplace`, `lreverse`, `lsearch`, `lseq`, `lset`, `lsort`, `namespace`, `open`, `package`, `proc`, `puts`, `pwd`, `read`, `regexp`, `regsub`, `rename`, `return`, `seek`, `set`, `source`, `split`, `string`, `switch`, `tell`, `unset`, `update`, `uplevel`, `upvar`, `variable`, `vwait`, `while`, `yield`, `yieldto`
+Implemented: `after`, `append`, `apply`, `array`, `break`, `catch`, `cd`, `clock`, `close`, `concat`, `continue`, `coroutine`, `dict`, `encoding`, `eof`, `error`, `eval`, `expr`, `fconfigure`, `file`, `flush`, `for`, `foreach`, `format`, `gets`, `glob`, `global`, `if`, `incr`, `info`, `join`, `lappend`, `lassign`, `ledit`, `lindex`, `linsert`, `list`, `llength`, `lmap`, `lpop`, `lrange`, `lremove`, `lrepeat`, `lreplace`, `lreverse`, `lsearch`, `lseq`, `lset`, `lsort`, `namespace`, `open`, `package`, `proc`, `puts`, `pwd`, `read`, `regexp`, `regsub`, `rename`, `return`, `seek`, `set`, `source`, `split`, `string`, `switch`, `tell`, `unset`, `update`, `uplevel`, `upvar`, `variable`, `vwait`, `while`, `yield`, `yieldto`
 
 ## Per file
 
@@ -168,11 +167,11 @@ Implemented: `after`, `append`, `apply`, `array`, `break`, `catch`, `cd`, `clock
 | `binary.test` | 750 | 748 | 2 | 0 | 2 | 0.0% |
 | `brodnik.test` | 422 | 422 | 0 | 0 | 0 | — |
 | `chan.test` | 42 | 40 | 2 | 2 | 0 | 100.0% |
-| `chanio.test` | 779 | 439 | 340 | 313 | 27 | 92.1% |
+| `chanio.test` | 779 | 438 | 341 | 314 | 27 | 92.1% |
 | `clock-ivm.test` | 8744 | 64 | 8680 | 1448 | 7232 | 16.7% |
 | `clock-no-tzdata.test` | 0 | 0 | 0 | 0 | 0 | — |
 | `clock.test` | 8744 | 76 | 8668 | 1448 | 7220 | 16.7% |
-| `cmdAH.test` | 17001 | 16889 | 112 | 52 | 60 | 46.4% |
+| `cmdAH.test` | 17001 | 206 | 16795 | 16243 | 552 | 96.7% |
 | `cmdIL.test` | 168 | 8 | 160 | 56 | 104 | 35.0% |
 | `cmdInfo.test` | 12 | 12 | 0 | 0 | 0 | — |
 | `cmdMZ.test` | 97 | 28 | 69 | 29 | 40 | 42.0% |
@@ -185,7 +184,7 @@ Implemented: `after`, `append`, `apply`, `array`, `break`, `catch`, `cd`, `clock
 | `dcall.test` | 6 | 6 | 0 | 0 | 0 | — |
 | `dict.test` | 373 | 22 | 351 | 106 | 245 | 30.2% |
 | `dstring.test` | 46 | 46 | 0 | 0 | 0 | — |
-| `encoding.test` | 232 | 216 | 16 | 4 | 12 | 25.0% |
+| `encoding.test` | 232 | 71 | 161 | 114 | 47 | 70.8% |
 | `env.test` | 32 | 29 | 3 | 0 | 3 | 0.0% |
 | `error.test` | 317 | 102 | 215 | 11 | 204 | 5.1% |
 | `eval.test` | 12 | 0 | 12 | 11 | 1 | 91.7% |
@@ -219,7 +218,7 @@ Implemented: `after`, `append`, `apply`, `array`, `break`, `catch`, `cd`, `clock
 | `init.test` | 10 | 10 | 0 | 0 | 0 | — |
 | `interp.test` | 355 | 297 | 58 | 0 | 58 | 0.0% |
 | `io.test` | 884 | 481 | 403 | 372 | 31 | 92.3% |
-| `ioCmd.test` | 377 | 246 | 131 | 53 | 78 | 40.5% |
+| `ioCmd.test` | 377 | 246 | 131 | 54 | 77 | 41.2% |
 | `ioTrans.test` | 106 | 104 | 2 | 0 | 2 | 0.0% |
 | `iogt.test` | 17 | 17 | 0 | 0 | 0 | — |
 | `join.test` | 10 | 0 | 10 | 7 | 3 | 70.0% |
@@ -269,7 +268,7 @@ Implemented: `after`, `append`, `apply`, `array`, `break`, `catch`, `cd`, `clock
 | `process.test` | 18 | 18 | 0 | 0 | 0 | — |
 | `pwd.test` | 3 | 0 | 3 | 2 | 1 | 66.7% |
 | `reg.test` | 1141 | 1107 | 34 | 21 | 13 | 61.8% |
-| `regexp.test` | 257 | 7 | 250 | 218 | 32 | 87.2% |
+| `regexp.test` | 257 | 6 | 251 | 218 | 33 | 86.9% |
 | `regexpComp.test` | 179 | 150 | 29 | 26 | 3 | 89.7% |
 | `registry.test` | 125 | 125 | 0 | 0 | 0 | — |
 | `rename.test` | 19 | 9 | 10 | 5 | 5 | 50.0% |

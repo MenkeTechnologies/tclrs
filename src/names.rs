@@ -29,6 +29,7 @@ pub fn commands() -> Vec<&'static str> {
         .chain(crate::regexp::COMMANDS.iter().copied())
         .chain(cmd_clock::COMMANDS.iter().copied())
         .chain(cmd_file::COMMANDS.iter().copied())
+        .chain(crate::cmd_encoding::COMMANDS.iter().copied())
         .collect();
     all.sort_unstable();
     all.dedup();
@@ -118,6 +119,11 @@ pub const CORPUS: &[Entry] = &[
         name: "dict",
         synopsis: "dict subcommand ?arg ...?",
         summary: "The dict ensemble, over a value: a dict is a list of alternating keys and values, so it can be passed and printed like any string.",
+    },
+    Entry {
+        name: "encoding",
+        synopsis: "encoding subcommand ?arg ...?",
+        summary: "The transcoding ensemble: convert between a byte string and a string, and report which encodings and error profiles exist.",
     },
     Entry {
         name: "eof",
@@ -450,6 +456,7 @@ pub fn subcommands(command: &str) -> &'static [&'static str] {
         "package" => crate::cmd_package::SUBCOMMANDS,
         "clock" => cmd_clock::SUBCOMMANDS,
         "file" => cmd_file::SUBCOMMANDS,
+        "encoding" => crate::cmd_encoding::SUBCOMMANDS,
         _ => &[],
     }
 }
@@ -469,12 +476,52 @@ pub fn subcommand_corpus(command: &str) -> &'static [Entry] {
         "dict" => DICT_CORPUS,
         "clock" => CLOCK_CORPUS,
         "file" => FILE_CORPUS,
+        "encoding" => ENCODING_CORPUS,
         "info" => INFO_CORPUS,
         "namespace" => NAMESPACE_CORPUS,
         "package" => PACKAGE_CORPUS,
         _ => &[],
     }
 }
+
+/// The `encoding` subcommands, in the order [`subcommands`] lists them.
+const ENCODING_CORPUS: &[Entry] = &[
+    Entry {
+        name: "convertfrom",
+        synopsis: "encoding convertfrom ?-profile profile? ?-failindex var? encoding data",
+        summary: "A byte string in some encoding, as a string. The profile decides what an invalid sequence becomes; strict is the default.",
+    },
+    Entry {
+        name: "convertto",
+        synopsis: "encoding convertto ?-profile profile? ?-failindex var? encoding data",
+        summary: "A string as a byte string in some encoding. The profile decides what an unrepresentable character becomes.",
+    },
+    Entry {
+        name: "dirs",
+        synopsis: "encoding dirs ?dirList?",
+        summary: "The encoding search path. Starts empty here: the tables are inside the binary, so there is no directory to search.",
+    },
+    Entry {
+        name: "names",
+        synopsis: "encoding names",
+        summary: "Every encoding this frontend can convert with, sorted. What it lists, it converts.",
+    },
+    Entry {
+        name: "profiles",
+        synopsis: "encoding profiles",
+        summary: "The error profiles: replace, strict and tcl8.",
+    },
+    Entry {
+        name: "system",
+        synopsis: "encoding system ?encoding?",
+        summary: "The encoding used for system calls, utf-8 unless it is set to another.",
+    },
+    Entry {
+        name: "user",
+        synopsis: "encoding user",
+        summary: "The encoding the user prefers, which off Windows is the system encoding.",
+    },
+];
 
 /// The `clock` subcommands, in the order [`subcommands`] lists them.
 const CLOCK_CORPUS: &[Entry] = &[

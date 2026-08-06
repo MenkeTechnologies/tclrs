@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. The 76 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. The 77 commands the current tclrs build compiles, their ensembles, and the expr operator ladder, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -72,7 +72,7 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">76</div>
+            <div class="stat-val">77</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
@@ -106,6 +106,7 @@
         <tr><td><code>continue</code></td><td><code>continue</code></td><td>Begin the innermost loop's next iteration; in a `for`, its step still runs first.</td></tr>
         <tr><td><code>coroutine</code></td><td><code>coroutine name cmd ?arg ...?</code></td><td>Create a coroutine context — a second VM over the same chunk — running one of the script's procedures, and enter it.</td></tr>
         <tr><td><code>dict</code></td><td><code>dict subcommand ?arg ...?</code></td><td>The dict ensemble, over a value: a dict is a list of alternating keys and values, so it can be passed and printed like any string.</td></tr>
+        <tr><td><code>encoding</code></td><td><code>encoding subcommand ?arg ...?</code></td><td>The transcoding ensemble: convert between a byte string and a string, and report which encodings and error profiles exist.</td></tr>
         <tr><td><code>eof</code></td><td><code>eof channel</code></td><td>Whether the channel's device reported end of file and nothing decoded is still buffered.</td></tr>
         <tr><td><code>error</code></td><td><code>error message</code></td><td>Raise an error carrying the message.</td></tr>
         <tr><td><code>eval</code></td><td><code>eval arg ?arg ...?</code></td><td>Concatenate the arguments and run the result as a script against the interpreter's own variables. The chunk is cached by source text.</td></tr>
