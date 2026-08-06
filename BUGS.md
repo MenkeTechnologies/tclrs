@@ -228,10 +228,34 @@ approximated, and nothing is silently mis-run.
   `stderr`. A file channel's name is `file` followed by its descriptor number,
   as `unix/tclUnixChan.c:1845` builds it. `-translation` takes `auto`, `binary`,
   `cr`, `lf`, `crlf` and `platform` on each side independently; `-encoding`
-  takes `utf-8` and `iso8859-1`; `-buffering` takes `full`, `line` and `none`.
+  takes every name `encoding names` lists, through the tables in
+  `src/cmd_encoding.rs`, holding an incomplete multi-byte sequence until the
+  rest of it arrives; `-buffering` takes `full`, `line` and `none`.
   The C side is `src/tk/channel.rs`: thirty-seven `TclStubs` slots including
   `Tcl_CreateChannel`, which takes a `Tcl_ChannelType` — Tk's own table of
   driver procs — and calls into it thereafter.
+- **Transcoding.** The `encoding` ensemble, whole: `convertfrom`, `convertto`,
+  `dirs`, `names`, `profiles`, `system`, `user`, with `-profile` (`tcl8`,
+  `strict`, `replace` — `strict` is the default, as tclsh 9.0.4's is) and
+  `-failindex` (`src/cmd_encoding.rs`). None of the tables is typed here: each is
+  a byte-for-byte copy of a `library/encoding/*.enc` file from the
+  checksum-verified source release, vendored into `src/encodings/` by
+  `scripts/gen_encoding_tables.py`, and read by a port of `LoadTableEncoding`
+  (`generic/tclEncoding.c`) — so `diff -r src/encodings
+  conformance/vendor/tcl*/library/encoding` is the whole provenance check, and
+  there is no new dependency. `TableToUtfProc` and `TableFromUtfProc` are ported
+  with them, which is what makes the double- and multi-byte CJK encodings
+  (`big5`, `cp932`, `cp936`, `cp949`, `cp950`, the `euc-*` set, `gb2312`,
+  `gb12345`, `jis0208`, `jis0212`, `ksc5601`, `macJapan`, `shiftjis`,
+  `cns11643`) work through the same prefix-byte machinery rather than an
+  approximation of it, along with the symbol-font page rule and the trailing
+  reverse-mapping section four of the Japanese tables carry. `utf-8`, `cesu-8`,
+  the `utf-16`/`unicode` family, `ucs-2` and `utf-32` are ports of
+  `UtfToUtfProc`, `Utf16ToUtfProc`, `UtfToUtf16Proc`, `UtfToUcs2Proc`,
+  `Utf32ToUtfProc` and `UtfToUtf32Proc`. `tests/encoding_differential.rs` puts
+  every single byte through every encoding under every profile, and every
+  two-byte sequence through the encodings where the second byte decides the
+  character, and compares with tclsh line for line.
 - **The rest of the toolchain.** `--disasm`, `--dump-tokens` and `--dump-ast`
   print the bytecode, the lexical output and the parse tree; the zsh completion
   is `completions/_tclrs`; the manual pages are `man/man1/tclrs.1` and the
@@ -293,11 +317,29 @@ approximated, and nothing is silently mis-run.
   accepted and ignored: a channel that reports itself non-blocking and then
   blocks is worse than one that says it cannot. Background flushing and the
   `BG_FLUSH_SCHEDULED` machinery go with it.
-- **Channel encodings beyond `utf-8` and `iso8859-1`,** which are what the
-  channel default and `-translation binary` need. `Tcl_GetEncoding`'s table of
-  the rest is not ported and a name outside the two is refused by name.
-  `fconfigure -eofchar` and `-profile` are reported at their defaults and
-  refused when set.
+- **`fconfigure -eofchar` and `-profile`,** which are reported at their defaults
+  and refused when set. `-profile strict` is the default a channel reports and
+  the one the encodings in `src/cmd_encoding.rs` are used at, so a byte sequence
+  a channel cannot decode is an error rather than a substitution; the `utf-8` and
+  `iso8859-1` arms of `src/cmd_channel.rs` predate that and still substitute.
+- **The escape-sequence encodings `iso2022`, `iso2022-jp` and `iso2022-kr`.**
+  These are not tables but state machines, with a second `.enc` file format of
+  their own (`LoadEscapeEncoding`) and conversion procs to match. They are
+  refused by name and are absent from `encoding names`, so a script can see
+  before it converts that they are not there — an approximation of a stateful
+  encoding is the kind of wrong answer a test suite does not reach.
+- **A decode whose result would be an unpaired surrogate.** Only `-profile tcl8`
+  produces one: `encoding convertfrom -profile tcl8 utf-8 \xED\xA0\x80` is
+  U+D800 in tclsh. A `String` in this frontend cannot hold a surrogate, so the
+  conversion stops with a message naming the code point rather than substituting
+  something that would look like success. The same input under `strict` and
+  `replace` is exact, since neither profile can produce one.
+- **A non-literal option name in `encoding convertfrom` / `convertto`.** Which
+  argument is an option, which is its value and which two are the encoding and
+  the data is decided by the argument *count*, which is known while compiling;
+  *which* option a word names is not, so `encoding convertfrom $opt tcl8 utf-8 x`
+  is refused where a literal is required. The option's *value*, the encoding and
+  the data may all be computed.
 - **Half-closing a read-write channel.** `close $chan read` on a channel with
   both sides open needs a driver whose `close2Proc` honours `TCL_CLOSE_READ`
   (`generic/tcl.h:1369-1370`), and no device here has one — tclsh's own file
@@ -404,8 +446,8 @@ approximated, and nothing is silently mis-run.
 - **`uplevel` to a level that is a procedure activation, and `upvar` at any
   level but `#0`.** See the entry under "What the differential fuzzer cannot
   reach" below for what that costs and what the two real fixes are.
-- **Every command outside those above.** `encoding`, `binary`, `interp`,
-  `socket`, `exec`, `trace`, … An unknown command name is `invalid command name
+- **Every command outside those above.** `binary`, `interp`, `socket`, `exec`,
+  `trace`, … An unknown command name is `invalid command name
   "…"`, raised when the command runs — `puts [catch {nosuchcmd} m]` is `1` —
   because the compiler lowers that refusal as code rather than deciding it (see
   `Compiler::defer`).
@@ -512,9 +554,33 @@ approximated, and nothing is silently mis-run.
 
 ## Divergences from tclsh where behavior *is* implemented
 
-Four of these are the event loop's and are not fuzzer findings; they are listed
-first because each is a deliberate decision with the measurement behind it.
+The first few are not fuzzer findings — four belong to the event loop and four to
+`encoding` — and they are listed first because each is a deliberate decision with
+the measurement behind it.
 
+- **`encoding names` answers what actually converts, not tclsh's list.** tclsh
+  answers in the order of its own hash table and includes the three escape-
+  sequence encodings it can load; this one is sorted and omits them, because they
+  are refused. That makes the list something a script can act on — every name it
+  offers converts, which `names_lists_only_what_converts` in
+  `tests/encoding_differential.rs` asserts one name at a time — and it is the one
+  answer in the ensemble the differential harness deliberately does not compare.
+- **`encoding dirs` starts empty.** tclsh's initial value is the directory its
+  own library was installed into, because that is where it looks for a `.enc`
+  file. The tables here are inside the binary and no file is ever read, so there
+  is no search path to report; a list set through the command comes back from it,
+  which is the part that is compared.
+- **`encoding system` and `encoding dirs` are process state, not interpreter
+  state.** Two `tclrs::eval` calls in one process share what the first set, where
+  two tclsh processes would each start from the platform's answer. Same shape as
+  the channel table, which is also per process.
+- **A name's case matters here and does not always matter in tclsh.** `encoding
+  convertfrom ISO8859-1 …` works under the tclsh on this machine and `UTF-8` does
+  not: the first is loaded from `iso8859-1.enc` through a case-insensitive
+  filesystem and the second is a built-in matched exactly in a hash table. The
+  case-insensitivity is macOS's, not Tcl's — the same tclsh on a case-sensitive
+  filesystem refuses both — so this frontend matches names exactly, which is what
+  tclsh does wherever the filesystem is not answering for it.
 - **`vwait` notices a write by comparing values, not by tracing them.** Tcl puts
   a write trace on the variable (`Tcl_TraceVar2`, `generic/tclEvent.c:1604`).
   There is no variable trace here, so `vwait` records what the variable held when
@@ -1197,6 +1263,18 @@ A fourth was not in the list above, because nothing had found it yet:
 
 ## Defects in the reference implementation
 
+- **tclsh 9.0.4 reads one byte past its input to describe a `cesu-8` decoding
+  error.** When a `cesu-8` decode ends on an unpaired high surrogate under
+  `-profile strict`, `UtfToUtfProc` reports a failure at an index equal to the
+  input's *length* — it does not rewind — and `Tcl_ExternalToUtfDStringEx` then
+  formats `srcStart[nBytesProcessed]`, which is one past the end of the byte
+  array. The value is whatever follows in the heap: `encoding convertfrom
+  -profile strict cesu-8 \xED\xA0\x80` says `'\x00'` in a small script and said
+  `'\xED'` in 699 of 700 cases inside a sweep, and `'\x0E'` in the remaining
+  one. tclrs reports `'\x00'`, the answer that does not depend on the heap. The
+  `-failindex` value for the same input is 3 in both, so only the message
+  differs, and no test asserts tclsh's side of it because there is nothing
+  stable to assert.
 - **`lsearch -start` on an empty list crashes tclsh 9.0.4.** A script whose only
   line is `puts [lsearch -start -1 {} e1]` exits with SIGSEGV: a negative index
   against an empty list resolves to the most negative `Tcl_Size`, and the scan
