@@ -1103,6 +1103,55 @@ impl Registry {
     }
 }
 
+/// `rename oldName newName`, when it runs.
+///
+/// The registry records that the old name is gone and that the new one names what
+/// it named, which is what the `namespace` queries answer from. The run-time
+/// command table has to follow, because that is what a call *resolves* through: a
+/// procedure registered there under the old name would keep answering to it, and
+/// in tclsh 9.0.4 `proc f {} {}; rename f g; f` is `invalid command name "f"`
+/// (measured). A call written after the rename reaches the body through the new
+/// name — the compiler records that as a second name for the procedure — and one
+/// written before it reaches it too, which BUGS.md records.
+fn rename(
+    state: &mut crate::runtime::State,
+    here: &str,
+    args: &[String],
+) -> Result<String, TclError> {
+    let old = resolve(here, &args[0]);
+    let Some(entry) = state.ns.commands.remove(&old) else {
+        return Err(TclError::plain(format!(
+            "can't rename \"{}\": command doesn't exist",
+            args[0]
+        )));
+    };
+    let defined = state.commands.remove(store_key(&old));
+    state.ns.gone.insert(old);
+    if args[1].is_empty() {
+        return Ok(String::new());
+    }
+    let new = resolve(here, &args[1]);
+    if state.ns.commands.contains_key(&new) {
+        return Err(TclError::plain(format!(
+            "can't rename to \"{}\": command already exists",
+            args[1]
+        )));
+    }
+    let ns = parent_of(&new);
+    if !ns.is_empty() && !state.ns.exists(&ns) {
+        return Err(TclError::plain(format!(
+            "can't rename to \"{}\": unknown namespace",
+            args[1]
+        )));
+    }
+    state.ns.gone.remove(&new);
+    if let Some(defined) = defined {
+        state.commands.insert(store_key(&new).to_string(), defined);
+    }
+    state.ns.commands.insert(new, entry);
+    Ok(String::new())
+}
+
 fn run(
     interp: &crate::runtime::Shared,
     sub: &str,
@@ -1121,6 +1170,12 @@ fn run(
     if sub == "which" {
         return which(&state, here, args);
     }
+    // `rename` moves an entry in the run-time command table as well as in the
+    // registry, so it is answered while both halves of the interpreter are
+    // reachable rather than through the registry alone.
+    if sub == "\u{0}rename" {
+        return rename(&mut state, here, args);
+    }
     let reg = &mut state.ns;
     match sub {
         "\u{0}create" => {
@@ -1129,36 +1184,6 @@ fn run(
         }
         "\u{0}define" => {
             reg.define(&args[0]);
-            Ok(String::new())
-        }
-        "\u{0}rename" => {
-            let old = resolve(here, &args[0]);
-            let Some(entry) = reg.commands.remove(&old) else {
-                return Err(TclError::plain(format!(
-                    "can't rename \"{}\": command doesn't exist",
-                    args[0]
-                )));
-            };
-            reg.gone.insert(old);
-            if args[1].is_empty() {
-                return Ok(String::new());
-            }
-            let new = resolve(here, &args[1]);
-            if reg.commands.contains_key(&new) {
-                return Err(TclError::plain(format!(
-                    "can't rename to \"{}\": command already exists",
-                    args[1]
-                )));
-            }
-            let ns = parent_of(&new);
-            if !ns.is_empty() && !reg.exists(&ns) {
-                return Err(TclError::plain(format!(
-                    "can't rename to \"{}\": unknown namespace",
-                    args[1]
-                )));
-            }
-            reg.gone.remove(&new);
-            reg.commands.insert(new, entry);
             Ok(String::new())
         }
         "qualifiers" => Ok(qualifiers(&args[0]).to_string()),
