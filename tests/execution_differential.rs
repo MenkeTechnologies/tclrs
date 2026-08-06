@@ -214,12 +214,16 @@ fn unsupported_constructs_are_refused() {
         // `interp` is chosen because a second interpreter is not on any current
         // branch: `tclrs::Interp` is created by the host, never by a script.
         ("interp create i", "invalid command name \"interp\""),
-        // `uplevel` exists now, and refuses a level it cannot reach. This is
-        // not the canary above: it is a live command reporting that the target
-        // level is a procedure's frame slots.
+        // `uplevel` exists now, and used to refuse a level it could not reach —
+        // `proc outer {} {inner}` / `proc inner {} {uplevel 1 {set x 1}}` was
+        // `"uplevel" to level 1 is not supported` here. It is an answer since the
+        // slot-name table landed (`src/cmd_scope.rs`), byte-compared against
+        // tclsh in `tests/event_differential.rs`, so the entry moved to what is
+        // left of the same wall: a *new* variable in the target frame, which has
+        // no slot because the procedure running there never names one.
         (
-            "proc outer {} {inner}\nproc inner {} {uplevel 1 {set x 1}}\nouter",
-            "\"uplevel\" to level 1 is not supported",
+            "proc outer {} {inner}\nproc inner {} {uplevel 1 {set brandnew 1}}\nouter",
+            "which is not supported",
         ),
         (
             "array startsearch a",
