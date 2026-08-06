@@ -477,13 +477,14 @@ mod tests {
     /// answer, not full Tcl's.
     ///
     /// The construct here only has to be *something still refused*: it was
-    /// `string wordend` until that was implemented, and `{*}{a b}` until
-    /// argument expansion landed. Whoever implements an array element as a
-    /// `foreach` variable should swap in whatever is refused then rather than
-    /// delete the test.
+    /// `string wordend` until that was implemented, `{*}{a b}` until argument
+    /// expansion landed, and an array element as a `foreach` variable until
+    /// `Compiler::elem_store` landed. Whoever implements `dict set` into an
+    /// array element should swap in whatever is refused then rather than delete
+    /// the test.
     #[test]
     fn a_refused_construct_is_reported_on_its_line() {
-        let found = diagnostics("set x 1\nforeach {a(1)} {x y} {}\n");
+        let found = diagnostics("set x 1\ndict set a(1) k v\n");
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].message.contains("not supported"), "{found:?}");
         assert_eq!(found[0].range.start.line, 1);

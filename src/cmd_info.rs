@@ -306,10 +306,7 @@ fn cmd_exists(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     };
     match crate::assoc::target_of(name_w) {
         Some(Target::Scalar(name)) => {
-            let place = match c.var_place(&name) {
-                Place::Global(idx) => i64::from(idx),
-                Place::Slot(slot) => -i64::from(slot) - 1,
-            };
+            let place = c.var_place(&name).encode();
             c.emit(Op::LoadInt(place), 1);
             c.emit(Op::Extended(ext::INFO_EXISTS, 0), 0);
             Ok(())
@@ -425,10 +422,7 @@ fn place_list(c: &mut Compiler, kind: u8, candidates: &[String]) -> String {
                 // the `vars` arm above.
                 return ALWAYS.to_string();
             }
-            match c.var_place(name) {
-                Place::Slot(slot) => (-i64::from(slot) - 1).to_string(),
-                Place::Global(idx) => i64::from(idx).to_string(),
-            }
+            c.var_place(name).encode().to_string()
         })
         .collect();
     crate::list::join(&places)
@@ -452,11 +446,15 @@ fn declared_names(c: &Compiler) -> std::collections::HashSet<String> {
         .iter()
         .cloned()
         .chain(scope.aliases.keys().cloned())
+        .chain(scope.links.keys().cloned())
         .collect()
 }
 
 /// Every name the procedure body being compiled can see: its locals, and the
-/// names `global`, `variable` and `upvar #0` bound into its frame.
+/// names `global`, `variable` and `upvar` bound into its frame — the last of
+/// those whether the link was made while the script was read (`aliases`) or when
+/// the command ran (`links`), since either way the name is a frame entry from the
+/// declaration on.
 fn visible_names(c: &Compiler) -> Vec<String> {
     let Some(scope) = c.scope.as_ref() else {
         return Vec::new();
@@ -464,6 +462,7 @@ fn visible_names(c: &Compiler) -> Vec<String> {
     let mut names = local_names(c);
     names.extend(scope.globals.iter().cloned());
     names.extend(scope.aliases.keys().cloned());
+    names.extend(scope.links.keys().cloned());
     names.sort();
     names.dedup();
     names

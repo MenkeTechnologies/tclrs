@@ -614,16 +614,21 @@ impl Compiler {
         self.var_place_operand(name)
     }
 
+    /// Where an array variable lives, as a [`Place`], recording the name as an
+    /// array the way [`Compiler::array_place`] does. For the ops that want the
+    /// place's two halves separately rather than as one integer.
+    pub(crate) fn array_place_of(&mut self, name: &str) -> Place {
+        self.note_array(name);
+        self.var_place(name)
+    }
+
     /// The same encoding, without recording the name as an array.
     ///
     /// `dict set` and the scalar guards need a variable's place to read it
     /// without refusing an unset one, and neither makes the name an array —
     /// noting it would make every other mention of it emit a guard.
     fn var_place_operand(&mut self, name: &str) -> i64 {
-        match self.var_place(name) {
-            Place::Global(idx) => i64::from(idx),
-            Place::Slot(slot) => -i64::from(slot) - 1,
-        }
+        self.var_place(name).encode()
     }
 
     /// Read a scalar variable. The guard is emitted only for names the script
@@ -667,12 +672,79 @@ impl Compiler {
 
     /// `$a(i)`.
     pub(crate) fn elem_get(&mut self, name: &str, index: &[Part]) -> Result<(), CompileError> {
+        self.emit_elem_get(name, index, false)
+    }
+
+    /// The same read, answering with the empty string where `$a(i)` would refuse.
+    ///
+    /// `lappend a(i) x` and `append a(i) x` on an element that does not exist yet
+    /// create it, exactly as they do for a scalar, so the read they are built out
+    /// of has to tolerate absence. A variable that exists and is *not* an array
+    /// is still refused: that is a different answer, and tclsh gives it.
+    pub(crate) fn elem_get_tolerant(
+        &mut self,
+        name: &str,
+        index: &[Part],
+    ) -> Result<(), CompileError> {
+        self.emit_elem_get(name, index, true)
+    }
+
+    fn emit_elem_get(
+        &mut self,
+        name: &str,
+        index: &[Part],
+        tolerant: bool,
+    ) -> Result<(), CompileError> {
         let place = self.array_place(name);
         self.push_str(name);
         self.index_value(index)?;
         self.emit(Op::LoadInt(place), 1);
-        self.emit(Op::Extended(ext::ELEM_GET, 0), -2);
+        self.emit(Op::Extended(ext::ELEM_GET, u8::from(tolerant)), -2);
         Ok(())
+    }
+
+    /// Store the value already on the stack into `a(i)`, leaving what was
+    /// stored — the same result `set a(i) v` yields.
+    ///
+    /// The operands [`ext::ELEM_SET`] wants sit *under* the value, and the value
+    /// is already on top, so each is pushed and swapped into place. That is what
+    /// lets an element be the variable of a command whose value is computed
+    /// before the variable is known — `lappend a(i) x`, `lassign … a(i)`, a
+    /// `foreach` variable — without a second op that only differs in operand
+    /// order.
+    pub(crate) fn elem_store(&mut self, name: &str, index: &[Part]) -> Result<(), CompileError> {
+        let place = self.array_place(name);
+        self.push_str(name);
+        self.emit(Op::Swap, 0);
+        self.index_value(index)?;
+        self.emit(Op::Swap, 0);
+        self.emit(Op::LoadInt(place), 1);
+        self.emit(Op::Extended(ext::ELEM_SET, 0), -3);
+        Ok(())
+    }
+
+    /// Store the value on the stack into whatever `text` names — a scalar or an
+    /// array element — leaving the stack as it was found.
+    ///
+    /// The commands that assign to a *list* of variables written as one word
+    /// (`foreach`, `lmap`, `lassign`) reach an element through here: the name
+    /// arrives as text, and `a(i)` is an element there exactly as it is anywhere
+    /// else a variable name is written.
+    pub(crate) fn store_named(&mut self, text: &str) -> Result<(), CompileError> {
+        match target_of(&Word {
+            parts: vec![Part::Lit(text.to_string())],
+            ..Word::default()
+        }) {
+            Some(Target::Elem { name, index }) => {
+                self.elem_store(&name, &index)?;
+                self.emit(Op::Pop, -1);
+                Ok(())
+            }
+            _ => {
+                self.emit_set_var(text);
+                Ok(())
+            }
+        }
     }
 
     /// `set a(i) v`, which yields the value it assigned.
@@ -736,10 +808,7 @@ impl Compiler {
                 Target::Scalar(name) => {
                     // A local is a frame slot rather than a global-table entry,
                     // and the op reaches either through the place it is handed.
-                    let place = match self.var_place(&name) {
-                        Place::Global(idx) => i64::from(idx),
-                        Place::Slot(slot) => -i64::from(slot) - 1,
-                    };
+                    let place = self.var_place(&name).encode();
                     self.push_str(&name);
                     self.emit(Op::LoadInt(place), 1);
                     self.emit(Op::LoadInt(complain as i64), 1);
@@ -1129,10 +1198,19 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let place = place_of(vm);
             let index = pop_str(vm);
             let name = pop_str(vm);
+            let tolerant = arg == 1;
+            let empty = || Value::Str(Arc::new(String::new()));
             let value = match peek(vm, place) {
-                Some(Value::Hash(map)) => map.get(&index).cloned().ok_or_else(|| {
-                    format!("can't read \"{name}({index})\": no such element in array")
-                })?,
+                Some(Value::Hash(map)) => match map.get(&index) {
+                    Some(v) => v.clone(),
+                    None if tolerant => empty(),
+                    None => {
+                        return Err(format!(
+                            "can't read \"{name}({index})\": no such element in array"
+                        ))
+                    }
+                },
+                Some(Value::Undef) | None if tolerant => empty(),
                 Some(Value::Undef) | None => {
                     return Err(format!("can't read \"{name}({index})\": no such variable"))
                 }
@@ -1204,6 +1282,16 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let complain = pop_int(vm) != 0;
             let place = place_of(vm);
             let name = pop_str(vm);
+            // A link may point at one element of an array, which has to be
+            // *removed*; emptying the cell the way a scalar is emptied would
+            // leave the key behind. See `cmd_scope::unset_link`.
+            if let Place::Link(slot) = place {
+                return match crate::cmd_scope::unset_link(vm, slot) {
+                    true => Ok(()),
+                    false if complain => Err(format!("can't unset \"{name}\": no such variable")),
+                    false => Ok(()),
+                };
+            }
             match crate::runtime::var_cell(vm, place) {
                 Some(v) if *v != Value::Undef => {
                     *v = Value::Undef;
@@ -1466,6 +1554,12 @@ fn dict_set(dict: &str, keys: &[String], value: String) -> Result<String, String
     Ok(d.to_list())
 }
 
+/// [`element_map`] for the ops outside this module that reach one element of an
+/// array variable — the list commands, whose variable may be written `a(i)`.
+pub(crate) fn elements_of(vm: &mut VM, place: Place) -> Option<&mut HashMap<String, Value>> {
+    element_map(vm, place)
+}
+
 /// The element map of an array variable, creating it when the variable does not
 /// exist yet. `None` when the variable holds a scalar.
 fn element_map(vm: &mut VM, place: Place) -> Option<&mut HashMap<String, Value>> {
@@ -1519,15 +1613,10 @@ fn pop_int(vm: &mut VM) -> i64 {
     }
 }
 
-/// Decode the operand [`Compiler::array_place`] pushed: a name index in the
-/// VM's global table, or a frame slot written as `-(slot + 1)`.
+/// Decode the operand [`Compiler::array_place`] pushed. [`Place::encode`] is the
+/// other half; the three ranges it uses are stated there.
 pub(crate) fn place_of(vm: &mut VM) -> Place {
-    let raw = pop_int(vm);
-    if raw < 0 {
-        Place::Slot((-raw - 1) as u16)
-    } else {
-        Place::Global(raw as u16)
-    }
+    Place::decode(pop_int(vm))
 }
 
 /// What the variable holds, without creating it.
@@ -1540,6 +1629,14 @@ pub(crate) fn peek(vm: &VM, place: Place) -> Option<&Value> {
     match place {
         Place::Global(idx) => vm.globals.get(idx as usize),
         Place::Slot(slot) => vm.frames.last().and_then(|f| f.slots.get(slot as usize)),
+        // A linked name is read through the descriptor its slot holds — still a
+        // borrow of storage the VM owns, so an element read of an `upvar`'d
+        // array costs no more than one of a local array does. A link that was
+        // never made reads as nothing at all.
+        Place::Link(slot) => {
+            let link = crate::cmd_scope::link_at(vm, slot)?;
+            crate::cmd_scope::read_link(vm, &link)
+        }
     }
 }
 
