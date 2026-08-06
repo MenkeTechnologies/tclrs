@@ -25,6 +25,8 @@ pub mod cache;
 pub mod cmd_after;
 pub mod cmd_channel;
 pub mod cmd_clock;
+/// `encoding` — transcoding, and the tables it is done with.
+pub mod cmd_encoding;
 pub mod cmd_file;
 /// `info` — what the interpreter knows about itself.
 pub mod cmd_info;
@@ -41,6 +43,8 @@ pub mod coro;
 pub mod cursor;
 pub mod dap;
 pub mod dump;
+/// The `.enc` tables, generated. See `scripts/gen_encoding_tables.py`.
+pub mod encoding_tables;
 pub mod expr;
 pub mod expr_math;
 pub mod list;

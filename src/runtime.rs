@@ -2719,6 +2719,12 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
         // The ranges are tested from the highest base down, so that a lower
         // one's `id >= BASE` does not swallow a higher module's ops.
+        // ── the encoding block ───────────────────────────────────────────
+        // A bounded range, because this block is the highest one allocated and
+        // an open-ended `id >= ENCODING_BASE` here would silently claim the
+        // next module's ids the day one is added below it.
+        id if crate::cmd_encoding::is_op(id) => crate::cmd_encoding::extension(vm, id, arg),
+        // ── end of the encoding block ────────────────────────────────────
         id if id >= ext::FILE_BASE => crate::cmd_file::extension(vm, id, arg),
         id if id >= ext::CLOCK_BASE => crate::cmd_clock::extension(vm, id, arg),
         id if id >= ext::MATH_BASE => crate::expr_math::extension(vm, id, arg),
