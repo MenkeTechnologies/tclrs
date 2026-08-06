@@ -124,9 +124,22 @@ fn indexing_agrees_with_the_counter_that_shares_its_units() {
 /// not a character device, so the session takes the branch a session started
 /// from a terminal takes.
 fn host(args: &[&str]) -> Option<(String, String)> {
+    host_with_env(args, &[])
+}
+
+/// [`host`], with `unset` removed from the child's environment.
+///
+/// The library search reads `TK_LIBRARY` and `TCL_LIBRARY` before anything else
+/// (`library/auto.tcl:73-75`), so a test about what is found *without* them has
+/// to be sure the machine it runs on does not have them set.
+fn host_with_env(args: &[&str], unset: &[&str]) -> Option<(String, String)> {
     use std::io::Write;
     let exe = std::path::Path::new(env!("CARGO_BIN_EXE_tk-host"));
-    let mut child = Command::new(exe)
+    let mut cmd = Command::new(exe);
+    for name in unset {
+        cmd.env_remove(name);
+    }
+    let mut child = cmd
         .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -249,6 +262,74 @@ fn the_main_window_exists_and_tk_answers_for_it() {
     assert!(
         geom.contains('x') && geom.contains('+'),
         "expected a WxH+X+Y geometry, got {geom:?}"
+    );
+}
+
+/// `tk.tcl` is found with nothing in the environment pointing at it.
+///
+/// The search that finds it is `tkInit`'s last statement — `tcl_findLibrary tk
+/// $tk_version $tk_patchLevel tk.tcl TK_LIBRARY tk_library`
+/// (`tk9.0.4/generic/tkWindow.c:3513`) — and what it walks is `auto_path`
+/// (`library/auto.tcl:148-155`). Nothing derived from this binary can name an
+/// installed Tk: `tclrs` is built into `target/debug`, and the three
+/// executable-relative candidates the procedure adds for itself are all under
+/// the build tree. The dylib that was just `dlopen`ed can, and does — see
+/// `tclrs::tk::load::seed_library_path`.
+///
+/// Asserted against the root the run reports rather than against a path written
+/// here, because where Tk is installed is a property of the machine. What is
+/// pinned is the relationship: the `tk.tcl` that was reached is the one beside
+/// the dylib that was loaded.
+#[test]
+fn the_tk_script_library_is_found_beside_the_loaded_dylib_with_no_environment() {
+    let Some((out, _)) = host_with_env(&[], &["TK_LIBRARY", "TCL_LIBRARY"]) else {
+        return;
+    };
+    let root = out
+        .lines()
+        .find_map(|l| l.strip_prefix("tkhost dylib root "))
+        .expect("dladdr gave no directory for the loaded Tk dylib");
+    assert!(
+        out.contains(&format!("tkhost library path {root}\n")),
+        "the dylib's own directory did not reach auto_path: {out:?}"
+    );
+    // The proof that the search succeeded: `tcl_findLibrary` only names a
+    // candidate file in its report once `source` has been tried on it and
+    // failed (`library/auto.tcl:204-209`), so this line means the file was
+    // there and was read.
+    assert!(
+        out.contains(&format!("{root}/tk9.0/tk.tcl: ")),
+        "tk.tcl was not found beside the dylib at {root}: {out:?}"
+    );
+}
+
+/// `bind` answers with the pattern it was given, which needs slot 579.
+///
+/// `[bind Button]` does not store the text it was handed: it rebuilds each
+/// pattern from the parsed `TkPattern` through `GetPatternObj`, and the modifier
+/// names and the button number get there only as variadic arguments to
+/// `Tcl_AppendPrintfToObj` (`tk9.0.4/generic/tkBind.c:5190`, `:5212`). The slot
+/// is one of the four this crate cannot write in Rust, so it goes through
+/// `src/tk/trampoline.c`; without it the call trapped and `bind` had no query
+/// form at all, and with the arguments dropped it would answer `<->`.
+#[test]
+fn the_bind_query_form_rebuilds_a_pattern_through_the_printf_trampoline() {
+    let Some((out, err)) = host(&[
+        "bind Button <Control-Button-1> {set x 1}",
+        "bind Button <Double-Shift-Button-3> {set y 2}",
+        "puts PATTERNS=[bind Button]",
+    ]) else {
+        return;
+    };
+    assert!(
+        !err.contains("tktrap "),
+        "the run stopped on a slot: {:?}",
+        err.lines().find(|l| l.starts_with("tktrap "))
+    );
+    // Newest first, which is the order `bind` reports its table in.
+    assert!(
+        out.contains("PATTERNS=<Double-Shift-Button-3> <Control-Button-1>"),
+        "the pattern did not survive the round trip: {out:?}"
     );
 }
 

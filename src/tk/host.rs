@@ -125,6 +125,15 @@ pub struct Host {
     /// it stood. A binding script that fails arrives here rather than at the
     /// caller, because there is no caller — see [`background_exception`].
     pub background_errors: Vec<(c_int, String, String)>,
+    /// `DELETED` of `Interp.flags`, which is the whole of what
+    /// `Tcl_InterpDeleted` reports (`generic/tclBasic.c:1872-1877`).
+    ///
+    /// Set by `Tcl_DeleteInterp` and never cleared, as in Tcl: a deleted
+    /// interpreter does not come back. Tk reads it to decide whether it may
+    /// still evaluate — its widget teardown paths skip untracing a
+    /// `-textvariable` in an interpreter that is going away
+    /// (`tk9.0.4/generic/tkButton.c:1646`, `:1757`, and eleven more).
+    pub deleted: bool,
 }
 
 /// One entry of the command table. Boxed, so the address returned as the
@@ -145,6 +154,16 @@ pub struct HostCommand {
     pub proc2: bool,
     /// The subcommand dictionary, for a command created as an ensemble.
     pub ensemble_map: *mut TclObj,
+    /// `CMD_DYING` (`generic/tclInt.h`), set by [`delete_command_from_token`]
+    /// before it runs the delete proc.
+    ///
+    /// Tcl's own comment is the whole reason it exists: the hash entry cannot be
+    /// removed before the callback runs, because a callback may need to invoke
+    /// the command — and it may equally try to delete it again
+    /// (`generic/tclBasic.c:3737-3744`). Tk's widget delete procs do reach back
+    /// in: `DestroyButton` runs `Tk_FreeOptions`, which can unset a
+    /// `-textvariable` whose trace fires more Tcl (`tk9.0.4/generic/tkButton.c:951-969`).
+    pub dying: bool,
 }
 
 unsafe fn host() -> &'static mut Host {
@@ -322,6 +341,7 @@ fn empty_host() -> Host {
         exit_handlers: Vec::new(),
         error_info: None,
         background_errors: Vec::new(),
+        deleted: false,
     }
 }
 
@@ -542,6 +562,8 @@ unsafe fn install_impls(t: &mut TclStubs, degraded: bool, level: Level) -> Vec<u
         install(t, "tcl_CreateInterp", create_interp as *const ()),
         // void (*tcl_DeleteInterp)(Tcl_Interp *interp) /* 110 */
         install(t, "tcl_DeleteInterp", delete_interp as *const ()),
+        // int (*tcl_InterpDeleted)(Tcl_Interp *interp) /* 184 */
+        install(t, "tcl_InterpDeleted", interp_deleted as *const ()),
         // void (*tcl_DeleteHashEntry)(Tcl_HashEntry *entryPtr) /* 108 */
         install(t, "tcl_DeleteHashEntry", delete_hash_entry as *const ()),
         // void (*tcl_DeleteHashTable)(Tcl_HashTable *tablePtr) /* 109 */
@@ -564,6 +586,12 @@ unsafe fn install_impls(t: &mut TclStubs, degraded: bool, level: Level) -> Vec<u
         // actually read.
         // const char *(*tcl_PosixError)(Tcl_Interp *interp) /* 204 */
         install(t, "tcl_PosixError", posix_error as *const ()),
+        // int (*tcl_DeleteCommandFromToken)(Tcl_Interp *, Tcl_Command) /* 104 */
+        install(
+            t,
+            "tcl_DeleteCommandFromToken",
+            delete_command_from_token as *const (),
+        ),
         // int (*tcl_GetCommandInfo)(Tcl_Interp *, const char *, Tcl_CmdInfo *) /* 159 */
         install(t, "tcl_GetCommandInfo", get_command_info as *const ()),
         // void *(*tcl_GetAssocData)(Tcl_Interp *, const char *,
@@ -891,6 +919,17 @@ unsafe fn install_hosting(t: &mut TclStubs) -> Vec<usize> {
             t,
             "tcl_ObjPrintf",
             super::eval::tclrs_tk_obj_printf as *const (),
+        ),
+        // void (*tcl_AppendPrintfToObj)(Tcl_Obj *, const char *format, ...) /* 579 */
+        //
+        // The fourth, and the same argument one value along: `bind Button`
+        // rebuilds each pattern it answers with through `GetPatternObj`, whose
+        // modifier names and button numbers arrive only as variadic arguments
+        // (`tk9.0.4/generic/tkBind.c:5190,5212`).
+        install(
+            t,
+            "tcl_AppendPrintfToObj",
+            super::eval::tclrs_tk_append_printf_to_obj as *const (),
         ),
     ]);
     slots
@@ -1442,11 +1481,12 @@ unsafe fn record_command(
         delete_proc,
         proc2,
         ensemble_map: ptr::null_mut(),
+        dying: false,
     };
     match h.commands.iter().position(|c| c.name == text) {
         Some(i) => {
             let old = std::mem::replace(&mut *h.commands[i], fresh);
-            run_delete_proc(&old);
+            run_delete_proc(old.delete_proc, old.client_data);
             &mut *h.commands[i] as *mut HostCommand as *mut c_void
         }
         None => {
@@ -1456,16 +1496,99 @@ unsafe fn record_command(
     }
 }
 
+/// Slot 104. `int Tcl_DeleteCommandFromToken(Tcl_Interp *, Tcl_Command)` —
+/// `generic/tclDecls.h`, table entry at `generic/tclDecls.h:1995`; body at
+/// `generic/tclBasic.c:3726-3902`.
+///
+/// A port of that body, with the four blocks that have no counterpart here
+/// named rather than silently dropped:
+///
+/// * command traces (`:3786-3806`) — this host has no `Tcl_TraceCommand`, so
+///   there is no trace list to call or free. [`super::trace`] is the call log,
+///   not Tcl's command traces;
+/// * the namespace refcount and export-list invalidation (`:3784`, `:3814-3815`)
+///   — the command table is flat here, and a `Tcl_Namespace` is the stack
+///   structure `dstring` describes;
+/// * `iPtr->compileEpoch` (`:3826-3828`) — Tk's commands have no `compileProc`,
+///   and this frontend's own compiled chunks are invalidated by
+///   [`super::dispatch`] resolving a name at run time rather than by an epoch;
+/// * import references (`:3830-3841`) — nothing imports a command into a
+///   namespace at this level, so `importRefPtr` is always empty.
+///
+/// What is reproduced exactly is the part Tk depends on and the part that is
+/// easy to get wrong: the `CMD_DYING` re-entry guard (`:3746-3768`,
+/// `:3770-3778`), the *order* of the delete proc against the table removal
+/// (`:3843-3879` — callback first, entry removed after, because the callback may
+/// still invoke the command), and the return value, `0` for a command that was
+/// there and `-1` for one that was not (`:3716-3717`).
+///
+/// Tk calls it from every widget's destroy procedure — 16 call sites across
+/// `tk9.0.4/generic`, e.g. `DestroyButton` (`tk9.0.4/generic/tkButton.c:951`) —
+/// so `destroy .` reached it and stopped without it.
+unsafe extern "C" fn delete_command_from_token(interp: *mut c_void, token: *mut c_void) -> c_int {
+    entered!("tcl_DeleteCommandFromToken");
+    let h = &mut *(*(interp as *mut HostInterp)).host;
+    let Some(i) = h
+        .commands
+        .iter()
+        .position(|c| &**c as *const HostCommand as *const c_void == token)
+    else {
+        // "-1 is returned if there didn't exist a command by that name"
+        // (`generic/tclBasic.c:3716-3717`).
+        return -1;
+    };
+    note("DeleteCommandFromToken", &h.commands[i].name.clone());
+
+    // `generic/tclBasic.c:3746-3768`: another deletion is already in progress,
+    // so take the entry out now and neither run the callback again nor free
+    // anything. Bug 1220058 is the third-time-through case, which is why the
+    // removal is guarded on the entry still being there — it is, by the
+    // `position` above.
+    if h.commands[i].dying {
+        h.commands.remove(i);
+        return 0;
+    }
+    h.commands[i].dying = true;
+
+    // `:3843-3860`. Before the removal, deliberately: a delete proc may invoke
+    // the command it is deleting, and Tcl's own comment says the hash entry is
+    // why the flag above exists at all (`:3737-3744`). The two fields are read
+    // out first so that nothing borrows the table across the callback, which is
+    // free to reach it.
+    let (delete_proc, client_data) = (h.commands[i].delete_proc, h.commands[i].client_data);
+    run_delete_proc(delete_proc, client_data);
+
+    // `:3869-3879`, and for the reason given at `:3862-3867`: the callback may
+    // have renamed or already removed the command, so the entry is looked up
+    // again rather than trusting `i`.
+    if let Some(i) = h
+        .commands
+        .iter()
+        .position(|c| &**c as *const HostCommand as *const c_void == token)
+    {
+        // `:3888` sets `objProc` to NULL so that a test for a particular kind
+        // of command cannot match a dead one. Here the record goes away
+        // entirely, which is the same guarantee more strongly.
+        h.commands.remove(i);
+    }
+    0
+}
+
 /// Run a command's `Tcl_CmdDeleteProc` — `void (*)(void *clientData)`
 /// (`generic/tcl.h:559`) — if it has one. Called where Tcl would call it: when
-/// the command is replaced, and when the interpreter holding it is deleted
-/// (`generic/tclBasic.c`).
-unsafe fn run_delete_proc(cmd: &HostCommand) {
-    if cmd.delete_proc.is_null() {
+/// the command is replaced, when the command is deleted by token, and when the
+/// interpreter holding it is deleted (`generic/tclBasic.c`).
+///
+/// The two pointers rather than the `HostCommand` they came out of, because a
+/// delete proc may call back in and reach the same command table
+/// (`generic/tclBasic.c:3737-3744` is Tcl saying so): a caller must be able to
+/// stop borrowing the entry before the callback runs.
+unsafe fn run_delete_proc(delete_proc: *mut c_void, client_data: *mut c_void) {
+    if delete_proc.is_null() {
         return;
     }
-    let f: unsafe extern "C" fn(*mut c_void) = std::mem::transmute(cmd.delete_proc);
-    f(cmd.client_data);
+    let f: unsafe extern "C" fn(*mut c_void) = std::mem::transmute(delete_proc);
+    f(client_data);
 }
 
 /// The command registered under `name` in `host`, or `None`.
@@ -1514,6 +1637,11 @@ unsafe extern "C" fn create_interp() -> *mut c_void {
 unsafe extern "C" fn delete_interp(interp: *mut c_void) {
     entered!("tcl_DeleteInterp");
     let h = (*(interp as *mut HostInterp)).host;
+    // `Interp.flags |= DELETED` — the first thing Tcl's `Tcl_DeleteInterp` does
+    // (`generic/tclBasic.c`'s `Tcl_DeleteInterp`), and what
+    // [`interp_deleted`] reports. Set before the early return, because the
+    // primary is not freed here but *is* deleted as far as Tk is concerned.
+    (*h).deleted = true;
     if h == CURRENT.load(Ordering::Relaxed) {
         return;
     }
@@ -1522,11 +1650,34 @@ unsafe extern "C" fn delete_interp(interp: *mut c_void) {
     // `DeleteInterpProc`). A command whose `clientData` is a Tk allocation
     // would otherwise leak it.
     for cmd in &(*h).commands {
-        run_delete_proc(cmd);
+        run_delete_proc(cmd.delete_proc, cmd.client_data);
     }
     super::interp::forget(h);
     drop(Box::from_raw(h));
     drop(Box::from_raw(interp as *mut HostInterp));
+}
+
+/// Slot 184. `int Tcl_InterpDeleted(Tcl_Interp *interp)` —
+/// `generic/tclDecls.h:2075`; body at `generic/tclBasic.c:1872-1877`, which is
+/// `return (((Interp *) interp)->flags & DELETED) ? 1 : 0;` and nothing else.
+///
+/// Reached by `destroy .`: `Tk_DestroyWindow` on the main window tears the
+/// application down, and every widget's teardown asks whether the interpreter
+/// is still there before it evaluates anything more
+/// (`tk9.0.4/generic/tkWindow.c:1650`).
+///
+/// A NULL interpreter answers 1. Tcl would dereference it, but Tk's own
+/// `tkConsole.c` guards each call with `consoleInterp &&`
+/// (`tk9.0.4/generic/tkConsole.c:508`, `:752`, `:958`), which says an absent
+/// interpreter is one that cannot be evaluated in — the same answer as a
+/// deleted one.
+unsafe extern "C" fn interp_deleted(interp: *mut c_void) -> c_int {
+    entered!("tcl_InterpDeleted");
+    if interp.is_null() {
+        return 1;
+    }
+    let h = (*(interp as *mut HostInterp)).host;
+    c_int::from(h.is_null() || (*h).deleted)
 }
 
 /// Slot 108.
@@ -2544,6 +2695,7 @@ unsafe extern "C" fn create_ensemble(
         delete_proc: ptr::null_mut(),
         proc2: false,
         ensemble_map: ptr::null_mut(),
+        dying: false,
     }));
     &mut **h.commands.last_mut().unwrap() as *mut HostCommand as *mut c_void
 }

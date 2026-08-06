@@ -142,6 +142,15 @@ pub fn load_tk() -> Result<(), String> {
     let tk_interp = host::primary_interp();
     assert!(!tk_interp.is_null(), "a session has a primary interpreter");
 
+    // Before `Tk_Init`, because its last statement is the search: `tkInit` ends
+    // in `tcl_findLibrary tk $tk_version $tk_patchLevel tk.tcl TK_LIBRARY
+    // tk_library` (`tk9.0.4/generic/tkWindow.c:3513`), and what that walks is
+    // `auto_path`. The dylib that was just opened is what says which install to
+    // walk; see [`load::seed_library_path`].
+    if let Some(root) = lib.library_root() {
+        unsafe { load::seed_library_path(tk_interp as *mut c_void, &root) };
+    }
+
     let code = unsafe { load::call_tk_init(&lib, tk_interp) }?;
     let result = String::from_utf8_lossy(&unsafe { host::result_bytes(tk_interp as *mut c_void) })
         .into_owned();
