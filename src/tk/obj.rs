@@ -30,7 +30,10 @@
 //!    `libc::malloc` block. It is never `realloc`ed, never moved, never copied
 //!    by value, and never handed out by reference into a `Vec` that could
 //!    reallocate. The address Tk receives stays that value's identity for its
-//!    whole life. `libc::malloc` and not Rust's allocator because the same
+//!    whole life — and only for that: the allocator hands the same block out
+//!    again afterwards, so an address is an identity *while the object is
+//!    live* and not a moment longer. [`serial_of`] is the identity that
+//!    outlasts the object. `libc::malloc` and not Rust's allocator because the same
 //!    block may be freed through `Tcl_Free` (`generic/tcl.h:2451-2463` makes
 //!    `ckfree` an alias for it outside Tcl's own build).
 //!
@@ -67,7 +70,7 @@
 //!    See [`super::objtype`] for why a host type without one is a leak Tk
 //!    causes on purpose.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::ffi::{c_char, c_void};
 use std::mem::{offset_of, size_of};
 use std::ptr;
@@ -116,14 +119,27 @@ pub struct TclDictSearch {
     pub dictionary_ptr: *mut c_void,
 }
 
-/// The address of every live object this side allocated.
+/// Every live object this side allocated: where it is, and which object it is.
 ///
-/// This is the mechanism behind rule 2: it is the only way to tell a value that
-/// came out of [`alloc`] from one Tk built on its stack, and the free path
-/// refuses to run on anything that is not in it. A `BTreeSet` because it is
-/// `const`-constructible and this is not a hot path — `Tk_Init` allocates in
-/// the hundreds.
-static LIVE: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+/// The key is the mechanism behind rule 2 — it is the only way to tell a value
+/// that came out of [`alloc`] from one Tk built on its stack, and the free path
+/// refuses to run on anything that is not in it.
+///
+/// The value is that object's serial number, and it is here because an address
+/// is not an identity. `libc::malloc` reuses a block as soon as it is freed, so
+/// two objects whose lifetimes do not overlap can share an address, and no
+/// amount of looking at the key distinguishes them. The serial does: it comes
+/// from [`NEXT_SERIAL`] and is never issued twice in a process. See
+/// [`serial_of`] for which of the two questions a caller wants.
+///
+/// A `BTreeMap` because it is `const`-constructible and this is not a hot path
+/// — `Tk_Init` allocates in the hundreds.
+static LIVE: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
+
+/// The next serial number to issue. Monotone and never reset, so a serial names
+/// one object for the whole life of the process even after its address has been
+/// handed to something else.
+static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
 
 /// Lifetime counters, reported by the probe.
 static CREATED: AtomicU64 = AtomicU64::new(0);
@@ -142,6 +158,13 @@ pub fn counts() -> (u64, u64, usize) {
 /// Whether `obj` is a value [`alloc`] produced and [`free_obj`] has not yet
 /// taken back.
 ///
+/// This is a question about an *address*, and it is the question a stub body
+/// has: it is handed a bare `Tcl_Obj *` and must decide whether the memory is
+/// this side's before it touches it, with nothing else to go on. It cannot tell
+/// one object from the next one the allocator puts at the same address, so
+/// nothing that outlives the call it was asked in may rely on it. A caller that
+/// held a pointer across a free wants [`serial_of`] instead.
+///
 /// # Safety
 /// None: only the pointer's numeric value is read, never the memory. That is
 /// the point — it is the question a function has to answer *before* it is
@@ -149,7 +172,28 @@ pub fn counts() -> (u64, u64, usize) {
 pub fn is_host_allocated(obj: *const TclObj) -> bool {
     LIVE.lock()
         .expect("object registry poisoned")
-        .contains(&(obj as usize))
+        .contains_key(&(obj as usize))
+}
+
+/// Which object is living at `obj`, or `None` if none is.
+///
+/// The identity question, as against [`is_host_allocated`]'s address question.
+/// Storage is pinned (rule 1) and only [`free_obj`] ever removes an entry, so
+/// for a serial `s` observed while an object was live:
+///
+/// * `serial_of(p) == Some(s)` means that object is still live;
+/// * anything else — `None`, or `Some` of a different serial — means the free
+///   path ran on it. A later allocation landing on the same address cannot
+///   disguise that, because it carries a serial of its own.
+///
+/// # Safety
+/// None, for the same reason as [`is_host_allocated`]: the pointer is compared,
+/// never dereferenced.
+pub fn serial_of(obj: *const TclObj) -> Option<u64> {
+    LIVE.lock()
+        .expect("object registry poisoned")
+        .get(&(obj as usize))
+        .copied()
 }
 
 /// A fresh value with the empty string as its string rep.
@@ -195,12 +239,13 @@ pub unsafe fn new_string(bytes: &[u8]) -> *mut TclObj {
     );
     set_string(p, bytes);
     CREATED.fetch_add(1, Ordering::Relaxed);
-    let inserted = LIVE
+    let serial = NEXT_SERIAL.fetch_add(1, Ordering::Relaxed);
+    let displaced = LIVE
         .lock()
         .expect("object registry poisoned")
-        .insert(p as usize);
+        .insert(p as usize, serial);
     assert!(
-        inserted,
+        displaced.is_none(),
         "malloc returned {p:?} for a second Tcl_Obj while the first is still live"
     );
     p

@@ -107,14 +107,14 @@
 //!    and `Tcl_DStringLength` are field accesses (`generic/tcl.h:892-893`).
 //!    See [`dstring`].
 //!
-//! # The one slot that cannot be written in stable Rust
+//! # The slots that cannot be written in stable Rust
 //!
 //! Seven slots are variadic. Defining a C-variadic function is rejected by
 //! stable rustc (`error[E0658]`, tracking issue 44930), and on AAPCS64 there is
 //! no non-variadic declaration that can reach the arguments either, because
-//! they are all passed on the stack. Five of the seven Tk calls only to build
-//! text a script would read, and ignoring their variadic arguments costs the
-//! text and nothing else — `eval` argues that one slot at a time. The other two
+//! they are all passed on the stack. Three of the seven Tk calls only to build
+//! text a script does not read, and ignoring their variadic arguments costs the
+//! text and nothing else — `eval` argues that one slot at a time. The other four
 //! carry a payload and go through `src/tk/trampoline.c`, a C file compiled by
 //! `build.rs`:
 //!
@@ -123,7 +123,14 @@
 //!   body that ignored them registers every ensemble subcommand under the
 //!   ensemble's own name;
 //! * `Tcl_Panic` (slot 2), because it never returns and the formatted message
-//!   is the only account of why.
+//!   is the only account of why;
+//! * `Tcl_ObjPrintf` (slot 578), because the formatted text is the value Tk
+//!   returns: `wm geometry .` is one call of it (`tk9.0.4/generic/tkWm.c`);
+//! * `Tcl_AppendPrintfToObj` (slot 579), for the same reason one value along.
+//!   `bind Button` rebuilds every pattern it reports through `GetPatternObj`,
+//!   whose modifier names and button numbers arrive only as variadic arguments
+//!   (`tk9.0.4/generic/tkBind.c:5190`, `:5212`), so the query form of `bind`
+//!   needs it — it trapped without it.
 //!
 //! `TCLRS_TK_DEGRADED` still installs the truncating body phase 1 used for slot
 //! 15, so the run that motivated the trampoline can be reproduced.
@@ -131,17 +138,24 @@
 //! # What the hosting table reaches
 //!
 //! `cargo run --features tk --bin tk-host` against the same library, with the
-//! object layer, the evaluator and the notifier all behind the table: **2726
-//! calls over 71 distinct slots**, and `Tk_Init` *returns* — it does not stop
-//! on a missing slot at any point. 197 of the 691 `TclStubs` slots have bodies.
+//! object layer, the evaluator and the notifier all behind the table: **2737
+//! calls over 75 distinct slots**, and `Tk_Init` *returns* — it does not stop
+//! on a missing slot at any point. 200 of the 691 `TclStubs` slots have bodies.
+//!
+//! Two of those 200 are not reached by `Tk_Init` at all and are there for what
+//! comes after it: `Tcl_DeleteCommandFromToken` (104) and `Tcl_InterpDeleted`
+//! (184), which every widget's destroy procedure calls
+//! (`tk9.0.4/generic/tkButton.c:951`, `:1646`). `destroy .b` stopped on the
+//! first and `destroy .` on the second; both run now, and the `Tk_Init`
+//! measurement above is unchanged by them.
 //!
 //! That measurement is of the run whose **stdin is a pipe**, and stdin decides
 //! which of two branches `TkpInit` takes. With stdin on `/dev/null` — a
 //! character device with no blocks, which is what a test harness gives a
 //! process — Tk opens a console instead
 //! (`tk9.0.4/macosx/tkMacOSXInit.c:493-494`, `:585-598`), and that branch is a
-//! different measurement: **2666 calls over 72 distinct slots**, stopping at
-//! `Tcl_Init` on the second interpreter `Tk_CreateConsoleWindow` creates
+//! different measurement: **2677 calls, stopping at `Tcl_Init`** on the second
+//! interpreter `Tk_CreateConsoleWindow` creates
 //! (`tk9.0.4/generic/tkConsole.c:344-345`). Before [`channel`] existed it
 //! stopped 27 calls earlier, at `Tcl_CreateChannel`. Both are pinned:
 //! `tests/tk_utf16_window.rs` runs the pipe branch and
@@ -183,20 +197,31 @@
 //!
 //! What stops it now is the statement those four were in the way of:
 //! `tcl_findLibrary tk $tk_version $tk_patchLevel tk.tcl TK_LIBRARY tk_library`
-//! (`:3513`). The search runs, and with `TK_LIBRARY` pointing at an installed
-//! Tk it finds `tk.tcl` and reads it — and then cannot compile it. `tk.tcl`
-//! uses `{*}` argument expansion in eleven places, and this frontend refuses
-//! one (`crate::compiler`, `{*} argument expansion is not supported yet`),
-//! because an expanded word decides an argument count when the command runs
-//! and every call site here is resolved while the script is read.
+//! (`:3513`). The search finds `tk.tcl` with nothing in the environment naming
+//! it — the directory of the `dlopen`ed dylib goes on `auto_path` before
+//! `Tk_Init` is called, which is where an installed `tk9.0/tk.tcl` sits and
+//! what `tcl_findLibrary` walks (`load::seed_library_path`) — reads it, and
+//! then cannot compile it. `tk.tcl` uses `{*}` argument expansion in eleven
+//! places, and this frontend refuses one (`crate::compiler`, `{*} argument
+//! expansion is not supported yet`), because an expanded word decides an
+//! argument count when the command runs and every call site here is resolved
+//! while the script is read.
+//!
+//! Behind that one, hand-probed by stripping each refusal from a copy of
+//! `tk.tcl` in turn: `upvar` with no level (`crate::cmd_scope`), then `upvar`
+//! of an array element (`crate::compiler`'s `var_name_of`), then `return
+//! -errorcode` (`crate::procs`), then a local whose name carries a namespace
+//! separator (`crate::cmd_namespace`). Every one of them is a Tcl language
+//! feature. No further stub slot is reached in any of it.
 //!
 //! `tk.tcl` is where Tk's class bindings live, so `bind Button` is empty in
-//! this host and a mouse click on a button reaches nothing. The gap between
-//! here and a `TCL_OK` is one Tcl language feature, not more of the Tk ABI.
+//! this host until a script writes one, and a mouse click on a button reaches
+//! nothing without it. The gap between here and a `TCL_OK` is Tcl language
+//! features, not more of the Tk ABI.
 //!
 //! The call and slot counts did not move as the refusal walked forward. The
 //! whole failure is on this side of the stub table, so Tk asked for exactly
-//! what it asked for before — 2726 calls over 71 slots, every time.
+//! what it asked for before — 2737 calls over 75 slots, every time.
 //!
 //! # What works anyway
 //!

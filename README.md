@@ -147,7 +147,12 @@ missing.
 Nothing is loaded until the script says `package require Tk`. That is what
 `dlopen`s the toolkit, calls `Tk_Init` and registers Tk's commands into the
 interpreter the script is running in; a `--tk` run of a script that never asks
-for Tk never opens the dylib. When the script has finished, the binary enters
+for Tk never opens the dylib. Tk's script library is found from that dylib
+rather than from this binary: the directory the dynamic linker mapped it into is
+put on `auto_path` before `Tk_Init` runs, so `tcl_findLibrary tk` reaches the
+`tk9.0/tk.tcl` of the install actually in use with no `TK_LIBRARY` in the
+environment. `TK_LIBRARY` and `TCL_LIBRARY` still outrank it. When the script
+has finished, the binary enters
 Tk's own main loop if Tk registered one — the same thing `wish` does, and under
 the same condition, which is that the script succeeded
 (`generic/tclMain.c:589-598`).
@@ -324,7 +329,7 @@ fusevm's own knobs work unchanged: `FUSEVM_JIT_BLOCK_THRESHOLD`,
 A `--features tk` build reads three more. `TCLRS_LIBTK` is the Tk dylib to
 open, instead of the Homebrew paths tried by default. `TCLRS_TK_TRACE` puts the
 stub-call log back on stderr — one line per call into the host, which is the
-probe's instrument and is off in a session because `Tk_Init` alone serves 2726
+probe's instrument and is off in a session because `Tk_Init` alone serves 2737
 of them — along with one `tkinit` line reporting what `Tk_Init` returned.
 `TCLRS_TK_STRINGS` logs the strings that crossed the boundary.
 
