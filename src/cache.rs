@@ -69,10 +69,14 @@ impl ChunkCache {
         let script = crate::parser::parse(&rewritten).map_err(|e| TclError {
             msg: e.msg,
             line: Some(e.line),
+            code: crate::runtime::TCL_ERROR,
+            level: 0,
         })?;
         let chunk = Arc::new(crate::compiler::compile(&script).map_err(|e| TclError {
             msg: e.msg,
             line: Some(e.line),
+            code: crate::runtime::TCL_ERROR,
+            level: 0,
         })?);
         // At capacity the whole cache is dropped rather than one entry chosen.
         // An `eval` loop reuses a handful of sources and never reaches the

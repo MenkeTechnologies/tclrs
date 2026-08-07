@@ -16,6 +16,20 @@ approximated, and nothing is silently mis-run.
   `append`, `if` / `elseif` / `else`, `while`, `for`, `foreach`, `switch`,
   `break`, `continue`, `global`, and command substitution of any of them
   (`src/compiler.rs`, `src/control.rs`).
+- **Return codes.** Tcl's `ok` / `error` / `return` / `break` / `continue` — and
+  any other integer — as one mechanism rather than five special cases. `return
+  ?-code c? ?-level n?` raises one; `catch script ?result? ?options?` reports the
+  code, the result and a `-code`/`-level` dictionary; a loop absorbs a `break` or
+  a `continue` that reaches it, and a procedure call spends one `-level` on the
+  way out. So a code crosses every boundary it does in tclsh: out of a script
+  `eval`, `uplevel` or `source` ran, and out of a procedure — which is what makes
+  `proc stop {} {return -code break}` end the loop that called `stop`, and what
+  makes `catch {break}` answer 3 while `while {1} {catch {break}}` does not end
+  the loop. A code nothing absorbs is reported at the outermost level by what it
+  was: `invoked "break" outside of a loop`. Compiled as a loop region
+  (`ext::LOOP_ENTER`) the driver in `src/runtime.rs` resumes at, alongside the
+  `catch` regions; the direct jump a `break` in its own loop's body compiles to
+  is unchanged, and so is the traced body between them.
 - **Procedures.** `proc` and `return`, with a procedure's parameters and locals
   as frame slots rather than entries in the global table (`src/procs.rs`).
   Signatures are collected before anything is emitted, so a procedure may call
@@ -428,17 +442,14 @@ approximated, and nothing is silently mis-run.
   reference interpreter's `yield can only be called in a coroutine`, and an
   `eval` inside a coroutine that does not yield is unaffected
   (`tests/frame_differential.rs`).
-- **`break`, `continue` or `return` inside a script `eval` or `uplevel` runs.**
-  The script is a chunk of its own and this frontend does not propagate a return
-  code across one, so a `break` there raises instead of breaking the loop in the
-  level the script ran in: `while {1} {catch {eval {break}}}` answers 1 with
-  `invoked "break" outside of a loop` where tclsh answers 3 with no message. The
-  message is also the wrong one for the situation — the loop exists, one level
-  out — but the right one cannot be produced without telling a nested compile
-  from an outermost one, and the chunk cache is keyed by source text alone, so
-  the two share a chunk. Keying it by nestedness as well is the fix. `uplevel`
-  inherits this from `eval`; pinned in `tests/frame_differential.rs` with what
-  tclsh gives.
+- **Return options beyond `-code` and `-level`.** The return-code system itself
+  is implemented — see the entry in "Implemented" — but `return -errorcode`,
+  `-errorinfo` and `-options` are refused, and `catch`'s options variable
+  carries only the two options this frontend models. tclsh's dictionary for an
+  *error* also has `-errorstack`, `-errorcode`, `-errorinfo` and `-errorline`,
+  so `catch {error boom} m o` gives a shorter dictionary here; the `-code` and
+  `-level` in it are exact, and `tests/proc_differential.rs` compares the whole
+  dictionary for every outcome whose tclsh form has nothing else in it.
 - **Procedures across an `eval`.** An evaluated script shares the interpreter's
   variables but not its procedures: it is a chunk of its own, and a call site
   resolves its command against that chunk. So `eval {proc twice {x} {…}}`
@@ -620,9 +631,9 @@ approximated, and nothing is silently mis-run.
   implemented set; `format` conversions outside the
   implemented set; `lsearch -sorted`, `-bisect`, `-dictionary`, `-nocase`,
   `-index`, `-subindices`; `lsort -command`,
-  `-dictionary`, `-nocase`, `-index`; `catch`'s options variable;
+  `-dictionary`, `-nocase`, `-index`;
   `error`'s `info` and `code` arguments; `return`'s options other than
-  `-code ok` / `-code error`. They go through the reference option parser first,
+  `-code` and `-level`. They go through the reference option parser first,
   so abbreviation and ambiguity behave as tclsh does, and are then refused.
   `-nocase` waits on a case-folding table that matches Tcl's, which Rust's
   `to_lowercase` does not: it is a full case mapping and can produce more than

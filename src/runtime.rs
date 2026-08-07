@@ -70,15 +70,37 @@ pub struct Outcome {
     pub output: String,
 }
 
-/// A script that would not compile, or that failed while running.
+/// Tcl's five standard return codes. Any other integer is legal too — `return
+/// -code 42` — so a code travels as an `i32` rather than an enum.
+pub(crate) const TCL_OK: i32 = 0;
+pub(crate) const TCL_ERROR: i32 = 1;
+pub(crate) const TCL_RETURN: i32 = 2;
+pub(crate) const TCL_BREAK: i32 = 3;
+pub(crate) const TCL_CONTINUE: i32 = 4;
+
+/// A script that would not compile, or that finished with a non-`ok` return
+/// code — which in Tcl is one mechanism, not two: `break`, `continue`, `return`
+/// and an error all leave a command the same way, differing only in the code
+/// they carry and in what is prepared to absorb it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TclError {
-    /// The message, in the reference interpreter's wording.
+    /// The message, in the reference interpreter's wording. For a non-error
+    /// code this is the *result* — `return 7` carries `7` — not a diagnostic.
     pub msg: String,
     /// The 1-based script line, when the failure was located while compiling.
     /// A failure raised by a running chunk carries no line, as the reference
     /// interpreter's does not either.
     pub line: Option<usize>,
+    /// The return code: [`TCL_ERROR`] for an error, and one of the others for
+    /// a `break`, a `continue` or a `return`.
+    pub code: i32,
+    /// The number of call levels still to unwind before `code` takes effect.
+    /// `return -level 1 -code break` (which is what a bare `return -code break`
+    /// means) is code `TCL_RETURN` to the procedure it is written in and code
+    /// `TCL_BREAK` to that procedure's caller — the mechanism a script builds
+    /// its own control structures out of. Zero for an error and for `break` /
+    /// `continue`, which act where they are written.
+    pub level: i32,
 }
 
 impl TclError {
@@ -86,6 +108,60 @@ impl TclError {
         TclError {
             msg: msg.into(),
             line: None,
+            code: TCL_ERROR,
+            level: 0,
+        }
+    }
+
+    /// A non-error return code leaving a command: `break`, `continue`, or a
+    /// `return` with its `-level` still to be spent.
+    pub(crate) fn coded(code: i32, level: i32, msg: impl Into<String>) -> Self {
+        TclError {
+            msg: msg.into(),
+            line: None,
+            code,
+            level,
+        }
+    }
+
+    /// The code as whatever is about to absorb it sees. A `return` with levels
+    /// left to unwind presents as [`TCL_RETURN`]; its own code applies only
+    /// once the levels are spent.
+    pub(crate) fn visible_code(&self) -> i32 {
+        if self.level > 0 {
+            TCL_RETURN
+        } else {
+            self.code
+        }
+    }
+
+    /// Cross one procedure-call boundary: spend a level, and once none are
+    /// left the carried code becomes the one the caller sees.
+    pub(crate) fn descend(mut self) -> Self {
+        if self.level > 0 {
+            self.level -= 1;
+        }
+        self
+    }
+
+    /// Tcl's `-errorcode`-style option dictionary for `catch`'s options
+    /// variable. Only the two options this frontend models are present.
+    pub(crate) fn options(&self) -> String {
+        format!("-code {} -level {}", self.code, self.level)
+    }
+
+    /// The message a code that reached the outermost level is reported with.
+    /// A `break` nothing absorbed is not "the script returned 3"; it is the
+    /// reference interpreter's `invoked "break" outside of a loop`.
+    pub(crate) fn escaped(self) -> Self {
+        let word = match self.visible_code() {
+            TCL_BREAK => "break",
+            TCL_CONTINUE => "continue",
+            _ => return self,
+        };
+        TclError {
+            msg: format!("invoked \"{word}\" outside of a loop"),
+            ..self
         }
     }
 }
@@ -307,9 +383,31 @@ impl Interp {
         self.lock().limit = limit.max(1);
     }
 
+    /// Finish a run at the outermost level, where a return code has nowhere left
+    /// to go.
+    ///
+    /// The script itself is a level, so a `return` that reached here spends its
+    /// last one — and a `return` whose code is then `ok` is not a failure at all:
+    /// the script finished with that result. A `break` or a `continue` nothing
+    /// absorbed is reported the way the reference interpreter reports it, by what
+    /// it was rather than by the number it carried.
+    fn outermost(outcome: Result<Value, TclError>) -> Result<String, TclError> {
+        match outcome {
+            Ok(v) => Ok(to_tcl_string(&v)),
+            Err(e) => {
+                let e = e.descend();
+                if e.visible_code() == TCL_OK {
+                    Ok(e.msg)
+                } else {
+                    Err(e.escaped())
+                }
+            }
+        }
+    }
+
     /// Compile and run a script, returning the value of its last command.
     pub fn eval(&mut self, src: &str) -> Result<String, TclError> {
-        run_source(&self.shared, src).map(|v| to_tcl_string(&v))
+        Self::outermost(run_source(&self.shared, src))
     }
 
     /// Run a chunk this interpreter did not compile, against its variables.
@@ -320,7 +418,7 @@ impl Interp {
     /// [`crate::compiler::compile_debug`]'s output, which is the same script
     /// with a line marker before every command.
     pub fn run_chunk(&mut self, chunk: fusevm::Chunk) -> Result<String, TclError> {
-        Machine::run(&self.shared, Arc::new(chunk)).map(|v| to_tcl_string(&v))
+        Self::outermost(Machine::run(&self.shared, Arc::new(chunk)))
     }
 
     /// Set a variable from the host — how the binary supplies `argv0`, `argc`
@@ -451,7 +549,22 @@ pub(crate) fn call_in_chunk(
     }
     let result = Machine::start(shared, Arc::clone(chunk), Some((entry, actuals)));
     shared.lock().expect("interpreter lock").depth -= 1;
-    result
+    // This is a procedure-call boundary, and a `return` spends one level
+    // crossing it: `return -code break` written in a procedure is code 2 to
+    // the procedure and code 3 to whoever called it. A `return` whose levels
+    // are then spent and whose code is `ok` is the procedure's ordinary
+    // result — which is what `catch {return $x}` in a procedure body leaves.
+    match result {
+        Err(e) if e.level > 0 => {
+            let e = e.descend();
+            if e.visible_code() == TCL_OK {
+                Ok(Value::Str(Arc::new(e.msg)))
+            } else {
+                Err(e)
+            }
+        }
+        other => other,
+    }
 }
 
 /// A chunk interns its own name table, so the slot holding a given variable
@@ -1022,12 +1135,26 @@ fn traced_read(shared: &Shared, name: &str) -> Option<Value> {
 /// restoring them puts the VM back exactly where the handler was compiled to
 /// expect it.
 struct CatchFrame {
-    /// Op index of the handler block the compiler emitted for this region.
-    handler: usize,
+    /// What the region absorbs, and where it resumes.
+    kind: FrameKind,
     /// Value-stack length when the region was entered.
     stack: usize,
     /// Call-frame count when the region was entered.
     frames: usize,
+}
+
+/// The two kinds of region a raised return code can land in.
+#[derive(Clone, Copy)]
+enum FrameKind {
+    /// A `catch`, which absorbs every code — including `break` and `continue`,
+    /// which is why `while {1} {catch {break}}` does not end the loop.
+    /// The payload is the op index of the handler block.
+    Catch(usize),
+    /// A loop, which absorbs only `break` and `continue` — arriving from a
+    /// nested script, from a procedure that returned one, or from anywhere
+    /// else the direct jump the compiler emits could not reach. The payloads
+    /// are the op indices a `break` and a `continue` resume at.
+    Loop { brk: usize, cont: usize },
 }
 
 /// Install everything a Tcl chunk needs on a VM — the output sink, the numeric
@@ -1175,8 +1302,18 @@ impl Hooks {
         // the two interleave in the order the script wrote them.
         let out = self.output.clone();
         vm.set_extension_handler(Box::new(move |vm: &mut VM, id: u16, arg: u8| {
-            if id == ext::CATCH_END {
+            if id == ext::CATCH_END || id == ext::LOOP_LEAVE {
                 open.lock().expect("catch lock").pop();
+                return;
+            }
+            if id == ext::LOOP_ENTER {
+                let cont = to_tcl_string(&vm.pop()).parse().unwrap_or(0);
+                let brk = to_tcl_string(&vm.pop()).parse().unwrap_or(0);
+                open.lock().expect("catch lock").push(CatchFrame {
+                    kind: FrameKind::Loop { brk, cont },
+                    stack: vm.stack.len(),
+                    frames: vm.frames.len(),
+                });
                 return;
             }
             if id == ext::PUTS {
@@ -1282,6 +1419,15 @@ impl Hooks {
                 // `ifneeded` one, or `package unknown` — and a script needs
                 // the interpreter, which only this closure holds.
                 ext::PACKAGE => package_op(&interp, vm, arg),
+                // Its own arm because it is the one op that produces a
+                // `TclError` carrying something other than an error: the code
+                // and the level are the point of it, and `extension` below can
+                // only answer with a message.
+                ext::RAISE => {
+                    let level = to_tcl_string(&vm.pop()).parse().unwrap_or(0);
+                    let code = to_tcl_string(&vm.pop()).parse().unwrap_or(TCL_ERROR);
+                    Err(TclError::coded(code, level, to_tcl_string(&vm.pop())))
+                }
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
             if let Err(e) = outcome {
@@ -1313,6 +1459,8 @@ impl Hooks {
                 *wide_err.lock().expect("error lock") = Some(TclError {
                     msg,
                     line: Some(payload),
+                    code: TCL_ERROR,
+                    level: 0,
                 });
                 vm.push(Value::Undef);
                 vm.request_halt();
@@ -1320,7 +1468,7 @@ impl Hooks {
             }
             if id == ext_wide::CATCH {
                 entered.lock().expect("catch lock").push(CatchFrame {
-                    handler: payload,
+                    kind: FrameKind::Catch(payload),
                     stack: vm.stack.len(),
                     frames: vm.frames.len(),
                 });
@@ -1931,8 +2079,8 @@ fn package_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
         // line it happened on; only a failure of `package` itself takes the
         // line of the `package` command.
         Err(e) => Err(TclError {
-            msg: e.msg,
             line: e.line.or(Some(line)),
+            ..e
         }),
     }
 }
@@ -2154,17 +2302,45 @@ impl Machine {
     /// `catch` handler, or — for a coroutine with none — end the coroutine and
     /// report the error to whoever resumed it, as the reference implementation
     /// does. `Err` means nothing was left to catch it.
-    fn raise(&mut self, e: TclError) -> Result<(), TclError> {
+    fn raise(&mut self, mut e: TclError) -> Result<(), TclError> {
+        // Every VM call frame the code unwinds past is a procedure-call
+        // boundary, and a `return` spends one level at each — which is what
+        // makes `proc p {} {return -code break}` break the loop that called
+        // `p` rather than reporting code 2 there. A call that crosses a *chunk*
+        // boundary runs on a VM of its own, so its frames are not in this
+        // count; [`call_in_chunk`] spends that level where the two VMs meet.
+        let mut depth = self.vm(self.current).frames.len();
         loop {
             if let Some(frame) = self.contexts[self.current].catches.pop() {
+                for _ in 0..depth.saturating_sub(frame.frames) {
+                    e = e.descend();
+                }
+                depth = frame.frames;
+                let code = e.visible_code();
+                let resume = match frame.kind {
+                    FrameKind::Catch(handler) => Some(handler),
+                    // A loop takes a `break` or a `continue` and lets every
+                    // other code — an error, a `return` — carry on outwards.
+                    FrameKind::Loop { brk, .. } if code == TCL_BREAK => Some(brk),
+                    FrameKind::Loop { cont, .. } if code == TCL_CONTINUE => Some(cont),
+                    FrameKind::Loop { .. } => None,
+                };
+                let Some(resume) = resume else {
+                    continue; // this region does not absorb the code; keep unwinding
+                };
+                let options = e.options();
                 let vm = self.vm(self.current);
                 // Unwind to the guarded script's entry state and hand the
-                // handler the message.
+                // handler the code, the options and the message.
                 vm.frames.truncate(frame.frames);
                 vm.stack.truncate(frame.stack);
                 vm.stack.resize(frame.stack, Value::Undef);
-                vm.push(Value::Str(Arc::new(e.msg)));
-                vm.ip = frame.handler;
+                if matches!(frame.kind, FrameKind::Catch(_)) {
+                    vm.push(Value::Int(code as i64));
+                    vm.push(Value::Str(Arc::new(options)));
+                    vm.push(Value::Str(Arc::new(e.msg)));
+                }
+                vm.ip = resume;
                 return Ok(());
             }
             if self.current == 0 {

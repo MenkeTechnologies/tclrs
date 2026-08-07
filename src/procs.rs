@@ -353,6 +353,8 @@ fn dispatch(
     let here = |msg: String| TclError {
         msg,
         line: Some(line),
+        code: crate::runtime::TCL_ERROR,
+        level: 0,
     };
     match defined {
         // A procedure the script defined shadows a foreign command of the same
@@ -557,6 +559,8 @@ pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(
     let here = |msg: String| TclError {
         msg,
         line: Some(line),
+        code: crate::runtime::TCL_ERROR,
+        level: 0,
     };
     let words = splice(&values[1..]).map_err(here)?;
     let Some((first, args)) = words.split_first() else {
@@ -871,58 +875,98 @@ impl Compiler {
 
     /// `return ?-code code? ?result?`.
     pub(crate) fn cmd_return(&mut self, args: &[Word]) -> Result<(), CompileError> {
-        if self.scope.is_none() {
-            return self.error("\"return\" outside of a procedure is not supported");
-        }
-        if self.catch_depth > 0 {
-            // `catch {return x}` reports return code 2 rather than returning
-            // from the procedure, which this frontend does not model.
-            return self.error("\"return\" out of a \"catch\" script is not supported");
-        }
-
+        // `-code` and `-level` may be written in either order and any number of
+        // times, the last of each winning, which is how `Tcl_ReturnObjCmd`
+        // reads them.
         let mut rest = args;
-        let mut code = "ok";
-        if let [first, value, tail @ ..] = args {
-            if first.as_literal() == Some("-code") {
-                code = self.literal_of(value, "return code")?;
-                rest = tail;
+        let mut code = crate::runtime::TCL_OK;
+        let mut level = 1;
+        while let [first, value, tail @ ..] = rest {
+            match first.as_literal() {
+                Some("-code") => {
+                    let text = self.literal_of(value, "return code")?.to_string();
+                    code = match text.as_str() {
+                        "ok" => crate::runtime::TCL_OK,
+                        "error" => crate::runtime::TCL_ERROR,
+                        "return" => crate::runtime::TCL_RETURN,
+                        "break" => crate::runtime::TCL_BREAK,
+                        "continue" => crate::runtime::TCL_CONTINUE,
+                        n => match n.parse() {
+                            Ok(n) => n,
+                            Err(_) => {
+                                return self.error(format!(
+                                "bad completion code \"{n}\": must be ok, error, return, break, \
+                                 continue, or an integer"
+                            ))
+                            }
+                        },
+                    };
+                }
+                Some("-level") => {
+                    let text = self.literal_of(value, "return level")?.to_string();
+                    level = match text.parse::<i32>() {
+                        Ok(n) if n >= 0 => n,
+                        _ => {
+                            return self.error(format!(
+                                "bad -level value: expected non-negative integer \
+                                                but got \"{text}\""
+                            ))
+                        }
+                    };
+                }
+                Some(other) if other.starts_with('-') => {
+                    return self.error(format!("return option \"{other}\" is not supported"))
+                }
+                _ => break,
             }
-        }
-        if let Some(w) = rest.first() {
-            if w.as_literal().is_some_and(|t| t.starts_with('-')) && rest.len() > 1 {
-                return self.error(format!(
-                    "return option \"{}\" is not supported",
-                    w.as_literal().unwrap_or_default()
-                ));
-            }
+            rest = tail;
         }
         let result = match rest {
             [] => None,
             [v] => Some(v),
-            _ => return self.error("wrong # args: should be \"return ?-code code? ?result?\""),
+            _ => {
+                return self.error(
+                    "wrong # args: should be \"return ?-code code? ?-level level? ?result?\"",
+                )
+            }
         };
 
-        match code {
-            "ok" | "0" => {
-                match result {
-                    Some(w) => self.word(w)?,
-                    None => self.push_empty(),
-                }
-                self.emit(Op::ReturnValue, -1);
+        // The one case that is a plain frame return rather than a raised code:
+        // an ordinary `return` from a procedure body, with no `catch` between
+        // it and the frame it is returning from. Inside a `catch` even a bare
+        // `return` is code 2 to that `catch`, which is what lets a script tell
+        // "the body returned" from "the body finished".
+        let plain = level == 1 && code == crate::runtime::TCL_OK && self.catch_depth == 0;
+        if plain && self.scope.is_some() {
+            match result {
+                Some(w) => self.word(w)?,
+                None => self.push_empty(),
             }
-            "error" | "1" => {
-                match result {
-                    Some(w) => self.word(w)?,
-                    None => self.push_empty(),
-                }
-                self.emit(Op::Extended(ext::ERROR, 0), -1);
-            }
-            other => {
-                return self.error(format!(
-                    "return -code \"{other}\" is not supported; only \"ok\" and \"error\" are"
-                ))
-            }
+            self.emit(Op::ReturnValue, -1);
+            self.push_empty();
+            return Ok(());
         }
+        // At the outermost level a plain `return` ends the script with its
+        // result. Anything else is raised and spends its levels on the way out
+        // — including against the outermost script itself, which is why
+        // `return -code error zap` there is the error and `catch {return 7}`
+        // there is still code 2.
+        if plain && self.scope.is_none() {
+            match result {
+                Some(w) => self.word(w)?,
+                None => self.push_empty(),
+            }
+            self.emit(Op::ReturnValue, -1);
+            self.push_empty();
+            return Ok(());
+        }
+        match result {
+            Some(w) => self.word(w)?,
+            None => self.push_empty(),
+        }
+        self.emit(Op::LoadInt(i64::from(code)), 1);
+        self.emit(Op::LoadInt(i64::from(level)), 1);
+        self.emit(Op::Extended(ext::RAISE, 0), -3);
         // Control has left; the value keeps the depth arithmetic honest.
         self.push_empty();
         Ok(())

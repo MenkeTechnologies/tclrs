@@ -386,8 +386,8 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Output | `puts`, with `-nonewline` and an optional channel |
 | Expressions | `expr` |
 | Control flow | `if` / `elseif` / `else`, `while`, `for`, `foreach`, `switch` (`-exact`, `-glob`), `break`, `continue` |
-| Procedures | `proc`, `return` (with `-code ok` / `-code error`), `apply` |
-| Errors | `catch`, `error` |
+| Procedures | `proc`, `return` (with `-code` — `ok`, `error`, `return`, `break`, `continue` or any integer — and `-level`), `apply` |
+| Errors | `catch` (with a result variable and an options variable), `error`; Tcl return codes across every boundary — a `break` or `continue` out of an `eval`, `uplevel` or `source` script reaches the loop, and one out of a procedure reaches its caller |
 | Coroutines | `coroutine`, `yield`, `yieldto`, `info coroutine` |
 | Namespaces | `namespace` — `eval`, `current`, `qualifiers`, `tail`, `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`, `import`, `forget`, `origin`, `which`, `ensemble exists` / `create` / `configure`; `variable`; `rename` |
 | The event loop | `after` — `ms`, `ms script`, `idle script`, `cancel`, `info`; `update`, `update idletasks`; `vwait` |
@@ -769,8 +769,8 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `format %a` / `%A`; any other letter is `bad field specifier "n"` instead | `the "%a" conversion is not supported yet` |
 | `lsearch -sorted` / `-dictionary` / `-nocase` / `-index` / `-subindices` / `-bisect`; `lsort -command` / `-dictionary` / `-index` / `-nocase`. `-regexp` and `-stride` are built for both. `-increasing` and `-decreasing` *are* taken: they only describe the order `-sorted` and `-bisect` search in, so the two that read it name it — `lsearch -sorted -increasing is not supported yet` | `lsearch -dictionary is not supported yet` |
 | Redefining a built-in — including from a `proc` away from the top level; redefining a procedure *at the top level*; a procedure and a coroutine of the same name. A `proc` away from the top level is *not* refused: it binds its name when it runs | `redefining the built-in command "set" is not supported` |
-| `return` outside a procedure; `return` or `break` or `continue` out of a `catch` script; `return -code` other than `ok` or `error`; `return`'s other options | `"return" outside of a procedure is not supported` |
-| `catch`'s third (options-variable) argument; `error`'s `info` and `code` arguments | `… the options variable is not supported` |
+| `return -errorcode`, `-errorinfo` and `-options`. `-code` and `-level` are implemented, and so is `catch`'s options variable — which carries those two and not tclsh's `-errorstack` / `-errorcode` / `-errorinfo` / `-errorline` | `return option "-errorinfo" is not supported` |
+| `error`'s `info` and `code` arguments | `… the info and code arguments are not supported` |
 | `yield` or `yieldto` inside a script run by `eval`, `uplevel` or `apply`. tclsh suspends the coroutine from inside the nested script; here that script runs a machine of its own, below the VM that would have to park, and that VM saves only its own state — so resuming could not return to the middle of the script | `yield inside a script run by "eval", "uplevel" or "apply" is not supported: a coroutine cannot suspend across one` |
 | `coroutine` anywhere but a script's top level or a command substitution in one; a coroutine of a built-in or of anything but one of the script's procedures; `yieldto` at a command that is not a coroutine of the script | `"coroutine" is only supported at the top level of a script, or in a command substitution in one` |
 | A computed `namespace eval` name or body, or a computed `namespace import` pattern | `a computed "namespace eval" name is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out` |

@@ -214,6 +214,37 @@ const PROGRAMS: &[&str] = &[
     "proc safeDiv {a b} {\n    if {[catch {expr {$a/$b}} r]} {\n        return NaN\n    }\n    return $r\n}\nfor {set i -2} {$i <= 2} {incr i} {puts [safeDiv 10 $i]}",
     "proc collatz {n} {\n    set steps 0\n    while {$n != 1} {\n        if {$n % 2 == 0} {set n [expr {$n/2}]} else {set n [expr {3*$n+1}]}\n        incr steps\n    }\n    return $steps\n}\nfor {set i 1} {$i <= 10} {incr i} {puts \"$i [collatz $i]\"}",
     "proc ack {m n} {\n    if {$m == 0} {return [expr {$n+1}]}\n    if {$n == 0} {return [ack [expr {$m-1}] 1]}\n    return [ack [expr {$m-1}] [ack $m [expr {$n-1}]]]\n}\nputs [ack 2 3]",
+    // ── return codes ──
+    // Every one of these is a *code* leaving a command rather than a value:
+    // what `catch` reports, what a loop absorbs, and what a level spends.
+    "puts [catch {break} m]:<$m>",
+    "puts [catch {continue} m]:<$m>",
+    "puts [catch {return 7} m]:<$m>",
+    "puts [catch {return -code break} m]:<$m>",
+    "puts [catch {return -code 42 hi} m]:<$m>",
+    "puts [catch {return -level 0 -code error zap} m]:<$m>",
+    "catch {break} m o\nputs $o",
+    // `catch {error boom} m o` is *not* here: tclsh's options dictionary for
+    // an error also carries `-errorstack`, `-errorcode`, `-errorinfo` and
+    // `-errorline`, none of which this frontend models. Its two options are
+    // asserted by `the_options_variable_carries_the_code_and_level` below,
+    // and the gap is recorded in BUGS.md.
+    "catch {return -code break} m o\nputs $o",
+    "catch {expr {1+1}} m o\nputs $m/$o",
+    // A procedure that returns a code makes a control structure of itself.
+    "proc stop {} {return -code break}\nset n 0\nwhile {1} {incr n\nstop}\nputs $n",
+    "proc skip {} {return -code continue}\nset n 0\nfor {set i 0} {$i < 5} {incr i} {if {$i == 2} {skip}\nincr n}\nputs $n",
+    // A code raised in a script another level ran reaches that level.
+    "set n 0\nwhile {1} {incr n\nif {$n > 3} {eval {break}}}\nputs $n",
+    "set n 0\nfor {set i 0} {$i < 5} {incr i} {if {$i == 2} {eval {continue}}\nincr n}\nputs $n",
+    // A `catch` inside the loop takes the code first, so the loop does not.
+    "set n 0\nwhile {1} {incr n\nputs [catch {break} c]\nif {$n > 2} break}\nputs $n",
+    // `return` inside a `catch` is code 2 to that `catch`, and the procedure
+    // carries on.
+    "proc q {} {catch {return 7} c\nreturn c=$c}\nputs [q]",
+    "proc r {} {set v [catch {return -code break} c o]\nreturn $v/$c/$o}\nputs [r]",
+    // A `-level` past one keeps travelling.
+    "proc a {} {b}\nproc b {} {return -level 2 -code break}\nset n 0\nwhile {1} {incr n\na}\nputs $n",
 ];
 
 fn tclsh() -> Option<PathBuf> {
@@ -365,19 +396,6 @@ fn unsupported_procedure_constructs_are_refused() {
             "proc f {a args} {}\nf",
             "wrong # args: should be \"f a ?arg ...?\"",
         ),
-        ("return", "\"return\" outside of a procedure"),
-        (
-            "proc f {} {return -code break}",
-            "return -code \"break\" is not supported",
-        ),
-        (
-            "proc f {} {catch {return 1}}",
-            "\"return\" out of a \"catch\" script",
-        ),
-        (
-            "while {1} {catch {break}}",
-            "\"break\" out of a \"catch\" script",
-        ),
         // `-nocase` and `-regexp` are both implemented now; `-matchvar` and
         // `-indexvar` are named rather than reported as bad options, because
         // `switch` does have them and this frontend does not. A genuinely
@@ -395,7 +413,6 @@ fn unsupported_procedure_constructs_are_refused() {
         ("switch a {}", "wrong # args"),
         ("switch a", "wrong # args"),
         ("switch a {a -}", "no body specified for pattern \"a\""),
-        ("catch {error x} m o", "options variable is not supported"),
         ("error a b", "info and code arguments are not supported"),
     ] {
         let err = tclrs::eval(src).expect_err(&format!("{src:?} should fail"));
@@ -550,4 +567,37 @@ fn a_proc_away_from_the_top_level_binds_its_name_when_it_runs() {
     // the call runs, in the usage wording tclsh reports.
     let err = tclrs::eval("if {1} {proc f {a b} {}}\nf 1").expect_err("too few arguments");
     assert!(err.contains("wrong # args: should be \"f a b\""), "{err:?}");
+}
+
+/// `catch`'s options variable carries the code and the level for every outcome.
+///
+/// The values are tclsh 9.0.3's, taken from it directly; the byte-for-byte
+/// corpus above compares the whole dictionary for the outcomes where tclsh's
+/// has nothing else in it. An *error* is the one that does — `-errorstack`,
+/// `-errorcode`, `-errorinfo` and `-errorline` are in tclsh's and not in this
+/// one — so its two modelled options are asserted here instead of pretending
+/// the dictionaries match.
+#[test]
+fn the_options_variable_carries_the_code_and_level() {
+    for (src, expected) in [
+        ("catch {expr {1+1}} m o\nputs $o", "-code 0 -level 0\n"),
+        ("catch {break} m o\nputs $o", "-code 3 -level 0\n"),
+        ("catch {continue} m o\nputs $o", "-code 4 -level 0\n"),
+        ("catch {return 7} m o\nputs $o", "-code 0 -level 1\n"),
+        (
+            "catch {return -code break} m o\nputs $o",
+            "-code 3 -level 1\n",
+        ),
+        (
+            "catch {return -code 42 hi} m o\nputs $o",
+            "-code 42 -level 1\n",
+        ),
+        (
+            "catch {error boom} m o\nputs \"[dict get $o -code] [dict get $o -level]\"",
+            "1 0\n",
+        ),
+    ] {
+        let outcome = tclrs::eval(src).unwrap_or_else(|e| panic!("{src:?} failed: {e}"));
+        assert_eq!(outcome.output, expected, "{src:?}");
+    }
 }

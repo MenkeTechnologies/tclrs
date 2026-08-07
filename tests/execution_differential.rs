@@ -235,12 +235,6 @@ fn unsupported_constructs_are_refused() {
             "array startsearch a",
             "array startsearch is not supported yet",
         ),
-        // A procedure's frame slots are what `return` returns from, so the
-        // command has no meaning outside one.
-        (
-            "return 1",
-            "\"return\" outside of a procedure is not supported",
-        ),
         // This entry was `expr {sin(1)}` until `src/expr_math.rs` landed the
         // whole of `mathfunc(n)`; `sin` is an answer now, so the entry moved
         // to the part of `expr`'s function call that is still not built — a
@@ -253,7 +247,12 @@ fn unsupported_constructs_are_refused() {
             "proc tcl::mathfunc::triple {x} {expr {3*$x}}\nputs [expr {triple(2)}]",
             "invalid command name \"tcl::mathfunc::triple\"",
         ),
+        // A `break` that reaches the outermost level is reported by what it
+        // was rather than by the code it carried — the return-code machinery
+        // is what raises it, and this is where nothing is left to absorb it.
         ("break", "invoked \"break\" outside of a loop"),
+        ("continue", "invoked \"continue\" outside of a loop"),
+        ("return -code error zap", "zap"),
     ] {
         let err = tclrs::eval(src).expect_err(&format!("{src:?} should fail"));
         assert!(

@@ -261,10 +261,6 @@ fn what_the_frame_commands_do_not_do_yet() {
             "proc f {} {upvar 1 neverused v\nset v 2}\nproc g {} {f}\ng",
             "the procedure running there never names it",
         ),
-        (
-            "proc f {} {return [uplevel 1 {return x}]}\nputs [f]",
-            "\"return\" outside of a procedure",
-        ),
         // A lambda's body is a procedure body, so what a body refuses it
         // refuses. `upvar 1 x y` stood here while `upvar` was absent; from a
         // lambda, level 1 is the chunk the synthesised procedure was called from
@@ -283,17 +279,34 @@ fn what_the_frame_commands_do_not_do_yet() {
         );
     }
 
-    // A `break` in a dynamically evaluated script cannot carry its code out to a
-    // loop in the level the script ran in: the script is a chunk of its own, and
-    // this frontend does not propagate a return code across one. It raises
-    // instead, so `catch` answers 1 where tclsh answers 3 and the loop breaks.
-    //
-    // This is a divergence rather than a refusal, and it is `eval`'s rather than
-    // `uplevel`'s — `uplevel` inherits it. Pinned here with the value tclsh
-    // gives, so the day the codes propagate this test is what says so. Recorded
-    // in BUGS.md.
+    // A `break` in a dynamically evaluated script carries its code out to the
+    // level the script ran in, which is what a `catch` around it reports and
+    // what a loop around it absorbs. Both values are tclsh 9.0.3's.
     let outcome = tclrs::eval("while {1} {puts [catch {eval {break}} m]:$m\nbreak}")
-        .expect("the raise is caught");
-    assert_eq!(outcome.output, "1:invoked \"break\" outside of a loop\n");
-    // tclsh: "3:\n"
+        .expect("the code is caught");
+    assert_eq!(outcome.output, "3:\n");
+
+    // Uncaught, the same code reaches the loop and ends it — across `eval`,
+    // across `uplevel`, and out of a procedure that returned one.
+    for (src, expected) in [
+        (
+            "set n 0\nwhile {1} {incr n\nif {$n > 3} {eval {break}}}\nputs $n",
+            "4\n",
+        ),
+        (
+            "proc stop {} {return -code break}\nset n 0\nwhile {1} {incr n\nstop}\nputs $n",
+            "1\n",
+        ),
+        (
+            "proc skip {} {return -code continue}\nset n 0\n\
+             for {set i 0} {$i < 5} {incr i} {if {$i == 2} {skip}\nincr n}\nputs $n",
+            "4\n",
+        ),
+        // A `return` from the script `uplevel` ran returns from the procedure
+        // that ran it, which is the level the script belongs to.
+        ("proc f {} {return [uplevel 1 {return x}]}\nputs [f]", "x\n"),
+    ] {
+        let outcome = tclrs::eval(src).unwrap_or_else(|e| panic!("{src:?} failed: {e}"));
+        assert_eq!(outcome.output, expected, "{src:?}");
+    }
 }

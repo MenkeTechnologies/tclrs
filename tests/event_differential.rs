@@ -453,13 +453,9 @@ fn unreachable_scopes_are_refused() {
         // simply not read back afterwards. Byte-compared against tclsh in
         // `PROGRAMS` above.
         //
-        // What is left of that wall is what a projection cannot carry either: a
-        // `return` in the projected script returns from the *chunk* the
-        // projection runs as, and that chunk is no procedure.
-        (
-            "proc o {} {i}\nproc i {} {return [uplevel 1 {return x}]}\nputs [o]",
-            "\"return\" outside of a procedure is not supported",
-        ),
+        // A `return` in the projected script no longer stands there: it is a
+        // return code leaving the chunk, and the level it belongs to absorbs
+        // it. Byte-compared against tclsh below.
         // Level 0 is the script's own, and *that* is name-addressed, so a level
         // past the end of the stack is the ordinary bad-level report rather than
         // this frontend's own refusal.
@@ -537,6 +533,13 @@ fn unreachable_scopes_are_refused() {
             "{src:?}: expected an error mentioning {expected:?}, got {err:?}"
         );
     }
+
+    // A `return` inside a script `uplevel` projected into a caller's frame
+    // returns from *that* frame's procedure, two levels of chunk down. tclsh
+    // 9.0.3 prints `x`.
+    let outcome = tclrs::eval("proc o {} {i}\nproc i {} {return [uplevel 1 {return x}]}\nputs [o]")
+        .expect("the return reaches the level it belongs to");
+    assert_eq!(outcome.output, "x\n");
 }
 
 /// `after ms` with no script blocks, which no byte-for-byte comparison can

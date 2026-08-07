@@ -244,13 +244,13 @@ impl Compiler {
 
     /// `catch script ?resultVarName?`.
     pub(crate) fn cmd_catch(&mut self, args: &[Word]) -> Result<(), CompileError> {
-        let (body, var) = match args {
-            [b] => (b, None),
-            [b, v] => (b, Some(self.var_name_of(v)?)),
+        let (body, var, opts_var) = match args {
+            [b] => (b, None, None),
+            [b, v] => (b, Some(self.var_name_of(v)?), None),
+            [b, v, o] => (b, Some(self.var_name_of(v)?), Some(self.var_name_of(o)?)),
             _ => {
                 return self.error(
-                    "wrong # args: should be \"catch script ?resultVarName?\"; the options \
-                     variable is not supported",
+                    "wrong # args: should be \"catch script ?resultVarName? ?optionsVarName?\"",
                 )
             }
         };
@@ -261,10 +261,12 @@ impl Compiler {
         // opened; the ordinary path jumps over it.
         let over = self.emit(Op::Jump(usize::MAX), 0);
         let handler = self.b.current_pos();
-        // The driver resumes here with the error message on the stack.
-        self.depth = entry + 1;
+        // The driver resumes here having pushed the code, the return options
+        // and the result, in that order — so the result is on top, the options
+        // under it, and the code under those, which is the value `catch` is.
+        self.depth = entry + 3;
         self.store_or_drop(var.as_deref());
-        self.emit(Op::LoadInt(1), 1);
+        self.store_or_drop(opts_var.as_deref());
         let to_end = self.emit(Op::Jump(usize::MAX), 0);
 
         let guarded = self.b.current_pos();
@@ -277,6 +279,11 @@ impl Compiler {
         compiled?;
         self.emit(Op::Extended(ext::CATCH_END, 0), 0);
         self.store_or_drop(var.as_deref());
+        // The script completed, so the options say so: code 0, level 0.
+        if let Some(name) = opts_var.as_deref() {
+            self.push_str("-code 0 -level 0");
+            self.store_or_drop(Some(name));
+        }
         self.emit(Op::LoadInt(0), 1);
 
         let end = self.b.current_pos();

@@ -63,6 +63,18 @@ pub mod ext {
     /// Leave the `catch` region entered by `ext_wide::CATCH`, having reached
     /// its end without an error.
     pub const CATCH_END: u16 = 9;
+    /// `[break_ip, continue_ip]` — open a loop region, which absorbs a `break`
+    /// or a `continue` that arrives as a *raised return code* rather than as
+    /// the direct jump the compiler emits for one written in the loop's own
+    /// body: from a nested `eval`, from a procedure that returned `-code
+    /// break`, or from an `uplevel`. See `Compiler::rotated_loop`.
+    pub const LOOP_ENTER: u16 = 35;
+    /// Leave the loop region opened by [`LOOP_ENTER`].
+    pub const LOOP_LEAVE: u16 = 36;
+    /// `[message, code, level]` — leave the running command with a Tcl return
+    /// code. `break` and `continue` outside any loop the chunk can see raise
+    /// one, and so does every `return` whose code is not `ok`.
+    pub const RAISE: u16 = 37;
 
     // Coroutines (`coro`). Every one but [`CORO_INFO`] parks the VM with a
     // request the driver in [`crate::runtime`] services; see [`crate::coro`].
@@ -2071,17 +2083,26 @@ impl Compiler {
         if !args.is_empty() {
             return self.error(format!("wrong # args: should be \"{word}\""));
         }
-        let Some(ctx) = self.loops.last() else {
-            return self.error(format!("invoked \"{word}\" outside of a loop"));
+        let code = if is_break {
+            crate::runtime::TCL_BREAK
+        } else {
+            crate::runtime::TCL_CONTINUE
         };
-        if ctx.catch_depth != self.catch_depth {
-            // Tcl turns such an exit into the return code the enclosing
-            // `catch` reports rather than letting it reach the loop, which
-            // this frontend does not model.
-            return self.error(format!(
-                "\"{word}\" out of a \"catch\" script is not supported"
-            ));
+        // No loop in this chunk to jump to, or one outside a `catch` this exit
+        // is written inside: either way the exit is a *return code* leaving the
+        // command, which is what it is in Tcl anyway. The enclosing `catch`
+        // reports it, a loop region absorbs it, and nothing at all leaves it to
+        // be reported as `invoked "break" outside of a loop`.
+        let ctx = self.loops.last();
+        if ctx.is_none_or(|c| c.catch_depth != self.catch_depth) {
+            self.push_empty();
+            self.emit(Op::LoadInt(i64::from(code)), 1);
+            self.emit(Op::LoadInt(0), 1);
+            self.emit(Op::Extended(ext::RAISE, 0), -3);
+            self.push_empty();
+            return Ok(());
         }
+        let ctx = ctx.expect("a loop context, checked above");
         // Discard whatever this iteration pushed before jumping, so the exit
         // point sees the depth it was compiled for.
         let before = self.depth;
@@ -2148,6 +2169,22 @@ impl Compiler {
         C: FnOnce(&mut Self) -> Result<(), CompileError>,
     {
         let entry = self.depth;
+        // Two trampolines the loop region resumes at, jumped over on the way
+        // in. A `break` or `continue` written in this loop's own body is a
+        // direct jump and never reaches them; one that arrives as a raised
+        // return code — from a nested script, or from a procedure that
+        // returned `-code break` — has only an op index to be sent to, and
+        // these are the two indices that mean "leave" and "next iteration".
+        // They are ordinary jumps, patched with the real targets below.
+        let over_tramps = self.emit(Op::Jump(usize::MAX), 0);
+        let brk_tramp = self.emit(Op::Jump(usize::MAX), 0);
+        let cont_tramp = self.emit(Op::Jump(usize::MAX), 0);
+        let region = self.b.current_pos();
+        self.b.patch_jump(over_tramps, region);
+        self.emit(Op::LoadInt(brk_tramp as i64), 1);
+        self.emit(Op::LoadInt(cont_tramp as i64), 1);
+        self.emit(Op::Extended(ext::LOOP_ENTER, 0), -2);
+
         let enter = self.emit(Op::Jump(usize::MAX), 0);
         let top = self.b.current_pos();
 
@@ -2181,6 +2218,11 @@ impl Compiler {
         for j in ctx.breaks {
             self.b.patch_jump(j, end);
         }
+        // The region closes here, so the trampolines can point at the two
+        // places a raised code should land: the loop's exit and its step.
+        self.b.patch_jump(brk_tramp, end);
+        self.b.patch_jump(cont_tramp, step_at);
+        self.emit(Op::Extended(ext::LOOP_LEAVE, 0), 0);
         Ok(())
     }
 
