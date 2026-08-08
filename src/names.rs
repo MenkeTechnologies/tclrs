@@ -408,7 +408,7 @@ pub const CORPUS: &[Entry] = &[
     },
     Entry {
         name: "switch",
-        synopsis: "switch ?options? string {pattern body ...}",
+        synopsis: "switch ?-option ...? string ?pattern body ...? ?default body?",
         summary: "Run the body of the first pattern that matches, `-exact` or `-glob`.",
     },
     Entry {

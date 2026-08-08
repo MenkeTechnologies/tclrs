@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. Every one of the 335 names the current tclrs build implements: 77 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. Every one of the 336 names the current tclrs build implements: 78 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -126,15 +126,15 @@
 
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>LANGUAGE REFERENCE</h2>
-      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 77 commands,
+      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 78 commands,
       169 ensemble subcommands, the <code>expr</code> ladder, the
       <code>string is</code> classes and the <code>format</code> conversions &mdash; each with the
       signature the compiler reports and a description written from what the code does.
-      335 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
+      336 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
       <section class="tutorial-section">
         <h2>Chapters</h2>
         <ul class="chapter-index">
-          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">77</span></li>
+          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">78</span></li>
           <li><a href="#ch-string">The <code>string</code> ensemble</a> <span class="chapter-count">23</span></li>
           <li><a href="#ch-array">The <code>array</code> ensemble</a> <span class="chapter-count">13</span></li>
           <li><a href="#ch-dict">The <code>dict</code> ensemble</a> <span class="chapter-count">22</span></li>
@@ -147,7 +147,7 @@
 
       <section class="tutorial-section" id="ch-commands">
         <h2>Commands</h2>
-        <p class="chapter-meta">77 entries</p>
+        <p class="chapter-meta">78 entries</p>
         <p>Every command the current build compiles. A name absent from this
         chapter is <code>invalid command name "&hellip;"</code> at <em>compile</em>
         time, not a runtime lookup that fails &mdash; resolving the name while
@@ -159,11 +159,11 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">77</div>
+            <div class="stat-val">78</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">130/169</div>
+            <div class="stat-val">137/169</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -536,6 +536,12 @@
 </code></pre>
           <p>Return from the enclosing procedure with the result. <code>-code ok</code> and <code>-code error</code> are the codes implemented.</p>
         </article>
+        <article class="doc-entry" id="doc-cmd-scan">
+          <h3><a class="doc-anchor" href="#doc-cmd-scan">#</a> <code>scan</code></h3>
+          <pre><code class="lang-tcl">scan string format ?varName ...?
+</code></pre>
+          <p>Read the string the way <code>sscanf</code> does, with Tcl's conversion set. With variable names the result is how many conversions were assigned, and a variable whose conversion never ran is left untouched; with none, the converted values come back as a list.</p>
+        </article>
         <article class="doc-entry" id="doc-cmd-seek">
           <h3><a class="doc-anchor" href="#doc-cmd-seek">#</a> <code>seek</code></h3>
           <pre><code class="lang-tcl">seek channel offset ?origin?
@@ -568,7 +574,7 @@
         </article>
         <article class="doc-entry" id="doc-cmd-switch">
           <h3><a class="doc-anchor" href="#doc-cmd-switch">#</a> <code>switch</code></h3>
-          <pre><code class="lang-tcl">switch ?options? string {pattern body ...}
+          <pre><code class="lang-tcl">switch ?-option ...? string ?pattern body ...? ?default body?
 </code></pre>
           <p>Run the body of the first pattern that matches, <code>-exact</code> or <code>-glob</code>.</p>
         </article>
@@ -877,14 +883,13 @@
 
       <section class="tutorial-section" id="ch-dict">
         <h2>The <code>dict</code> ensemble</h2>
-        <p class="chapter-meta">22 subcommands recognised &middot; 11 implemented &middot; 11 refused</p>
+        <p class="chapter-meta">22 subcommands recognised &middot; 18 implemented &middot; 4 refused</p>
         <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
         <article class="doc-entry" id="doc-dict-append">
           <h3><a class="doc-anchor" href="#doc-dict-append">#</a> <code>dict append</code></h3>
           <pre><code class="lang-tcl">dict append dictVarName key ?string ...?
 </code></pre>
-          <p>Append the strings to the value already at the key in the dict the variable holds, creating the key when it is absent, and yield the new dict. Not built here.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict append is not supported yet</code></p>
+          <p>Append the strings to the value already at the key in the dict the variable holds, creating the key when it is absent, and yield the new dict.</p>
         </article>
         <article class="doc-entry" id="doc-dict-create">
           <h3><a class="doc-anchor" href="#doc-dict-create">#</a> <code>dict create</code></h3>
@@ -902,8 +907,7 @@
           <h3><a class="doc-anchor" href="#doc-dict-filter">#</a> <code>dict filter</code></h3>
           <pre><code class="lang-tcl">dict filter dictionary filterType arg ?arg ...?
 </code></pre>
-          <p>The pairs kept by one of three filters: <code>key</code> and <code>value</code> take glob patterns, and <code>script {k v} body</code> keeps a pair when the body's expression is true. The script form needs a body run per pair against caller variables, which is the same machinery <code>dict map</code> wants. Not built here.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict filter is not supported yet</code></p>
+          <p>The pairs kept by one of three filters: <code>key</code> and <code>value</code> take glob patterns and are built here — any of several patterns matching keeps the pair, and no pattern keeps nothing. The <code>script {k v} body</code> form is not: it needs a body run per pair against caller variables, which is the same machinery <code>dict map</code> wants.</p>
         </article>
         <article class="doc-entry" id="doc-dict-for">
           <h3><a class="doc-anchor" href="#doc-dict-for">#</a> <code>dict for</code></h3>
@@ -921,15 +925,13 @@
           <h3><a class="doc-anchor" href="#doc-dict-getdef">#</a> <code>dict getdef</code></h3>
           <pre><code class="lang-tcl">dict getdef dictionary ?key ...? key default
 </code></pre>
-          <p>The value at the key path, or the trailing default argument when any step of the path is missing — the total-function form of <code>dict get</code>. Not built here.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict getdef is not supported yet</code></p>
+          <p>The value at the key path, or the trailing default argument when any step of the path is missing — the total-function form of <code>dict get</code>. A dict that does not parse is still an error, as it is for <code>dict get</code>.</p>
         </article>
         <article class="doc-entry" id="doc-dict-getwithdefault">
           <h3><a class="doc-anchor" href="#doc-dict-getwithdefault">#</a> <code>dict getwithdefault</code></h3>
           <pre><code class="lang-tcl">dict getwithdefault dictionary ?key ...? key default
 </code></pre>
           <p>The long spelling of <code>dict getdef</code>, identical in behaviour. Both are listed because either one being present is what makes <code>dict get</code> an unambiguous abbreviation of nothing else.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict getwithdefault is not supported yet</code></p>
         </article>
         <article class="doc-entry" id="doc-dict-incr">
           <h3><a class="doc-anchor" href="#doc-dict-incr">#</a> <code>dict incr</code></h3>
@@ -954,8 +956,7 @@
           <h3><a class="doc-anchor" href="#doc-dict-lappend">#</a> <code>dict lappend</code></h3>
           <pre><code class="lang-tcl">dict lappend dictVarName key ?value ...?
 </code></pre>
-          <p>Append the values as list elements to the value at the key in the dict the variable holds, and yield the new dict. Not built here.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict lappend is not supported yet</code></p>
+          <p>Append the values as list elements to the value at the key in the dict the variable holds, and yield the new dict.</p>
         </article>
         <article class="doc-entry" id="doc-dict-map">
           <h3><a class="doc-anchor" href="#doc-dict-map">#</a> <code>dict map</code></h3>
@@ -980,8 +981,7 @@
           <h3><a class="doc-anchor" href="#doc-dict-replace">#</a> <code>dict replace</code></h3>
           <pre><code class="lang-tcl">dict replace dictionary ?key value ...?
 </code></pre>
-          <p>The dict with the given pairs set, as a value rather than through a variable — <code>dict set</code> without the assignment. Not built here.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict replace is not supported yet</code></p>
+          <p>The dict with the given pairs set, as a value rather than through a variable — <code>dict set</code> without the assignment.</p>
         </article>
         <article class="doc-entry" id="doc-dict-set">
           <h3><a class="doc-anchor" href="#doc-dict-set">#</a> <code>dict set</code></h3>
@@ -999,8 +999,7 @@
           <h3><a class="doc-anchor" href="#doc-dict-unset">#</a> <code>dict unset</code></h3>
           <pre><code class="lang-tcl">dict unset dictVarName key ?key ...?
 </code></pre>
-          <p>Remove the key path from the dict the variable holds and yield the new dict. Not built here.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict unset is not supported yet</code></p>
+          <p>Remove the key path from the dict the variable holds and yield the new dict. Removing the last key of the path is not an error when it is absent; a key the path has to walk <em>through</em> must exist.</p>
         </article>
         <article class="doc-entry" id="doc-dict-update">
           <h3><a class="doc-anchor" href="#doc-dict-update">#</a> <code>dict update</code></h3>

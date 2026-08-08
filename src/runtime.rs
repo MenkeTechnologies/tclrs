@@ -1607,13 +1607,38 @@ fn info_names_op(interp: &Shared, vm: &mut VM, which: u8) -> Result<(), TclError
         // this one has assigned and not yet written back.
         _ => global_names_of(interp, vm),
     };
+    // A pattern that names a namespace is matched — and answered — in fully
+    // qualified form: `info vars n::*` is `::n::x` in tclsh, where a pattern
+    // with no separator in it answers the bare names it matched. Both sides are
+    // normalised to the absolute spelling so that `n::*` and `::n::*` are the
+    // same pattern, which is what tclsh resolves them to.
+    let qualified = filter.as_deref().is_some_and(|p| p.contains("::"));
     if let Some(p) = filter.as_deref() {
-        names.retain(|name| crate::list::glob_match(p, name));
+        if qualified {
+            let p = absolute(p);
+            names.retain(|name| crate::list::glob_match(&p, &absolute(name)));
+        } else {
+            names.retain(|name| crate::list::glob_match(p, name));
+        }
+    }
+    if qualified {
+        for name in &mut names {
+            *name = absolute(name);
+        }
     }
     names.sort();
     names.dedup();
     vm.push(Value::Str(Arc::new(crate::list::join(&names))));
     Ok(())
+}
+
+/// A name in its absolute spelling: rooted at the global namespace.
+fn absolute(name: &str) -> String {
+    if name.starts_with("::") {
+        name.to_string()
+    } else {
+        format!("::{name}")
+    }
 }
 
 fn eval_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {

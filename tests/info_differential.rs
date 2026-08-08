@@ -114,6 +114,18 @@ const PROGRAMS: &[&str] = &[
     "set zza(k) 1\nputs [info globals zz*]",
     "set zzalpha 1\nputs [lsort [info vars zz*]]",
     "proc p {} {global zzg\nreturn [info globals zz*]}\nset zzg 1\nputs [p]",
+    // A pattern that names a namespace is matched and answered in fully
+    // qualified form, whichever spelling it was written in; one with no
+    // separator answers the bare names.
+    "namespace eval zzn {variable x 1; variable y 2}\nputs [lsort [info vars zzn::*]]",
+    "namespace eval zzn {variable x 1}\nputs [lsort [info vars ::zzn::*]]",
+    "namespace eval zzn {variable x 1}\nputs [info vars ::zzn::x]",
+    "namespace eval zzn {proc f {} {}; proc g {} {}}\nputs [lsort [info procs zzn::*]]",
+    "namespace eval zzn {proc f {} {}}\nputs [lsort [info procs ::zzn::*]]",
+    "namespace eval zzn {proc f {} {}}\nputs [lsort [info commands ::zzn::f]]",
+    "namespace eval zzn {proc f {} {}}\nputs [info procs ::zzn::nosuch]x",
+    "puts [info vars ::zznosuch::*]x",
+    "set zzalpha 1\nputs [info vars ::zzalpha]",
     // ── versions ──
     "puts [info tclversion]",
     "puts [info patchlevel]",

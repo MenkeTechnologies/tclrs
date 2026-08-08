@@ -111,7 +111,7 @@ impl Compiler {
 
         let Some(subject) = args.get(i) else {
             return self
-                .error("wrong # args: should be \"switch ?options? string {pattern body ...}\"");
+                .error("wrong # args: should be \"switch ?-option ...? string ?pattern body ...? ?default body?\"");
         };
         let clauses = self.switch_clauses(&args[i + 1..])?;
 
@@ -174,7 +174,7 @@ impl Compiler {
 
         if tail.is_empty() {
             return self
-                .error("wrong # args: should be \"switch ?options? string pattern body ...\"");
+                .error("wrong # args: should be \"switch ?-option ...? string ?pattern body ...? ?default body?\"");
         }
         if tail.len() == 1 {
             // The grouped form: the whole tail is one list, and because braces
@@ -186,7 +186,7 @@ impl Compiler {
             };
             if elements.is_empty() {
                 return self.error(
-                    "wrong # args: should be \"switch ?options? string {pattern body ...}\"",
+                    "wrong # args: should be \"switch ?-option ...? string ?pattern body ...? ?default body?\"",
                 );
             }
             if !elements.len().is_multiple_of(2) {
