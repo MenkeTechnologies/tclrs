@@ -1073,8 +1073,119 @@ impl Compiler {
                 self.emit_set_var(&name);
                 Ok(())
             }
+            "replace" => {
+                // The pairs are loose arguments, so an odd count is the usage
+                // error rather than "missing value to go with key".
+                if rest.is_empty() || !(rest.len() - 1).is_multiple_of(2) {
+                    return self.error(
+                        "wrong # args: should be \"dict replace dictionary ?key value ...?\"",
+                    );
+                }
+                self.variadic(rest, ext::DICT_REPLACE)
+            }
+            "getdef" | "getwithdefault" => {
+                if rest.len() < 3 {
+                    return self.error(format!(
+                        "wrong # args: should be \"dict {sub} dictionary ?key ...? key default\""
+                    ));
+                }
+                self.variadic(rest, ext::DICT_GETDEF)
+            }
+            "unset" => {
+                let [name, keys @ ..] = rest else {
+                    return self
+                        .error("wrong # args: should be \"dict unset dictVarName key ?key ...?\"");
+                };
+                if keys.is_empty() {
+                    return self
+                        .error("wrong # args: should be \"dict unset dictVarName key ?key ...?\"");
+                }
+                self.dict_in_place(name, keys, ext::DICT_UNSET, "dict unset")
+            }
+            "lappend" | "append" => {
+                let [name, key, values @ ..] = rest else {
+                    return self.error(format!(
+                        "wrong # args: should be \"dict {sub} dictVarName key ?value ...?\""
+                    ));
+                };
+                let op = if sub == "lappend" {
+                    ext::DICT_LAPPEND
+                } else {
+                    ext::DICT_APPEND
+                };
+                let mut operands = Vec::with_capacity(values.len() + 1);
+                operands.push(key.clone());
+                operands.extend_from_slice(values);
+                self.dict_in_place(name, &operands, op, &format!("dict {sub}"))
+            }
+            "filter" => {
+                let [dict, which, patterns @ ..] = rest else {
+                    return self.error(
+                        "wrong # args: should be \"dict filter dictionary filterType ?arg ...?\"",
+                    );
+                };
+                // Which filter it is decides how many arguments are legal, so
+                // the type has to be a literal here; `script` needs a body run
+                // per pair, which this frontend does not lower yet.
+                let which = match self.literal_of(which, "dict filter type")? {
+                    "key" => 0,
+                    "value" => 1,
+                    "script" => return self.error("dict filter script is not supported yet"),
+                    // The reference implementation only reaches this when the
+                    // command runs, so `catch {dict filter {a 1} bogus}` is a
+                    // caught error there rather than a script that refuses to
+                    // compile. Marked so the failure becomes code.
+                    other => {
+                        let msg =
+                            format!("bad filterType \"{other}\": must be key, script, or value");
+                        return Err(self.deferrable_err(msg));
+                    }
+                };
+                self.word(dict)?;
+                self.push_str(&which.to_string());
+                for p in patterns {
+                    self.word(p)?;
+                }
+                // The count covers the dict and the filter type as well, since
+                // the handler pops all of its operands through it.
+                self.emit(Op::LoadInt(patterns.len() as i64 + 2), 1);
+                self.emit(
+                    Op::Extended(ext::DICT_FILTER, 0),
+                    -(patterns.len() as i32 + 2),
+                );
+                Ok(())
+            }
             other => self.error(format!("dict {other} is not supported yet")),
         }
+    }
+
+    /// The shape every `dict` subcommand that *updates a variable* shares:
+    /// push the name, push where it lives, push the operands and their count,
+    /// run the op, and store what it produced back into the variable. The
+    /// variable is reached by place rather than by value because these
+    /// subcommands create it when it does not exist, so the read must tolerate
+    /// an absent variable where a bare `$d` refuses one.
+    fn dict_in_place(
+        &mut self,
+        name: &Word,
+        operands: &[Word],
+        op: u16,
+        what: &str,
+    ) -> Result<(), CompileError> {
+        let Some(Target::Scalar(name)) = target_of(name) else {
+            return self.error(format!("{what} into an array element is not supported yet"));
+        };
+        self.push_str(&name);
+        let place = self.var_place_operand(&name);
+        self.emit(Op::LoadInt(place), 1);
+        for w in operands {
+            self.word(w)?;
+        }
+        self.emit(Op::LoadInt(operands.len() as i64), 1);
+        self.emit(Op::Extended(op, 0), -(operands.len() as i32 + 2));
+        self.emit(Op::Dup, 1);
+        self.emit_set_var(&name);
+        Ok(())
     }
 
     /// Emit `n` argument words followed by their count, then the op that reads
@@ -1579,8 +1690,120 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             vm.push(Value::Array(flat));
             Ok(())
         }
+        ext::DICT_REPLACE => {
+            let mut args = pop_args(vm);
+            let dict = args.remove(0);
+            let mut d = Dict::parse(&dict)?;
+            let mut it = args.into_iter();
+            while let (Some(k), Some(v)) = (it.next(), it.next()) {
+                d.put(k, v);
+            }
+            push_str(vm, d.to_list());
+            Ok(())
+        }
+        ext::DICT_GETDEF => {
+            let mut args = pop_args(vm);
+            let dict = args.remove(0);
+            let default = args.pop().expect("arity checked at compile time");
+            let last = args.pop().expect("arity checked at compile time");
+            // A missing step anywhere along the path is the default, not an
+            // error — that is the whole difference from `dict get`. A dict that
+            // does not parse is still an error, as it is there.
+            let mut current = Dict::parse(&dict)?;
+            for key in &args {
+                match current.get(key) {
+                    Some(next) => current = Dict::parse(next)?,
+                    None => {
+                        push_str(vm, default);
+                        return Ok(());
+                    }
+                }
+            }
+            push_str(
+                vm,
+                current
+                    .get(&last)
+                    .map_or(default, |found| found.to_string()),
+            );
+            Ok(())
+        }
+        ext::DICT_UNSET => {
+            let keys = pop_args(vm);
+            let (current, _name) = dict_variable(vm)?;
+            push_str(vm, dict_unset(&current, &keys)?);
+            Ok(())
+        }
+        ext::DICT_LAPPEND | ext::DICT_APPEND => {
+            let mut args = pop_args(vm);
+            let key = args.remove(0);
+            let (current, _name) = dict_variable(vm)?;
+            let mut d = Dict::parse(&current)?;
+            let existing = d.get(&key).unwrap_or("").to_string();
+            let updated = if id == ext::DICT_LAPPEND {
+                let mut elements = crate::list::split(&existing)?;
+                elements.extend(args);
+                crate::list::join(&elements)
+            } else {
+                let mut text = existing;
+                for piece in args {
+                    text.push_str(&piece);
+                }
+                text
+            };
+            d.put(key, updated);
+            push_str(vm, d.to_list());
+            Ok(())
+        }
+        ext::DICT_FILTER => {
+            let mut args = pop_args(vm);
+            let dict = args.remove(0);
+            let on_value = args.remove(0) == "1";
+            let d = Dict::parse(&dict)?;
+            let mut kept = Dict::new();
+            for (k, v) in d.entries {
+                let subject = if on_value { &v } else { &k };
+                if args.iter().any(|p| string_match(subject, p)) {
+                    kept.put(k, v);
+                }
+            }
+            push_str(vm, kept.to_list());
+            Ok(())
+        }
         other => Err(format!("unknown extension op {other}")),
     }
+}
+
+/// The `[name, place]` pair every in-place `dict` subcommand pushes below its
+/// operands: the variable's current value as a string, and its name. An array
+/// is refused with the reference implementation's wording, and a variable that
+/// does not exist reads as the empty dict rather than as a failure.
+fn dict_variable(vm: &mut VM) -> Result<(String, String), String> {
+    let place = place_of(vm);
+    let current = peek(vm, place).cloned().unwrap_or(Value::Undef);
+    let name = pop_str(vm);
+    if matches!(current, Value::Hash(_)) {
+        return Err(format!("can't set \"{name}\": variable is array"));
+    }
+    Ok((to_tcl_string(&current), name))
+}
+
+/// `dict unset` down a key path. Every step but the last must resolve to a
+/// dict; the last key is simply removed, and removing a key that is not there
+/// is not an error.
+fn dict_unset(dict: &str, keys: &[String]) -> Result<String, String> {
+    let mut d = Dict::parse(dict)?;
+    let (key, rest) = keys.split_first().expect("at least one key");
+    if rest.is_empty() {
+        // Removing the last key is not an error when it is not there — only a
+        // key that the path has to walk *through* must exist.
+        d.remove(key);
+    } else {
+        let Some(inner) = d.get(key).map(str::to_string) else {
+            return Err(format!("key \"{key}\" not known in dictionary"));
+        };
+        d.put(key.clone(), dict_unset(&inner, rest)?);
+    }
+    Ok(d.to_list())
 }
 
 /// `dict incr`: the key's value plus the increment, the key created at zero when

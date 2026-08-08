@@ -827,11 +827,20 @@ enum Mode {
     Glob,
     /// `-regexp`, matched by [`crate::regexp`] rather than by the glob matcher.
     Regexp,
+    /// `-sorted` and `-bisect`: a mode in the reference implementation rather
+    /// than a flag, so a later `-glob` takes the search off the binary-search
+    /// path. Where the search still has to be linear — `-all` or `-not` — it
+    /// compares exactly, as that implementation does.
+    Sorted,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DataType {
     Ascii,
+    /// `-ascii -nocase`. A mode of its own in the reference implementation
+    /// (`SORTMODE_ASCII_NC`), because `-nocase` is ignored outside it.
+    AsciiNoCase,
+    Dictionary,
     Integer,
     Real,
 }
@@ -843,11 +852,14 @@ fn lsearch(args: &[String]) -> Result<String, String> {
     let mut inline = false;
     let mut negated = false;
     let mut start_text: Option<&str> = None;
-    // Recorded for the diagnostic below; nothing else reads it while `-sorted`
-    // and `-bisect` are unimplemented, which is the whole point — the option is
-    // accepted because it changes no answer without them.
+    // Which order the list `-sorted` and `-bisect` binary-search through is in.
+    // lsearch(n) gives it no other effect: `lsearch -decreasing {a b c} b` is 1
+    // in tclsh 9.0.4, exactly as the same search without the option is.
     let mut increasing = true;
-    let mut ordered: Option<&str> = None;
+    let mut bisect = false;
+    let mut nocase = false;
+    let mut subindices = false;
+    let mut index_path: Vec<String> = Vec::new();
     let mut stride = 1usize;
 
     let mut i = 0;
@@ -856,6 +868,16 @@ fn lsearch(args: &[String]) -> Result<String, String> {
         match name {
             "-all" => all = true,
             "-ascii" => data = DataType::Ascii,
+            "-dictionary" => data = DataType::Dictionary,
+            "-nocase" => nocase = true,
+            "-subindices" => subindices = true,
+            "-index" => {
+                if i + 2 > args.len() - 2 {
+                    return Err("\"-index\" option must be followed by list index".to_string());
+                }
+                i += 1;
+                index_path = list::split(&args[i])?;
+            }
             "-exact" => mode = Mode::Exact,
             "-glob" => mode = Mode::Glob,
             "-regexp" => mode = Mode::Regexp,
@@ -879,10 +901,15 @@ fn lsearch(args: &[String]) -> Result<String, String> {
                 i += 1;
                 start_text = Some(&args[i]);
             }
-            // The two options that would read the order. Refused after the loop,
-            // not here, so the order they name is the one the whole command
-            // settled on rather than whichever flag came first.
-            "-sorted" | "-bisect" => ordered = Some(name),
+            // Both put the search on the binary-search path; `-bisect` differs
+            // in answering the last element that is not past the pattern rather
+            // than only an exact hit. Setting the *mode* is what the reference
+            // implementation does, so a `-glob` written after one of these
+            // takes the search off that path again, exactly as it does there.
+            "-sorted" | "-bisect" => {
+                mode = Mode::Sorted;
+                bisect = name == "-bisect";
+            }
             // `-stride N` makes the list groups of N and searches each group's
             // first element, answering where the *group* starts. The floor is 1
             // here and 2 in `lsort`, with a different wording each — measured:
@@ -905,13 +932,11 @@ fn lsearch(args: &[String]) -> Result<String, String> {
         }
         i += 1;
     }
-    if let Some(name) = ordered {
-        let order = if increasing {
-            "-increasing"
-        } else {
-            "-decreasing"
-        };
-        return Err(format!("lsearch {name} {order} is not supported yet"));
+    if subindices && index_path.is_empty() {
+        return Err("-subindices cannot be used without -index option".to_string());
+    }
+    if bisect && mode == Mode::Sorted && (all || negated) {
+        return Err("-bisect is not compatible with -all or -not".to_string());
     }
 
     let items = list::split(&args[args.len() - 2])?;
@@ -919,6 +944,20 @@ fn lsearch(args: &[String]) -> Result<String, String> {
     if stride > 1 && !items.len().is_multiple_of(stride) {
         return Err("list size must be a multiple of the stride length".to_string());
     }
+
+    // With `-stride`, the first `-index` value picks which element of each
+    // group carries the key, exactly as it does in `lsort`; the rest of the
+    // path is walked into that element.
+    let (group_offset, path): (usize, &[String]) = match index_path.split_first() {
+        Some((first, rest)) if stride > 1 => {
+            let at = list::index(first, stride as i64 - 1)?;
+            if at < 0 || at >= stride as i64 {
+                return Err("when used with \"-stride\", the leading \"-index\" value must be within the group".to_string());
+            }
+            (at as usize, rest)
+        }
+        _ => (0, &index_path),
+    };
 
     let mut start = 0usize;
     if let Some(text) = start_text {
@@ -931,62 +970,184 @@ fn lsearch(args: &[String]) -> Result<String, String> {
             });
         }
         start = at as usize;
+        // A start inside a group searches from the group it is in.
+        start -= start % stride;
     }
 
-    // The data-type options describe how to compare, so they only apply where a
-    // comparison happens; the glob matcher works on strings whatever they hold.
-    let target = match (mode, data) {
-        (Mode::Exact, DataType::Integer) => Some(Compare::Integer(list::wide(pattern)?)),
-        (Mode::Exact, DataType::Real) => Some(Compare::Real(list::double(pattern)?)),
-        _ => None,
-    };
+    // The key one list position is searched on: the element itself, or what
+    // `-index` names inside it.
+    let key_at = |i: usize| -> Result<String, String> { sublist(&items[i + group_offset], path) };
 
+    let mut index: i64 = -1;
     let mut hits: Vec<usize> = Vec::new();
-    for (i, item) in items
-        .iter()
-        .enumerate()
-        .skip(start)
-        .filter(|(i, _)| i.is_multiple_of(stride))
-    {
-        let mut hit = match (&target, mode) {
-            (Some(Compare::Integer(want)), _) => list::wide(item)? == *want,
-            (Some(Compare::Real(want)), _) => list::double(item)? == *want,
-            (None, Mode::Exact) => item == pattern,
-            (None, Mode::Glob) => list::glob_match(pattern, item),
-            // The regular-expression engine owns this one; a pattern it
-            // refuses is `lsearch`'s error too. `-nocase` is not threaded
-            // through because `lsearch` does not implement it — that option
-            // still reports its own refusal above.
-            (None, Mode::Regexp) => crate::regexp::matches_anywhere(pattern, item, false)?,
-        };
-        if negated {
-            hit = !hit;
-        }
-        if hit {
-            hits.push(i);
-            if !all {
-                break;
+
+    if mode == Mode::Sorted && !all && !negated {
+        // A sorted list is bisected rather than scanned. The search does not
+        // stop at the first hit: it keeps narrowing so that the *leftmost* of
+        // a run of equal elements is the answer — and with `-bisect`, the
+        // rightmost element that is not past the pattern.
+        let mut lower = start as i64 - stride as i64;
+        let mut upper = items.len() as i64;
+        while lower + (stride as i64) != upper {
+            let mut i = (lower + upper) / 2;
+            i -= i % stride as i64;
+            let key = key_at(i as usize)?;
+            let order = compare_to_pattern(pattern, &key, data, nocase)?;
+            if order.is_eq() {
+                index = i;
+                if bisect {
+                    lower = i;
+                } else {
+                    upper = i;
+                }
+            } else if order.is_gt() == increasing {
+                lower = i;
+            } else {
+                upper = i;
             }
+        }
+        if bisect && index < 0 {
+            index = lower;
+        }
+        if index >= 0 {
+            hits.push(index as usize);
+        }
+    } else {
+        // The data-type options describe how to compare, so they only apply
+        // where a comparison happens; the glob matcher works on strings
+        // whatever they hold.
+        let target = match (mode, data) {
+            (Mode::Exact | Mode::Sorted, DataType::Integer) => {
+                Some(Compare::Integer(list::wide(pattern)?))
+            }
+            (Mode::Exact | Mode::Sorted, DataType::Real) => {
+                Some(Compare::Real(list::double(pattern)?))
+            }
+            _ => None,
+        };
+
+        let mut i = start;
+        while i < items.len() {
+            let item = key_at(i)?;
+            let mut hit = match (&target, mode) {
+                (Some(Compare::Integer(want)), _) => list::wide(&item)? == *want,
+                (Some(Compare::Real(want)), _) => list::double(&item)? == *want,
+                (None, Mode::Exact | Mode::Sorted) => match data {
+                    DataType::Dictionary => dictionary_compare(&item, pattern).is_eq(),
+                    // The reference implementation compares the byte lengths
+                    // before folding case, so a fold that changes the length
+                    // is not a match however the characters compare.
+                    _ if nocase => {
+                        item.len() == pattern.len() && utf_casecmp(&item, pattern).is_eq()
+                    }
+                    _ => item == *pattern,
+                },
+                (None, Mode::Glob) => {
+                    if nocase {
+                        list::glob_match(&pattern.to_lowercase(), &item.to_lowercase())
+                    } else {
+                        list::glob_match(pattern, &item)
+                    }
+                }
+                // The regular-expression engine owns this one; a pattern it
+                // refuses is `lsearch`'s error too.
+                (None, Mode::Regexp) => crate::regexp::matches_anywhere(pattern, &item, nocase)?,
+            };
+            if negated {
+                hit = !hit;
+            }
+            if hit {
+                hits.push(i);
+                if !all {
+                    break;
+                }
+            }
+            i += stride;
         }
     }
 
     // With a stride, `-inline` answers the whole group rather than the element
     // that matched: `lsearch -stride 2 -inline {a 1 b 2} b` is `b 2`.
     let group_of = |i: usize| -> Vec<String> { items[i..i + stride].to_vec() };
+    // `-subindices` answers where the *key* is rather than where the element
+    // is: the list position, then every index of the path, each decoded
+    // against the whole list's length as the reference implementation decodes
+    // them.
+    let subindex_of = |i: usize| -> Result<String, String> {
+        let mut out = vec![(i + group_offset).to_string()];
+        for spec in path {
+            out.push(list::index(spec, items.len() as i64)?.to_string());
+        }
+        Ok(list::join(&out))
+    };
 
-    Ok(match (all, inline) {
-        (true, true) => {
+    Ok(match (all, inline, subindices) {
+        (true, true, true) => {
+            let mut values = Vec::with_capacity(hits.len());
+            for &i in &hits {
+                values.push(key_at(i)?);
+            }
+            list::join(&values)
+        }
+        (true, true, false) => {
             let values: Vec<String> = hits.iter().flat_map(|&i| group_of(i)).collect();
             list::join(&values)
         }
-        (true, false) => {
+        (true, false, true) => {
+            let mut values = Vec::with_capacity(hits.len());
+            for &i in &hits {
+                values.push(subindex_of(i)?);
+            }
+            list::join(&values)
+        }
+        (true, false, false) => {
             let values: Vec<String> = hits.iter().map(|i| i.to_string()).collect();
             list::join(&values)
         }
-        (false, true) => hits
-            .first()
-            .map_or(String::new(), |&i| list::join(&group_of(i))),
-        (false, false) => hits.first().map_or(-1, |&i| i as i64).to_string(),
+        (false, true, true) => match hits.first() {
+            Some(&i) => key_at(i)?,
+            None => String::new(),
+        },
+        // A single `-inline` hit without a stride is the element itself, not a
+        // one-element list of it: `lsearch -inline {{a 1}} *` is `a 1`.
+        (false, true, false) => hits.first().map_or(String::new(), |&i| {
+            if stride > 1 {
+                list::join(&group_of(i))
+            } else {
+                items[i].clone()
+            }
+        }),
+        (false, false, true) => match hits.first() {
+            Some(&i) => subindex_of(i)?,
+            // Nothing found: the position alone, with no path after it.
+            None => "-1".to_string(),
+        },
+        (false, false, false) => hits.first().map_or(-1, |&i| i as i64).to_string(),
+    })
+}
+
+/// How the pattern orders against one element, for the binary search. The
+/// reference implementation compares *pattern to element*, which is the
+/// direction the search's `lower`/`upper` updates assume.
+fn compare_to_pattern(
+    pattern: &str,
+    item: &str,
+    data: DataType,
+    nocase: bool,
+) -> Result<std::cmp::Ordering, String> {
+    Ok(match data {
+        DataType::Dictionary => dictionary_compare(pattern, item),
+        DataType::Integer => list::wide(pattern)?.cmp(&list::wide(item)?),
+        DataType::Real => {
+            let (p, o) = (list::double(pattern)?, list::double(item)?);
+            match (p >= o, p <= o) {
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                _ => std::cmp::Ordering::Equal,
+            }
+        }
+        _ if nocase => utf_casecmp(pattern, item),
+        _ => pattern.cmp(item),
     })
 }
 
@@ -1015,8 +1176,163 @@ const LSORT_OPTIONS: &[&str] = &[
 /// What two elements are compared as.
 enum Key {
     Text(String),
+    TextNoCase(String),
+    Dictionary(String),
     Integer(i64),
     Real(f64),
+}
+
+/// The collation key one element sorts by.
+fn key_of(text: &str, data: DataType) -> Result<Key, String> {
+    Ok(match data {
+        DataType::Ascii => Key::Text(text.to_string()),
+        DataType::AsciiNoCase => Key::TextNoCase(text.to_string()),
+        DataType::Dictionary => Key::Dictionary(text.to_string()),
+        DataType::Integer => Key::Integer(list::wide(text)?),
+        DataType::Real => Key::Real(list::double(text)?),
+    })
+}
+
+/// `TclUtfCasecmp`: characters compare as themselves first and folded to lower
+/// case only when they differ, so the order is the plain one wherever case does
+/// not decide it.
+fn utf_casecmp(left: &str, right: &str) -> std::cmp::Ordering {
+    let mut l = left.chars();
+    let mut r = right.chars();
+    loop {
+        match (l.next(), r.next()) {
+            (Some(a), Some(b)) => {
+                if a != b {
+                    let (a, b) = (lower(a), lower(b));
+                    if a != b {
+                        return (a as u32).cmp(&(b as u32));
+                    }
+                }
+            }
+            (rest_left, rest_right) => {
+                return rest_left.is_some().cmp(&rest_right.is_some());
+            }
+        }
+    }
+}
+
+/// `Tcl_UniCharToLower` for one character: the single-character fold, leaving
+/// anything that folds to more than one character alone.
+fn lower(c: char) -> char {
+    let mut it = c.to_lowercase();
+    match (it.next(), it.next()) {
+        (Some(one), None) => one,
+        _ => c,
+    }
+}
+
+/// `DictionaryCompare`, ported from `tclCmdIL.c`: runs of digits compare as
+/// numbers, letters compare case-insensitively, and the case of the first
+/// character that differed only in case — like the count of leading zeros on
+/// the first number that had a different number of them — breaks a tie that
+/// nothing else settled.
+fn dictionary_compare(left: &str, right: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let l: Vec<char> = left.chars().collect();
+    let r: Vec<char> = right.chars().collect();
+    let (mut i, mut j) = (0usize, 0usize);
+    let mut secondary = Ordering::Equal;
+    let digit = |v: &Vec<char>, at: usize| v.get(at).is_some_and(char::is_ascii_digit);
+
+    loop {
+        if digit(&l, i) && digit(&r, j) {
+            // Leading zeros: more of them sorts later, but only as a tiebreak,
+            // and only the first number that differs in them has a say.
+            let mut zeros = 0i32;
+            while r.get(j) == Some(&'0') && digit(&r, j + 1) {
+                j += 1;
+                zeros -= 1;
+            }
+            while l.get(i) == Some(&'0') && digit(&l, i + 1) {
+                i += 1;
+                zeros += 1;
+            }
+            if secondary == Ordering::Equal {
+                secondary = zeros.cmp(&0);
+            }
+            // The numbers are compared without being converted: the longer run
+            // of digits is the larger number, and equal-length runs are decided
+            // by the first digit that differs.
+            let mut diff = Ordering::Equal;
+            loop {
+                if diff == Ordering::Equal {
+                    diff = l.get(i).cmp(&r.get(j));
+                }
+                i += 1;
+                j += 1;
+                if !digit(&r, j) {
+                    if digit(&l, i) {
+                        return Ordering::Greater;
+                    }
+                    if diff != Ordering::Equal {
+                        return diff;
+                    }
+                    break;
+                } else if !digit(&l, i) {
+                    return Ordering::Less;
+                }
+            }
+            continue;
+        }
+
+        let (Some(&a), Some(&b)) = (l.get(i), r.get(j)) else {
+            // One of the two ran out: the shorter string is the smaller one,
+            // which is what comparing the terminating byte says in C.
+            let ended = l.get(i).is_some().cmp(&r.get(j).is_some());
+            return if ended == Ordering::Equal {
+                secondary
+            } else {
+                ended
+            };
+        };
+        i += 1;
+        j += 1;
+        let (al, bl) = (lower(a), lower(b));
+        if al != bl {
+            return (al as u32).cmp(&(bl as u32));
+        }
+        if secondary == Ordering::Equal {
+            if a.is_uppercase() && b.is_lowercase() {
+                secondary = Ordering::Less;
+            } else if b.is_uppercase() && a.is_lowercase() {
+                secondary = Ordering::Greater;
+            }
+        }
+    }
+}
+
+/// `SelectObjFromSublist`: walk an element down a path of list indices to the
+/// value `-index` names. An index that is not there is the reference
+/// implementation's own diagnostic, which names the sublist it looked in.
+fn sublist(item: &str, indices: &[String]) -> Result<String, String> {
+    let mut current = item.to_string();
+    for spec in indices {
+        let elements = list::split(&current)?;
+        let at = list::index(spec, elements.len() as i64 - 1)?;
+        let Some(found) = usize::try_from(at).ok().and_then(|k| elements.get(k)) else {
+            return Err(format!(
+                "element {} missing from sublist \"{current}\"",
+                missing_index(spec, at)
+            ));
+        };
+        current = found.clone();
+    }
+    Ok(current)
+}
+
+/// How the "missing from sublist" diagnostic spells the index it could not
+/// reach: an index that decoded to before the start is reported in the
+/// `end-N` form it was written in, and anything else as the number it is.
+fn missing_index(spec: &str, at: i64) -> String {
+    if at < 0 && spec.starts_with("end") {
+        return spec.to_string();
+    }
+    at.to_string()
 }
 
 /// One element of the merge sort's intrusive list, as in the reference
@@ -1036,19 +1352,25 @@ fn lsort_stride(
     data: DataType,
     order: Order,
     indices: bool,
+    index_path: &[String],
 ) -> Result<String, String> {
+    // With `-stride`, the *first* `-index` value picks which element of the
+    // group carries the key, and only the rest of the path is walked into it.
+    let (offset, rest) = match index_path.split_first() {
+        None => (0usize, &[][..]),
+        Some((first, rest)) => {
+            let at = list::index(first, stride as i64 - 1)?;
+            if at < 0 || at >= stride as i64 {
+                return Err("when used with \"-stride\", the leading \"-index\" value must be within the group".to_string());
+            }
+            (at as usize, rest)
+        }
+    };
     let groups = items.len() / stride;
     let mut keyed: Vec<(Key, usize)> = Vec::with_capacity(groups);
     for g in 0..groups {
-        let first = &items[g * stride];
-        keyed.push((
-            match data {
-                DataType::Ascii => Key::Text(first.clone()),
-                DataType::Integer => Key::Integer(list::wide(first)?),
-                DataType::Real => Key::Real(list::double(first)?),
-            },
-            g,
-        ));
+        let keyed_on = &items[g * stride + offset];
+        keyed.push((key_of(&sublist(keyed_on, rest)?, data)?, g));
     }
     // A stable sort keeps equal groups in the order they were written, which is
     // what the reference merge sort does with them.
@@ -1090,6 +1412,8 @@ fn lsort(args: &[String]) -> Result<String, String> {
     let mut increasing = true;
     let mut unique = false;
     let mut indices = false;
+    let mut nocase = false;
+    let mut index_path: Vec<String> = Vec::new();
 
     let mut stride = 1usize;
 
@@ -1099,11 +1423,23 @@ fn lsort(args: &[String]) -> Result<String, String> {
         match name {
             "-ascii" => data = DataType::Ascii,
             "-decreasing" => increasing = false,
+            "-dictionary" => data = DataType::Dictionary,
             "-increasing" => increasing = true,
             "-indices" => indices = true,
             "-integer" => data = DataType::Integer,
+            // `-nocase` is not a mode of its own: it is ignored outside an
+            // ascii sort, so it is recorded here and applied after the loop,
+            // once the mode the whole command settled on is known.
+            "-nocase" => nocase = true,
             "-real" => data = DataType::Real,
             "-unique" => unique = true,
+            "-index" => {
+                let Some(value) = args.get(i + 1) else {
+                    return Err("\"-index\" option must be followed by list index".to_string());
+                };
+                index_path = list::split(value)?;
+                i += 1;
+            }
             // `-stride N` sorts groups of N as units, keyed on the group's first
             // element, and both refusals are the interpreter's own wording.
             "-stride" => {
@@ -1124,21 +1460,28 @@ fn lsort(args: &[String]) -> Result<String, String> {
         i += 1;
     }
 
+    if nocase && data == DataType::Ascii {
+        data = DataType::AsciiNoCase;
+    }
+
     let items = list::split(&args[args.len() - 1])?;
     if stride > 1 {
         if !items.len().is_multiple_of(stride) {
             return Err("list size must be a multiple of the stride length".to_string());
         }
-        return lsort_stride(&items, stride, data, Order { increasing, unique }, indices);
+        return lsort_stride(
+            &items,
+            stride,
+            data,
+            Order { increasing, unique },
+            indices,
+            &index_path,
+        );
     }
     let mut elements = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
         elements.push(Element {
-            key: match data {
-                DataType::Ascii => Key::Text(item.clone()),
-                DataType::Integer => Key::Integer(list::wide(item)?),
-                DataType::Real => Key::Real(list::double(item)?),
-            },
+            key: key_of(&sublist(item, &index_path)?, data)?,
             payload: i,
             next: None,
         });
@@ -1194,6 +1537,8 @@ struct Order {
 fn compare_keys(a: &Key, b: &Key) -> std::cmp::Ordering {
     match (a, b) {
         (Key::Text(x), Key::Text(y)) => x.cmp(y),
+        (Key::TextNoCase(x), Key::TextNoCase(y)) => utf_casecmp(x, y),
+        (Key::Dictionary(x), Key::Dictionary(y)) => dictionary_compare(x, y),
         (Key::Integer(x), Key::Integer(y)) => x.cmp(y),
         (Key::Real(x), Key::Real(y)) => {
             // The reference compares with `(a >= b) - (a <= b)`, which calls
@@ -1209,20 +1554,7 @@ fn compare_keys(a: &Key, b: &Key) -> std::cmp::Ordering {
 }
 
 fn compare(elements: &[Element], a: usize, b: usize, order: Order) -> std::cmp::Ordering {
-    let ordering = match (&elements[a].key, &elements[b].key) {
-        (Key::Text(x), Key::Text(y)) => x.cmp(y),
-        (Key::Integer(x), Key::Integer(y)) => x.cmp(y),
-        (Key::Real(x), Key::Real(y)) => {
-            // The reference compares with `(a >= b) - (a <= b)`, which calls
-            // any pair involving a NaN equal.
-            match (x >= y, x <= y) {
-                (true, false) => std::cmp::Ordering::Greater,
-                (false, true) => std::cmp::Ordering::Less,
-                _ => std::cmp::Ordering::Equal,
-            }
-        }
-        _ => std::cmp::Ordering::Equal,
-    };
+    let ordering = compare_keys(&elements[a].key, &elements[b].key);
     if order.increasing {
         ordering
     } else {

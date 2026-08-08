@@ -396,9 +396,9 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Packages | `package` — `files`, `forget`, `ifneeded`, `names`, `prefer`, `present`, `provide`, `require`, `unknown`, `vcompare`, `versions`, `vsatisfies` |
 | Run-time evaluation | `eval`, `source`, `tcl_findLibrary` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
-| Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `create`, `exists`, `for`, `get`, `incr`, `keys`, `merge`, `remove`, `set`, `size`, `values` |
+| Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `append`, `create`, `exists`, `filter` (`key` and `value`), `for`, `get`, `getdef`, `getwithdefault`, `incr`, `keys`, `lappend`, `merge`, `remove`, `replace`, `set`, `size`, `unset`, `values` |
 | Regular expressions | `regexp`, `regsub` — with `-nocase`, `-all`, `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`, `-start` and `--`; `switch -regexp` and `lsearch -regexp` take one too |
-| Strings | `format`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright`, `wordend`, `wordstart` |
+| Strings | `format`, `scan`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright`, `wordend`, `wordstart` |
 | Channels | `open`, `close`, `gets`, `read`, `flush`, `eof`, `seek`, `tell`, `fconfigure`, and `puts` to a channel; `stdin`, `stdout` and `stderr` |
 | Math functions | The whole of `mathfunc(n)` inside `expr`: `abs`, `acos`, `asin`, `atan`, `atan2`, `bool`, `ceil`, `cos`, `cosh`, `double`, `entier`, `exp`, `floor`, `fmod`, `hypot`, `int`, `isfinite`, `isinf`, `isnan`, `isnormal`, `isqrt`, `issubnormal`, `isunordered`, `log`, `log10`, `max`, `min`, `pow`, `rand`, `round`, `sin`, `sinh`, `sqrt`, `srand`, `tan`, `tanh`, `wide` |
 | Time | `clock` — `seconds`, `milliseconds`, `microseconds`, `clicks`, `format`, `scan` (with `-format`), `add`; `-gmt`, `-timezone` (a numeric offset or any zone with a `TZif` file) and the root locale |
@@ -764,10 +764,10 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | A variable or body word that is not literal (`set $name …`) | the word is refused where a literal is required |
 | An array variable in a `foreach` variable list | `array variables are not supported yet` |
 | `array startsearch` and the other search subcommands | `array startsearch is not supported yet` |
-| `dict` subcommands outside the implemented set; `dict set` into an array element | `dict append is not supported yet` |
+| `dict` subcommands outside the implemented set — `map`, `update`, `with`, `info`, and `filter script`; `dict set` into an array element | `dict map is not supported yet` |
 | `string wordend` / `wordstart` past ASCII | `string wordend/wordstart: characters beyond ASCII need Unicode category tables, which are not built yet` |
 | `format %a` / `%A`; any other letter is `bad field specifier "n"` instead | `the "%a" conversion is not supported yet` |
-| `lsearch -sorted` / `-dictionary` / `-nocase` / `-index` / `-subindices` / `-bisect`; `lsort -command` / `-dictionary` / `-index` / `-nocase`. `-regexp` and `-stride` are built for both. `-increasing` and `-decreasing` *are* taken: they only describe the order `-sorted` and `-bisect` search in, so the two that read it name it — `lsearch -sorted -increasing is not supported yet` | `lsearch -dictionary is not supported yet` |
+| `lsort -command`, which runs a script per comparison. Every other option of both commands is built: `lsearch -sorted` / `-bisect` / `-dictionary` / `-nocase` / `-index` / `-subindices` and `lsort -dictionary` / `-index` / `-nocase`, alongside `-regexp` and `-stride` | `lsort -command is not supported yet` |
 | Redefining a built-in — including from a `proc` away from the top level; redefining a procedure *at the top level*; a procedure and a coroutine of the same name. A `proc` away from the top level is *not* refused: it binds its name when it runs | `redefining the built-in command "set" is not supported` |
 | `return -errorcode`, `-errorinfo` and `-options`. `-code` and `-level` are implemented, and so is `catch`'s options variable — which carries those two and not tclsh's `-errorstack` / `-errorcode` / `-errorinfo` / `-errorline` | `return option "-errorinfo" is not supported` |
 | `error`'s `info` and `code` arguments | `… the info and code arguments are not supported` |

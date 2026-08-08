@@ -377,6 +377,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "Return from the enclosing procedure with the result. `-code ok` and `-code error` are the codes implemented.",
     },
     Entry {
+        name: "scan",
+        synopsis: "scan string format ?varName ...?",
+        summary: "Read the string the way `sscanf` does, with Tcl's conversion set. With variable names the result is how many conversions were assigned, and a variable whose conversion never ran is left untouched; with none, the converted values come back as a list.",
+    },
+    Entry {
         name: "seek",
         synopsis: "seek channel offset ?origin?",
         summary: "Move the device's position, discarding what was buffered and clearing end of file.",
@@ -966,7 +971,7 @@ const DICT_CORPUS: &[Entry] = &[
     Entry {
         name: "append",
         synopsis: "dict append dictVarName key ?string ...?",
-        summary: "Append the strings to the value already at the key in the dict the variable holds, creating the key when it is absent, and yield the new dict. Not built here.",
+        summary: "Append the strings to the value already at the key in the dict the variable holds, creating the key when it is absent, and yield the new dict.",
     },
     Entry {
         name: "create",
@@ -981,7 +986,7 @@ const DICT_CORPUS: &[Entry] = &[
     Entry {
         name: "filter",
         synopsis: "dict filter dictionary filterType arg ?arg ...?",
-        summary: "The pairs kept by one of three filters: `key` and `value` take glob patterns, and `script {k v} body` keeps a pair when the body's expression is true. The script form needs a body run per pair against caller variables, which is the same machinery `dict map` wants. Not built here.",
+        summary: "The pairs kept by one of three filters: `key` and `value` take glob patterns and are built here — any of several patterns matching keeps the pair, and no pattern keeps nothing. The `script {k v} body` form is not: it needs a body run per pair against caller variables, which is the same machinery `dict map` wants.",
     },
     Entry {
         name: "for",
@@ -996,7 +1001,7 @@ const DICT_CORPUS: &[Entry] = &[
     Entry {
         name: "getdef",
         synopsis: "dict getdef dictionary ?key ...? key default",
-        summary: "The value at the key path, or the trailing default argument when any step of the path is missing — the total-function form of `dict get`. Not built here.",
+        summary: "The value at the key path, or the trailing default argument when any step of the path is missing — the total-function form of `dict get`. A dict that does not parse is still an error, as it is for `dict get`.",
     },
     Entry {
         name: "getwithdefault",
@@ -1021,7 +1026,7 @@ const DICT_CORPUS: &[Entry] = &[
     Entry {
         name: "lappend",
         synopsis: "dict lappend dictVarName key ?value ...?",
-        summary: "Append the values as list elements to the value at the key in the dict the variable holds, and yield the new dict. Not built here.",
+        summary: "Append the values as list elements to the value at the key in the dict the variable holds, and yield the new dict.",
     },
     Entry {
         name: "map",
@@ -1041,7 +1046,7 @@ const DICT_CORPUS: &[Entry] = &[
     Entry {
         name: "replace",
         synopsis: "dict replace dictionary ?key value ...?",
-        summary: "The dict with the given pairs set, as a value rather than through a variable — `dict set` without the assignment. Not built here.",
+        summary: "The dict with the given pairs set, as a value rather than through a variable — `dict set` without the assignment.",
     },
     Entry {
         name: "set",
@@ -1056,7 +1061,7 @@ const DICT_CORPUS: &[Entry] = &[
     Entry {
         name: "unset",
         synopsis: "dict unset dictVarName key ?key ...?",
-        summary: "Remove the key path from the dict the variable holds and yield the new dict. Not built here.",
+        summary: "Remove the key path from the dict the variable holds and yield the new dict. Removing the last key of the path is not an error when it is absent; a key the path has to walk *through* must exist.",
     },
     Entry {
         name: "update",

@@ -538,6 +538,52 @@ const PROGRAMS: &[&str] = &[
     "set i -3\nwhile {$i < 4} {puts [format {%d %i %o %x %X %b %u} $i $i $i $i $i $i $i]; incr i}",
     // Rounding behaviour across a whole decade.
     "set i 0\nwhile {$i < 40} {puts [format {%.1f %.2e %g} [expr {$i/8.0}] [expr {$i/8.0}] [expr {$i/8.0}]]; incr i}",
+    // ── scan: the inline form ────────────────────────────────────────────
+    "puts [scan {1 2 3} {%d %d %d}]",
+    "puts [scan abc %s]",
+    "puts [scan abc123 {%[a-z]%d}]",
+    "puts [scan 42abc {%d%s}]",
+    "puts [scan 12345 {%2d%3d}]",
+    "puts [scan xyz {%*s%n}]",
+    "puts [scan {1,2} {%d,%d}]",
+    "puts [scan abc {%[^b]}]",
+    "puts [scan {abc]d} {%[]abc]}]",
+    "puts [scan a-c {%[a-]}]",
+    "puts [scan a1b {%[a-c0-9]}]",
+    "puts [scan --a {%[-]}]",
+    "puts [scan abc {%[c-a]}]",
+    "puts <[scan {1 2} {%d %d %d}]>",
+    "puts <[scan {} %d]>",
+    "puts <[scan abc abc]>",
+    "puts [scan hello %c]",
+    "puts [scan héllo {%c%c}]",
+    "puts [scan 日本 {%c%c}]",
+    "puts [scan 5% {%d%%}]",
+    "puts [scan xy {%*c%c}]",
+    "puts [scan {hello world} {%*s %s}]",
+    "puts [scan ab {%2$s %1$s}]",
+    // ── scan: the radix each conversion reads ────────────────────────────
+    "puts [scan 0x1f %i]\nputs [scan 017 %i]\nputs [scan 0b11 %i]\nputs [scan 0o17 %i]",
+    "puts [scan 1f %x]\nputs [scan 0x1f %x]\nputs [scan 01f %x]\nputs [scan 0x %x]",
+    "puts [scan 17 %o]\nputs [scan 0o17 %o]\nputs <[scan 8 %o]>",
+    "puts [scan 101 %b]\nputs [scan 0b101 %b]\nputs [scan 0101 %b]",
+    // ── scan: how wide the value is ──────────────────────────────────────
+    "foreach v {2147483647 2147483648 4294967295 4294967296 -2147483649 99999999999} {puts \"[scan $v %d] [scan $v %u]\"}",
+    "foreach v {9223372036854775807 9223372036854775808 18446744073709551615 -9223372036854775809} {puts \"[scan $v %ld] [scan $v %lu]\"}",
+    "foreach v {999999999999999999999999 -999999999999999999999999} {puts \"[scan $v %Ld] [scan $v %lld]\"}",
+    "puts [scan 255 %hd]",
+    // ── scan: floating point, and the longest prefix that is a number ────
+    "foreach v {3.5e2z .5 5. 1e 1e+ 1e5 1e400 inf -inf -0 -0.0 -0e5 0.1} {puts <[scan $v %f]>}",
+    "puts [scan 1E5 %E]\nputs [scan 0.1 %g]",
+    // ── scan: what counts as running out of input ────────────────────────
+    "foreach {s f} {{} %d x %d + %d +x %d { } %d . %f +. %f e %f - %f} {puts [scan $s $f v]}",
+    "set a x\nset b y\nputs [scan 1 {%d %d} a b]\nputs \"$a $b\"",
+    "puts [scan {1 2} {%d %d %d} p q r]\nputs [info exists r]",
+    // ── scan: what it refuses ────────────────────────────────────────────
+    "foreach f {{%d %d} {%2c} {%lc} {%z} {%} {%1$d %1$d} {%d %1$d}} {puts [catch {scan a $f x} m]\nputs $m}",
+    "puts [catch {scan a %d x y} m]\nputs $m",
+    "puts [catch {scan a {%[}} m]\nputs $m",
+    "puts [catch {scan a %99999999999999999999d} m]\nputs $m",
 ];
 
 fn tclsh() -> Option<PathBuf> {

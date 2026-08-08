@@ -1,13 +1,13 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00156   depth: 4   generator: scripts/fuzz/gen.tcl   shrink: 12 -> 2 lines, reduced by hand
-# verdict: DIVERGENCE	stdout	line tclsh=m:-1 tclrs=m:lsearch -sorted -increasing is not supported yet
+# verdict: PASS	ran	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.3.0
+# tclrs: tclrs 0.4.0
 # tclsh-status: 0
 # tclsh-stdout: m:-1\n\x1e
 # tclsh-stderr: 
 # tclrs-status: 0
-# tclrs-stdout: m:lsearch -sorted -increasing is not supported yet\n\x1e
+# tclrs-stdout: m:-1\n\x1e
 # tclrs-stderr: 
 #
 # The case itself is the sibling .tcl file. It is run spliced into

@@ -447,6 +447,28 @@ pub mod ext {
     /// the variable when it does not exist and its read must therefore tolerate
     /// absence where a bare `$d` refuses it.
     pub const DICT_INCR: u16 = ASSOC_BASE + 22;
+    /// `[dict, key, value, …, count]` → the dict with those pairs written over
+    /// it. `dict replace` differs from `dict merge` only in taking loose pairs
+    /// rather than whole dicts.
+    pub const DICT_REPLACE: u16 = ASSOC_BASE + 23;
+    /// `[dict, key, …, key, default, count]` → the value at the key path, or
+    /// `default` when any step of the path is missing. `dict getdef` and
+    /// `dict getwithdefault` are the same subcommand under two names.
+    pub const DICT_GETDEF: u16 = ASSOC_BASE + 24;
+    /// `[name, place, key, …, count]` → the dict without that key path.
+    /// Reached by place rather than by value for the same reason `dict set` is:
+    /// the variable may be missing, and reading it must not refuse.
+    pub const DICT_UNSET: u16 = ASSOC_BASE + 25;
+    /// `[name, place, key, value, …, count]` → the updated dict, with the
+    /// values appended to the key's value as list elements.
+    pub const DICT_LAPPEND: u16 = ASSOC_BASE + 26;
+    /// `[name, place, key, value, …, count]` → the updated dict, with the
+    /// values concatenated onto the key's value as text.
+    pub const DICT_APPEND: u16 = ASSOC_BASE + 27;
+    /// `[dict, which, pattern, …, count]` → the pairs whose key (`which` = 0)
+    /// or value (`which` = 1) matches any of the glob patterns. No pattern
+    /// matches nothing, which is what the reference implementation answers.
+    pub const DICT_FILTER: u16 = ASSOC_BASE + 28;
 
     /// Where the string commands' ops begin — the `string` ensemble, `append`
     /// and `format` — dispatched to [`crate::cmd_string`], which names them.
@@ -1463,6 +1485,7 @@ impl Compiler {
         "string",
         "append",
         "format",
+        "scan",
         "break",
         "continue",
         "proc",
@@ -1575,6 +1598,7 @@ impl Compiler {
             "foreach" => self.cmd_foreach(args),
             "switch" => self.cmd_switch(args),
             "string" | "append" | "format" => self.cmd_string_family(name, args),
+            "scan" => crate::cmd_scan::compile(self, args),
             "break" => self.cmd_loop_exit(args, true),
             "continue" => self.cmd_loop_exit(args, false),
             // `ns_proc` and `ns_global` are one-line wrappers in

@@ -629,15 +629,12 @@ approximated, and nothing is silently mis-run.
   set, and `dict set` or `dict incr` into an array element; `string`
   subcommands outside the
   implemented set; `format` conversions outside the
-  implemented set; `lsearch -sorted`, `-bisect`, `-dictionary`, `-nocase`,
-  `-index`, `-subindices`; `lsort -command`,
-  `-dictionary`, `-nocase`, `-index`;
+  implemented set; `lsort -command`;
   `error`'s `info` and `code` arguments; `return`'s options other than
   `-code` and `-level`. They go through the reference option parser first,
   so abbreviation and ambiguity behave as tclsh does, and are then refused.
-  `-nocase` waits on a case-folding table that matches Tcl's, which Rust's
-  `to_lowercase` does not: it is a full case mapping and can produce more than
-  one character where Tcl maps one to one.
+  `lsort -command` waits on a way to call back into the interpreter from inside
+  a sort, which the ops this frontend emits have no route for.
 - **A `dict` written into an array element.** `dict set a(1) k v` and
   `dict incr a(1) k` are refused: the target travels as a variable *place* — a
   name index or a frame slot — and an array element is neither. Both work on a
@@ -1040,9 +1037,9 @@ with a sign, and carries `nan` / `inf` in its value pools.
   `s`, not the padding as a whole. Reached only because the generator builds the
   specifier from its axes rather than drawing a fixed spelling.
 - **A refusal decided at run time is catchable, so `catch` sees a message where
-  tclsh saw an answer.** `catch {lsearch -sorted {a} b} m` leaves `m` as
-  `lsearch -sorted -increasing is not supported yet` and the script runs on, where tclsh
-  leaves `-1`; the same for `lsort -nocase`. The refusals decided while
+  tclsh saw an answer.** `catch {lsort -command x {a b}} m` leaves `m` as
+  `lsort -command is not supported yet` and the script runs on, where tclsh
+  sorts. The refusals decided while
   *compiling* — `string is punct`, `switch -matchvar` — are not catchable and do
   take the whole case out of comparison as a skip. The two halves are pinned
   together, because which side a refusal falls on is what decides whether the

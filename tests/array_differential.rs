@@ -200,6 +200,43 @@ const FIXED: &[&str] = &[
     "set d [dict create a 1]\nproc p {} {global d\ndict incr d a\nreturn $d}\nputs [p]\nputs $d",
     // In a loop, which is where a dict counter is actually used.
     "set d {}\nforeach w {a b a c a} {dict incr d $w}\nputs [dict get $d a]\nputs [dict size $d]",
+    // ── dict replace / getdef ──
+    "puts [dict replace {a 1} a 2 b 3]",
+    "puts [dict replace {a 1 b 2}]",
+    "puts [dict replace {} {x y} {1 2}]",
+    "puts [catch {dict replace {a 1} b} m]\nputs $m",
+    "puts [dict getdef {a 1} z 9]",
+    "puts [dict getwithdefault {a 1} a 9]",
+    "puts [dict getwithdefault {a {b 1}} a b 9]",
+    "puts [dict getwithdefault {a {b 1}} a z 9]",
+    "puts [dict getwithdefault {a 1} z y 9]",
+    "puts [catch {dict getwithdefault {a 1}} m]\nputs $m",
+    // ── dict unset ──
+    "set d {a 1 b 2}\ndict unset d a\nputs $d",
+    "set d {a 1}\ndict unset d z\nputs $d",
+    "set d {a {b 1 c 2}}\ndict unset d a b\nputs $d",
+    "set d {a {b 1}}\nputs [catch {dict unset d z q} m]\nputs $m",
+    "set d {a 1 b 2}\nputs [dict unset d a]",
+    "dict unset fresh k\nputs [list $fresh]",
+    "set d {a 1}\nputs [catch {dict unset d} m]\nputs $m",
+    "proc p {} {set d {a 1 b 2}\ndict unset d a\nreturn $d}\nputs [p]",
+    // ── dict lappend / append ──
+    "set d {a 1}\ndict lappend d a 2 3\nputs $d",
+    "set d {}\ndict lappend d k v1 v2\nputs $d",
+    "set d {a {}}\ndict lappend d a {x y}\nputs $d",
+    "set d {a 1}\ndict lappend d a\nputs $d",
+    "set d {a 1}\ndict append d a xy\nputs $d",
+    "set d {}\ndict append d k a b c\nputs $d",
+    "set d {a 1}\nputs [dict append d a z]",
+    "proc p {} {dict lappend d k 1\ndict lappend d k 2\nreturn $d}\nputs [p]",
+    // ── dict filter ──
+    "puts [dict filter {a 1 b 2} key a]",
+    "puts [dict filter {aa 1 ab 2 b 3} key a*]",
+    "puts [dict filter {a 1 b 2} value 1]",
+    "puts [dict filter {a 1 b 2} value *]",
+    "puts [dict filter {a 1 b 2} key]",
+    "puts [dict filter {aa 1 bb 2 cc 3} key a* c*]",
+    "puts [catch {dict filter {a 1} bogus} m]\nputs $m",
     // ── the two together ──
     "array set a {x 1 y 2}\nputs [dict get [array get a] y]\nputs [dict size [array get a]]",
     "array set a {x 1 y 2 z 3}\nset d [array get a]\nputs [dict exists $d z]\nputs [dict exists $d w]",
@@ -414,9 +451,12 @@ fn unimplemented_subcommands_are_refused() {
         ),
         ("array for {k v} a {}", "array for is not supported yet"),
         ("array names a -regexp x", "needs regexp support"),
+        // `dict filter` is implemented for the two glob filters; the `script`
+        // filter is what it still refuses, because that one runs a body per
+        // pair against caller variables.
         (
-            "dict filter {a 1} key a",
-            "dict filter is not supported yet",
+            "dict filter {a 1} script {k v} {expr 1}",
+            "dict filter script is not supported yet",
         ),
         // `dict incr` is implemented; what it still refuses is an array element
         // as the target, which is `dict set`'s limitation and now also its own.
@@ -424,8 +464,10 @@ fn unimplemented_subcommands_are_refused() {
             "set a(1) x\ndict incr a(1) k",
             "array element is not supported yet",
         ),
-        ("dict unset d k", "dict unset is not supported yet"),
         ("dict with d {}", "dict with is not supported yet"),
+        ("dict map {k v} {a 1} {}", "dict map is not supported yet"),
+        ("dict update d k x {}", "dict update is not supported yet"),
+        ("dict info {a 1}", "dict info is not supported yet"),
         (
             "set a(1) x\ndict set a(1) k v",
             "array element is not supported yet",

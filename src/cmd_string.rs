@@ -530,6 +530,11 @@ pub(crate) fn extension(vm: &mut VM, id: u16, argc: u8) -> Result<(), String> {
     if id == ext::IS_FAILINDEX || id == ext::IS_FAILINDEX_SLOT {
         return is_failindex(vm, id);
     }
+    // `scan` lives in this block because it is `format` read backwards, and it
+    // reaches its variables itself for the same reason `-failindex` does.
+    if id == crate::cmd_scan::ext::SCAN {
+        return crate::cmd_scan::extension(vm);
+    }
     let mut operands = Vec::with_capacity(argc as usize);
     for _ in 0..argc {
         operands.push(vm.pop());

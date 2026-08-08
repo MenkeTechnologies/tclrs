@@ -173,6 +173,71 @@ const PROGRAMS: &[&str] = &[
     "puts [lsort {B a A b}]",
     "puts [lsort -integer -unique {3 1 3 1 2}]",
     "puts [lsort -unique {{a b} {a  b} {a b}}]",
+    // lsort -dictionary: numbers inside a string compare as numbers, letters
+    // compare case-insensitively, and leading zeros and case break ties.
+    "puts [lsort -dictionary {a10 a9 a1}]",
+    "puts [lsort -dictionary {x007 x7 x07}]",
+    "puts [lsort -dictionary {A a B b}]",
+    "puts [lsort -dictionary {abc ABC Abc}]",
+    "puts [lsort -dictionary {a1b2 a1b10 a2b1}]",
+    "puts [lsort -dictionary {0 00 000}]",
+    "puts [lsort -dictionary {a0b a00b}]",
+    "puts [lsort -dictionary {foo10bar foo9bar foo10Bar}]",
+    "puts [lsort -dictionary -decreasing {a10 a9}]",
+    "puts [lsort -dictionary -unique {A a}]",
+    "puts [lsort -dictionary {10 9 1x 1}]",
+    // lsort -nocase, which is only a mode of the ascii sort.
+    "puts [lsort -nocase {B a C}]",
+    "puts [lsort -nocase {aB Ab}]",
+    "puts [lsort -nocase -unique {a A b}]",
+    "puts [lsort -nocase -integer {10 9}]",
+    // lsort -index, including into a nested sublist and alongside -stride.
+    "puts [lsort -index 1 {{a 2} {b 1}}]",
+    "puts [lsort -index end {{a 2} {b 1}}]",
+    "puts [lsort -index 0 -integer {{10 x} {9 y}}]",
+    "puts [lsort -index {0 1} {{{a b}} {{a a}}}]",
+    "puts [lsort -indices -index 1 {{a 2} {b 1}}]",
+    "puts [lsort -stride 2 -index 1 {b 1 a 2}]",
+    "puts [lsort -stride 2 -index 0 {b 1 a 2}]",
+    "puts [catch {lsort -index 5 {{a b}}} m]\nputs $m",
+    "puts [catch {lsort -index end-5 {{a b}}} m]\nputs $m",
+    "puts [catch {lsort -stride 2 -index 3 {b 1 a 2}} m]\nputs $m",
+    // lsearch -sorted / -bisect: the binary search, in both orders, and the
+    // leftmost-of-equals rule that separates the two.
+    "puts [lsearch -sorted {1 3 5} 3]",
+    "puts [lsearch -sorted {1 3 5} 4]",
+    "puts [lsearch -sorted {1 3 3 3 5} 3]",
+    "puts [lsearch -bisect {1 3 3 3 5} 3]",
+    "puts [lsearch -bisect {1 3 5} 4]",
+    "puts [lsearch -bisect {1 3 5} 0]",
+    "puts [lsearch -sorted -integer {1 3 5} 5]",
+    "puts [lsearch -sorted -decreasing {5 3 1} 3]",
+    "puts [lsearch -bisect -decreasing {5 3 1} 4]",
+    "puts [lsearch -sorted -all {1 3 3 5} 3]",
+    "puts [lsearch -sorted -inline {1 3 5} 3]",
+    "puts [lsearch -sorted -dictionary {a1 a9 a10} a10]",
+    "puts [lsearch -sorted -glob {ab cd} c*]",
+    "puts [catch {lsearch -bisect -all {1 3} 1} m]\nputs $m",
+    // lsearch -nocase, -dictionary and -index.
+    "puts [lsearch -nocase {A b} a]",
+    "puts [lsearch -nocase -exact {A b} a]",
+    "puts [lsearch -nocase -glob {AB cd} a*]",
+    "puts [lsearch -nocase -regexp {AB cd} {^a}]",
+    "puts [lsearch -dictionary {a10 a9} a9]",
+    "puts [lsearch -index 0 {{a 1} {b 2}} b]",
+    "puts [lsearch -index end {{a 1}} 1]",
+    "puts [lsearch -index {0 1} {{{a b}}} b]",
+    "puts [lsearch -all -index 0 {{a 1} {a 2}} a]",
+    "puts [lsearch -inline -index 0 {{a 1}} a]",
+    "puts [lsearch -stride 2 -index 1 {a 1 b 2} 2]",
+    "puts [catch {lsearch -index 5 {{a b}} x} m]\nputs $m",
+    // lsearch -subindices, which answers where the key is rather than where
+    // the element is.
+    "puts [lsearch -subindices -index 0 {{a 1}} a]",
+    "puts [lsearch -subindices -index 0 -inline {{a 1}} a]",
+    "puts [lsearch -subindices -index {0 1} -inline {{{a b}}} b]",
+    "puts [lsearch -subindices -all -index 0 {{a 1} {a 2}} a]",
+    "puts [catch {lsearch -subindices {a} a} m]\nputs $m",
     // join.
     "puts [join {a b c}]",
     "puts [join {a b c} ,]",
@@ -734,13 +799,11 @@ fn errors_match_tclsh() {
 /// must say so rather than being ignored, which would silently change a result.
 #[test]
 fn unimplemented_options_are_refused() {
-    for (src, expected) in [
-        ("puts [lsearch -sorted {a b} a]", "lsearch -sorted"),
-        ("puts [lsearch -nocase {a b} A]", "lsearch -nocase"),
-        ("puts [lsort -command x {a b}]", "lsort -command"),
-        ("puts [lsort -index 0 {{a b}}]", "lsort -index"),
-        ("puts [lsort -dictionary {a b}]", "lsort -dictionary"),
-    ] {
+    // `-command` runs a script per comparison, which this frontend has no way
+    // to call back into from inside a sort. It is the only option of either
+    // command still refused, so the loop the others shared is one entry now.
+    {
+        let (src, expected) = ("puts [lsort -command x {a b}]", "lsort -command");
         let err = tclrs::eval(src).expect_err(&format!("{src:?} should fail"));
         assert!(
             err.contains(expected) && err.contains("not supported yet"),
@@ -758,4 +821,26 @@ fn unimplemented_options_are_refused() {
             .output,
         "1\n"
     );
+
+    // The same pinning for the options that were on that list until the
+    // sorting and searching keys landed. What each *answers* is compared
+    // against tclsh by `sort_and_search_options_match_tclsh`.
+    for (src, want) in [
+        ("puts [lsearch -sorted {a b} a]", "0\n"),
+        ("puts [lsearch -bisect {1 3 5} 4]", "1\n"),
+        ("puts [lsearch -nocase {a b} A]", "0\n"),
+        ("puts [lsearch -index 0 {{a 1} {b 2}} b]", "1\n"),
+        ("puts [lsearch -subindices -index 0 {{a 1}} a]", "0 0\n"),
+        ("puts [lsort -index 0 {{b x} {a y}}]", "{a y} {b x}\n"),
+        ("puts [lsort -dictionary {a10 a9}]", "a9 a10\n"),
+        ("puts [lsort -nocase {B a}]", "a B\n"),
+    ] {
+        assert_eq!(
+            tclrs::eval(src)
+                .unwrap_or_else(|e| panic!("{src:?} is implemented: {e}"))
+                .output,
+            want,
+            "{src:?}"
+        );
+    }
 }
