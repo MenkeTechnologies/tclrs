@@ -696,12 +696,65 @@ approximated, and nothing is silently mis-run.
   which are values. That is the same wall as `set $name 1` — a procedure's locals
   are frame slots settled while the script is read, and a name that only exists at
   run time has no slot to be given. See "Non-literal variable and body words".
-- **`dict info`.** The answer is `Tcl_HashStats` on the dictionary's own hash
-  table: a bucket count, the distribution of chain lengths, and an average search
-  distance. Reproducing it means reproducing tclsh's hash function, its bucket
-  growth policy and its insertion order — the internals of a container this
-  frontend does not have, and an approximation of them would be a number that
-  looks like a measurement and is not one.
+
+  The `finally` region `dict update` is built out of supplies one of its two
+  halves: `FinalizeDictWith` (`generic/tclDictObj.c:3696`) is the same NRE
+  callback shape, and `TclDictWithFinish` (`:3842`) is the same write-back with
+  a key *path* added. So what is left is the binding, and the wall is narrower
+  than "no dynamic names at all":
+
+  * At the top level a name really can be resolved when the command runs.
+    `crate::cmd_scope::global_home` turns a name into an index in the chunk's
+    table, interning one that is not there yet — that is how `upvar #0 $name x`
+    already works outside a procedure.
+  * Inside a procedure a name can be resolved *if the body mentions it*: the
+    chunk records a slot-name table per subroutine and
+    `crate::cmd_scope::frame_home` reads it. A name with no slot is refused
+    there today, in `upvar`'s wording, "the procedure running there never names
+    it, so it has no frame slot".
+
+  The second bullet is where it stops being an engineering question. `dict with`
+  binds *every* key, not the ones the body names, so a record with a field the
+  body never reads would refuse — and refusing on ordinary code is not an
+  option. Skipping those keys instead reads plausible: a name with no slot is a
+  name the body cannot write, so its key cannot have changed, and leaving it
+  alone would be right. It is not airtight — an `eval` inside the body runs a
+  chunk of its own whose variables project the frame's *named* slots, so what a
+  nested `eval {set zz 9}` does to a key with no slot has to be established
+  before that rule can be relied on rather than assumed. Until it is, this stays
+  refused: the failure mode of getting it wrong is a key silently kept or
+  silently dropped, which is the class of bug this file exists to keep out.
+- **`dict info`.** The answer is `Tcl_HashStats` (`generic/tclHash.c:602`) on the
+  dictionary's own hash table: a bucket count, the distribution of chain lengths,
+  and an average search distance.
+
+  The *algorithm* is reproducible, and was reproduced to check. A dict's table is
+  `TCL_CUSTOM_PTR_KEYS` over `TclHashObjKey` (`generic/tclObj.c:4245`), which is
+  `result += (result << 3) + byte` over the key's string form; the type carries no
+  `TCL_HASH_KEY_RANDOMIZE_HASH`, so the bucket is `hash & mask`; the table starts
+  at 4 buckets with `rebuildSize` 12 and both multiply by 4 whenever
+  `numEntries >= rebuildSize` (`tclHash.c:167-170`, `:357`, `:983-999`). A
+  transcription of that reproduced tclsh 9.0.4's whole 12-line answer byte for
+  byte on seven dictionaries, including a 200-key one that rebuilds twice.
+
+  What is not reproducible is which table. `Tcl_HashStats` reports the table the
+  `Tcl_Obj` *has*, and that depends on the object's history, not on its value —
+  a dict grown and then shrunk in place keeps the buckets it grew:
+
+      set d {}
+      for {set i 0} {$i<20} {incr i} {dict set d k$i $i}
+      for {set i 0} {$i<18} {incr i} {dict unset d k$i}
+      dict info $d          →  2 entries in table, 16 buckets
+      dict info {k18 18 k19 19}  →  2 entries in table, 4 buckets
+
+  Both dictionaries are `k18 18 k19 19`. A dict here is its string and nothing
+  else, so there is no history to consult and no way to tell the two apart — the
+  answer would be exact for every dictionary built by inserting its own pairs
+  (which is `dict create`, a literal, `dict get`, `dict merge`, `dict replace`
+  and `dict remove`, all measured) and quietly wrong for one that shrank, with
+  nothing marking which. A command whose entire purpose is to report a container's
+  real internal state is the last one that should sometimes report a plausible
+  one, so it stays refused.
 - **`regexp -about`.** The group count is easy; the second element is not. It is
   the reference engine's own compile-time telemetry — `REG_UUNPORT`,
   `REG_UNONPOSIX`, `REG_ULOCALE`, `REG_UEMPTYMATCH`, `REG_UBOUNDS` and the rest
