@@ -1472,13 +1472,13 @@ than an unexamined one. Measured against the 2000-program run above.
   generated yet, so the run above says nothing about them either; what does is
   `tests/list_commands_differential.rs`.
 - **`array` on a procedure local, `unset` of one, and `eval` inside a procedure
-  body** *are* generated now, at `REFUSAL_RATE` — so are the `dict` subcommands
-  outside the implemented set (`lsort -command` was one of these until it
-  landed, and its case in the run below became a pass). Each lands in the skip bucket under the refusal's own wording,
-  which is coverage waiting for the refusal to go rather than a hole. The rate is
-  low because these refusals are decided while compiling, so one of them anywhere
-  takes the whole case out of comparison: at 8 percent the run is 215 skips of
-  2000; at roughly one in two it was 44 percent skips.
+  body** are generated, at `RARE_SHAPE_RATE` — so are the `dict` subcommands
+  outside the implemented set. All three were refusals when the rate was named
+  and are comparisons now, as are `lsort -command` and every option in the
+  generator's two "rare" lists: at seed 1, depth 4, 200 cases the skip bucket is
+  1 and its one entry is `format %a`. The rate stayed where the refusals put it,
+  so those shapes are drawn rarely and are under-measured for it; raising it
+  moves what every seed generates and is a change of its own.
 - **The two `format` crashes are out of the value pools on purpose.** An
   unbounded field width aborts the process on the allocation and a precision
   above 65535 panics; both are recorded under "Crashes reachable from a script"

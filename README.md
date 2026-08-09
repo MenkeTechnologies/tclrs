@@ -1587,21 +1587,20 @@ allows. Programs are stateful as well as nested — coroutines resumed from a
 counted loop, from inside a procedure and inside a `catch`, procedures that call
 procedures along an acyclic call graph, and `eval` nested several levels deep.
 
-Shapes that tclrs **recognises and refuses** — `array` on a procedure local,
-`dict with`, `string is punct` — are generated on purpose at a
-low rate rather than avoided. Each lands in the skip bucket under the refusal's
-own wording, so the coverage is already in place on the day the refusal goes; the
-rate is one number in the generator (`REFUSAL_RATE`) because every one of those
-refusals is decided while compiling, so one anywhere in a case takes the whole
-case out of comparison.
+Shapes tclrs **recognised and refused** — `array` on a procedure local,
+`lsort -command`, `string is punct`, `eval` inside a procedure body — were
+generated on purpose at a low rate rather than avoided, so that the coverage
+would already be in place on the day each refusal went. Every one of them has
+since gone: at seed 1, depth 4, 200 cases the skip bucket is **1**, and the one
+entry in it is `format %a`. The rate is still one number in the generator
+(`RARE_SHAPE_RATE`), and it now weights the *corner* of each command against its
+middle rather than trading a comparison for a skip. Whether it should rise, now
+that these cost a comparison nothing, is an open question and a change of its
+own: raising it moves what every seed generates.
 
-That is what happened to `eval` inside a procedure body, which was on that list
-until it was implemented: a 400-program run at seed 1 moved ten cases from the
-skip bucket to the pass bucket and left every other bucket where it was
-(`DIVERGENCE` 19, `ALLOWED` 7, `CRITICAL` 0). It is still generated at
-`REFUSAL_RATE` rather than at the rate a working construct deserves, which
-under-measures it — the generator has not caught up, and `uplevel` and `apply`
-are not generated at all yet. What covers all three meanwhile is
+The generator has not caught up in the other direction either — it
+under-measures the constructs it still draws at the rare rate, and `uplevel` and
+`apply` are not generated at all. What covers those meanwhile is
 `tests/frame_differential.rs`.
 
 ```sh
