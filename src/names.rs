@@ -417,11 +417,6 @@ pub const CORPUS: &[Entry] = &[
         summary: "Run the body of the first pattern that matches, `-exact` or `-glob`.",
     },
     Entry {
-        name: "throw",
-        synopsis: "throw type message",
-        summary: "Raise `message` as an error, the type having been checked to be a list of at least one element. The `-errorcode` the type becomes is part of the return-options dictionary, whose error entries this frontend does not model.",
-    },
-    Entry {
         name: "tcl_findLibrary",
         synopsis: "tcl_findLibrary basename version patch initScript enVarName varName",
         summary: "Tcl's own library-directory search, ported from `library/auto.tcl`: find the initialisation script, set the library variable and source it.",
@@ -430,6 +425,11 @@ pub const CORPUS: &[Entry] = &[
         name: "tell",
         synopsis: "tell channel",
         summary: "The device's position, less whatever was read ahead of the script.",
+    },
+    Entry {
+        name: "throw",
+        synopsis: "throw type message",
+        summary: "Raise `message` as an error, the type having been checked to be a list of at least one element. The `-errorcode` the type becomes is part of the return-options dictionary, whose error entries this frontend does not model.",
     },
     Entry {
         name: "unset",
