@@ -799,17 +799,20 @@ fn errors_match_tclsh() {
 /// must say so rather than being ignored, which would silently change a result.
 #[test]
 fn unimplemented_options_are_refused() {
-    // `-command` runs a script per comparison, which this frontend has no way
-    // to call back into from inside a sort. It is the only option of either
-    // command still refused, so the loop the others shared is one entry now.
-    {
-        let (src, expected) = ("puts [lsort -command x {a b}]", "lsort -command");
-        let err = tclrs::eval(src).expect_err(&format!("{src:?} should fail"));
-        assert!(
-            err.contains(expected) && err.contains("not supported yet"),
-            "{src:?}: expected a refusal mentioning {expected:?}, got {err:?}"
-        );
-    }
+    // Neither command refuses an option any more: `-command` was the last one,
+    // and it landed. What it *answers* is compared against tclsh by
+    // `sort_and_search_options_match_tclsh`; what is pinned here is that a
+    // comparison command the script does not define is the reference
+    // implementation's own diagnostic and not a refusal to compile.
+    assert_eq!(
+        tclrs::eval("proc c {a b} {string compare $a $b}\nputs [lsort -command c {b a}]")
+            .expect("lsort -command is implemented")
+            .output,
+        "a b\n"
+    );
+    assert!(tclrs::eval("puts [lsort -command x {a b}]")
+        .expect_err("an undefined comparison command fails when the sort runs")
+        .contains("invalid command name \"x\""));
 
     // `-regexp` was on that list until the regular-expression engine landed.
     // Pinned here rather than dropped, so that the day it starts refusing
