@@ -122,6 +122,22 @@ const PROGRAMS: &[&str] = &[
     "while 1 {incr i; puts [list a [break]]}\nputs done-$i",
     "set n 0\nforeach x {1 2 3} {incr n; puts [list v [continue]]}\nputs n-$n",
     "for {set i 0} {$i<5} {incr i} {puts [string cat x [break]]}\nputs after-$i",
+    // A `break` or a `continue` that arrives as a *raised return code* rather
+    // than as the direct jump the compiler emits — from a nested script, or
+    // from a procedure that returned one. The loop's region absorbs it and must
+    // still be there for the next iteration: a region closed by the first one
+    // left the second with no loop at all.
+    "foreach i {1 2 3} {eval {continue}; puts \"body $i\"}\nputs after",
+    "set n 0\nwhile {[incr n] < 4} {eval {continue}; puts no}\nputs n-$n",
+    "proc c {} {return -code continue}\nforeach i {1 2 3} {c; puts \"body $i\"}\nputs after",
+    "proc b {} {return -code break}\nforeach i {1 2 3} {b; puts \"body $i\"}\nputs after",
+    // Nested: the raised code must close the region of the loop it leaves and
+    // no other. Closing the outer one instead lost the second outer iteration.
+    "foreach j {1 2} {foreach i {1 2 3} {eval {break}}\nputs \"outer $j\"}\nputs after",
+    "foreach j {1 2} {foreach i {1 2 3} {eval {continue}}\nputs \"outer $j\"}\nputs after",
+    // A `catch` inside the loop absorbs the code first, so the loop's own
+    // region is untouched and every iteration still runs.
+    "foreach i {1 2 3} {catch {eval {continue}} m; puts \"caught $i\"}\nputs after",
 ];
 
 fn tclsh() -> Option<PathBuf> {

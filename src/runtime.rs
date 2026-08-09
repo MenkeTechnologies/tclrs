@@ -1147,6 +1147,7 @@ fn traced_read(shared: &Shared, name: &str) -> Option<Value> {
 /// anywhere below, including inside a procedure the guarded script called, and
 /// restoring them puts the VM back exactly where the handler was compiled to
 /// expect it.
+#[derive(Clone, Copy)]
 struct CatchFrame {
     /// What the region absorbs, and where it resumes.
     kind: FrameKind,
@@ -2398,7 +2399,7 @@ impl Machine {
         // count; [`call_in_chunk`] spends that level where the two VMs meet.
         let mut depth = self.vm(self.current).frames.len();
         loop {
-            if let Some(frame) = self.contexts[self.current].catches.pop() {
+            if let Some(frame) = self.contexts[self.current].catches.last().copied() {
                 for _ in 0..depth.saturating_sub(frame.frames) {
                     e = e.descend();
                 }
@@ -2413,8 +2414,26 @@ impl Machine {
                     FrameKind::Loop { .. } => None,
                 };
                 let Some(resume) = resume else {
-                    continue; // this region does not absorb the code; keep unwinding
+                    // This region does not absorb the code, so the loop is being
+                    // abandoned and its `LOOP_LEAVE` will never run: the record
+                    // goes here, and the unwind carries on outwards.
+                    self.contexts[self.current].catches.pop();
+                    continue;
                 };
+                // A `catch` region ends at its handler — the `CATCH_END` that
+                // would close it is on the ordinary path, which was jumped over
+                // — so its record goes now. A *loop* region does not end: both
+                // trampolines land inside the loop, and the `LOOP_LEAVE` at its
+                // exit is still ahead and pops the record itself. Popping here
+                // as well left the loop with no region at all, so the second
+                // raised `continue` in one loop was `invoked "continue" outside
+                // of a loop` where tclsh 9.0.4 runs the next iteration
+                // (measured: `foreach i {1 2 3} {eval {continue}}`), and a
+                // raised `break` in a nested loop closed the *outer* one's
+                // region instead of its own.
+                if matches!(frame.kind, FrameKind::Catch(_)) {
+                    self.contexts[self.current].catches.pop();
+                }
                 let options = e.options();
                 let vm = self.vm(self.current);
                 // Unwind to the guarded script's entry state and hand the
