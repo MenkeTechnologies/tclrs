@@ -142,8 +142,15 @@ impl Namespace {
     /// The table keys to try for `name`, in the reference interpreter's order.
     fn keys(&self, name: &str) -> Vec<String> {
         let key = crate::cmd_namespace::store_key(name);
-        // A qualified name — or one written `::x` — names exactly one variable.
-        if name.starts_with("::") || key.contains("::") {
+        // A name written `::x` names exactly one variable, and names it as the
+        // *interpreter's* rather than as anything a frame could hold — so the
+        // prefix is kept, which is what tells a projection in effect not to
+        // answer for it. `crate::runtime::read_global` strips it again.
+        if name.starts_with("::") {
+            return vec![crate::cmd_namespace::chunk_key(name)];
+        }
+        // A qualified name is already one variable and already carries `::`.
+        if key.contains("::") {
             return vec![key.to_string()];
         }
         match &self.prefix {

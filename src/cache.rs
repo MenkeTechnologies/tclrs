@@ -30,7 +30,12 @@ pub const DEFAULT_CAPACITY: usize = 1024;
 /// Compiled scripts, keyed by their source text.
 #[derive(Debug)]
 pub struct ChunkCache {
-    entries: HashMap<String, Arc<Chunk>>,
+    /// Keyed by the source text *and* by whether it was lowered for a frame
+    /// projection, because the same text lowers differently in the two cases —
+    /// see [`crate::compiler::compile_projected`]. Almost every script is
+    /// compiled one way only, so the second key costs a `bool` per entry and
+    /// nothing else.
+    entries: HashMap<(bool, String), Arc<Chunk>>,
     capacity: usize,
     hits: u64,
     misses: u64,
@@ -56,7 +61,14 @@ impl ChunkCache {
     /// A source that fails to compile is not stored: the failure is reported on
     /// every attempt, and a diagnostic is not worth a cache slot.
     pub fn compile(&mut self, src: &str) -> Result<Arc<Chunk>, TclError> {
-        if let Some(chunk) = self.entries.get(src) {
+        self.compile_in(src, false)
+    }
+
+    /// [`ChunkCache::compile`], for a script that will run inside a frame
+    /// projection. Cached apart from the same text compiled outside one.
+    pub fn compile_in(&mut self, src: &str, projected: bool) -> Result<Arc<Chunk>, TclError> {
+        let key = (projected, src.to_string());
+        if let Some(chunk) = self.entries.get(&key) {
             self.hits += 1;
             return Ok(Arc::clone(chunk));
         }
@@ -72,7 +84,12 @@ impl ChunkCache {
             code: crate::runtime::TCL_ERROR,
             level: 0,
         })?;
-        let chunk = Arc::new(crate::compiler::compile(&script).map_err(|e| TclError {
+        let lowered = if projected {
+            crate::compiler::compile_projected(&script)
+        } else {
+            crate::compiler::compile(&script)
+        };
+        let chunk = Arc::new(lowered.map_err(|e| TclError {
             msg: e.msg,
             line: Some(e.line),
             code: crate::runtime::TCL_ERROR,
@@ -85,7 +102,7 @@ impl ChunkCache {
         if self.entries.len() >= self.capacity {
             self.entries.clear();
         }
-        self.entries.insert(src.to_string(), Arc::clone(&chunk));
+        self.entries.insert(key, Arc::clone(&chunk));
         Ok(chunk)
     }
 

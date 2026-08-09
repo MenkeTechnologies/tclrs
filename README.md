@@ -608,7 +608,18 @@ in the body. A procedure's locals are frame slots, so nothing addresses them by
 name once the chunk is built — `proc` therefore records the name of each slot in
 the chunk (`fusevm::Chunk::sub_slot_names`), and the op runs the script against a
 projection of the frame built from them, reading it back into the slots
-afterwards.
+afterwards. Every activation is projected, including one whose body happens to
+declare no local at all.
+
+A `::`-qualified name is the exception the projection is built around: `$g` in
+such a script is the frame's local and `$::g` is the interpreter's variable, so
+the qualified spelling reaches past the frame in both directions — a read
+answers from the interpreter and a write lands there. The two are told apart by
+the spelling the chunk keeps, which is a separate name only in a script lowered
+to run in a projection; everywhere else `::g` and `g` are one variable and share
+one name. `info locals` asked inside such a script answers with that frame's
+names, which is a run-time fact rather than anything the lowering can know: the
+script is a chunk of its own, compiled at the script's own level.
 
 `uplevel ?level? arg …` is the same mechanism aimed at a different frame: `#0`
 is the global level, a bare number counts calls outwards from the running one,

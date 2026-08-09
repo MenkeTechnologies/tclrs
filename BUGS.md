@@ -408,8 +408,22 @@ approximated, and nothing is silently mis-run.
   activation* is served through the per-procedure slot-name table the compiler
   now publishes: `chunk.ops[frame.return_ip - 1]` attributes a live frame to a
   body, and the table says which name each of that body's slots was written as.
+  A script running against a frame sees the frame's variables and nothing else,
+  which is what makes a bare read of an undeclared global refuse there exactly as
+  it refuses in the body — while a `::`-qualified name still names the
+  *interpreter's* variable, in both directions. The two are told apart by the
+  spelling the chunk keeps (`cmd_namespace::chunk_key`), which is a name of its
+  own only in a script lowered for a projection (`Compiler::projected`), because
+  everywhere else `::g` and a bare `g` are one variable and must share one name.
+  Every procedure activation is projected, including one whose body declares no
+  local of its own: a name its script assigns is a local of that activation even
+  when a global already wears the name.
+
   `upvar` at any level, with a computed level, a computed name, or an array
-  element as its target all work; `upvar #0 other local` written out is still a
+  element as its target all work — and an element target *creates* the array in
+  the frame it points into, before anything is written through the link and
+  whether or not anything ever is, as `TclObjLookupVar`'s `createPart1` does;
+  `upvar #0 other local` written out is still a
   compile-time binding through `Compiler::var_place`, so the common case costs
   the body nothing. `upvar` outside a procedure makes two globals one variable,
   in the interpreter's own table (`runtime::alias_global`). `apply` of a lambda
@@ -961,36 +975,11 @@ the measurement behind it.
   The names an activation grew *after* it was compiled are exact and are listed
   beside them, so the `dict with` half of this is gone: `proc p {} {set d {a 1 b
   2}; dict with d {puts [lsort [info locals]]}}` answers `a b d` in both, as does
-  `proc p {} {eval {set v 1}; info locals}`. What is not exact is `info locals`
-  asked *inside* a nested script — `proc p {} {eval {set v 1}; eval {info
-  locals}}` is `v` in tclsh 9.0.4 and empty here. The nested script is a chunk of
-  its own and is compiled at the script's own level, where `info locals`'
-  candidate list is empty; the frame it is projected into is not a fact the
-  compiler that lowers it has. Answering it needs the projection to reach the
-  compiler, not just the interpreter's variable table.
-- **A `::`-qualified global is not visible to a script running in a projected
-  frame.** `proc p {} {set z 1; return [subst {g=$::g}]}` refuses with `can't
-  read "::g": no such variable` where tclsh answers `g=3`; `eval {set ::g}` is
-  the same wall. A frame projection replaces the interpreter's variable table
-  with the frame's own for the duration, which is what makes a *bare* read of an
-  undeclared global refuse exactly as tclsh refuses it — and the two spellings
-  cannot be told apart, because a chunk's key for `::g` and for a bare `g` are
-  both `g` (`crate::cmd_namespace::store_key` strips the prefix). Serving both
-  needs the qualified spelling to survive into the chunk's name table, which is a
-  change to how a global is keyed rather than to the projection.
-
-  A procedure whose body declares no local of its own is *not* projected, for
-  this reason: it has nothing to project, and keeping the interpreter's table in
-  place is what keeps `proc p {} {return [subst {g=$::g}]}` answering. What such
-  an activation still gets is the run-time locals below, so a name its script
-  creates does not leak out of it (`crate::runtime::in_bare_frame`).
-- **`upvar` to an array element does not create the array.** `proc i {} {upvar 1
-  arr(k) e}` leaves `info exists arr` at 0 in the frame the link points into,
-  where tclsh 9.0.4 answers 1 — `Tcl_ObjLookupVar` creates the array part of an
-  element name even when nothing is ever assigned through the link. The scalar
-  spelling agrees with tclsh: `upvar 1 ghost q` creates nothing in either. Every
-  level behaves the same way here, the global one included, and an element that
-  *is* assigned through the link is exact.
+  `proc p {} {eval {set v 1}; info locals}`. `info locals` asked *inside* a
+  nested script is exact too, and is answered by a different route: the script is
+  a chunk of its own compiled at the script's own level, where there is no scope
+  to list, so the frame comes from the projection in effect when it runs
+  (`crate::runtime::State::frame_declared`) rather than from the lowering.
 - **`info commands`, `info procs` and `info globals` do not list a script
   library.** tclsh answers with `auto_execok`, `auto_load`, `unknown` and the
   rest, and with the `auto_path` global, because `init.tcl` defined them. There

@@ -400,10 +400,13 @@ fn visible(vm: &mut VM) -> Vec<(String, String)> {
         // anything the script wrote.
         .filter(|(_, name)| !name.starts_with('\u{0}'))
         .filter_map(|(slot, name)| {
+            // A chunk keeps the `::` on a name the code wrote qualified; the
+            // debugger names the variable, not the spelling.
+            let name = crate::cmd_namespace::store_key(name);
             let value = vm.globals.get(slot)?;
             match value {
                 Value::Undef => None,
-                value => Some((name.clone(), to_tcl_string(value))),
+                value => Some((name.to_string(), to_tcl_string(value))),
             }
         })
         .collect()

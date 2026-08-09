@@ -51,6 +51,59 @@ const PROGRAMS: &[&str] = &[
     // A body with no locals of its own still reaches a global written the one
     // way a procedure may reach one without declaring it.
     "set g 3\nproc f {} {return [subst {g=$::g}]}\nputs [f]",
+    // ── a `::`-qualified name inside a script running in a frame ──
+    //
+    // `$g` is the frame's local and `$::g` is the interpreter's variable, so a
+    // script running against the frame has to answer them differently. Every
+    // way into such a script is here, because each reaches the name by its own
+    // route: `subst` resolves it as a value, a nested script compiles it, and
+    // `uplevel` does both.
+    "set g 3\nproc p {} {set z 1\nreturn [subst {g=$::g}]}\nputs [p]",
+    "set g 3\nproc p {} {set z 1\nreturn [eval {set ::g}]}\nputs [p]",
+    "set g 3\nproc p {} {set z 1\nreturn [uplevel 0 {set ::g}]}\nputs [p]",
+    "namespace eval nsx {variable v 9}\nproc p {} {set z 1\nreturn [subst {v=$::nsx::v}]}\nputs [p]",
+    "namespace eval nsx {variable v 9}\nproc p {} {set z 1\nreturn [eval {set ::nsx::v}]}\nputs [p]",
+    // A write through the qualified spelling reaches the interpreter's variable
+    // and stays there, rather than becoming a local of the frame it ran in.
+    "set g 3\nproc p {} {set z 1\neval {set ::g 42}}\np\nputs $g",
+    "set g 3\nproc p {} {set z 1\neval {set ::g 42}\nreturn [list $::g [info exists z]]}\nputs [p]",
+    // ...and the two spellings stay *one* variable where they mean one: at the
+    // script's own level, in the same chunk, written one way and read the other.
+    "set g 1\nputs $::g\nset ::g 2\nputs $g\nputs [info exists ::g][info exists g]",
+    "namespace eval foo {set x 1}\nputs $::foo::x",
+    // A qualified name for a variable that does not exist refuses as tclsh's
+    // does — the projection is not answering for it, and neither is anything
+    // else.
+    "proc p {} {set z 1\nreturn [catch {eval {set ::nope}} m]:$m}\nputs [p]",
+    // The same, in a body with no local of its own: such an activation used to
+    // keep the interpreter's variable table rather than be projected, which is
+    // what made a script in one write the *global* whenever a global already
+    // wore the name it meant to make a local of.
+    "set g 3\nproc p {} {eval {set g 99}}\np\nputs $g",
+    "set g 3\nproc p {} {eval {set g 99}\nreturn [eval {list $::g $g}]}\nputs [p]",
+    "set g 3\nproc p {} {eval {set g 99}\nreturn [lsort [info locals]]}\nputs [p]",
+    // ── `info locals` from inside a script running in a frame ──
+    //
+    // The script is a chunk of its own, compiled at the script's own level,
+    // where there is no scope to list: the frame it will be projected into is
+    // only known when it runs.
+    "proc p {} {eval {set v 1}\nreturn [eval {info locals}]}\nputs [p]",
+    "proc p {} {set k 1\neval {set v 1}\nreturn [lsort [eval {info locals}]]}\nputs [p]",
+    // ...including a name the script itself creates, which is in the chunk's own
+    // slots and not yet in the interpreter's table when it asks.
+    "proc p {} {eval {set v 1\nreturn [lsort [info locals]]}}\nputs [p]",
+    "proc p {} {set k 1\neval {set v 1\nreturn [lsort [info locals]]}}\nputs [p]",
+    // A name the body declared `global` is visible to the script but is not one
+    // of the frame's locals.
+    "set g 5\nproc p {} {global g\nset k 1\nreturn [lsort [eval {info locals}]]}\nputs [p]",
+    // The pattern is applied to the same set, and the level `uplevel` ran in is
+    // the one answered for.
+    "proc p {} {set kk 1\nset zz 2\nreturn [lsort [eval {info locals k*}]]}\nputs [p]",
+    "proc a {} {set av 1\nreturn [b]}\nproc b {} {return [lsort [uplevel 1 {info locals}]]}\nputs [a]",
+    "proc p {} {set k 1\nreturn [eval {eval {info locals}}]}\nputs [p]",
+    // At the script's own level there is no frame and no local, either asked
+    // directly or through a script.
+    "set g 1\nputs \"[info locals]|[eval {info locals}]\"",
     // A read sees the procedure's locals.
     "proc f {} {set x 5\nreturn [eval {expr {$x * 2}}]}\nputs [f]",
     "proc f {a b} {return [eval {expr {$a + $b}}]}\nputs [f 20 22]",
@@ -98,6 +151,18 @@ const PROGRAMS: &[&str] = &[
     // The name the link made is the caller's local and dies with the call.
     "proc a {} {b}\nproc b {} {upvar 1 late z\nset z 1}\na\nputs [info exists ::late]",
     "proc a {} {b\nreturn [eval {array get arr}]}\nproc b {} {upvar 1 arr(k) e\nset e 7}\nputs [a]",
+    // Naming an element *creates the array*, before anything is written through
+    // the link and whether or not anything ever is: the target is looked up with
+    // `createPart1` set. The array is all that is created — the element itself
+    // stays absent, which is what `array size` and `array names` report on.
+    "proc a {} {b\nreturn \"[info exists arr] [array exists arr] [array size arr] \
+     [array names arr] [lsort [info locals]]\"}\nproc b {} {upvar 1 arr(k) e\nreturn}\nputs [a]",
+    "proc b {} {upvar #0 gz(k) e\nreturn}\nb\n\
+     puts \"[info exists gz] [array exists gz] [array size gz] [lsort [info globals gz]]\"",
+    // ...and an element of a variable that is already a scalar is refused there
+    // and then, rather than left as a link that could never be written through.
+    "set sc 1\nproc b {} {return [catch {upvar #0 sc(k) e} m]:$m}\nputs [b]",
+    "proc a {} {set sc 1\nreturn [b]}\nproc b {} {return [catch {upvar 1 sc(k) e} m]:$m}\nputs [a]",
     // The level's own locals are what is visible — not the caller's, which are
     // one level further in.
     "proc a {} {set mine 1\nb}\nproc b {} {set mine 2\nreturn [uplevel 1 {set mine}]}\nputs [a]",

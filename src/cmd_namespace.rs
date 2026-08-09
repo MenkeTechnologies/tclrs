@@ -191,6 +191,32 @@ pub fn store_key(fqn: &str) -> &str {
     fqn.strip_prefix("::").unwrap_or(fqn)
 }
 
+/// The spelling a name a script wrote with a leading `::` takes in a *chunk's*
+/// name table — the [`store_key`] with the prefix put back.
+///
+/// The two are different on purpose. The table key is what the variable is
+/// stored under, and `::g` and a global `g` are one variable, so both store as
+/// `g`. The chunk name is what a *projected frame* is asked about, and there the
+/// two spellings mean opposite things: inside a procedure `$g` is the frame's
+/// own local and `$::g` is the interpreter's variable, so a projection that
+/// answered both from the frame's view would either hide the global or leak the
+/// local. Keeping the prefix in the chunk is what lets the projection tell them
+/// apart; [`crate::runtime`] strips it again at every point the name reaches the
+/// variable table.
+///
+/// A name that resolves *into* a namespace — `nsx::v`, or a bare `v` written
+/// inside `namespace eval nsx` — needs no marker, because its key already
+/// carries `::` and no frame slot's name ever can.
+pub(crate) fn chunk_key(fqn: &str) -> String {
+    format!("::{}", store_key(fqn))
+}
+
+/// Whether `name`, as a chunk's name table spells it, is a namespace variable
+/// rather than something a frame could hold — the test a projection makes.
+pub(crate) fn is_namespaced(name: &str) -> bool {
+    name.contains("::")
+}
+
 // ── the compile-time context ─────────────────────────────────────────────
 
 /// What the compiler knows about namespaces while it lowers a script.
@@ -283,6 +309,15 @@ pub(crate) fn global_key(c: &Compiler, name: &str) -> String {
 /// A variable name as written in a namespace body: qualified names are
 /// absolute or relative as spelt, bare ones belong to the current namespace.
 fn resolve_var(c: &Compiler, name: &str) -> String {
+    // Written `::x`: the root namespace's variable, said so explicitly. Inside a
+    // projection that is a different variable from a bare `x` — the frame's
+    // local — so the prefix is kept and the two take separate names. Everywhere
+    // else they are one variable and must share one name, or a chunk that wrote
+    // through one spelling would read nothing back through the other. See
+    // [`chunk_key`] and [`Compiler::projected`].
+    if c.projected && name.starts_with("::") {
+        return chunk_key(&resolve(&c.ns.current, name));
+    }
     if name.contains("::") {
         return store_key(&resolve(&c.ns.current, name)).to_string();
     }

@@ -83,6 +83,11 @@ pub(crate) const VARS: u8 = 3;
 /// The candidates the compiler pushed, kept only where the variable each names
 /// is set right now — `info locals`, and `info vars` inside a procedure body.
 pub(crate) const SET_OF: u8 = 4;
+/// `info locals` asked from a script that is *not* a procedure body — a nested
+/// script an `eval`, `uplevel` or `subst` is running. Which frame it belongs to
+/// is only known when it runs, so the names come from the projection in effect
+/// rather than from the lowering; see [`crate::runtime::State::frame_locals`].
+pub(crate) const FRAME_LOCALS: u8 = 5;
 
 /// The place operand [`SET_OF`] uses for a candidate whose *existence* is not a
 /// question: a name `global`, `variable` or `upvar` bound into the frame is
@@ -177,10 +182,15 @@ impl Compiler {
                 self.info_candidates(rest, visible, "info vars ?pattern?")
             }
             "vars" => self.info_names(rest, VARS, "info vars ?pattern?"),
-            "locals" => {
+            // Inside a body the candidates are the ones the lowering reached. A
+            // nested script has no scope of its own to list, and the frame it
+            // will be projected into is not something its compiler can know, so
+            // the answer is deferred to the run.
+            "locals" if self.scope.is_some() => {
                 let locals = self.local_names();
                 self.info_candidates(rest, locals, "info locals ?pattern?")
             }
+            "locals" => self.info_names(rest, FRAME_LOCALS, "info locals ?pattern?"),
             "level" => self.info_level(rest),
             "functions" => self.info_about_list(rest, ext::FUNCTIONS, "info functions ?pattern?"),
             "tclversion" => self.info_literal(rest, TCL_VERSION, "info tclversion"),

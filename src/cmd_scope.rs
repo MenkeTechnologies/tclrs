@@ -545,8 +545,12 @@ impl Compiler {
     /// of a second global. Both are followed by [`Compiler::var_place`].
     fn bind_alias(&mut self, local: &str, other: &str) -> Result<(), CompileError> {
         let Some(scope) = self.scope.as_mut() else {
+            // Both sides are stored under the table key: the pair is between two
+            // variables, and `::a` and `a` are one variable.
             let local = crate::cmd_namespace::global_key(self, local);
             let other = crate::cmd_namespace::global_key(self, other);
+            let local = crate::cmd_namespace::store_key(&local).to_string();
+            let other = crate::cmd_namespace::store_key(&other).to_string();
             if local == other {
                 return self.error("can't upvar from variable to itself");
             }
@@ -702,7 +706,11 @@ fn resolve_target(
     } else {
         frame_home(vm, target, &base)?
     };
-    Ok(Link { home, elem })
+    let link = Link { home, elem };
+    if link.elem.is_some() {
+        materialize_array(vm, &link, other)?;
+    }
+    Ok(link)
 }
 
 /// `a(i)` → `("a", Some("i"))`, and anything else → `(name, None)`.
@@ -721,7 +729,17 @@ fn split_element(name: &str) -> (String, Option<String>) {
 /// not carry it — which is the whole point of a *computed* target name.
 fn global_home(interp: &Shared, vm: &mut VM, name: &str) -> Result<u16, TclError> {
     let key = crate::cmd_namespace::store_key(name).to_string();
-    if let Some(idx) = vm.chunk.names.iter().position(|n| *n == key) {
+    // The chunk may hold the name under either spelling — `::x` when the code it
+    // was compiled from wrote the prefix — and both are the one variable, so the
+    // table is searched by the key rather than by the spelling. Missing this
+    // would intern a *second* projection entry for a variable the chunk already
+    // carries, and the two would disagree.
+    if let Some(idx) = vm
+        .chunk
+        .names
+        .iter()
+        .position(|n| crate::cmd_namespace::store_key(n) == key)
+    {
         return u16::try_from(idx).map_err(|_| {
             TclError::plain(format!("\"upvar\" cannot reach the variable \"{name}\""))
         });
@@ -958,20 +976,60 @@ pub(crate) fn unset_link(vm: &mut VM, slot: u16) -> bool {
     }
 }
 
-/// The cell the link points at, growing the storage to reach it. `None` when the
-/// target is an element of something that is not an array.
-pub(crate) fn write_link<'v>(vm: &'v mut VM, link: &Link) -> Option<&'v mut Value> {
-    let base = match link.home {
-        Home::Global(_) => crate::runtime::var_cell(vm, home_place(link))?,
+/// The cell holding the *variable* a link points into — the array itself for an
+/// `a(i)` target, and the target itself otherwise — growing the frame's slot
+/// vector to reach it.
+///
+/// Separate from [`write_link`] because the variable has to be reached at two
+/// different moments: when something is written through the link, and when the
+/// link is *made*. See [`materialize_array`] for why the second one exists.
+fn base_cell<'v>(vm: &'v mut VM, link: &Link) -> Option<&'v mut Value> {
+    match link.home {
+        Home::Global(_) => crate::runtime::var_cell(vm, home_place(link)),
         Home::Slot { frame, slot } => {
             let f = vm.frames.get_mut(usize::from(frame))?;
             let slot = usize::from(slot);
             if slot >= f.slots.len() {
                 f.slots.resize(slot + 1, Value::Undef);
             }
-            &mut f.slots[slot]
+            Some(&mut f.slots[slot])
         }
+    }
+}
+
+/// Make the variable an `a(i)` link points into an array, before anything is
+/// written through the link.
+///
+/// `Tcl_UpvarObjCmd` reaches its target through `TclObjLookupVar` with
+/// `createPart1` set (`generic/tclVar.c`), so naming an element *creates the
+/// array*: after `upvar 1 arr(k) e` the caller has an `arr`, `info exists arr`
+/// is 1 and `array exists arr` is 1, whether or not `e` is ever assigned. Only
+/// the array is created — `createPart2` is 0, so the element itself stays
+/// absent and `array names arr` is empty.
+///
+/// The same lookup is what refuses an element of a variable that is already a
+/// scalar, in these words, rather than quietly making a link that could never be
+/// written through.
+fn materialize_array(vm: &mut VM, link: &Link, spelled: &str) -> Result<(), TclError> {
+    let Some(base) = base_cell(vm, link) else {
+        return Ok(());
     };
+    match base {
+        Value::Undef => {
+            *base = Value::Hash(HashMap::new());
+            Ok(())
+        }
+        Value::Hash(_) => Ok(()),
+        _ => Err(TclError::plain(format!(
+            "can't access \"{spelled}\": variable isn't array"
+        ))),
+    }
+}
+
+/// The cell the link points at, growing the storage to reach it. `None` when the
+/// target is an element of something that is not an array.
+pub(crate) fn write_link<'v>(vm: &'v mut VM, link: &Link) -> Option<&'v mut Value> {
+    let base = base_cell(vm, link)?;
     let Some(key) = &link.elem else {
         return Some(base);
     };

@@ -335,6 +335,10 @@ pub(crate) struct State {
     /// lookup per name at a chunk's entry and exit when it is not — see
     /// [`alias_global`].
     aliases: HashMap<String, String>,
+    /// The frame projections in effect, outermost first — see [`Projection`].
+    /// Empty except while a nested script is running against a procedure
+    /// activation's variables.
+    projections: Vec<Projection>,
     cache: ChunkCache,
     /// Where the scripts of this interpreter write.
     output: Output,
@@ -357,6 +361,32 @@ pub(crate) struct State {
     /// "tclAfter", …)`, `generic/tclTimer.c:801-807`); see
     /// [`crate::cmd_after`].
     pub(crate) afters: crate::cmd_after::Afters,
+}
+
+/// One frame projection in progress: what a nested script running against a
+/// procedure activation's variables needs that the variable table cannot say.
+///
+/// Two things live here, for two questions the script asks.
+///
+/// A `::`-qualified name is the *interpreter's* variable, not the frame's, so it
+/// has to reach past the view the projection installed — [`State::root_global`]
+/// walks these outermost-first to find the table the view displaced.
+///
+/// `info locals` asked inside the script has to answer with the frame's names.
+/// The script is a chunk of its own, compiled at the script's own level, so its
+/// compiler has no scope to list; the frame it is projected into is only known
+/// here.
+struct Projection {
+    /// The variable table this projection displaced. The outermost one is the
+    /// interpreter's own, which is what makes the walk in [`State::root_global`]
+    /// terminate at the right table.
+    outer: HashMap<String, Value>,
+    /// The names the body declared `global`, which are in the view but are not
+    /// locals of the frame. Everything else the view holds is, which is what
+    /// [`State::frame_locals`] answers `info locals` with — read from the view
+    /// as it stands rather than from a snapshot, so a name the script itself
+    /// creates is listed the moment it exists.
+    declared: Vec<String>,
 }
 
 pub(crate) type Shared = Arc<Mutex<State>>;
@@ -391,6 +421,7 @@ impl Interp {
                 ns: crate::cmd_namespace::Registry::default(),
                 running: Vec::new(),
                 aliases: HashMap::new(),
+                projections: Vec::new(),
                 cache: ChunkCache::new(),
                 output,
                 depth: 0,
@@ -529,7 +560,11 @@ pub(crate) fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> 
             ));
         }
         state.depth += 1;
-        state.cache.compile(src)
+        // A script running inside a frame projection lowers a `::`-qualified
+        // name apart from a bare one, because there the two are different
+        // variables. See [`crate::compiler::Compiler::projected`].
+        let projected = state.projected();
+        state.cache.compile_in(src, projected)
     };
     // The depth is given back however this returns, including the compile
     // failure above, which is why it is not a `?` in the block.
@@ -608,7 +643,16 @@ fn seed(chunk: &Chunk, shared: &Shared) -> Vec<Value> {
             .iter()
             .map(|name| {
                 let key = state.alias_of(name);
-                state.globals.get(key).cloned().unwrap_or(Value::Undef)
+                // A name a projection cannot answer — the interpreter's, said so
+                // by the `::` the chunk kept, or a namespace's, which no frame
+                // slot can be named. Outside a projection the two paths reach
+                // the same table.
+                let value = if crate::cmd_namespace::is_namespaced(name) {
+                    state.root_global(key)
+                } else {
+                    state.globals.get(key)
+                };
+                value.cloned().unwrap_or(Value::Undef)
             })
             .collect()
     };
@@ -656,12 +700,38 @@ fn write_back(
         }
         // An aliased name is not its own variable: `upvar` outside a procedure
         // made it another spelling of one, and the write goes where that one is.
-        // Resolved only when some alias exists, so a script that made none pays
-        // one `is_empty` for the whole write-back rather than a copy per name.
-        let aliased = (!state.aliases.is_empty()).then(|| state.alias_of(name).to_string());
+        // `alias_of` also strips the `::` a chunk keeps on an explicitly
+        // qualified name, which the table does not carry, so it is consulted for
+        // every such name whether or not any alias exists.
+        // The write of a namespace variable goes past whatever projection is in
+        // effect, to the same table [`seed`] read it from.
+        let past = crate::cmd_namespace::is_namespaced(name);
+        let aliased = (!state.aliases.is_empty() || name.starts_with("::"))
+            .then(|| state.alias_of(name).to_string());
         let name: &str = aliased.as_deref().unwrap_or(name);
         let value = globals.get(slot).unwrap_or(&Value::Undef);
         let watched = traced.at(slot);
+        if past && state.projected() {
+            match value {
+                Value::Undef if watched.reads || boundary == Boundary::Sync => {}
+                Value::Undef => {
+                    if state.root_global(name).is_some() {
+                        state.set_root_global(name, None);
+                        if watched.unsets {
+                            fired.push((name.to_string(), TraceOp::Unset));
+                        }
+                    }
+                }
+                value => {
+                    let changed = state.root_global(name) != Some(value);
+                    state.set_root_global(name, Some(value.clone()));
+                    if changed && watched.writes {
+                        fired.push((name.to_string(), TraceOp::Write));
+                    }
+                }
+            }
+            continue;
+        }
         match value {
             // A slot [`TracedIn::blank_reads`] emptied so that reads of it
             // would reach the hook is not an `unset`, and neither is a slot a
@@ -734,6 +804,12 @@ fn overflow_value_index(chunk: &Chunk, offset: usize) -> usize {
 pub(crate) fn read_global(interp: &Shared, name: &str) -> Option<Value> {
     let state = interp.lock().expect("interpreter lock");
     let key = state.alias_of(name);
+    // A namespace variable is not a frame's, so a projection in effect does not
+    // answer for it — the same rule [`seed`] applies to a chunk's names. Outside
+    // one both reach the same table.
+    if crate::cmd_namespace::is_namespaced(name) {
+        return state.root_global(key).cloned();
+    }
     state.globals.get(key).cloned()
 }
 
@@ -743,7 +819,11 @@ impl State {
     /// which registers the target it resolved to — and a bounded walk is what
     /// keeps a cycle from being a hang.
     fn alias_of<'a>(&'a self, name: &'a str) -> &'a str {
-        let mut at = name;
+        // A chunk spells an explicitly `::`-qualified name with its prefix, so
+        // that a frame projection can tell `$::g` from `$g`
+        // (`crate::cmd_namespace::chunk_key`). The variable table knows only the
+        // one variable, under the prefixless key.
+        let mut at = crate::cmd_namespace::store_key(name);
         if self.aliases.is_empty() {
             return at;
         }
@@ -754,6 +834,57 @@ impl State {
             }
         }
         at
+    }
+}
+
+impl State {
+    /// Whether a nested script compiled now would run inside a frame projection.
+    /// The compiler needs it to key a `::`-qualified name apart from a bare one;
+    /// see [`crate::compiler::Compiler::projected`].
+    pub(crate) fn projected(&self) -> bool {
+        !self.projections.is_empty()
+    }
+
+    /// The interpreter's own value for the variable `key`, reached past whatever
+    /// frame projections are in effect.
+    ///
+    /// `::g` names the root namespace's variable wherever it is written, so a
+    /// projection must not answer it from the frame's view. Projections nest, and
+    /// each one displaced the table the one outside it installed, so the
+    /// interpreter's own table is the *outermost* one — and the table in
+    /// `globals` when nothing is projected.
+    fn root_global(&self, key: &str) -> Option<&Value> {
+        match self.projections.first() {
+            Some(p) => p.outer.get(key),
+            None => self.globals.get(key),
+        }
+    }
+
+    /// Store the interpreter's value for `key` past the projections in effect,
+    /// the write matching [`State::root_global`]'s read. `None` removes it.
+    fn set_root_global(&mut self, key: &str, value: Option<Value>) {
+        let table = match self.projections.first_mut() {
+            Some(p) => &mut p.outer,
+            None => &mut self.globals,
+        };
+        match value {
+            Some(v) => table.insert(key.to_string(), v),
+            None => table.remove(key),
+        };
+    }
+
+    /// What separates the frame's locals from the rest of the variables visible
+    /// to a nested script, or `None` when no projection is in effect.
+    ///
+    /// The script is a chunk of its own, compiled at the script's own level,
+    /// where the compiler has no scope to list — so `info locals` cannot be
+    /// answered from the lowering the way a body's is. It is answered from the
+    /// projection instead: while one is in effect the visible variables *are*
+    /// the frame's, so all of them are its locals except the ones the body
+    /// declared `global`. At the script's own level there is no projection and
+    /// no local, and the answer is empty, as tclsh's is.
+    pub(crate) fn frame_declared(&self) -> Option<Vec<String>> {
+        self.projections.last().map(|p| p.declared.clone())
     }
 }
 
@@ -980,8 +1111,11 @@ impl TracedIn {
             .enumerate()
             .filter(|(_, name)| !name.starts_with('\u{0}'))
             .filter_map(|(slot, name)| {
+                // A trace is registered against the variable, which is the
+                // prefixless name; the chunk may spell it `::x`.
+                let name = crate::cmd_namespace::store_key(name);
                 let watched = sink.traced(name);
-                watched.any().then(|| (slot, name.clone(), watched))
+                watched.any().then(|| (slot, name.to_string(), watched))
             })
             .collect();
         TracedIn { entries }
@@ -1652,6 +1786,25 @@ fn info_names_op(interp: &Shared, vm: &mut VM, which: u8) -> Result<(), TclError
             .chain(chunk_procs(vm))
             .collect(),
         crate::cmd_info::PROCS => chunk_procs(vm).collect(),
+        // `info locals` from a script that is not a body: the frame it is
+        // running in is a run-time fact, so the names come from the projection.
+        // Through `global_names_of` for the same reason `info vars` goes through
+        // it — a name *this* chunk has assigned is in its slots and not yet in
+        // the interpreter's table, and `eval {set v 1; info locals}` has to list
+        // it.
+        crate::cmd_info::FRAME_LOCALS => {
+            let declared = interp
+                .lock()
+                .expect("interpreter lock")
+                .frame_declared();
+            match declared {
+                None => Vec::new(),
+                Some(declared) => global_names_of(interp, vm)
+                    .into_iter()
+                    .filter(|n| !declared.iter().any(|d| d == n))
+                    .collect(),
+            }
+        }
         // The candidates the compiler pushed, kept where the variable each names
         // is set — or unconditionally for a name `global`, `variable` or `upvar`
         // bound into the frame, whose visibility is not a question about a slot.
@@ -1945,20 +2098,18 @@ pub(crate) fn in_frame<T>(
         // script runs against the globals, as an ordinary `eval` does.
         //
         // A *procedure activation* whose body happens to declare no local at all
-        // lands here too, and it must not simply run against the globals: what
-        // it assigns is a local of that activation, and leaving it in the
-        // interpreter's table is what let `proc p {} {eval {set qq 9}}` set
-        // `::qq` for good, where tclsh leaves no global behind at all. It gets
-        // [`in_bare_frame`], which is the projection reduced to the half a frame
-        // with no named slots still has: the locals it grew at run time.
-        Some(index) if names.is_empty() => {
-            let activation = vm.frames[index].entry_ip.is_some();
+        // is projected like any other, with a view that starts empty. It used to
+        // keep the interpreter's table instead, because a `::`-qualified read
+        // inside the script had no other way to reach the interpreter's
+        // variable; that is now a name of its own
+        // (`crate::cmd_namespace::chunk_key`), so the exception is gone — and
+        // with it what the exception cost. A script in such a frame was writing
+        // the *global* whenever one already wore the name it meant to make a
+        // local of: `set g 3; proc p {} {eval {set g 99}}` left `::g` at 99,
+        // where tclsh leaves 3 and makes a local.
+        Some(index) if names.is_empty() && vm.frames[index].entry_ip.is_none() => {
             flush(&vm.chunk, interp, &vm.globals);
-            let result = if activation {
-                in_bare_frame(interp, vm, index, body)
-            } else {
-                body(interp)
-            };
+            let result = body(interp);
             vm.globals = seed(&vm.chunk, interp);
             return result;
         }
@@ -2000,11 +2151,26 @@ pub(crate) fn in_frame<T>(
     for (name, value) in crate::cmd_scope::runtime_locals(vm, frame) {
         view.insert(name, value);
     }
-    interp.lock().expect("interpreter lock").globals = view;
+    {
+        let mut state = interp.lock().expect("interpreter lock");
+        state.globals = view;
+        // The displaced table goes with the projection rather than staying a
+        // local of this function: a `::`-qualified name inside the script names
+        // a variable *in it*, and the only way there is through the interpreter.
+        state.projections.push(Projection {
+            outer,
+            declared: declared.clone(),
+        });
+    }
 
     let result = body(interp);
 
-    let after = std::mem::take(&mut interp.lock().expect("interpreter lock").globals);
+    let (after, mut outer) = {
+        let mut state = interp.lock().expect("interpreter lock");
+        let parked = state.projections.pop().expect("projection was pushed");
+        let after = std::mem::take(&mut state.globals);
+        (after, parked.outer)
+    };
     for (slot, name) in names.iter().enumerate() {
         if name.is_empty() {
             continue;
@@ -2022,7 +2188,6 @@ pub(crate) fn in_frame<T>(
     harvest_locals(vm, frame, &after, |name| {
         !names.iter().any(|n| n == name) && !declared.iter().any(|n| n == name)
     });
-    let mut outer = outer;
     for name in &declared {
         match after.get(name) {
             Some(v) => outer.insert(name.clone(), v.clone()),
@@ -2031,58 +2196,6 @@ pub(crate) fn in_frame<T>(
     }
     interp.lock().expect("interpreter lock").globals = outer;
     vm.globals = seed(&vm.chunk, interp);
-    result
-}
-
-/// What a procedure activation the compiler recorded *no* slot names for gets
-/// instead of the projection.
-///
-/// There is nothing to project — the body declares no local, so the frame has no
-/// named slot — but there is still something to keep: what the script *creates*
-/// belongs to that activation and must not outlive it. tclsh makes it a local of
-/// the frame's own variable table; here it becomes a run-time slot, by the same
-/// rule [`in_frame`] harvests one.
-///
-/// The interpreter's table is left in place rather than replaced, which is the
-/// difference from the projection and the reason this path exists at all: a
-/// `::`-qualified read inside the script — `subst {g=$::g}` in a body with no
-/// locals — names the interpreter's variable, and the projection cannot serve it
-/// because a chunk's name for `::g` and for a bare `g` are the same key
-/// (`crate::cmd_namespace::store_key`). Keeping the table is what keeps that
-/// working; the harvest below is what stops the script's *own* names leaking
-/// into it.
-fn in_bare_frame<T>(
-    interp: &Shared,
-    vm: &mut VM,
-    frame: usize,
-    body: impl FnOnce(&Shared) -> Result<T, TclError>,
-) -> Result<T, TclError> {
-    let locals = crate::cmd_scope::runtime_locals(vm, frame);
-    let before: std::collections::HashSet<String>;
-    let mut shadowed: HashMap<String, Value> = HashMap::new();
-    {
-        let mut state = interp.lock().expect("interpreter lock");
-        before = state.globals.keys().cloned().collect();
-        // A local this activation already grew goes in over whatever global
-        // wears its name, which is put back below.
-        for (name, value) in locals {
-            if let Some(old) = state.globals.insert(name.clone(), value) {
-                shadowed.insert(name, old);
-            }
-        }
-    }
-
-    let result = body(interp);
-
-    let mut after = std::mem::take(&mut interp.lock().expect("interpreter lock").globals);
-    let taken = harvest_locals(vm, frame, &after, |name| !before.contains(name));
-    for name in taken {
-        after.remove(&name);
-        if let Some(old) = shadowed.remove(&name) {
-            after.insert(name, old);
-        }
-    }
-    interp.lock().expect("interpreter lock").globals = after;
     result
 }
 
@@ -2269,6 +2382,9 @@ pub(crate) fn global_names_of(interp: &Shared, vm: &VM) -> Vec<String> {
         if name.starts_with('\u{0}') {
             continue;
         }
+        // The chunk's spelling of an explicitly qualified name carries a `::`
+        // the variable table does not; `info globals` answers with the table's.
+        let name = crate::cmd_namespace::store_key(name);
         if matches!(vm.globals.get(slot), Some(Value::Undef) | None) {
             // Unset in the chunk is unset, whatever an earlier evaluation left
             // in the map: this chunk's `unset x` has to be visible before the
@@ -2276,7 +2392,7 @@ pub(crate) fn global_names_of(interp: &Shared, vm: &VM) -> Vec<String> {
             names.retain(|n| n != name);
             continue;
         }
-        names.push(name.clone());
+        names.push(name.to_string());
     }
     names
 }

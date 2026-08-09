@@ -781,21 +781,28 @@ impl std::error::Error for CompileError {}
 /// nor a nested `proc` compiles in one pass exactly as it did before and pays
 /// nothing.
 pub fn compile(script: &Script) -> Result<fusevm::Chunk, CompileError> {
-    lower(script, false)
+    lower(script, false, false)
+}
+
+/// Lower a script that will run inside a frame projection — a nested script an
+/// `eval`, `uplevel`, `subst` or `apply` runs against a procedure activation's
+/// variables. See [`Compiler::projected`] for the single difference.
+pub fn compile_projected(script: &Script) -> Result<fusevm::Chunk, CompileError> {
+    lower(script, false, true)
 }
 
 /// Lower a script with a line marker before every command, for the debug
 /// adapter. The markers are the only difference: a debugger single-steps the
 /// same bytecode a run executes, rather than a second lowering written for it.
 pub fn compile_debug(script: &Script) -> Result<fusevm::Chunk, CompileError> {
-    lower(script, true)
+    lower(script, true, false)
 }
 
-fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
+fn lower(script: &Script, debug: bool, projected: bool) -> Result<fusevm::Chunk, CompileError> {
     // Both extra passes, and both reasons a second one is needed: a name used
     // as an array, and a `proc` whose definition only happens when the
     // enclosing code runs.
-    let first = Compiler::run(script, ArrayNames::new(), HashSet::new(), debug)?;
+    let first = Compiler::run(script, ArrayNames::new(), HashSet::new(), debug, projected)?;
     let (mut chunk, tolerant, incr_sites, procs, slot_names) =
         if first.seen_arrays.is_empty() && first.seen_runtime.is_empty() {
             let procs = signature_table(&first);
@@ -808,7 +815,7 @@ fn lower(script: &Script, debug: bool) -> Result<fusevm::Chunk, CompileError> {
                 names,
             )
         } else {
-            let second = Compiler::run(script, first.seen_arrays, first.seen_runtime, debug)?;
+            let second = Compiler::run(script, first.seen_arrays, first.seen_runtime, debug, projected)?;
             let reads = second.tolerant_reads.clone();
             let incrs = second.incr_sites.clone();
             let procs = signature_table(&second);
@@ -1034,6 +1041,23 @@ pub(crate) struct Compiler {
     /// Emit a `ext_wide::DBG_LINE` marker before every command, which is what
     /// lets a debugger stop at one. Off for every ordinary compilation.
     pub(crate) debug: bool,
+    /// Whether this script will run inside a *frame projection* — a nested
+    /// script an `eval`, `uplevel`, `subst` or `apply` is running against a
+    /// procedure activation's variables rather than against the interpreter's.
+    ///
+    /// The one thing it changes is how a `::`-qualified name is keyed. In a
+    /// projected frame `$g` is the frame's local and `$::g` is the
+    /// interpreter's variable — two variables — so the qualified spelling keeps
+    /// its prefix and takes a name of its own
+    /// (`crate::cmd_namespace::chunk_key`). Everywhere else the two are the same
+    /// variable and must share one name, or a chunk that wrote through one
+    /// spelling and read through the other would answer from a slot nothing had
+    /// written.
+    ///
+    /// It is a property of the *evaluation*, not of the text, which is why it is
+    /// part of the cache key in [`crate::cache::ChunkCache`]: the same script may
+    /// be evaluated both ways.
+    pub(crate) projected: bool,
     /// How many command substitutions enclose the command being compiled. A
     /// debugger stops before a statement, and a substitution is part of one.
     pub(crate) subst_depth: usize,
@@ -1071,6 +1095,7 @@ impl Compiler {
         arrays: ArrayNames,
         runtime: HashSet<String>,
         debug: bool,
+        projected: bool,
     ) -> Result<Compiler, CompileError> {
         let mut c = Compiler {
             b: ChunkBuilder::new(),
@@ -1093,6 +1118,7 @@ impl Compiler {
             top_level: true,
             static_ctx: true,
             debug,
+            projected,
             subst_depth: 0,
             deferrable: false,
             ns: crate::cmd_namespace::NsCtx::default(),
@@ -1330,7 +1356,13 @@ impl Compiler {
                 // globals, so it is followed here rather than at the top of this
                 // function: the name is resolved in its namespace first, and the
                 // binding is on the resolved spelling.
-                let key = match self.top_aliases.get(&key) {
+                // The binding is between two *variables*, so it is looked up by
+                // the table key rather than by the spelling the code used: after
+                // `upvar #0 a b`, `$b` and `$::b` are both the alias.
+                let key = match self
+                    .top_aliases
+                    .get(crate::cmd_namespace::store_key(&key))
+                {
                     Some(target) => target.clone(),
                     None => key,
                 };
