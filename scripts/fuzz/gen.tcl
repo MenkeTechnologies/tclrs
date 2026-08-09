@@ -1194,8 +1194,8 @@ proc local_dict_stmt {} {
         return "set $d \[dict create a 1\]; puts \[dict merge \$$d \[dict create [value] [value]\]\]"
     }
     # A subcommand from the far end of the ensemble. Every name here is
-    # implemented now; `with` and `info` are the two the list still names that
-    # are not, and those two are skips.
+    # implemented now, `with` included since it landed; `info` is the one name
+    # the ensemble still refuses, and it is not in this list.
     if {[rare_shape]} {
         return "set $d \[dict create a 1 b 2\]; dict [rpick [list unset append \
             incr lappend replace update filter for with getwithdefault]] $d [value]"

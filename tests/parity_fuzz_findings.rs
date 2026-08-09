@@ -1471,15 +1471,23 @@ fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
         eprintln!("skipping: no tclsh on PATH");
         return;
     };
+    // `dict info` is the standing example: tclsh reports its hash-table
+    // statistics and the refusal here is decided when the command runs, so
+    // `catch` sees a message and the script goes on.
     diverges(
+        &tclsh,
+        "catch {dict info {a 1}} m; puts m:[lindex [split $m \\n] 0]",
+        out("m:1 entries in table, 4 buckets\n"),
+        out("m:dict info is not supported yet\n"),
+    );
+    // `dict with`, `lsearch -sorted` and `lsort -nocase` stood here as examples
+    // of a catchable run-time refusal until each landed; they are the same
+    // programs, asserted as agreements now.
+    agrees(
         &tclsh,
         "set d {a 1}\ncatch {dict with d {}} m; puts m:$m",
         out("m:\n"),
-        out("m:dict with is not supported yet\n"),
     );
-    // `lsearch -sorted` and `lsort -nocase` stood here as the two examples of a
-    // catchable run-time refusal until both landed; they are the same programs,
-    // asserted as agreements now.
     agrees(
         &tclsh,
         "catch {lsearch -sorted {a} b} m; puts m:$m",

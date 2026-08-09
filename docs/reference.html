@@ -163,7 +163,7 @@
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">138/169</div>
+            <div class="stat-val">140/169</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -268,9 +268,9 @@
         </article>
         <article class="doc-entry" id="doc-cmd-error">
           <h3><a class="doc-anchor" href="#doc-cmd-error">#</a> <code>error</code></h3>
-          <pre><code class="lang-tcl">error message
+          <pre><code class="lang-tcl">error message ?errorInfo? ?errorCode?
 </code></pre>
-          <p>Raise an error carrying the message.</p>
+          <p>Raise an error carrying the message. The two optional words are evaluated and then dropped: what they set is <code>-errorinfo</code> and <code>-errorcode</code>, the return options this frontend does not carry.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-eval">
           <h3><a class="doc-anchor" href="#doc-cmd-eval">#</a> <code>eval</code></h3>
@@ -584,12 +584,6 @@
 </code></pre>
           <p>Run the body of the first pattern that matches, <code>-exact</code> or <code>-glob</code>.</p>
         </article>
-        <article class="doc-entry" id="doc-cmd-throw">
-          <h3><a class="doc-anchor" href="#doc-cmd-throw">#</a> <code>throw</code></h3>
-          <pre><code class="lang-tcl">throw type message
-</code></pre>
-          <p>Raise <code>message</code> as an error, the type having been checked to be a list of at least one element. The <code>-errorcode</code> the type becomes is part of the return-options dictionary, whose error entries this frontend does not model.</p>
-        </article>
         <article class="doc-entry" id="doc-cmd-tcl-findLibrary">
           <h3><a class="doc-anchor" href="#doc-cmd-tcl-findLibrary">#</a> <code>tcl_findLibrary</code></h3>
           <pre><code class="lang-tcl">tcl_findLibrary basename version patch initScript enVarName varName
@@ -601,6 +595,12 @@
           <pre><code class="lang-tcl">tell channel
 </code></pre>
           <p>The device's position, less whatever was read ahead of the script.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-throw">
+          <h3><a class="doc-anchor" href="#doc-cmd-throw">#</a> <code>throw</code></h3>
+          <pre><code class="lang-tcl">throw type message
+</code></pre>
+          <p>Raise <code>message</code> as an error, the type having been checked to be a list of at least one element. The <code>-errorcode</code> the type becomes is part of the return-options dictionary, whose error entries this frontend does not model.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-unset">
           <h3><a class="doc-anchor" href="#doc-cmd-unset">#</a> <code>unset</code></h3>
@@ -895,7 +895,7 @@
 
       <section class="tutorial-section" id="ch-dict">
         <h2>The <code>dict</code> ensemble</h2>
-        <p class="chapter-meta">22 subcommands recognised &middot; 19 implemented &middot; 3 refused</p>
+        <p class="chapter-meta">22 subcommands recognised &middot; 21 implemented &middot; 1 refused</p>
         <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
         <article class="doc-entry" id="doc-dict-append">
           <h3><a class="doc-anchor" href="#doc-dict-append">#</a> <code>dict append</code></h3>
@@ -955,7 +955,7 @@
           <h3><a class="doc-anchor" href="#doc-dict-info">#</a> <code>dict info</code></h3>
           <pre><code class="lang-tcl">dict info dictionary
 </code></pre>
-          <p>A multi-line report on the hash table behind the dict: entries, buckets, the bucket-occupancy histogram and the average search distance. Every number in it describes the reference interpreter's <code>Tcl_HashTable</code>, which is not what stores a dict here.</p>
+          <p>A multi-line report on the hash table behind the dict: entries, buckets, the bucket-occupancy histogram and the average search distance. Refused here. Every number in it describes the reference interpreter's <code>Tcl_HashTable</code>, and it reports the table the <em>object</em> has rather than one the value implies — a dict grown and then shrunk keeps the buckets it grew, so two dicts with the same string answer differently. A dict here is its string, so there is no history to report.</p>
         <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict info is not supported yet</code></p>
         </article>
         <article class="doc-entry" id="doc-dict-keys">
@@ -1016,8 +1016,7 @@
           <h3><a class="doc-anchor" href="#doc-dict-update">#</a> <code>dict update</code></h3>
           <pre><code class="lang-tcl">dict update dictVarName key varName ?key varName ...? script
 </code></pre>
-          <p>Bind each named key's value to a variable, run the script, then write the variables back into the dict — and yield the script's own result. Not built here: it needs writes to caller variables to survive the body and be copied back afterwards.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict update is not supported yet</code></p>
+          <p>Bind each named key's value to a variable, run the script, then write the variables back into the dict — and yield the script's own result. The write-back is a <code>finally</code>: it happens after an error, a <code>break</code> or a <code>return</code> too, and a variable the body unset takes its key out of the dict. The variable names have to be literal here.</p>
         </article>
         <article class="doc-entry" id="doc-dict-values">
           <h3><a class="doc-anchor" href="#doc-dict-values">#</a> <code>dict values</code></h3>
@@ -1029,8 +1028,7 @@
           <h3><a class="doc-anchor" href="#doc-dict-with">#</a> <code>dict with</code></h3>
           <pre><code class="lang-tcl">dict with dictVarName ?key ...? script
 </code></pre>
-          <p><code>dict update</code> over <em>every</em> key at once: each key becomes a variable of that name for the duration of the script, and the variables are written back after. Not built here, for the same reason.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict with is not supported yet</code></p>
+          <p><code>dict update</code> over <em>every</em> key at once: each key becomes a variable of that name for the duration of the script, and the variables are written back after — after an error, a <code>break</code> or a <code>return</code> too. A leading key path opens out a sub-dictionary instead. The names come from the dictionary's keys, so each is resolved when the command runs: a global at a script's own level, a frame slot inside a procedure, and one element of an array for a key written <code>a(i)</code>. Unsetting a bound variable is what removes its key; every other key goes back even if the body deleted it from the dictionary.</p>
         </article>
       </section>
 
@@ -2188,7 +2186,7 @@
 
       <section class="tutorial-section" id="ch-format">
         <h2><code>format</code> conversions</h2>
-        <p class="chapter-meta">17 conversions &middot; 15 implemented &middot; 8 size modifiers</p>
+        <p class="chapter-meta">17 conversions &middot; 17 implemented &middot; 8 size modifiers</p>
         <p>Each conversion below was established by running one of it through
         the runtime and reading the answer. A letter missing from this chapter
         is <code>bad field specifier</code>. Width and precision both accept
@@ -2292,14 +2290,12 @@
           <pre><code class="lang-tcl">format %a double
 </code></pre>
           <p>C99's hexadecimal floating-point form. Recognised and refused — <code>the "%a" conversion is not supported yet</code> — rather than being reported as a bad field specifier, so the message distinguishes a conversion that exists from one that does not.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>the "%a" conversion is not supported yet</code></p>
         </article>
         <article class="doc-entry" id="doc-format-conv-pctA">
           <h3><a class="doc-anchor" href="#doc-format-conv-pctA">#</a> <code>%A</code></h3>
           <pre><code class="lang-tcl">format %A double
 </code></pre>
           <p>The upper-case spelling of <code>%a</code>, refused with the same message.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>the "%A" conversion is not supported yet</code></p>
         </article>
 
         <h3>Size modifiers</h3>

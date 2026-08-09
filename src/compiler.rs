@@ -544,6 +544,26 @@ pub mod ext {
     /// dictionary, when the variable does not (`:3573-3591`, where a failed read
     /// is "an instruction to remove the key").
     pub const DICT_UPDATE_END: u16 = ASSOC_BASE + 31;
+    /// `dict with`'s binding half: `[name, place, pathKey …, pathCount]` → the
+    /// record the write-back needs.
+    ///
+    /// Unlike [`DICT_UPDATE_BIND`] the names are not in the chunk: they are the
+    /// dictionary's own *keys*, read when the command runs, so each is resolved
+    /// to a home then rather than to a place while the script is lowered
+    /// (`crate::cmd_scope::dict_with_home`). The record carries the resolved
+    /// home for a key the body names and the key's *value* for one it does not —
+    /// which is what lets the write-back put every key back the way
+    /// `TclDictWithFinish` does (`generic/tclDictObj.c:3926-3941`), including
+    /// the ones the body deleted from the dictionary.
+    pub const DICT_WITH_BIND: u16 = ASSOC_BASE + 32;
+    /// `dict with`'s write-back, run as the cleanup of a
+    /// [`Compiler::finally_region`](crate::compiler::Compiler) exactly as
+    /// [`DICT_UPDATE_END`] is — `FinalizeDictWith` (`generic/tclDictObj.c:3696`)
+    /// is the same NRE callback shape as `FinalizeDictUpdate`, with a key *path*
+    /// added and both of its silent paths kept: a dictionary variable that no
+    /// longer exists drops the whole write-back (`:3875-3877`), and so does a
+    /// path that no longer leads anywhere (`:3912-3917`).
+    pub const DICT_WITH_END: u16 = ASSOC_BASE + 33;
 
     /// Where the string commands' ops begin — the `string` ensemble, `append`
     /// and `format` — dispatched to [`crate::cmd_string`], which names them.

@@ -1417,6 +1417,14 @@ impl Hooks {
                 // same reason `uplevel` does: a name the chunk's table does not
                 // carry is interned against the interpreter's variables.
                 ext::UPVAR => crate::cmd_scope::upvar_op(&interp, vm, arg),
+                // `dict with` binds variables named by the dictionary's own
+                // keys, so it needs the interpreter for exactly the reason
+                // `upvar` with a computed target does: a name the chunk's table
+                // does not carry is interned against the interpreter's
+                // variables. Its write-back is dispatched beside it so the two
+                // halves raise the same located error type.
+                ext::DICT_WITH_BIND => crate::assoc::dict_with_bind(&interp, vm),
+                ext::DICT_WITH_END => crate::assoc::dict_with_end(vm, arg),
                 // Following a link needs nothing but the VM, but it raises the
                 // located `TclError` the arms above raise rather than the plain
                 // string the module below returns, so it is dispatched here.

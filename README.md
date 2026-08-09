@@ -396,7 +396,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Packages | `package` — `files`, `forget`, `ifneeded`, `names`, `prefer`, `present`, `provide`, `require`, `unknown`, `vcompare`, `versions`, `vsatisfies` |
 | Run-time evaluation | `eval`, `subst`, `source`, `tcl_findLibrary` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
-| Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `append`, `create`, `exists`, `filter` (`key`, `value` and `script`), `for`, `get`, `getdef`, `getwithdefault`, `incr`, `keys`, `lappend`, `map`, `merge`, `remove`, `replace`, `set`, `size`, `unset`, `values` |
+| Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `append`, `create`, `exists`, `filter` (`key`, `value` and `script`), `for`, `get`, `getdef`, `getwithdefault`, `incr`, `keys`, `lappend`, `map`, `merge`, `remove`, `replace`, `set`, `size`, `unset`, `update`, `values`, `with` |
 | Regular expressions | `regexp`, `regsub` — with `-nocase`, `-all`, `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`, `-start` and `--`; `switch -regexp` and `lsearch -regexp` take one too |
 | Strings | `format`, `scan`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright`, `wordend`, `wordstart` |
 | Channels | `open`, `close`, `gets`, `read`, `flush`, `eof`, `seek`, `tell`, `fconfigure`, and `puts` to a channel; `stdin`, `stdout` and `stderr` |
@@ -764,7 +764,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | A variable or body word that is not literal (`set $name …`) | the word is refused where a literal is required |
 | An array variable in a `foreach` variable list | `array variables are not supported yet` |
 | `array startsearch` and the other search subcommands | `array startsearch is not supported yet` |
-| `dict with`, which names variables after the dictionary's *keys*, which are values; `dict info`, which reports the reference interpreter's hash-table statistics; `dict set`, `dict incr` or `dict update` into an array element; `dict update`'s variable names when they are not literal | `dict with is not supported yet` |
+| `dict info`, which reports the hash-table statistics of the *object* rather than of the value — two dictionaries with the same string answer differently when one of them shrank, so it needs a dict that retains its table, [see BUGS.md](BUGS.md); `dict set`, `dict incr`, `dict update` or `dict with` into an array element; `dict update`'s variable names when they are not literal | `dict info is not supported yet` |
 | `string wordend` / `wordstart` past ASCII | `string wordend/wordstart: characters beyond ASCII need Unicode category tables, which are not built yet` |
 | `format %a` / `%A`; any other letter is `bad field specifier "n"` instead. These are the one conversion Tcl does not perform: it builds the C spec and calls the platform `snprintf` (`generic/tclStringObj.c:2547`), so the answer is the C library's and the libraries this crate builds against do not agree — [see BUGS.md](BUGS.md) | `the "%a" conversion is not supported: tclsh hands it to the platform C library …` |
 | `regexp -about`. The group count is easy; the flag list is the reference engine's own compile-time telemetry (`REG_UUNPORT`, `REG_UNONPOSIX`, …), which a different engine can only guess at — and the result is one list, so half of it right and half of it guessed is a wrong list | `regexp -about is not supported yet: its second element is the reference engine's own compile-time telemetry …` |
@@ -873,14 +873,28 @@ rotated branch layout the tracing JIT needs in a single place rather than
 repeated four times.
 
 Tcl has one shape that is neither: a *cleanup that runs however the body ended*.
-`dict update` writes its variables back into the dictionary after an error, a
+`dict update` and `dict with` write their variables back into the dictionary
+after an error, a
 `break` and a `return` alike, because the reference implementation evaluates the
 body with the write-back already pushed as an NRE callback
-(`FinalizeDictUpdate`, `generic/tclDictObj.c:3539`). There is no NRE stack here,
+(`FinalizeDictUpdate`, `generic/tclDictObj.c:3539`; `FinalizeDictWith`, `:3696`).
+There is no NRE stack here,
 so `Compiler::finally_region` builds the same shape out of the `catch` region:
 the region absorbs every code so the cleanup runs, and then hands the code back
 on unchanged. One op, `ext::RERAISE`, is the whole of the difference between a
 `catch` and a `finally`.
+
+`dict with` needs one thing beyond that region, and it is the only command here
+that does: its variables are named by the dictionary's own *keys*, which are
+values rather than words of the script. Each key is resolved to a home when the
+command runs — the resolution a computed `upvar` target gets — so at a script's
+own level it is a global, interned past the chunk's name table when the table
+does not carry it, and inside a procedure it is a frame slot. A key written
+`a(i)` names one element of an array, as `Tcl_ObjSetVar2` makes of it. A key
+whose name a procedure body never spells has no slot, and rather than refuse a
+record because the body ignores one of its fields, the command carries that
+key's value in its own write-back record; `BUGS.md` has the one case that does
+not cover.
 
 ---
 

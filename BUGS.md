@@ -151,7 +151,8 @@ approximated, and nothing is silently mis-run.
 - **Associative data.** Array variables (`a(k)`), `array` — `exists`, `get`,
   `names`, `set`, `size`, `unset` — and `dict` — `append`, `create`, `exists`,
   `filter`, `for`, `get`, `getdef`, `getwithdefault`, `incr`, `keys`, `lappend`,
-  `map`, `merge`, `remove`, `replace`, `set`, `size`, `unset`, `values`
+  `map`, `merge`, `remove`, `replace`, `set`, `size`, `unset`, `update`, `values`,
+  `with`
   (`src/assoc.rs`). `dict incr` counts a missing key as zero and promotes past
   an `i64` as Tcl's integers do, and it refuses a non-integer with `incr`'s own
   wording rather than an `expr` operand error.
@@ -169,6 +170,21 @@ approximated, and nothing is silently mis-run.
   `generic/tclDictObj.c:2992-3013`). `dict map` reads the key from the *variable*
   after the body has run, so a body that reassigns `$k` moves the pair, and
   `dict filter` keeps the dictionary's own key and value instead.
+  `dict update` and `dict with` share the `finally` region below, and `dict with`
+  adds the one thing no other command here needs: variables named by *values*.
+  Each key is resolved to a home when the command runs — a global at a script's
+  own level, interned past the chunk's name table when the table does not carry
+  it, and a frame slot inside a procedure — which is the resolution a computed
+  `upvar` target already gets (`crate::cmd_scope::dict_with_home`). A key written
+  `a(i)` is one element of an array, because `Tcl_ObjSetVar2(keyPtr, NULL, …)`
+  parses it that way (`generic/tclDictObj.c:3810`). The write-back puts back the
+  keys the *binding* recorded rather than whatever the dictionary holds at the
+  end, so a body that empties the dictionary or deletes one of those keys does
+  not lose them, and only unsetting a bound variable removes one — all three
+  measured against tclsh 9.0.4. A missing dictionary variable and a path that
+  stopped leading anywhere both drop the write-back silently, as
+  `TclDictWithFinish` does (`:3875-3877`, `:3912-3917`). The one case it does not
+  cover is the entry below.
   An array works inside a procedure as well as at the top level: every one of its
   ops takes the variable's place — a name index in the global table, or a frame
   slot written as `-(slot + 1)` — so a local array belongs to its activation and
@@ -681,8 +697,9 @@ approximated, and nothing is silently mis-run.
   The list is `BEYOND_UNICODE_16` in `src/cmd_string.rs`; regenerate it when the
   crate's Unicode version catches up, at which point it should be empty.
 - **Subcommands and options recognised and then refused.** `array startsearch`
-  and the other search subcommands; `dict with` and `dict info`;
-  `dict set`, `dict incr` or `dict update` into an array element; `string`
+  and the other search subcommands; `dict info`;
+  `dict set`, `dict incr`, `dict update` or `dict with` into an array element;
+  `string`
   subcommands outside the
   implemented set; `format` conversions outside the
   implemented set; `regexp -about`;
@@ -690,40 +707,9 @@ approximated, and nothing is silently mis-run.
   `-code` and `-level`. They go through the reference option parser first,
   so abbreviation and ambiguity behave as tclsh does, and are then refused.
   `lsort -command`, `dict map` and `dict filter … script` were on this list until
-  the change that added `subst`, and `dict update` until the change that built
-  the `finally` region; what each of the two still open waits on is named below.
-- **`dict with`.** The variables it creates are named by the dictionary's *keys*,
-  which are values. That is the same wall as `set $name 1` — a procedure's locals
-  are frame slots settled while the script is read, and a name that only exists at
-  run time has no slot to be given. See "Non-literal variable and body words".
-
-  The `finally` region `dict update` is built out of supplies one of its two
-  halves: `FinalizeDictWith` (`generic/tclDictObj.c:3696`) is the same NRE
-  callback shape, and `TclDictWithFinish` (`:3842`) is the same write-back with
-  a key *path* added. So what is left is the binding, and the wall is narrower
-  than "no dynamic names at all":
-
-  * At the top level a name really can be resolved when the command runs.
-    `crate::cmd_scope::global_home` turns a name into an index in the chunk's
-    table, interning one that is not there yet — that is how `upvar #0 $name x`
-    already works outside a procedure.
-  * Inside a procedure a name can be resolved *if the body mentions it*: the
-    chunk records a slot-name table per subroutine and
-    `crate::cmd_scope::frame_home` reads it. A name with no slot is refused
-    there today, in `upvar`'s wording, "the procedure running there never names
-    it, so it has no frame slot".
-
-  The second bullet is where it stops being an engineering question. `dict with`
-  binds *every* key, not the ones the body names, so a record with a field the
-  body never reads would refuse — and refusing on ordinary code is not an
-  option. Skipping those keys instead reads plausible: a name with no slot is a
-  name the body cannot write, so its key cannot have changed, and leaving it
-  alone would be right. It is not airtight — an `eval` inside the body runs a
-  chunk of its own whose variables project the frame's *named* slots, so what a
-  nested `eval {set zz 9}` does to a key with no slot has to be established
-  before that rule can be relied on rather than assumed. Until it is, this stays
-  refused: the failure mode of getting it wrong is a key silently kept or
-  silently dropped, which is the class of bug this file exists to keep out.
+  the change that added `subst`, `dict update` until the change that built the
+  `finally` region, and `dict with` until the change that resolved a key to a
+  home when the command runs; what `dict info` waits on is named below.
 - **`dict info`.** The answer is `Tcl_HashStats` (`generic/tclHash.c:602`) on the
   dictionary's own hash table: a bucket count, the distribution of chain lengths,
   and an average search distance.
@@ -747,7 +733,9 @@ approximated, and nothing is silently mis-run.
       dict info $d          →  2 entries in table, 16 buckets
       dict info {k18 18 k19 19}  →  2 entries in table, 4 buckets
 
-  Both dictionaries are `k18 18 k19 19`. A dict here is its string and nothing
+  Both dictionaries are `k18 18 k19 19`, and `string equal` between them is 1 —
+  re-measured against tclsh 9.0.4 rather than taken from the earlier reading. A
+  dict here is its string and nothing
   else, so there is no history to consult and no way to tell the two apart — the
   answer would be exact for every dictionary built by inserting its own pairs
   (which is `dict create`, a literal, `dict get`, `dict merge`, `dict replace`
@@ -755,6 +743,19 @@ approximated, and nothing is silently mis-run.
   nothing marking which. A command whose entire purpose is to report a container's
   real internal state is the last one that should sometimes report a plausible
   one, so it stays refused.
+
+  What it would take is therefore a *representation* change, not a formatting
+  one, and the change is not local to this crate. A dict value here is a
+  `Value::Str` that `crate::assoc::Dict::parse` reads and `to_list` writes back;
+  the `Dict` itself is a transient parse with no identity, so there is no object
+  to hang a bucket count and a rebuild count on. Giving one identity means a new
+  `fusevm::Value` variant, and that type belongs to fusevm — a crate this
+  frontend shares with every other one built on it, so the cost of `dict info`
+  would be paid by all of them. The same reasoning that keeps an `upvar` link a
+  tagged `Value::Array` rather than a variant of its own (`src/cmd_scope.rs:170`)
+  applies here and points the same way. It stays refused until a dict needs
+  retained state for some *other* reason; on the day one does, this answer comes
+  with it.
 - **`regexp -about`.** The group count is easy; the second element is not. It is
   the reference engine's own compile-time telemetry — `REG_UUNPORT`,
   `REG_UNONPOSIX`, `REG_ULOCALE`, `REG_UEMPTYMATCH`, `REG_UBOUNDS` and the rest
@@ -931,6 +932,54 @@ the measurement behind it.
   the same bound on its local half; the names `global`, `variable` and
   `upvar #0` bound into the frame are exact, and are listed whether or not the
   variable they link to is set, as tclsh lists them.
+
+  A `dict with` inside a procedure is the one command that makes locals the
+  compiler never reached, so its keys are the other half of this: `proc p {}
+  {set d {a 1 b 2}; dict with d {puts [lsort [info locals]]}}` answers `d` here
+  and `a b d` in tclsh 9.0.4 (measured). The values are all there and all written
+  back — the entry below says what is and is not reachable — but a key the body
+  never spells has no slot, and `info locals` is a list of slots.
+- **A name a procedure body never spells is a global when a nested script sets
+  it.** `proc p {} {eval {set qq 9}}` leaves `::qq` set here and leaves a *local*
+  `qq` in tclsh 9.0.4, which vanishes with the frame; `info locals` is empty here
+  and `qq` there (measured, both spellings). Same for `uplevel` from a callee:
+  `proc poke {} {uplevel 1 {set tt 42}}` writes `::tt`. A nested script projects
+  the frame's *named* slots, so a name that has one is exact — `proc p {} {set qq
+  1; eval {set qq 9}}` answers 9 from the slot, matching tclsh — and only a name
+  that appears nowhere in the body as a literal variable word falls through to
+  the globals. The `upvar` spelling of the same reach is not silent: `upvar 1 tt
+  v` refuses with "the procedure running there never names it, so it has no frame
+  slot". Fixing it needs what the "procedures across an `eval`" entry needs, a
+  frame that can grow a name at run time.
+- **`dict with` and a key the body never names.** The write-back is exact for
+  every key the body can reach, and the previous entry is why that is not the
+  same sentence as "every key". A key whose name the body never spells has no
+  frame slot, so it is bound to nothing and its value is carried in the command's
+  own record instead; the write-back puts it back unchanged. That is right for
+  every body that cannot reach the name, and no compiled op in a body that never
+  spells a name can reach it — a body that deletes the key from the dictionary,
+  replaces the whole dictionary, or writes that key *through* the dictionary
+  still ends with what tclsh ends with (`tests/array_differential.rs`). Two
+  shapes reach such a key anyway, and both are measured:
+
+  * **A nested script.** `eval {set k v}` or `uplevel` writes the global rather
+    than the binding, per the entry above, so the write is not seen and the key
+    keeps its old value where tclsh takes the new one.
+  * **A second `dict with` in the same frame over the same unnamed key.** In
+    tclsh both bindings assign the one local, so the inner one's value is what
+    the outer one writes back. Here neither has a cell to share, so each carries
+    its own copy and the outer write-back wins:
+
+        proc p {} {set d {q 1}; dict with d {dict set d q 5; dict with d {}}; return $d}
+        p    →  q 5 in tclsh 9.0.4, q 1 here
+
+    Naming the key anywhere in the body — `dict with d {set _ $q; …}` — gives it
+    a slot and the two agree. Closing it needs a frame that can grow a name at
+    run time, which is the same thing the entry above needs.
+
+  At a script's own level there is no gap at all — every key is a global,
+  interned when the command runs, so both shapes reach the same cell the binding
+  did and both agree with tclsh.
 - **`info commands`, `info procs` and `info globals` do not list a script
   library.** tclsh answers with `auto_execok`, `auto_load`, `unknown` and the
   rest, and with the `auto_path` global, because `init.tcl` defined them. There
@@ -1211,10 +1260,10 @@ with a sign, and carries `nan` / `inf` in its value pools.
   `s`, not the padding as a whole. Reached only because the generator builds the
   specifier from its axes rather than drawing a fixed spelling.
 - **A refusal decided at run time is catchable, so `catch` sees a message where
-  tclsh saw an answer.** `catch {dict with d {}} m` leaves `m` as
-  `dict with is not supported yet` and the script runs on, where tclsh
-  explodes the dictionary. (`lsort -command` was the example here until it
-  landed.) The refusals decided while
+  tclsh saw an answer.** `catch {dict info {a 1}} m` leaves `m` as
+  `dict info is not supported yet` and the script runs on, where tclsh
+  answers the hash-table statistics. (`lsort -command` was the example here
+  until it landed, and `dict with` until it did.) The refusals decided while
   *compiling* — `string is punct`, `switch -matchvar` — are not catchable and do
   take the whole case out of comparison as a skip. The two halves are pinned
   together, because which side a refusal falls on is what decides whether the

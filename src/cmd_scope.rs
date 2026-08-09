@@ -193,7 +193,7 @@ pub(crate) enum Home {
 const LINK_TAG: &str = "\u{0}upvar";
 
 impl Link {
-    fn encode(&self) -> Value {
+    pub(crate) fn encode(&self) -> Value {
         let mut parts = vec![Value::Str(std::sync::Arc::new(LINK_TAG.to_string()))];
         match self.home {
             Home::Global(idx) => {
@@ -212,7 +212,7 @@ impl Link {
         Value::Array(parts)
     }
 
-    fn decode(value: &Value) -> Option<Link> {
+    pub(crate) fn decode(value: &Value) -> Option<Link> {
         let Value::Array(parts) = value else {
             return None;
         };
@@ -622,6 +622,32 @@ fn global_home(interp: &Shared, vm: &mut VM, name: &str) -> Result<u16, TclError
 /// the level has to be turned back into a frame the same way. Treating them as
 /// the same number was right only while every frame on the stack was a call.
 fn frame_home(vm: &VM, target: i64, name: &str) -> Result<Home, TclError> {
+    match frame_home_opt(vm, target, name)? {
+        Some(home) => Ok(home),
+        // A name with no slot in the callee's table has no home: no op in the
+        // already-built body could address it, so writing one would be writing
+        // into a variable that procedure can never read. tclsh creates it; here
+        // that is reported rather than silently lost.
+        None => Err(TclError::plain(format!(
+            "\"upvar\" to the variable \"{name}\" at level {target} is not supported: the \
+             procedure running there never names it, so it has no frame slot"
+        ))),
+    }
+}
+
+/// [`frame_home`] with the missing-slot case handed back rather than raised.
+///
+/// The two callers want opposite things from it. `upvar` is *asked* for one
+/// name and cannot answer with a slot that does not exist, so it reports. `dict
+/// with` is handed every key of a dictionary at once and must not refuse a
+/// record because the body ignores one of its fields, so it takes the `None` and
+/// keeps that key's value aside instead — see
+/// [`crate::assoc::dict_with_bind`].
+///
+/// Everything that is not "the body never names it" — a level that is no frame,
+/// a frame whose body recorded no slot names at all — stays an error here,
+/// because neither caller can do anything with those.
+fn frame_home_opt(vm: &VM, target: i64, name: &str) -> Result<Option<Home>, TclError> {
     let Some(frame) = crate::runtime::frame_of_level(vm, target) else {
         return Err(TclError::plain(format!("bad level \"{target}\"")));
     };
@@ -637,19 +663,38 @@ fn frame_home(vm: &VM, target: i64, name: &str) -> Result<Home, TclError> {
         .find(|(n, _)| n == name)
         .map(|(_, slot)| *slot);
     match slot {
-        Some(slot) => Ok(Home::Slot {
+        Some(slot) => Ok(Some(Home::Slot {
             frame: u16::try_from(frame).map_err(|_| TclError::plain("call stack too deep"))?,
             slot,
-        }),
-        // A name with no slot in the callee's table has no home: no op in the
-        // already-built body could address it, so writing one would be writing
-        // into a variable that procedure can never read. tclsh creates it; here
-        // that is reported rather than silently lost.
-        None => Err(TclError::plain(format!(
-            "\"upvar\" to the variable \"{name}\" at level {target} is not supported: the \
-             procedure running there never names it, so it has no frame slot"
-        ))),
+        })),
+        None => Ok(None),
     }
+}
+
+/// Where the variable a `dict with` key names lives, in the frame the command is
+/// running in — or `None` when that frame is a procedure activation whose body
+/// never names it.
+///
+/// The key is a *value*, so this is the same resolution [`resolve_target`] does
+/// for a computed `upvar` target, at the current level: a `::`-qualified name is
+/// the interpreter's, a bare name at a script's own top level is a global —
+/// interned past the chunk's table when the table does not carry it — and a bare
+/// name inside a procedure is a frame slot. An `a(i)` spelling is one element of
+/// an array, which is what `Tcl_ObjSetVar2(keyPtr, NULL, …)` makes of a key
+/// written that way (`generic/tclDictObj.c:3810`): tclsh 9.0.4 turns the key
+/// `a(1)` into the local *array* `a` with element `1`, measured.
+pub(crate) fn dict_with_home(
+    interp: &Shared,
+    vm: &mut VM,
+    key: &str,
+) -> Result<Option<Link>, TclError> {
+    let (base, elem) = split_element(key);
+    let level = crate::runtime::current_level(vm);
+    if level == 0 || base.contains("::") {
+        let home = Home::Global(global_home(interp, vm, &base)?);
+        return Ok(Some(Link { home, elem }));
+    }
+    Ok(frame_home_opt(vm, level, &base)?.map(|home| Link { home, elem }))
 }
 
 /// [`ext::LINK_GET`]: `[name, slot]` → what the link points at.

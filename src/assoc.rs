@@ -40,9 +40,10 @@ use std::sync::Arc;
 
 use fusevm::{Op, Value, VM};
 
+use crate::cmd_scope::Link;
 use crate::compiler::{ext, CompileError, Compiler, Place};
 use crate::parser::{Part, Word};
-use crate::runtime::{tcl_int, to_tcl_string};
+use crate::runtime::{tcl_int, to_tcl_string, Shared, TclError};
 
 // ─── Tcl list syntax ──────────────────────────────────────────────────────
 
@@ -1065,6 +1066,19 @@ impl Compiler {
                 let pairs = pairs.to_vec();
                 self.dict_update(&name, &pairs, &body)
             }
+            "with" => {
+                // `DictWithCmd` wants `objc >= 3` (`generic/tclDictObj.c:3658`);
+                // counted from here that is a variable, any number of path keys,
+                // and a script.
+                let [name, path @ .., body] = rest else {
+                    return self.error(
+                        "wrong # args: should be \"dict with dictVarName ?key ...? script\"",
+                    );
+                };
+                let (name, body) = (name.clone(), body.clone());
+                let path = path.to_vec();
+                self.dict_with(&name, &path, &body)
+            }
             "incr" => {
                 let (name, key, by) = match rest {
                     [name, key] => (name, key, None),
@@ -1290,6 +1304,58 @@ impl Compiler {
             -(3 * count as i32 + 2),
         );
         self.finally_region(ext::DICT_UPDATE_END, |c| c.emit_body_value(&script))
+    }
+
+    /// `dict with d ?key …? {body}` — every key of the dictionary becomes a
+    /// variable for the body, and every one of them goes back on the way out.
+    ///
+    /// The same `finally` shape as `dict update`, for the same reason:
+    /// `DictWithCmd` evaluates the body with `FinalizeDictWith` already pushed as
+    /// its NRE callback (`generic/tclDictObj.c:3689`), so an error, a `break`, a
+    /// `continue`, a `return` and an ordinary result all reach the write-back and
+    /// all keep the body's own outcome afterwards.
+    ///
+    /// What `dict update` does not have is the *binding*. Its variable names are
+    /// words of the command and are known while the script is read; these are the
+    /// dictionary's keys, so nothing about them is known until it runs. That is
+    /// resolved where it can be — [`crate::cmd_scope::dict_with_home`], the same
+    /// resolution a computed `upvar` target gets — and the one case it cannot
+    /// resolve is a key whose name a *procedure* body never mentions, which
+    /// therefore has no frame slot. Refusing those is not an option: a record
+    /// with a field the body does not read is ordinary code. They are bound to
+    /// nothing and their values are carried in the record instead, which is what
+    /// tclsh's write-back produces for every body that leaves the variable
+    /// alone — and no compiled op in a body that never spells a name can touch
+    /// it. The two shapes that reach one anyway are measured and recorded under
+    /// "`dict with` and a key the body never names" in `BUGS.md`: a nested
+    /// script (`eval`, `uplevel`), which is `eval`'s own divergence rather than
+    /// this command's, and a second `dict with` in the same frame over the same
+    /// unnamed key, which in tclsh share one local and here do not.
+    fn dict_with(
+        &mut self,
+        name: &Word,
+        path: &[Word],
+        body: &Word,
+    ) -> Result<(), CompileError> {
+        let Some(Target::Scalar(dict_name)) = target_of(name) else {
+            return self.error("dict with on an array element is not supported yet");
+        };
+        let script = self.body_of(body)?;
+        self.push_str(&dict_name);
+        // By place, and for the reason `dict update` takes one: the write-back
+        // has to reach the variable the binding read, and a place reaches a
+        // frame slot as readily as a global.
+        let place = self.var_place_operand(&dict_name);
+        self.emit(Op::LoadInt(place), 1);
+        for key in path {
+            self.word(key)?;
+        }
+        self.emit(Op::LoadInt(path.len() as i64), 1);
+        self.emit(
+            Op::Extended(ext::DICT_WITH_BIND, 0),
+            -(path.len() as i32 + 2),
+        );
+        self.finally_region(ext::DICT_WITH_END, |c| c.emit_body_value(&script))
     }
 
     /// `dict map {k v} $d {body}` — `dict for` that collects.
@@ -1691,6 +1757,266 @@ fn dict_update_end(vm: &mut VM, above: u8) -> Result<(), String> {
     match crate::runtime::var_cell(vm, record.place) {
         Some(cell) => *cell = written,
         None => return Err(format!("can't set \"{}\": no frame to set it in", record.name)),
+    }
+    Ok(())
+}
+
+/// What one key of a `dict with` binding turned into.
+enum Bound {
+    /// The key named a variable that could be reached, and it was assigned. The
+    /// write-back reads it back through the same link.
+    Var(Link),
+    /// The key named a variable a procedure body never mentions, so it has no
+    /// frame slot and no compiled op in that body can read or write it. Nothing
+    /// was assigned; the value is carried here so the write-back can put the key
+    /// back unchanged, which is what tclsh does for a key whose variable the body
+    /// left alone (`generic/tclDictObj.c:3939`) — including when the body removed
+    /// the key from the dictionary, which does *not* keep it out.
+    Kept(String),
+}
+
+/// The record [`ext::DICT_WITH_BIND`] builds and [`ext::DICT_WITH_END`]
+/// consumes: where the dictionary variable lives, under what name, which path
+/// leads to the sub-dictionary that was opened out, and what became of each of
+/// its keys.
+///
+/// It rides the VM stack for the reason `dict update`'s does — `dict with`
+/// nests, over the same dictionary as readily as over another, and a hidden
+/// global would hand an inner write-back the outer one's keys.
+struct DictWith {
+    name: String,
+    place: Place,
+    /// The path words, evaluated once when the command ran. tclsh keeps the list
+    /// it built from them and the finalizer walks *that*
+    /// (`generic/tclDictObj.c:3685`), so a path word with a side effect happens
+    /// once however the body ends.
+    path: Vec<String>,
+    /// `(key, what it bound to)`, in the dictionary's own order — which is the
+    /// order `TclDictWithInit` appends to `keysPtr` (`:3808-3816`) and therefore
+    /// the order the write-back puts them back in.
+    keys: Vec<(String, Bound)>,
+}
+
+impl DictWith {
+    fn encode(&self) -> Value {
+        let path = self
+            .path
+            .iter()
+            .map(|k| Value::Str(Arc::new(k.clone())))
+            .collect();
+        let keys = self
+            .keys
+            .iter()
+            .map(|(key, bound)| {
+                let payload = match bound {
+                    Bound::Var(link) => link.encode(),
+                    Bound::Kept(value) => Value::Str(Arc::new(value.clone())),
+                };
+                Value::Array(vec![Value::Str(Arc::new(key.clone())), payload])
+            })
+            .collect();
+        Value::Array(vec![
+            Value::Str(Arc::new(self.name.clone())),
+            Value::Int(self.place.encode()),
+            Value::Array(path),
+            Value::Array(keys),
+        ])
+    }
+
+    fn decode(value: &Value) -> Option<DictWith> {
+        let Value::Array(items) = value else {
+            return None;
+        };
+        let [name, place, Value::Array(path), Value::Array(keys)] = items.as_slice() else {
+            return None;
+        };
+        let keys = keys
+            .iter()
+            .map(|entry| {
+                let Value::Array(pair) = entry else {
+                    return None;
+                };
+                let [key, payload] = pair.as_slice() else {
+                    return None;
+                };
+                // A link is a tagged `Value::Array` and a kept value is a string,
+                // so the two cannot be mistaken for each other: the tag holds a
+                // NUL, which no list a script built can start with.
+                let bound = match Link::decode(payload) {
+                    Some(link) => Bound::Var(link),
+                    None => Bound::Kept(to_tcl_string(payload)),
+                };
+                Some((to_tcl_string(key), bound))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(DictWith {
+            name: to_tcl_string(name),
+            place: Place::decode(tcl_int(place).ok()?),
+            path: path.iter().map(to_tcl_string).collect(),
+            keys,
+        })
+    }
+}
+
+/// [`ext::DICT_WITH_BIND`]: open the dictionary out into variables named by its
+/// own keys, and leave the record the write-back will need.
+///
+/// `DictWithCmd` and `TclDictWithInit` (`generic/tclDictObj.c:3649-3818`) in the
+/// same order: the variable must exist, the path — when there is one — is walked
+/// in read mode so a missing step is an error before anything is assigned, and
+/// then every key of the sub-dictionary is assigned to the variable its own name
+/// spells.
+pub(crate) fn dict_with_bind(interp: &Shared, vm: &mut VM) -> Result<(), TclError> {
+    let count = pop_int(vm).max(0) as usize;
+    let mut path: Vec<String> = (0..count).map(|_| pop_str(vm)).collect();
+    path.reverse();
+    let place = place_of(vm);
+    let name = pop_str(vm);
+
+    // `Tcl_ObjGetVar2(…, TCL_LEAVE_ERR_MSG)` (`:3667`): an absent variable is
+    // refused, exactly as `dict update`'s binding refuses one.
+    let current = match peek(vm, place) {
+        Some(Value::Hash(_)) => {
+            return Err(TclError::plain(format!(
+                "can't read \"{name}\": variable is array"
+            )))
+        }
+        Some(value) if *value != Value::Undef => to_tcl_string(value),
+        _ => {
+            return Err(TclError::plain(format!(
+                "can't read \"{name}\": no such variable"
+            )))
+        }
+    };
+
+    // `TclTraceDictPath(…, DICT_PATH_READ)` (`:3787`): a step the dictionary
+    // does not have is an error here, where the write-back's own walk treats the
+    // same absence as "drop it".
+    let mut leaf = Dict::parse(&current).map_err(TclError::plain)?;
+    for key in &path {
+        let Some(next) = leaf.get(key) else {
+            return Err(TclError::plain(format!(
+                "key \"{key}\" not known in dictionary"
+            )));
+        };
+        leaf = Dict::parse(next).map_err(TclError::plain)?;
+    }
+
+    let mut keys = Vec::with_capacity(leaf.len());
+    for (key, value) in &leaf.entries {
+        let Some(link) = crate::cmd_scope::dict_with_home(interp, vm, key)? else {
+            keys.push((key.clone(), Bound::Kept(value.clone())));
+            continue;
+        };
+        let assigned = Value::Str(Arc::new(value.clone()));
+        match crate::cmd_scope::write_link(vm, &link) {
+            // Assigning a scalar over a variable that holds an array is refused
+            // in tclsh's own wording, and the refusal happens *during* the
+            // binding, so the keys before it stay assigned (measured).
+            Some(cell) if matches!(cell, Value::Hash(_)) => {
+                return Err(TclError::plain(format!(
+                    "can't set \"{key}\": variable is array"
+                )))
+            }
+            Some(cell) => *cell = assigned,
+            None => {
+                return Err(TclError::plain(format!(
+                    "can't set \"{key}\": variable isn't array"
+                )))
+            }
+        }
+        keys.push((key.clone(), Bound::Var(link)));
+    }
+
+    let record = DictWith {
+        name,
+        place,
+        path,
+        keys,
+    };
+    vm.push(record.encode());
+    Ok(())
+}
+
+/// [`ext::DICT_WITH_END`]: put the variables back into the dictionary, whatever
+/// ended the body.
+///
+/// `FinalizeDictWith` and `TclDictWithFinish` (`generic/tclDictObj.c:3696-3963`),
+/// with all three of their quiet paths kept:
+///
+/// * a dictionary variable that no longer exists drops the whole write-back
+///   (`:3875-3877`),
+/// * a path that no longer leads anywhere drops it too (`:3912-3917`) — the
+///   write-back's walk is `DICT_PATH_EXISTS`, where the binding's was
+///   `DICT_PATH_READ`,
+/// * and a *variable* that no longer exists takes its key out of the dictionary
+///   (`:3929-3930`), which is the one way a `dict with` body can remove one.
+///
+/// Every other key is put back, including one the body deleted from the
+/// dictionary: the keys are the list the binding recorded, not whatever the
+/// dictionary holds now, so `dict with d {dict unset d k}` leaves `k` where it
+/// was (measured against tclsh 9.0.4).
+pub(crate) fn dict_with_end(vm: &mut VM, above: u8) -> Result<(), TclError> {
+    let record = take_record(vm, above).map_err(TclError::plain)?;
+    let Some(record) = DictWith::decode(&record) else {
+        return Err(TclError::plain("corrupt dict with record"));
+    };
+
+    let current = match peek(vm, record.place) {
+        Some(value) if !matches!(value, Value::Hash(_)) && *value != Value::Undef => {
+            to_tcl_string(value)
+        }
+        _ => return Ok(()),
+    };
+    // "Double-check that it is still a dictionary" (`:3883`): a body that made
+    // it something else fails the command here, replacing whatever the body
+    // left.
+    let mut root = Dict::parse(&current).map_err(TclError::plain)?;
+
+    // Walk to the leaf, keeping the parents so the chain can be rebuilt: a
+    // dictionary is its string here, so there is no shared sub-object to update
+    // in place the way `InvalidateDictChain` does.
+    let mut chain: Vec<(Dict, String)> = Vec::with_capacity(record.path.len());
+    for key in &record.path {
+        let Some(next) = root.get(key) else {
+            // The path stopped leading anywhere while the body ran. Dropped, and
+            // silently — the body's own result stands.
+            return Ok(());
+        };
+        let child = Dict::parse(next).map_err(TclError::plain)?;
+        chain.push((root, key.clone()));
+        root = child;
+    }
+
+    for (key, bound) in &record.keys {
+        match bound {
+            Bound::Kept(value) => root.put(key.clone(), value.clone()),
+            Bound::Var(link) => match crate::cmd_scope::read_link(vm, link) {
+                Some(value) if !matches!(value, Value::Hash(_)) && *value != Value::Undef => {
+                    root.put(key.clone(), to_tcl_string(value));
+                }
+                // A variable that is gone — or that became an array, which the
+                // scalar read `Tcl_ObjGetVar2(key, NULL, 0)` cannot answer — is
+                // "an instruction to remove the key".
+                _ => root.remove(key),
+            },
+        }
+    }
+
+    while let Some((mut parent, key)) = chain.pop() {
+        parent.put(key, root.to_list());
+        root = parent;
+    }
+
+    let written = Value::Str(Arc::new(root.to_list()));
+    match crate::runtime::var_cell(vm, record.place) {
+        Some(cell) => *cell = written,
+        None => {
+            return Err(TclError::plain(format!(
+                "can't set \"{}\": no frame to set it in",
+                record.name
+            )))
+        }
     }
     Ok(())
 }

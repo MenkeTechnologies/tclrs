@@ -305,6 +305,79 @@ const FIXED: &[&str] = &[
     "proc walk {n} {set d [list k $n]\ndict update d k v {if {$n > 0} {walk [expr {$n-1}]}\nset v [expr {$v*2}]}\nputs $d}\nwalk 3",
     // Inside a procedure the variables are frame slots, not globals.
     "proc p {} {set d {a 1 b 2}\ndict update d a x {set x [expr {$x+1}]}\nreturn $d}\nputs [p]\nputs [info exists x]",
+    // ── dict with ──
+    //
+    // Same `finally` write-back as `dict update`, so every ending is a case
+    // again; what is new is that the variables are named by the dictionary's own
+    // *keys*, which are values.
+    "set d {a 1 b 2}\ndict with d {set a 99}\nputs $d",
+    "set d {a 1 b 2}\nputs [dict with d {expr {$a + $b}}]",
+    "set d {}\ndict with d {}\nputs [list $d]",
+    // Every key goes back, not only the ones the body assigned.
+    "set d {a 1 b 2}\ndict with d {set a 9}\nputs $d",
+    // Unsetting a bound variable is the one way the body can remove a key.
+    "set d {a 1 b 2}\ndict with d {unset a}\nputs $d",
+    // The keys the write-back puts back are the ones the *binding* recorded, so
+    // a body that empties or edits the dictionary itself does not lose them.
+    "proc p {} {set d {a 1 q 2}\ndict with d {dict unset d q}\nreturn $d}\nputs [p]",
+    "proc p {} {set d {a 1 q 2}\ndict with d {set d {}}\nreturn $d}\nputs [p]",
+    "proc p {} {set d {a 1 q 2}\ndict with d {dict set d zz 9}\nreturn $d}\nputs [p]",
+    // Every ending reaches the write-back.
+    "set d {a 1}\nputs [catch {dict with d {set a 5; error boom}} m]\nputs $m\nputs $d",
+    "set d {a 1}\nforeach i {1 2 3} {dict with d {set a $i; break}}\nputs $d",
+    "set d {a 1}\nset seen {}\nforeach i {1 2 3} {dict with d {set a $i; continue}\nlappend seen $i}\nputs $d\nputs [list $seen]",
+    // A `return` reads its word *before* the write-back, so it answers the
+    // dictionary as the body found it.
+    "proc p {} {set d {a 1}\ndict with d {set a 42; return $d}}\nputs [p]",
+    "proc p {} {upvar 1 d d\ndict with d {set a 42; return done}}\nset d {a 1}\nputs [p]\nputs $d",
+    // The dictionary variable going away drops the write-back silently.
+    "proc p {} {set d {a 1}\ndict with d {unset d; set a 9}\nreturn [info exists d]}\nputs [p]",
+    // The variable becoming something that is not a dictionary fails here,
+    // after the body, replacing what the body left.
+    "set d {a 1}\nputs [catch {dict with d {set d \"q w e\"; set a 5}} m]\nputs $m\nputs $d",
+    // A key that collides with a local overwrites it, and the local keeps the
+    // value afterwards — `dict with` does not restore what it displaced.
+    "proc p {} {set a 111\nset d {a 1}\ndict with d {set a 7}\nreturn [list $d $a]}\nputs [p]",
+    // A key named as the dictionary variable clobbers the dictionary, which the
+    // write-back then finds is not one.
+    "proc p {} {set d {d 1 b 2}\nreturn [catch {dict with d {set b 3}} m]\n}\nputs [p]",
+    // Keys are variable *names*, so an `a(i)` key is one element of an array,
+    // and one whose base already holds a scalar is refused as `set` refuses it.
+    "set d {q(1) 5}\ndict with d {set q(1) 6}\nputs $d\nputs [array size q]",
+    "set a hello\nset d {a(1) 5}\nputs [catch {dict with d {}} m]\nputs $m",
+    "proc p {} {set a hello\nset d {a(1) 5}\nreturn [catch {dict with d {}} m],$m}\nputs [p]",
+    // A path names a sub-dictionary to open out instead.
+    "set d {k1 {k2 {a 1 b 2}}}\ndict with d k1 k2 {set a 99}\nputs $d",
+    "set d {k {a 1}}\nputs [catch {dict with d zz {set a 1}} m]\nputs $m",
+    // A path that stops leading anywhere while the body runs drops the
+    // write-back, exactly as a missing variable does.
+    "proc p {} {set d {k {a 1}}\ndict with d k {set d {other 1}; set a 99}\nreturn $d}\nputs [p]",
+    "proc p {} {set d {k {a 1}}\ndict with d k {dict unset d k; set a 99}\nreturn [list $d]}\nputs [p]",
+    // Refusals, all from the command rather than from the body.
+    "puts [catch {dict with nosuch {}} m]\nputs $m",
+    "set d \"a b c\"\nputs [catch {dict with d {}} m]\nputs $m",
+    "array set A {a 1}\nputs [catch {dict with A {}} m]\nputs $m",
+    "set d {x 1}\narray set x {q 1}\nputs [catch {dict with d {}} m]\nputs $m",
+    "puts [catch {dict with} m]\nputs $m",
+    "puts [catch {dict with d} m]\nputs $m",
+    // Nested, over the same dictionary and over a sub-dictionary: an inner
+    // write-back must not be handed the outer one's keys.
+    "set d {a 1 b {c 2}}\ndict with d {dict with b {set c 42}\nset a 5}\nputs $d",
+    "proc walk {n} {set d [list k $n]\ndict with d {if {$n > 0} {walk [expr {$n-1}]}\nset k [expr {$k*2}]}\nputs $d}\nwalk 3",
+    // Inside a procedure the bound variables are frame slots and go away with
+    // the frame; at the script's own level they are globals and stay.
+    "proc p {} {set d {a 1}\ndict with d {set a [expr {$a+1}]}\nreturn $d}\nputs [p]\nputs [info exists a]",
+    "set d {zz 1}\ndict with d {set zz 2}\nputs $d\nputs $zz",
+    // A key the body never spells has no frame slot, so its value rides the
+    // command's record instead of a variable. These are the shapes that would
+    // catch that going wrong: writing the key through the dictionary, and a
+    // nested binding that names it. The two that do diverge — a nested script,
+    // and a second binding that does *not* name it — are in BUGS.md, and at a
+    // script's own level neither diverges because every key is a global.
+    "proc p {} {set d {a 1 q 2}\ndict with d {dict set d q 7}\nreturn [list $d]}\nputs [p]",
+    "proc p {} {set d {q 1}\ndict with d {dict set d q 5\ndict with d {set _ $q}}\nreturn $d}\nputs [p]",
+    "set d {q 1}\ndict with d {dict set d q 5\ndict with d {}}\nputs $d",
+    "set e {r 1}\ndict with e {eval {set r 9}}\nputs $e",
     // ── the two together ──
     "array set a {x 1 y 2}\nputs [dict get [array get a] y]\nputs [dict size [array get a]]",
     "array set a {x 1 y 2 z 3}\nset d [array get a]\nputs [dict exists $d z]\nputs [dict exists $d w]",
@@ -527,8 +600,18 @@ fn unimplemented_subcommands_are_refused() {
         ),
         // `dict filter … script` and `dict map` were refused here until they
         // landed; what they answer is now compared against tclsh in `FIXED`.
-        ("dict with d {}", "dict with is not supported yet"),
         ("dict info {a 1}", "dict info is not supported yet"),
+        // `dict with` landed; what it answers is compared against tclsh in
+        // `FIXED`. What it still refuses is the same two names `dict update`
+        // cannot resolve while compiling.
+        (
+            "set a(1) x\ndict with a(1) {}",
+            "array element is not supported yet",
+        ),
+        (
+            "set d {a 1}\nset b {set a 9}\ndict with d $b",
+            "script body must be a literal in this phase",
+        ),
         // `dict update` landed; what it answers is compared against tclsh in
         // `FIXED`. What it still refuses is the two names it cannot resolve
         // while compiling — an array element as the dictionary, and a computed

@@ -1026,7 +1026,7 @@ const DICT_CORPUS: &[Entry] = &[
     Entry {
         name: "info",
         synopsis: "dict info dictionary",
-        summary: "A multi-line report on the hash table behind the dict: entries, buckets, the bucket-occupancy histogram and the average search distance. Every number in it describes the reference interpreter's `Tcl_HashTable`, which is not what stores a dict here.",
+        summary: "A multi-line report on the hash table behind the dict: entries, buckets, the bucket-occupancy histogram and the average search distance. Refused here. Every number in it describes the reference interpreter's `Tcl_HashTable`, and it reports the table the *object* has rather than one the value implies — a dict grown and then shrunk keeps the buckets it grew, so two dicts with the same string answer differently. A dict here is its string, so there is no history to report.",
     },
     Entry {
         name: "keys",
@@ -1086,7 +1086,7 @@ const DICT_CORPUS: &[Entry] = &[
     Entry {
         name: "with",
         synopsis: "dict with dictVarName ?key ...? script",
-        summary: "`dict update` over *every* key at once: each key becomes a variable of that name for the duration of the script, and the variables are written back after. Not built here: the names come from the dictionary's keys, which are values, and a name that only exists at run time has no frame slot to be given.",
+        summary: "`dict update` over *every* key at once: each key becomes a variable of that name for the duration of the script, and the variables are written back after — after an error, a `break` or a `return` too. A leading key path opens out a sub-dictionary instead. The names come from the dictionary's keys, so each is resolved when the command runs: a global at a script's own level, a frame slot inside a procedure, and one element of an array for a key written `a(i)`. Unsetting a bound variable is what removes its key; every other key goes back even if the body deleted it from the dictionary.",
     },
 ];
 
