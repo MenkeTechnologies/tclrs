@@ -209,6 +209,21 @@ const PROGRAMS: &[&str] = &[
     "puts [catch {error {a b}} m]\nputs $m",
     "puts [catch {error {}} m]\nputs \"<$m>\"",
     "set what disk\nputs [catch {error \"no $what\"} m]\nputs $m",
+    // The `errorInfo` and `errorCode` arguments. What they *set* is two options
+    // this frontend does not carry, so only the message and the arity are
+    // compared here — asking the options dictionary for either key fails, which
+    // is the gap BUGS.md records rather than a wrong answer.
+    "puts [catch {error boom myinfo} m]\nputs $m",
+    "puts [catch {error boom myinfo mycode} m]\nputs $m",
+    "puts [catch {error boom {} mycode} m]\nputs $m",
+    "puts [catch {error a b c d} m]\nputs $m",
+    "puts [catch {error} m]\nputs $m",
+    // All three words are substituted, and in the order written: a command
+    // substitution in the second or the third has run before the error leaves.
+    "proc n {x} {puts \"ran $x\"\nreturn $x}\nputs [catch {error [n one] [n two] [n three]} m]\nputs $m",
+    // The shape that made this reachable without anyone writing it: a
+    // comparison script is called with the two elements appended.
+    "puts [catch {lsort -command {error boom} {a b}} m]\nputs $m",
     // ── the pieces together ──
     "proc fizz {n} {\n    for {set i 1} {$i <= $n} {incr i} {\n        switch [expr {$i % 15}] {\n            0 {puts FizzBuzz}\n            3 - 6 - 9 - 12 {puts Fizz}\n            5 - 10 {puts Buzz}\n            default {puts $i}\n        }\n    }\n}\nfizz 20",
     "proc safeDiv {a b} {\n    if {[catch {expr {$a/$b}} r]} {\n        return NaN\n    }\n    return $r\n}\nfor {set i -2} {$i <= 2} {incr i} {puts [safeDiv 10 $i]}",
@@ -413,7 +428,6 @@ fn unsupported_procedure_constructs_are_refused() {
         ("switch a {}", "wrong # args"),
         ("switch a", "wrong # args"),
         ("switch a {a -}", "no body specified for pattern \"a\""),
-        ("error a b", "info and code arguments are not supported"),
     ] {
         let err = tclrs::eval(src).expect_err(&format!("{src:?} should fail"));
         assert!(

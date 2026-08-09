@@ -499,7 +499,13 @@ approximated, and nothing is silently mis-run.
   *error* also has `-errorstack`, `-errorcode`, `-errorinfo` and `-errorline`,
   so `catch {error boom} m o` gives a shorter dictionary here; the `-code` and
   `-level` in it are exact, and `tests/proc_differential.rs` compares the whole
-  dictionary for every outcome whose tclsh form has nothing else in it.
+  dictionary for every outcome whose tclsh form has nothing else in it. The
+  three commands that *set* one of the missing options — `throw`'s type word,
+  and `error`'s `errorInfo` and `errorCode` arguments — take the word, evaluate
+  it and drop it rather than refusing the command, because the message and the
+  code they carry are right either way and the option they set is missing
+  visibly: asking the dictionary for it fails. `::errorInfo` and `::errorCode`
+  are not set either, and reading one is `no such variable`.
 - **Procedures across an `eval`.** An evaluated script shares the interpreter's
   variables but not its procedures: it is a chunk of its own, and a call site
   resolves its command against that chunk. So `eval {proc twice {x} {…}}`
@@ -680,7 +686,7 @@ approximated, and nothing is silently mis-run.
   subcommands outside the
   implemented set; `format` conversions outside the
   implemented set; `regexp -about`;
-  `error`'s `info` and `code` arguments; `return`'s options other than
+  `return`'s options other than
   `-code` and `-level`. They go through the reference option parser first,
   so abbreviation and ambiguity behave as tclsh does, and are then refused.
   `lsort -command`, `dict map` and `dict filter … script` were on this list until

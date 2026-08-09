@@ -3564,7 +3564,15 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
         // `error` and `return -code error` raise the message as the error, so
         // the enclosing `catch` — or the caller of `eval` — receives it.
-        ext::ERROR => Err(to_tcl_string(&vm.pop())),
+        ext::ERROR => {
+            // `error`'s `errorInfo` and `errorCode` words, off the stack in the
+            // order they were pushed; see [`ext::ERROR`] for why they are
+            // evaluated and then dropped.
+            for _ in 0..arg {
+                vm.pop();
+            }
+            Err(to_tcl_string(&vm.pop()))
+        }
         // `throw type message`. The type has to be a list of at least one
         // element — `Tcl_ThrowObjCmd` asks `TclListObjLength` and then its own
         // length test — and the message is then raised as an ordinary error.

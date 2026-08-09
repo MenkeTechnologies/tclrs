@@ -348,17 +348,38 @@ impl Compiler {
         Ok(())
     }
 
-    /// `error message` — `info` and `code` set return options this frontend
-    /// does not model.
+    /// `error message ?errorInfo? ?errorCode?`.
+    ///
+    /// All three words are evaluated, in the order written — `Tcl_ErrorObjCmd`
+    /// (`generic/tclCmdAH.c:596-628`) receives them already substituted, so a
+    /// command substitution in the second or the third has run whatever the
+    /// first does. What the two extras *set* is `-errorinfo` and `-errorcode`,
+    /// the return options this frontend does not carry, so they are dropped —
+    /// which is visible at the point either option is asked for, and is the
+    /// same gap `throw`'s type word already has.
+    ///
+    /// They were refused outright until `lsort -command` landed and made the
+    /// three-argument form reachable without anyone writing it: a comparison
+    /// script is called with the two elements appended, so `lsort -command
+    /// {error boom} {a b}` runs `error boom a b`. tclsh reports `boom`; the
+    /// refusal reported the arity message instead.
     pub(crate) fn cmd_error(&mut self, args: &[Word]) -> Result<(), CompileError> {
-        let [message] = args else {
-            return self.error(
-                "wrong # args: should be \"error message\"; the info and code arguments are \
-                 not supported",
-            );
+        let [message, extra @ ..] = args else {
+            return self
+                .error("wrong # args: should be \"error message ?errorInfo? ?errorCode?\"");
         };
+        if extra.len() > 2 {
+            return self
+                .error("wrong # args: should be \"error message ?errorInfo? ?errorCode?\"");
+        }
         self.word(message)?;
-        self.emit(Op::Extended(ext::ERROR, 0), -1);
+        for w in extra {
+            self.word(w)?;
+        }
+        self.emit(
+            Op::Extended(ext::ERROR, extra.len() as u8),
+            -(extra.len() as i32 + 1),
+        );
         // Control has left; the value keeps the depth arithmetic honest.
         self.push_empty();
         Ok(())

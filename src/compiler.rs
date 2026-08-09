@@ -58,7 +58,17 @@ pub mod ext {
     /// Pop a pattern and a subject and push 1 or 0. `arg` is 0 for `switch
     /// -exact` and 1 for `switch -glob`.
     pub const MATCH: u16 = 7;
-    /// Raise the Tcl error whose message is on top of the stack.
+    /// `[message, extra …]` with the number of `extra` words in the inline
+    /// operand — raise `message` as a Tcl error.
+    ///
+    /// The extras are `error`'s `errorInfo` and `errorCode` arguments. They are
+    /// evaluated, because `Tcl_ErrorObjCmd` receives them substituted and a
+    /// command substitution in one has already run by then, and then dropped:
+    /// what they set is `-errorinfo` and `-errorcode`, the two return options
+    /// this frontend does not carry (BUGS.md). Dropping them is visible rather
+    /// than silent — asking the options dictionary for either key fails — where
+    /// refusing the whole command made `catch {error boom info code} m` leave
+    /// the *arity message* in `m` instead of `boom`.
     pub const ERROR: u16 = 8;
     /// Leave the `catch` region entered by `ext_wide::CATCH`, having reached
     /// its end without an error.

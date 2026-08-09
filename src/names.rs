@@ -153,8 +153,8 @@ pub const CORPUS: &[Entry] = &[
     },
     Entry {
         name: "error",
-        synopsis: "error message",
-        summary: "Raise an error carrying the message.",
+        synopsis: "error message ?errorInfo? ?errorCode?",
+        summary: "Raise an error carrying the message. The two optional words are evaluated and then dropped: what they set is `-errorinfo` and `-errorcode`, the return options this frontend does not carry.",
     },
     Entry {
         name: "eval",
