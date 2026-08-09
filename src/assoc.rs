@@ -1319,18 +1319,16 @@ impl Compiler {
     /// words of the command and are known while the script is read; these are the
     /// dictionary's keys, so nothing about them is known until it runs. That is
     /// resolved where it can be — [`crate::cmd_scope::dict_with_home`], the same
-    /// resolution a computed `upvar` target gets — and the one case it cannot
-    /// resolve is a key whose name a *procedure* body never mentions, which
-    /// therefore has no frame slot. Refusing those is not an option: a record
-    /// with a field the body does not read is ordinary code. They are bound to
-    /// nothing and their values are carried in the record instead, which is what
-    /// tclsh's write-back produces for every body that leaves the variable
-    /// alone — and no compiled op in a body that never spells a name can touch
-    /// it. The two shapes that reach one anyway are measured and recorded under
-    /// "`dict with` and a key the body never names" in `BUGS.md`: a nested
-    /// script (`eval`, `uplevel`), which is `eval`'s own divergence rather than
-    /// this command's, and a second `dict with` in the same frame over the same
-    /// unnamed key, which in tclsh share one local and here do not.
+    /// resolution a computed `upvar` target gets. A key whose name a *procedure*
+    /// body never mentions has no slot the compiler could have assigned, so it
+    /// is given one at run time
+    /// ([`crate::cmd_scope::runtime_slot_alloc`]) and is a local of that
+    /// activation like any other: a nested script assigns it, `info locals`
+    /// lists it, a second `dict with` over the same key finds the same one, and
+    /// it dies with the frame. Refusing such a key was never an option — a
+    /// record with a field the body does not read is ordinary code — and
+    /// carrying its value in the command's record instead was right only for a
+    /// body that leaves it alone.
     fn dict_with(
         &mut self,
         name: &Word,

@@ -633,10 +633,17 @@ only one that is not a script: an alias, which every later command of the body
 reads and writes through. The level and the target may both be computed, and the
 target may be an array element. It resolves to one of three homes — a global at
 its index in the chunk's projection, a global whose computed name the chunk's
-table does not carry, or a frame slot by frame and slot index — which is why the
-one thing it refuses is a name the procedure running at that level never wrote:
-a link is a slot's *address*, and such a name has no slot. `uplevel` is not
-limited that way, projecting the whole frame rather than addressing one slot.
+table does not carry, or a frame slot by frame and slot index.
+
+A name the procedure running at that level never wrote has no slot the compiler
+could have assigned it, so the frame **grows one** when the link asks for it, and
+the name is a local of that activation like any other: a script in that frame
+reads and writes it, `info locals` lists it, and it dies with the call rather
+than becoming a global that outlives it. The same run-time slot serves the other
+three ways a name arrives after a body is compiled — `eval {set qq 9}` in a body
+that never writes `qq`, `uplevel 1 {set made 1}` into a caller that never writes
+`made`, and a `dict with` key the body never spells. It costs that one activation
+its compiled trace, which is the cost a procedure-local array already carries.
 
 ### Namespaces
 
@@ -764,7 +771,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | A variable or body word that is not literal (`set $name …`) | the word is refused where a literal is required |
 | An array variable in a `foreach` variable list | `array variables are not supported yet` |
 | `array startsearch` and the other search subcommands | `array startsearch is not supported yet` |
-| `dict info`, which reports the hash-table statistics of the *object* rather than of the value — two dictionaries with the same string answer differently when one of them shrank, so it needs a dict that retains its table, [see BUGS.md](BUGS.md); `dict set`, `dict incr`, `dict update` or `dict with` into an array element; `dict update`'s variable names when they are not literal | `dict info is not supported yet` |
+| `dict info`, which reports the hash-table statistics of the *object* rather than of the value — two dictionaries with the same string answer differently when one of them shrank, and a third answer again once a list holds one, so it needs a dict that retains its table *and* a count of what holds it, [see BUGS.md](BUGS.md); `dict set`, `dict incr`, `dict update` or `dict with` into an array element; `dict update`'s variable names when they are not literal | `dict info is not supported yet` |
 | `string wordend` / `wordstart` past ASCII | `string wordend/wordstart: characters beyond ASCII need Unicode category tables, which are not built yet` |
 | `format %a` / `%A`; any other letter is `bad field specifier "n"` instead. These are the one conversion Tcl does not perform: it builds the C spec and calls the platform `snprintf` (`generic/tclStringObj.c:2547`), so the answer is the C library's and the libraries this crate builds against do not agree — [see BUGS.md](BUGS.md) | `the "%a" conversion is not supported: tclsh hands it to the platform C library …` |
 | `regexp -about`. The group count is easy; the flag list is the reference engine's own compile-time telemetry (`REG_UUNPORT`, `REG_UNONPOSIX`, …), which a different engine can only guess at — and the result is one list, so half of it right and half of it guessed is a wrong list | `regexp -about is not supported yet: its second element is the reference engine's own compile-time telemetry …` |
@@ -779,7 +786,6 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `namespace eval` inside a procedure body, where an unqualified name in its body would take a frame slot rather than the namespace's variable | `"namespace eval" inside a procedure is not supported yet: an unqualified name in its body would take a frame slot rather than the namespace's variable` |
 | `info` subcommands that need machinery this frontend has none of: `frame`, `errorstack`, `cmdcount`, `cmdtype`, `class`, `object`, `consts`, `constant`, `loaded`; and `info level N`, which needs a record of the command that entered a level | `info frame is not supported yet` |
 | `info library` — a raise rather than a refusal, carrying tclsh's own message for an interpreter with no script library, which this one permanently is | `no library has been specified for Tcl` |
-| `upvar` to a variable the procedure running at that level never names. A link is one slot's address, and such a name has no slot. `uplevel` is not limited that way | `"upvar" to the variable "neverused" at level 1 is not supported: the procedure running there never names it, so it has no frame slot` |
 | A `return` inside a script `eval`, `uplevel` or `apply` runs, where the script is a chunk of its own and that chunk is no procedure | `"return" outside of a procedure is not supported` |
 | A lambda naming a namespace other than `::`, written out or computed | `the namespace "::ns" of a lambda is not supported yet: this frontend has only "::"` |
 | `vwait` on more than one variable, and its `-timeout` / `-readable` / `-writable` / `-all` options | `"vwait" takes at most one variable name in this phase` |

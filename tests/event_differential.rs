@@ -415,50 +415,33 @@ fn a_wait_that_could_never_end_is_reported_rather_than_entered() {
 ///   answers; a computed name is what the run-time link exists for.
 ///
 /// * `uplevel 1 {set neverused 1}` (`the procedure running there never names it`)
-///   — now answers. `uplevel` projects the whole frame rather than addressing one
-///   slot, so a name the target procedure never wrote is simply not read back.
-///   `upvar` still refuses it, because a link *is* a slot address.
+///   — now answers, and so does `upvar 1 neverused z`. A frame grows the name a
+///   slot when the script asks for one, `cmd_scope::runtime_slot_alloc`.
 /// * `apply $f 1` (`"apply" of a computed lambda is not supported`) — now
 ///   answers; `apply` runs the lambda as a synthesised procedure, so its text
 ///   need not be in the chunk.
 /// * `info library` (`info library is not supported yet`) — now raises tclsh's
 ///   own `no library has been specified for Tcl`.
 ///
-/// All ten are byte-compared against tclsh in `PROGRAMS` above. What stands
-/// here is what is still out of reach, for the reason `src/cmd_scope.rs` gives:
-/// another frame's variables are addressed through a table of the names its
-/// procedure *wrote*, so a name that procedure never mentions has no slot to be
-/// reached at. Refusing loudly is what keeps a script from being run against the
-/// wrong variables.
+/// All eleven are byte-compared against tclsh in `PROGRAMS` above or in
+/// `frame_differential.rs`. What stands here is what is still out of reach for a
+/// reason no slot can supply.
 #[test]
 fn unreachable_scopes_are_refused() {
     for (src, expected) in [
-        // A caller's variable the caller itself never names. tclsh creates it in
-        // that frame; here there is no slot for it, because no op in the
-        // already-built body could have addressed one.
-        (
-            "proc o {} {i}\nproc i {} {upvar 1 neverused z\nset z 1}\no",
-            "the procedure running there never names it",
-        ),
-        // An array element of the caller's, which is the same wall by another
-        // spelling: the *array* is the name with no slot.
-        (
-            "proc o {} {i}\nproc i {} {upvar 1 arr(k) e\nset e 1}\no",
-            "the procedure running there never names it",
-        ),
-        // `uplevel 1 {set neverused 1}` stood here — `uplevel` refused a name the
-        // target procedure never wrote, exactly as `upvar` above still does. It
-        // answers now, and answers what tclsh answers, because `uplevel` projects
-        // the whole frame rather than addressing one slot: a name with no slot is
-        // simply not read back afterwards. Byte-compared against tclsh in
-        // `PROGRAMS` above.
+        // `upvar 1 neverused z` and `upvar 1 arr(k) e` into a caller that names
+        // neither stood here — the target frame had no slot to address, because
+        // no op in the already-built body could have addressed one. A frame can
+        // grow a slot at run time now, so both answer, and answer what tclsh
+        // answers. Byte-compared against tclsh in `frame_differential.rs`.
         //
-        // A `return` in the projected script no longer stands there: it is a
-        // return code leaving the chunk, and the level it belongs to absorbs
-        // it. Byte-compared against tclsh below.
         // Level 0 is the script's own, and *that* is name-addressed, so a level
         // past the end of the stack is the ordinary bad-level report rather than
         // this frontend's own refusal.
+        //
+        // A `return` in the projected script no longer stands here either: it is
+        // a return code leaving the chunk, and the level it belongs to absorbs
+        // it. Byte-compared against tclsh below.
         (
             "proc o {} {i}\nproc i {} {upvar 3 x y}\no",
             "bad level \"3\"",

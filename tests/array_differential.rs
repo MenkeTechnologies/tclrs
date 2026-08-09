@@ -368,16 +368,23 @@ const FIXED: &[&str] = &[
     // the frame; at the script's own level they are globals and stay.
     "proc p {} {set d {a 1}\ndict with d {set a [expr {$a+1}]}\nreturn $d}\nputs [p]\nputs [info exists a]",
     "set d {zz 1}\ndict with d {set zz 2}\nputs $d\nputs $zz",
-    // A key the body never spells has no frame slot, so its value rides the
-    // command's record instead of a variable. These are the shapes that would
-    // catch that going wrong: writing the key through the dictionary, and a
-    // nested binding that names it. The two that do diverge — a nested script,
-    // and a second binding that does *not* name it — are in BUGS.md, and at a
-    // script's own level neither diverges because every key is a global.
+    // A key the body never spells has no frame slot the compiler could have
+    // assigned, so it gets one at run time and is a local of that activation
+    // like any other. These are the shapes that catch that going wrong: writing
+    // the key through the dictionary, a nested binding that names it, and — the
+    // two that used to diverge — a nested script that assigns it, and a *second*
+    // binding over the same unmentioned key, which must find the local the first
+    // one made rather than a second one of its own.
     "proc p {} {set d {a 1 q 2}\ndict with d {dict set d q 7}\nreturn [list $d]}\nputs [p]",
     "proc p {} {set d {q 1}\ndict with d {dict set d q 5\ndict with d {set _ $q}}\nreturn $d}\nputs [p]",
     "set d {q 1}\ndict with d {dict set d q 5\ndict with d {}}\nputs $d",
     "set e {r 1}\ndict with e {eval {set r 9}}\nputs $e",
+    "proc p {} {set d {kk 1}\ndict with d {eval {set kk 5}}\nreturn $d}\nputs [p]",
+    "proc p {} {set a {zz 1}\nset b {zz 2}\ndict with a {}\nset x [eval {set zz}]\ndict with b {}\nreturn \"$x [eval {set zz}] $a $b\"}\nputs [p]",
+    // The variable the binding made is one of the activation's locals, and dies
+    // with it.
+    "proc p {} {set d {xx 1}\ndict with d {}\nreturn [lsort [info locals]]}\nputs [p]",
+    "proc p {} {set d {ww 1}\ndict with d {}}\np\nputs [info exists ww]",
     // ── the two together ──
     "array set a {x 1 y 2}\nputs [dict get [array get a] y]\nputs [dict size [array get a]]",
     "array set a {x 1 y 2 z 3}\nset d [array get a]\nputs [dict exists $d z]\nputs [dict exists $d w]",

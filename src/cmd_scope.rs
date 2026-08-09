@@ -77,11 +77,25 @@
 //! A target that is a *procedure activation* is served through the same
 //! slot-name table: the frame's named locals are projected into the interpreter's
 //! variables, the script runs against them as a chunk of its own, and the values
-//! are read back into the frame's slots afterwards. What that cannot do is
-//! *create* a variable in the target frame — a name with no slot in the callee's
-//! table has no home to be written back to, because no op in the already-built
-//! body could address it — so a name the script assigns that the target
-//! procedure never mentions is reported rather than silently dropped.
+//! are read back into the frame's slots afterwards.
+//!
+//! ## A frame that grows a name
+//!
+//! The compiled body is not the whole of what a frame may hold. `eval {set qq
+//! 9}` in a body that never writes `qq`, `uplevel 1 {set made 1}` into a caller
+//! that never writes `made`, `upvar 1 fresh alias`, and a `dict with` key the
+//! body never spells all name a variable of that activation which no op in the
+//! already-built body can address. tclsh keeps such a name in the frame's own
+//! variable table; here it gets a **run-time slot** past the last one the
+//! compiler allocated — [`runtime_slot_alloc`] — so it is a local like any
+//! other: a later script in the same frame reads what an earlier one wrote,
+//! `info locals` lists it, and it dies with the frame rather than becoming a
+//! global that outlives the call.
+//!
+//! It costs the activation that grew one its trace eligibility, because the
+//! roster is a `Value::Array` in a slot and `slots_all_numeric` then fails —
+//! the same cost a procedure-local array or an `upvar` link already carries,
+//! and paid only from the moment the name is created.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -162,6 +176,109 @@ pub(crate) fn frame_slots(vm: &VM, frame: usize) -> Option<BodySlots> {
         None => vm.ip.checked_sub(1)?,
     };
     body_at(crate::runtime::chunk_identity(&vm.chunk), ip)
+}
+
+// ── locals the body never mentioned ──────────────────────────────────────
+
+/// The tag that marks the frame slot holding an activation's run-time local
+/// *names*. It carries a NUL, which no list a script built can start with, so
+/// the roster cannot be mistaken for a value some other mechanism stored — the
+/// same rule [`LINK_TAG`] is written by.
+const ROSTER_TAG: &str = "\u{0}roster";
+
+/// The first frame slot past the ones the compiler allocated for the body
+/// running in `frame` — where that activation's run-time locals begin.
+///
+/// `Chunk::sub_slot_names` has one entry per slot the body was lowered with
+/// (`crate::procs::slot_names_of` sizes it by `Scope::next_slot`), so its length
+/// *is* the count of slots any op in the body can address. Everything from there
+/// on is unreachable to the compiled code and free for this table.
+///
+/// `None` for a frame that is not a procedure activation — the chunk's own top
+/// level, a scope frame, one materialized after a JIT side exit. Those have no
+/// locals in the Tcl sense, so there is nothing to grow.
+fn roster_base(vm: &VM, frame: usize) -> Option<usize> {
+    let up = vm.frames.len().checked_sub(frame + 1)?;
+    vm.frames.get(frame)?.entry_ip?;
+    Some(vm.slot_names_at(up).len())
+}
+
+/// The run-time locals of the activation in `frame`, in the order they were
+/// created — which is the order `Tcl_GetVariableFullName` walks a frame's
+/// `varTablePtr` overflow in, and therefore the order `info locals` reports
+/// them after the body's own names.
+pub(crate) fn runtime_names(vm: &VM, frame: usize) -> Vec<String> {
+    let Some(base) = roster_base(vm, frame) else {
+        return Vec::new();
+    };
+    match vm.frames[frame].slots.get(base) {
+        Some(Value::Array(items)) => match items.split_first() {
+            Some((tag, names)) if to_tcl_string(tag) == ROSTER_TAG => {
+                names.iter().map(to_tcl_string).collect()
+            }
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// The slot the run-time local `name` of the activation in `frame` occupies, or
+/// `None` when that activation has never created it.
+pub(crate) fn runtime_slot(vm: &VM, frame: usize, name: &str) -> Option<u16> {
+    let base = roster_base(vm, frame)?;
+    let at = runtime_names(vm, frame).iter().position(|n| n == name)?;
+    u16::try_from(base + 1 + at).ok()
+}
+
+/// The same slot, creating it when the activation does not have the name yet.
+///
+/// A name created this way is a local of that activation for the rest of its
+/// life: it is written back into the frame, a later script in the same frame
+/// finds it, `info locals` lists it, and it dies with the frame — which is what
+/// tclsh's own `varTablePtr` gives a name a compiled body never mentioned.
+///
+/// The roster and the values live in the frame's own `slots`, past the last one
+/// the compiler allocated, so nothing has to know when the activation ends. The
+/// cost is that the frame stops being all-numeric and so stops being traceable
+/// — for the one activation that created a name this way, and only from the
+/// moment it did.
+pub(crate) fn runtime_slot_alloc(vm: &mut VM, frame: usize, name: &str) -> Option<u16> {
+    if let Some(slot) = runtime_slot(vm, frame, name) {
+        return Some(slot);
+    }
+    let base = roster_base(vm, frame)?;
+    let mut names = runtime_names(vm, frame);
+    names.push(name.to_string());
+    let at = names.len() - 1;
+    let slot = u16::try_from(base + 1 + at).ok()?;
+    let mut roster = Vec::with_capacity(names.len() + 1);
+    roster.push(Value::Str(std::sync::Arc::new(ROSTER_TAG.to_string())));
+    for n in names {
+        roster.push(Value::Str(std::sync::Arc::new(n)));
+    }
+
+    let slots = &mut vm.frames[frame].slots;
+    if slots.len() <= usize::from(slot) {
+        slots.resize(usize::from(slot) + 1, Value::Undef);
+    }
+    slots[base] = Value::Array(roster);
+    Some(slot)
+}
+
+/// `(name, value)` for every run-time local of the activation in `frame` that is
+/// set right now. An `unset` leaves the name on the roster with `Value::Undef`
+/// in its slot, which is how a body's own slots record the same thing.
+pub(crate) fn runtime_locals(vm: &VM, frame: usize) -> Vec<(String, Value)> {
+    runtime_names(vm, frame)
+        .into_iter()
+        .filter_map(|name| {
+            let slot = runtime_slot(vm, frame, &name)?;
+            match vm.frames[frame].slots.get(usize::from(slot)) {
+                Some(v) if *v != Value::Undef => Some((name, v.clone())),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 // ── the link descriptor ──────────────────────────────────────────────────
@@ -621,28 +738,37 @@ fn global_home(interp: &Shared, vm: &mut VM, name: &str) -> Result<u16, TclError
 /// exit — and `crate::runtime::current_level` counts only the ones that are, so
 /// the level has to be turned back into a frame the same way. Treating them as
 /// the same number was right only while every frame on the stack was a call.
-fn frame_home(vm: &VM, target: i64, name: &str) -> Result<Home, TclError> {
-    match frame_home_opt(vm, target, name)? {
-        Some(home) => Ok(home),
-        // A name with no slot in the callee's table has no home: no op in the
-        // already-built body could address it, so writing one would be writing
-        // into a variable that procedure can never read. tclsh creates it; here
-        // that is reported rather than silently lost.
+fn frame_home(vm: &mut VM, target: i64, name: &str) -> Result<Home, TclError> {
+    if let Some(home) = frame_home_opt(vm, target, name)? {
+        return Ok(home);
+    }
+    // A name with no slot in the compiled body gets one at run time, which is
+    // what tclsh's own frame does with a name its compiled body never mentioned.
+    // No op in the already-built body can address it — but a nested script in
+    // that frame can, and `info locals` there lists it, which is the whole of
+    // what the reference implementation gives such a name.
+    let Some(frame) = crate::runtime::frame_of_level(vm, target) else {
+        return Err(TclError::plain(format!("bad level \"{target}\"")));
+    };
+    match runtime_slot_alloc(vm, frame, name) {
+        Some(slot) => Ok(Home::Slot {
+            frame: u16::try_from(frame).map_err(|_| TclError::plain("call stack too deep"))?,
+            slot,
+        }),
         None => Err(TclError::plain(format!(
-            "\"upvar\" to the variable \"{name}\" at level {target} is not supported: the \
-             procedure running there never names it, so it has no frame slot"
+            "\"upvar\" to the variable \"{name}\" at level {target} is not supported: there is \
+             no procedure activation at that level to hold it"
         ))),
     }
 }
 
 /// [`frame_home`] with the missing-slot case handed back rather than raised.
 ///
-/// The two callers want opposite things from it. `upvar` is *asked* for one
-/// name and cannot answer with a slot that does not exist, so it reports. `dict
-/// with` is handed every key of a dictionary at once and must not refuse a
-/// record because the body ignores one of its fields, so it takes the `None` and
-/// keeps that key's value aside instead — see
-/// [`crate::assoc::dict_with_bind`].
+/// Both callers answer the `None` the same way — by growing the name a slot,
+/// [`runtime_slot_alloc`] — but they reach it differently, so the "not there"
+/// answer stays separate from the "here it is" one: `upvar` is asked for a
+/// single name and raises whatever went wrong, and `dict with` is handed every
+/// key of a dictionary at once.
 ///
 /// Everything that is not "the body never names it" — a level that is no frame,
 /// a frame whose body recorded no slot names at all — stays an error here,
@@ -694,7 +820,26 @@ pub(crate) fn dict_with_home(
         let home = Home::Global(global_home(interp, vm, &base)?);
         return Ok(Some(Link { home, elem }));
     }
-    Ok(frame_home_opt(vm, level, &base)?.map(|home| Link { home, elem }))
+    if let Some(home) = frame_home_opt(vm, level, &base)? {
+        return Ok(Some(Link { home, elem }));
+    }
+    // A key the body never wrote as a variable still becomes one — `dict with`
+    // assigns *every* key of the dictionary (`generic/tclDictObj.c:3808-3816`),
+    // and tclsh puts a name the compiled body has no slot for in the frame's own
+    // variable table. That is what a run-time slot is, and it is what makes two
+    // `dict with` commands over the same unmentioned key in one frame bind the
+    // *same* variable, as they do in tclsh: the second finds the roster entry
+    // the first created.
+    let Some(frame) = crate::runtime::frame_of_level(vm, level) else {
+        return Ok(None);
+    };
+    Ok(runtime_slot_alloc(vm, frame, &base).map(|slot| Link {
+        home: Home::Slot {
+            frame: u16::try_from(frame).unwrap_or(u16::MAX),
+            slot,
+        },
+        elem,
+    }))
 }
 
 /// [`ext::LINK_GET`]: `[name, slot]` → what the link points at.

@@ -235,18 +235,13 @@ fn unsupported_constructs_are_refused() {
         // `"uplevel" to level 1 is not supported` here. It became an answer when
         // the slot-name table landed, and `uplevel 1 {set brandnew 1}` — a *new*
         // variable in the target frame — became one when the published line's
-        // frame projection was merged in: a projection carries every name at once,
-        // so a name with no slot is simply not read back rather than refused. Both
-        // are byte-compared against tclsh in `tests/event_differential.rs`.
+        // frame projection was merged in.
         //
-        // `upvar` still refuses that name, and refuses it for a reason a
-        // projection does not have: a link is the *address* of one slot, and a
-        // name the target procedure never wrote has none. So the entry moved
-        // there.
-        (
-            "proc outer {} {inner}\nproc inner {} {upvar 1 brandnew z\nset z 1}\nouter",
-            "the procedure running there never names it",
-        ),
+        // `upvar 1 brandnew z` stood here after them, refused because a link is
+        // the *address* of one slot and a name the target procedure never wrote
+        // had none. A frame grows a slot for such a name now
+        // (`cmd_scope::runtime_slot_alloc`), so it answers too, byte-compared
+        // against tclsh in `tests/frame_differential.rs`.
         (
             "array startsearch a",
             "array startsearch is not supported yet",

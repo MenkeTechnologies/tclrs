@@ -26,8 +26,31 @@ const PROGRAMS: &[&str] = &[
     // A write reaches the procedure's own local, not a global of the same name.
     "proc f {} {set x 1\neval {set x 2}\nreturn $x}\nputs [f]",
     "set x outer\nproc f {} {set x inner\neval {set x changed}\nreturn $x}\nputs [f]\nputs $x",
-    // A variable the nested script creates becomes a local of the procedure.
+    // A variable the nested script creates becomes a local of the procedure —
+    // whether or not the body mentions it anywhere, which is the case that has
+    // no slot for it and had to grow one at run time. The `info exists ::…`
+    // lines are the half a script run against the globals would fail: it leaves
+    // the name behind as a global of the same value.
     "proc f {} {eval {set made 7}\nreturn $made}\nputs [f]",
+    "proc f {} {eval {set qq 9}}\nf\nputs [info exists ::qq]",
+    "proc f {} {set keep 1\neval {set bb 8}}\nf\nputs [info exists ::bb]",
+    "proc f {} {eval {set only 1}}\nf\nputs [catch {set only} m]:$m",
+    // ...and it is still there for the next script in the same frame.
+    "proc f {} {eval {set rr 7}\nreturn [eval {set rr}]}\nputs [f]",
+    "proc f {} {set keep 1\neval {set bb 8}\nreturn [eval {set bb}]}\nputs [f]",
+    // ...where `info locals` lists it beside the body's own.
+    "proc f {} {eval {set dd 1}\nreturn [lsort [info locals]]}\nputs [f]",
+    "proc f {} {set keep 1\neval {set cc 3}\nreturn [lsort [info locals]]}\nputs [f]",
+    "proc f {} {set keep 1\neval {set cc 3}\nreturn [lsort [info vars]]}\nputs [f]",
+    // ...and an `unset` of it takes it away again.
+    "proc f {} {set keep 1\neval {set dd 3}\neval {unset dd}\nreturn [eval {info exists dd}]}\nputs [f]",
+    "proc f {} {eval {set ee 3}\neval {unset ee}\nreturn [lsort [info locals]]}\nputs [f]",
+    // It belongs to the activation, not to the procedure: a second call does not
+    // find what the first one made.
+    "proc f {n} {if {$n} {eval {set seen 1}}\nreturn [eval {info exists seen}]}\nputs [f 1][f 0]",
+    // A body with no locals of its own still reaches a global written the one
+    // way a procedure may reach one without declaring it.
+    "set g 3\nproc f {} {return [subst {g=$::g}]}\nputs [f]",
     // A read sees the procedure's locals.
     "proc f {} {set x 5\nreturn [eval {expr {$x * 2}}]}\nputs [f]",
     "proc f {a b} {return [eval {expr {$a + $b}}]}\nputs [f 20 22]",
@@ -54,9 +77,27 @@ const PROGRAMS: &[&str] = &[
     // ── uplevel: which level a script runs in ──
     "proc a {} {set caller 99\nb}\nproc b {} {return [uplevel 1 {set caller}]}\nputs [a]",
     "proc a {} {set w 1\nb\nreturn $w}\nproc b {} {uplevel 1 {set w 42}}\nputs [a]",
-    // A variable the script creates is created in the level it ran in.
+    // A variable the script creates is created in the level it ran in — whether
+    // or not the procedure running there ever writes the name, which is the
+    // shape that had no slot to be written into.
     "proc a {} {b\nreturn [set made]}\nproc b {} {uplevel 1 {set made 1}}\nputs [a]",
     "proc a {} {set l {}\nb\nreturn $l}\nproc b {} {uplevel 1 {lappend l x\nlappend l y}}\nputs [a]",
+    "proc a {} {b\nreturn [lsort [info locals]]}\nproc b {} {uplevel 1 {set made 1}}\nputs [a]",
+    "proc a {} {b\nreturn [eval {set grown}]}\nproc b {} {uplevel 1 {set grown 42}}\nputs [a]",
+    "proc a {} {set keep 1\nb\nreturn [eval {set g2}]}\nproc b {} {uplevel 1 {set g2 7}}\nputs [a]",
+    // ── upvar to a name the target procedure never writes ──
+    //
+    // A link is the address of one frame slot, and such a name has none until
+    // the frame grows one. That the *caller* then sees what the link wrote is
+    // the half a slot that went nowhere would fail.
+    "proc a {} {b\nreturn [eval {set v}]}\nproc b {} {upvar 1 v z\nset z 5}\nputs [a]",
+    "proc a {} {b\nreturn [lsort [info locals]]}\nproc b {} {upvar 1 fresh alias\nset alias 3}\nputs [a]",
+    "proc a {} {set n grownup\nb $n\nreturn [eval {set grownup}]}\nproc b {nm} {upvar 1 $nm z\nset z 11}\nputs [a]",
+    // A link that is never written creates nothing, in either frame.
+    "proc a {} {b\nreturn [eval {info exists ghost}]}\nproc b {} {upvar 1 ghost q\nreturn [info exists q]}\nputs [a]",
+    // The name the link made is the caller's local and dies with the call.
+    "proc a {} {b}\nproc b {} {upvar 1 late z\nset z 1}\na\nputs [info exists ::late]",
+    "proc a {} {b\nreturn [eval {array get arr}]}\nproc b {} {upvar 1 arr(k) e\nset e 7}\nputs [a]",
     // The level's own locals are what is visible — not the caller's, which are
     // one level further in.
     "proc a {} {set mine 1\nb}\nproc b {} {set mine 2\nreturn [uplevel 1 {set mine}]}\nputs [a]",
@@ -253,31 +294,26 @@ fn a_yield_inside_a_nested_script_is_refused_and_says_why() {
 /// `upvar` still refuses, which is a name the target procedure never wrote — a
 /// link is the address of one frame slot, and such a name has none — and, for the
 /// lambda, to what any procedure body refuses.
+///
+/// The `upvar` entry that replaced them — a name the target procedure never
+/// wrote, which had no frame slot to be the address of — has since gone the same
+/// way: a frame grows a slot for such a name when a script asks for one, and the
+/// programs above compare the result against tclsh.
 #[test]
 fn what_the_frame_commands_do_not_do_yet() {
-    for (src, expected) in [
-        // A caller's variable the caller itself never names.
-        (
-            "proc f {} {upvar 1 neverused v\nset v 2}\nproc g {} {f}\ng",
-            "the procedure running there never names it",
-        ),
-        // A lambda's body is a procedure body, so what a body refuses it
-        // refuses. `upvar 1 x y` stood here while `upvar` was absent; from a
-        // lambda, level 1 is the chunk the synthesised procedure was called from
-        // and that level is name-addressed, so `upvar` reaches it. What a lambda
-        // body refuses is what any body refuses — here, a `namespace eval` whose
-        // unqualified names would become frame slots.
-        (
-            "puts [apply {{} {namespace eval foo {set x 1}}}]",
-            "\"namespace eval\" inside a procedure is not supported yet",
-        ),
-    ] {
-        let err = tclrs::eval(src).expect_err(&format!("{src:?} should fail"));
-        assert!(
-            err.contains(expected),
-            "{src:?}: expected an error mentioning {expected:?}, got {err:?}"
-        );
-    }
+    // A lambda's body is a procedure body, so what a body refuses it refuses.
+    // `upvar 1 x y` stood here while `upvar` was absent; from a lambda, level 1
+    // is the chunk the synthesised procedure was called from and that level is
+    // name-addressed, so `upvar` reaches it. What a lambda body refuses is what
+    // any body refuses — here, a `namespace eval` whose unqualified names would
+    // become frame slots.
+    let src = "puts [apply {{} {namespace eval foo {set x 1}}}]";
+    let expected = "\"namespace eval\" inside a procedure is not supported yet";
+    let err = tclrs::eval(src).expect_err(&format!("{src:?} should fail"));
+    assert!(
+        err.contains(expected),
+        "{src:?}: expected an error mentioning {expected:?}, got {err:?}"
+    );
 
     // A `break` in a dynamically evaluated script carries its code out to the
     // level the script ran in, which is what a `catch` around it reports and

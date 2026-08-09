@@ -744,18 +744,43 @@ approximated, and nothing is silently mis-run.
   real internal state is the last one that should sometimes report a plausible
   one, so it stays refused.
 
-  What it would take is therefore a *representation* change, not a formatting
-  one, and the change is not local to this crate. A dict value here is a
-  `Value::Str` that `crate::assoc::Dict::parse` reads and `to_list` writes back;
-  the `Dict` itself is a transient parse with no identity, so there is no object
-  to hang a bucket count and a rebuild count on. Giving one identity means a new
-  `fusevm::Value` variant, and that type belongs to fusevm — a crate this
-  frontend shares with every other one built on it, so the cost of `dict info`
-  would be paid by all of them. The same reasoning that keeps an `upvar` link a
-  tagged `Value::Array` rather than a variant of its own (`src/cmd_scope.rs:170`)
-  applies here and points the same way. It stays refused until a dict needs
-  retained state for some *other* reason; on the day one does, this answer comes
-  with it.
+  **What it would take is not a fusevm change.** This entry used to say a dict
+  with an identity means a new `fusevm::Value` variant, and that is wrong:
+  `Value::Obj(u32)` is already there, is already identity-comparable, and is
+  already how several sibling frontends carry a heap object the VM never looks
+  inside. Nothing in the interpreter, the Cranelift JIT or the AOT lowerer reads
+  an `Obj`, and none of the ops this frontend emits stringify one behind its
+  back, so a dict could be a handle into a heap this crate owns without any other
+  frontend paying for it. (Two costs would be local and real: a builtin's
+  `dispatch` answers a `String` today and would have to be able to answer a
+  handle, and a handle in `chunk.constants` would be a dangling index in the next
+  process — the AOT and JIT disk caches serialise `Value` — so a dict must never
+  become a compile-time constant, or must carry a heap image the way elisprs
+  does.)
+
+  **What it really needs is `Tcl_IsShared`.** The bucket count is not a function
+  of the value *or* of the object's history alone: it is a function of the
+  object's history and of whether each write found the object shared. Measured
+  against tclsh 9.0.4, over the 16-bucket dictionary above:
+
+      set e $d;    dict info $e          →  2 entries, 16 buckets   (same object)
+      dict set e zz 1; dict unset e zz   →  2 entries,  4 buckets   (shared: duplicated)
+      dict info $d                       →  2 entries, 16 buckets   (untouched)
+      dict set d zz 1; dict unset d zz   →  2 entries, 16 buckets   (unshared: in place)
+      set L [list $d]                    →  (a list now holds it)
+      dict set d q 1;  dict unset d q    →  2 entries,  4 buckets   (shared by the list)
+
+  `DupDictInternalRep` builds the copy's table by inserting its entries, which is
+  why a duplicate reports the natural count. A handle heap gives the identity
+  those lines need but not the sharing: the last pair is a reference held by a
+  *list*, and a list here is a `String` (`crate::list::split` / `join`), so the
+  handle is not in it and nothing has counted. The same goes for an array element
+  and for a dict nested in another dict. Answering `dict info` exactly therefore
+  needs tclrs's own aggregate types to hold `Value`s rather than strings — its
+  representation change, not fusevm's — and a copy-on-write rule keyed on that
+  count, which is `Tcl_Obj` in full. Until then a handle heap would move the
+  wrongness rather than remove it, so the refusal stands for the same reason it
+  always did.
 - **`regexp -about`.** The group count is easy; the second element is not. It is
   the reference engine's own compile-time telemetry — `REG_UUNPORT`,
   `REG_UNONPOSIX`, `REG_ULOCALE`, `REG_UEMPTYMATCH`, `REG_UBOUNDS` and the rest
@@ -933,53 +958,39 @@ the measurement behind it.
   `upvar #0` bound into the frame are exact, and are listed whether or not the
   variable they link to is set, as tclsh lists them.
 
-  A `dict with` inside a procedure is the one command that makes locals the
-  compiler never reached, so its keys are the other half of this: `proc p {}
-  {set d {a 1 b 2}; dict with d {puts [lsort [info locals]]}}` answers `d` here
-  and `a b d` in tclsh 9.0.4 (measured). The values are all there and all written
-  back — the entry below says what is and is not reachable — but a key the body
-  never spells has no slot, and `info locals` is a list of slots.
-- **A name a procedure body never spells is a global when a nested script sets
-  it.** `proc p {} {eval {set qq 9}}` leaves `::qq` set here and leaves a *local*
-  `qq` in tclsh 9.0.4, which vanishes with the frame; `info locals` is empty here
-  and `qq` there (measured, both spellings). Same for `uplevel` from a callee:
-  `proc poke {} {uplevel 1 {set tt 42}}` writes `::tt`. A nested script projects
-  the frame's *named* slots, so a name that has one is exact — `proc p {} {set qq
-  1; eval {set qq 9}}` answers 9 from the slot, matching tclsh — and only a name
-  that appears nowhere in the body as a literal variable word falls through to
-  the globals. The `upvar` spelling of the same reach is not silent: `upvar 1 tt
-  v` refuses with "the procedure running there never names it, so it has no frame
-  slot". Fixing it needs what the "procedures across an `eval`" entry needs, a
-  frame that can grow a name at run time.
-- **`dict with` and a key the body never names.** The write-back is exact for
-  every key the body can reach, and the previous entry is why that is not the
-  same sentence as "every key". A key whose name the body never spells has no
-  frame slot, so it is bound to nothing and its value is carried in the command's
-  own record instead; the write-back puts it back unchanged. That is right for
-  every body that cannot reach the name, and no compiled op in a body that never
-  spells a name can reach it — a body that deletes the key from the dictionary,
-  replaces the whole dictionary, or writes that key *through* the dictionary
-  still ends with what tclsh ends with (`tests/array_differential.rs`). Two
-  shapes reach such a key anyway, and both are measured:
+  The names an activation grew *after* it was compiled are exact and are listed
+  beside them, so the `dict with` half of this is gone: `proc p {} {set d {a 1 b
+  2}; dict with d {puts [lsort [info locals]]}}` answers `a b d` in both, as does
+  `proc p {} {eval {set v 1}; info locals}`. What is not exact is `info locals`
+  asked *inside* a nested script — `proc p {} {eval {set v 1}; eval {info
+  locals}}` is `v` in tclsh 9.0.4 and empty here. The nested script is a chunk of
+  its own and is compiled at the script's own level, where `info locals`'
+  candidate list is empty; the frame it is projected into is not a fact the
+  compiler that lowers it has. Answering it needs the projection to reach the
+  compiler, not just the interpreter's variable table.
+- **A `::`-qualified global is not visible to a script running in a projected
+  frame.** `proc p {} {set z 1; return [subst {g=$::g}]}` refuses with `can't
+  read "::g": no such variable` where tclsh answers `g=3`; `eval {set ::g}` is
+  the same wall. A frame projection replaces the interpreter's variable table
+  with the frame's own for the duration, which is what makes a *bare* read of an
+  undeclared global refuse exactly as tclsh refuses it — and the two spellings
+  cannot be told apart, because a chunk's key for `::g` and for a bare `g` are
+  both `g` (`crate::cmd_namespace::store_key` strips the prefix). Serving both
+  needs the qualified spelling to survive into the chunk's name table, which is a
+  change to how a global is keyed rather than to the projection.
 
-  * **A nested script.** `eval {set k v}` or `uplevel` writes the global rather
-    than the binding, per the entry above, so the write is not seen and the key
-    keeps its old value where tclsh takes the new one.
-  * **A second `dict with` in the same frame over the same unnamed key.** In
-    tclsh both bindings assign the one local, so the inner one's value is what
-    the outer one writes back. Here neither has a cell to share, so each carries
-    its own copy and the outer write-back wins:
-
-        proc p {} {set d {q 1}; dict with d {dict set d q 5; dict with d {}}; return $d}
-        p    →  q 5 in tclsh 9.0.4, q 1 here
-
-    Naming the key anywhere in the body — `dict with d {set _ $q; …}` — gives it
-    a slot and the two agree. Closing it needs a frame that can grow a name at
-    run time, which is the same thing the entry above needs.
-
-  At a script's own level there is no gap at all — every key is a global,
-  interned when the command runs, so both shapes reach the same cell the binding
-  did and both agree with tclsh.
+  A procedure whose body declares no local of its own is *not* projected, for
+  this reason: it has nothing to project, and keeping the interpreter's table in
+  place is what keeps `proc p {} {return [subst {g=$::g}]}` answering. What such
+  an activation still gets is the run-time locals below, so a name its script
+  creates does not leak out of it (`crate::runtime::in_bare_frame`).
+- **`upvar` to an array element does not create the array.** `proc i {} {upvar 1
+  arr(k) e}` leaves `info exists arr` at 0 in the frame the link points into,
+  where tclsh 9.0.4 answers 1 — `Tcl_ObjLookupVar` creates the array part of an
+  element name even when nothing is ever assigned through the link. The scalar
+  spelling agrees with tclsh: `upvar 1 ghost q` creates nothing in either. Every
+  level behaves the same way here, the global one included, and an element that
+  *is* assigned through the link is exact.
 - **`info commands`, `info procs` and `info globals` do not list a script
   library.** tclsh answers with `auto_execok`, `auto_load`, `unknown` and the
   rest, and with the `auto_path` global, because `init.tcl` defined them. There

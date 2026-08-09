@@ -1666,6 +1666,21 @@ fn info_names_op(interp: &Shared, vm: &mut VM, which: u8) -> Result<(), TclError
                     Err(_) => false,
                 })
                 .map(|(name, _)| name.clone())
+                // The compiler can only offer the names the body mentions. A
+                // local this activation grew afterwards — an `eval` that
+                // assigned a name, a `dict with` key the body never wrote — is
+                // just as much one of its variables, and it is only knowable
+                // from the frame.
+                .chain(
+                    frame_of_current_level(vm)
+                        .map(|frame| {
+                            crate::cmd_scope::runtime_locals(vm, frame)
+                                .into_iter()
+                                .map(|(name, _)| name)
+                                .collect::<Vec<String>>()
+                        })
+                        .unwrap_or_default(),
+                )
                 .collect()
         }
         // globals and vars: both halves of where a global lives mid-run — the
@@ -1928,9 +1943,22 @@ pub(crate) fn in_frame<T>(
         // A frame with no name for its slots — the base frame, a scope frame, or
         // one materialized after a JIT side exit — cannot be projected, so the
         // script runs against the globals, as an ordinary `eval` does.
-        Some(_) if names.is_empty() => {
+        //
+        // A *procedure activation* whose body happens to declare no local at all
+        // lands here too, and it must not simply run against the globals: what
+        // it assigns is a local of that activation, and leaving it in the
+        // interpreter's table is what let `proc p {} {eval {set qq 9}}` set
+        // `::qq` for good, where tclsh leaves no global behind at all. It gets
+        // [`in_bare_frame`], which is the projection reduced to the half a frame
+        // with no named slots still has: the locals it grew at run time.
+        Some(index) if names.is_empty() => {
+            let activation = vm.frames[index].entry_ip.is_some();
             flush(&vm.chunk, interp, &vm.globals);
-            let result = body(interp);
+            let result = if activation {
+                in_bare_frame(interp, vm, index, body)
+            } else {
+                body(interp)
+            };
             vm.globals = seed(&vm.chunk, interp);
             return result;
         }
@@ -1965,6 +1993,13 @@ pub(crate) fn in_frame<T>(
             }
         }
     }
+    // The locals this activation grew after it was compiled — a name an earlier
+    // script in the same frame assigned that the body itself never mentions.
+    // They are as much this frame's variables as its slots are, so the script
+    // sees them by the same rule.
+    for (name, value) in crate::cmd_scope::runtime_locals(vm, frame) {
+        view.insert(name, value);
+    }
     interp.lock().expect("interpreter lock").globals = view;
 
     let result = body(interp);
@@ -1981,6 +2016,12 @@ pub(crate) fn in_frame<T>(
         }
         slots[slot] = value;
     }
+    // A name the script left behind that is neither one of the body's slots nor
+    // one of the globals it declared is a *new* local of this activation, which
+    // is what `set` inside an `eval` makes in tclsh.
+    harvest_locals(vm, frame, &after, |name| {
+        !names.iter().any(|n| n == name) && !declared.iter().any(|n| n == name)
+    });
     let mut outer = outer;
     for name in &declared {
         match after.get(name) {
@@ -1991,6 +2032,93 @@ pub(crate) fn in_frame<T>(
     interp.lock().expect("interpreter lock").globals = outer;
     vm.globals = seed(&vm.chunk, interp);
     result
+}
+
+/// What a procedure activation the compiler recorded *no* slot names for gets
+/// instead of the projection.
+///
+/// There is nothing to project — the body declares no local, so the frame has no
+/// named slot — but there is still something to keep: what the script *creates*
+/// belongs to that activation and must not outlive it. tclsh makes it a local of
+/// the frame's own variable table; here it becomes a run-time slot, by the same
+/// rule [`in_frame`] harvests one.
+///
+/// The interpreter's table is left in place rather than replaced, which is the
+/// difference from the projection and the reason this path exists at all: a
+/// `::`-qualified read inside the script — `subst {g=$::g}` in a body with no
+/// locals — names the interpreter's variable, and the projection cannot serve it
+/// because a chunk's name for `::g` and for a bare `g` are the same key
+/// (`crate::cmd_namespace::store_key`). Keeping the table is what keeps that
+/// working; the harvest below is what stops the script's *own* names leaking
+/// into it.
+fn in_bare_frame<T>(
+    interp: &Shared,
+    vm: &mut VM,
+    frame: usize,
+    body: impl FnOnce(&Shared) -> Result<T, TclError>,
+) -> Result<T, TclError> {
+    let locals = crate::cmd_scope::runtime_locals(vm, frame);
+    let before: std::collections::HashSet<String>;
+    let mut shadowed: HashMap<String, Value> = HashMap::new();
+    {
+        let mut state = interp.lock().expect("interpreter lock");
+        before = state.globals.keys().cloned().collect();
+        // A local this activation already grew goes in over whatever global
+        // wears its name, which is put back below.
+        for (name, value) in locals {
+            if let Some(old) = state.globals.insert(name.clone(), value) {
+                shadowed.insert(name, old);
+            }
+        }
+    }
+
+    let result = body(interp);
+
+    let mut after = std::mem::take(&mut interp.lock().expect("interpreter lock").globals);
+    let taken = harvest_locals(vm, frame, &after, |name| !before.contains(name));
+    for name in taken {
+        after.remove(&name);
+        if let Some(old) = shadowed.remove(&name) {
+            after.insert(name, old);
+        }
+    }
+    interp.lock().expect("interpreter lock").globals = after;
+    result
+}
+
+/// Move the names a script left behind that belong to the activation in `frame`
+/// into that frame's run-time slots, and answer with the names it claimed.
+///
+/// `grew` decides which of `after`'s names are the frame's rather than the
+/// interpreter's; a name the frame *already* grew is always its own, whatever
+/// `grew` says about it. An existing run-time local keeps its position — a name
+/// must not move between slots — and the ones this script invented are appended
+/// in sorted order, because a `HashMap`'s iteration order is not an order
+/// anything should inherit. A name that is gone from `after` was unset, and its
+/// slot is cleared rather than removed, exactly as a body's own slot records an
+/// `unset`.
+fn harvest_locals(
+    vm: &mut VM,
+    frame: usize,
+    after: &HashMap<String, Value>,
+    grew: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let known = crate::cmd_scope::runtime_names(vm, frame);
+    let mut fresh: Vec<String> = after
+        .keys()
+        .filter(|name| !known.iter().any(|n| n == *name) && grew(name))
+        .cloned()
+        .collect();
+    fresh.sort_unstable();
+    let taken: Vec<String> = known.into_iter().chain(fresh).collect();
+    for name in &taken {
+        let Some(slot) = crate::cmd_scope::runtime_slot_alloc(vm, frame, name) else {
+            continue;
+        };
+        let value = after.get(name).cloned().unwrap_or(Value::Undef);
+        vm.frames[frame].slots[usize::from(slot)] = value;
+    }
+    taken
 }
 
 /// `apply lambdaExpr ?arg …?`: `[lambda, arg …]`.
@@ -4091,6 +4219,12 @@ pub(crate) fn frame_of_level(vm: &VM, level: i64) -> Option<usize> {
     let out = usize::try_from(ups.len() as i64 - level).ok()?;
     let up = *ups.get(out)?;
     vm.frames.len().checked_sub(up + 1)
+}
+
+/// The VM frame of the innermost procedure activation, or `None` at the
+/// script's own level, where there is no frame whose locals a name could be.
+pub(crate) fn frame_of_current_level(vm: &VM) -> Option<usize> {
+    frame_of_level(vm, current_level(vm))
 }
 
 /// The formals of `name` as the running chunk declared it, or `None` when the
