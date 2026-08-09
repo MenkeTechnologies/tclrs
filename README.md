@@ -67,7 +67,9 @@ to `fusevm` bytecode, the same bytecode sixteen other language frontends emit.
   operators, and the short-circuiting `&&` / `||` lower to native fusevm ops.
   Only the operators whose Tcl meaning differs from the VM's generic one — `/`,
   `%`, `**` — take a frontend extension op, and only operands the VM cannot
-  compute on natively (mostly strings) take the numeric hook.
+  compute on natively (mostly strings), plus the one pair it could compute on but
+  must not — an integer past 2^53 against a double, which Tcl orders exactly —
+  take the numeric hook.
 - **One driver for everything** — procedure calls, `catch` unwinding, coroutine
   switching and nested `eval` all go through a single driver that owns the
   interpreter's variables and installs every VM hook in one place.
@@ -855,7 +857,7 @@ The execution path mirrors how `zshrs` hosts zsh and `groovyrs` hosts Groovy:
 ```
 Tcl script → parser (Script/Command/Word) → fusevm bytecode → Interp → Machine → fusevm VM
                                                                           │
-                                                     numeric hook (string operands, overflow)
+                                                     numeric hook (string operands, overflow, exact integer-vs-double order)
                                                      extension ops (/ % ** floored, puts, string compare, …)
                                                      enable_tracing_jit
 ```
@@ -866,7 +868,7 @@ Tcl script → parser (Script/Command/Word) → fusevm bytecode → Interp → M
 | **`Interp`** | The variables of a session, keyed by name, plus the source-keyed chunk cache. A chunk interns its own name table, so a slot vector cannot cross evaluations; the map is the authority and the vector is projected out of it on entry and read back into it on exit. |
 | **`Machine`** | One evaluation. It switches coroutine contexts, unwinds `catch`, services the requests coroutine ops raise, and moves the global slot vector between the VMs of one chunk. Every one of those works the same way: an op stashes something in a cell and halts, and the driver reads the cell after `run()` returns. |
 | **One install point** | The output sink, the numeric hook, the extension dispatch and `enable_tracing_jit` are installed in exactly one function, so the main VM, a coroutine's VM, a nested `eval`'s VM and an ahead-of-time run all behave alike. |
-| **Numeric hook** | Catches operands the VM cannot compute on natively. An operand that parses as a number is one (including the `0x` / `0o` / `0b` / `0d` radix prefixes and `_` as numeric whitespace); comparisons fall back to string order when it does not; arithmetic on a non-number is an error. An integer past `i64` is where the hook earns its keep: fusevm's checked arithmetic hands the operands over on overflow, the hook computes the exact answer as a `BigInt` and returns it as its canonical decimal, and the fast path stays `i64` in registers. |
+| **Numeric hook** | Catches operands the VM cannot compute on natively. An operand that parses as a number is one (including the `0x` / `0o` / `0b` / `0d` radix prefixes and `_` as numeric whitespace); comparisons fall back to string order when it does not; arithmetic on a non-number is an error. An integer past `i64` is where the hook earns its keep: fusevm's checked arithmetic hands the operands over on overflow, the hook computes the exact answer as a `BigInt` and returns it as its canonical decimal, and the fast path stays `i64` in registers. The hook also owns one comparison the VM could answer itself: an integer past 2^53 against a double. Reading the integer as an `f64` lands on a neighbouring value, so `expr {3**34 == double(3**34)}` would be 1 where tclsh says 0 — Tcl orders an integer against a double exactly, at every width, even though its *arithmetic* on the same pair promotes to a double. Only the frontend knows which of the two rules its language wants, so fusevm asks. |
 | **Extension ops** | `/` and `%` floor toward negative infinity (`-57 / 10` is `-6`, `-57 % 10` is `3`), `**` stays integral for integral operands *including a negative exponent* (`2 ** -1` is `0`), and a boolean op applies Tcl's rule for a condition, which is not the VM's truthiness. Tcl's *string* form is a frontend op wherever one is needed — `puts`, the always-string comparisons, word concatenation — because the VM's own stringification is not Tcl's for a double or a boolean, and none of those ops is JIT-eligible in fusevm anyway, so owning them costs no tier. An `expr` result is **not** converted: it stays the value the VM computed, which is what keeps an arithmetic loop free of extension ops. The list, associative and string commands are extension ops too. |
 | **No object heap** | Tcl's value model needs none on top of fusevm's: strings, integers and floats map onto `Value` directly. |
 

@@ -7,7 +7,9 @@
 //! * the **numeric hook** catches operands the VM cannot compute on natively —
 //!   strings, mostly — and applies Tcl's rules: an operand that parses as a
 //!   number is one, comparisons fall back to string order when it does not, and
-//!   arithmetic on a non-number is an error;
+//!   arithmetic on a non-number is an error. It also catches the one pair the
+//!   VM *could* compute on but must not: an integer past 2^53 compared against
+//!   a double, which Tcl orders exactly and a machine `f64` cannot;
 //! * the **extension handler** implements the operators whose Tcl meaning
 //!   differs from the VM's generic one: `/` and `%` floor toward negative
 //!   infinity, `**` stays integral for integral operands.
@@ -3018,9 +3020,10 @@ pub(crate) enum Num {
     ///
     /// It is reached only by a spelling that does not fit or by an operation
     /// that overflowed: the VM computes on `i64` in registers and hands the
-    /// frontend the operands only when its checked arithmetic fails, so nothing
-    /// on a hot path ever builds one (`fusevm`'s `NumericHook`, and
-    /// [`numeric`]).
+    /// frontend the operands only when its checked arithmetic fails, or when a
+    /// comparison of two numbers it holds natively would have to round to
+    /// answer. Neither happens on a hot path, so an ordinary loop never builds
+    /// one (`fusevm`'s `NumericHook`, and [`numeric`]).
     Big(BigInt),
 }
 
@@ -3048,14 +3051,27 @@ impl Num {
     fn is_big(&self) -> bool {
         matches!(self, Num::Big(_))
     }
+
+    /// Whether this is an integer of any width, as opposed to a double.
+    ///
+    /// The distinction that matters for ordering: a pair with an integer on
+    /// either side is ordered exactly, and only a pair of two doubles is
+    /// ordered as doubles. `is_big` is the wrong question there — an `i64`
+    /// past 2^53 is no more representable as a double than a bignum is, and
+    /// `expr {3**34 == double(3**34)}` is 0 in tclsh for exactly that reason.
+    fn is_integral(&self) -> bool {
+        matches!(self, Num::Int(_) | Num::Big(_))
+    }
 }
 
-/// Order two numbers exactly when at least one is wider than an `i64`.
+/// Order two numbers exactly, for any pair with an integer on either side.
 ///
-/// Going through `f64` would be wrong in both directions: it rounds a bignum to
-/// the nearest double, which makes distinct integers compare equal, and it
-/// cannot represent one larger than `f64::MAX` at all. `None` only for a NaN,
-/// which has no ordering.
+/// Going through `f64` would be wrong in both directions: it rounds an integer
+/// past 2^53 to the nearest double, which makes distinct integers compare
+/// equal, and it cannot represent one larger than `f64::MAX` at all. Width is
+/// not the test — `3**34` fits an `i64` and still rounds. `None` only for a
+/// NaN, which has no ordering, and for a pair of two doubles, which has no
+/// integer to compare against and belongs on the `f64` path.
 pub(crate) fn big_cmp(p: &Num, q: &Num) -> Option<std::cmp::Ordering> {
     match (p, q) {
         (Num::Float(f), _) | (_, Num::Float(f)) if f.is_nan() => None,
@@ -3126,9 +3142,9 @@ pub(crate) fn tcl_num(v: &Value) -> Result<Num, NotNumeric> {
 ///
 /// Only comparison uses this, and an integer of any width now parses exactly
 /// through [`parse_number`], so the fallback is reached only by a spelling
-/// `tcl_num` rejects outright. Ordering a bignum goes through [`big_cmp`]
-/// instead, which is exact — the nearest double would make distinct integers
-/// compare equal.
+/// `tcl_num` rejects outright. Ordering a pair with an integer on either side
+/// goes through [`big_cmp`] instead, which is exact — the nearest double would
+/// make distinct integers compare equal.
 fn approx_num(v: &Value) -> Option<Num> {
     if let Ok(n) = tcl_num(v) {
         return Some(n);
@@ -3391,8 +3407,6 @@ fn incr_operand(text: &str) -> Result<Num, String> {
     }
 }
 
-/// The numeric hook: called when an operand is not something the VM can
-/// compute on natively, or when an integer operation overflows.
 /// `incr`'s own wording for an operand that is not an integer.
 ///
 /// `incr` takes an integer, so it names the value rather than the operator, and
@@ -3425,6 +3439,23 @@ fn incr_operand_error(a: &Value, b: &Value) -> Option<String> {
     None
 }
 
+/// The numeric hook: fusevm calls this instead of answering an operation
+/// itself. Three things bring it here, and only the first two are about an
+/// operand the VM cannot use:
+///
+/// * an operand that is not a native number — a string, mostly — which Tcl
+///   reads as a number when it parses as one and as text when it does not;
+/// * an integer operation whose result left `i64`, which in Tcl 9 is a
+///   promotion to arbitrary precision rather than an error;
+/// * a *comparison* of two numbers the VM could compare but would have to
+///   round to do it — an integer past 2^53 against a double. Only the
+///   frontend knows whether its language wants the rounded answer; Tcl does
+///   not, so this orders such a pair exactly (see [`big_cmp`]).
+///
+/// The third is a comparison rule and not an arithmetic one. Tcl's arithmetic
+/// on the same pair *does* promote the integer to a double —
+/// `expr {3**34 - double(3**34)}` is 0.0 in tclsh 9.0.4, not the exact 1 —
+/// and the arms below keep it that way.
 fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
     // Comparisons prefer numbers but fall back to string order, which is what
     // makes `expr {"10" < "9"}` false and `expr {10 < 9}` also false while
@@ -3436,12 +3467,22 @@ fn numeric(op: NumOp, a: &Value, b: &Value) -> Result<Value, String> {
     if cmp {
         let ordering = match (approx_num(a), approx_num(b)) {
             (Some(Num::Int(i)), Some(Num::Int(j))) => i.cmp(&j),
-            // A bignum on either side orders exactly, never through a double.
-            // The difference is observable: `99999999999999999999 < 1e20` is
-            // true and `== 1e20` is false, though both sides are the same
-            // double once converted — while `1e20 == 100000000000000000000` is
-            // true, because that one really is the same integer.
-            (Some(p), Some(q)) if p.is_big() || q.is_big() => match big_cmp(&p, &q) {
+            // An integer on either side orders exactly, never through a
+            // double. The difference is observable: `99999999999999999999 <
+            // 1e20` is true and `== 1e20` is false, though both sides are the
+            // same double once converted — while `1e20 ==
+            // 100000000000000000000` is true, because that one really is the
+            // same integer.
+            //
+            // Width is not what decides it. An `i64` past 2^53 rounds on the
+            // way to a double just as a bignum does, so `3**34` and
+            // `double(3**34)` are one apart and tclsh 9.0.4 answers 0 for `==`
+            // and 1 for `>`. Reading either through an `f64` first would make
+            // them the same value and answer both the other way. Two doubles
+            // fall through to the arm below, which is where they belong: they
+            // are already the values being compared, and `big_cmp` cannot
+            // order a pair with no integer in it.
+            (Some(p), Some(q)) if p.is_integral() || q.is_integral() => match big_cmp(&p, &q) {
                 Some(ordering) => ordering,
                 None => return Ok(Value::Int(matches!(op, NumOp::Ne) as i64)),
             },
@@ -4468,5 +4509,123 @@ pub fn format_double(f: f64) -> String {
         plain
     } else {
         format!("{plain}.0")
+    }
+}
+
+#[cfg(test)]
+mod numeric_hook_tests {
+    use super::*;
+
+    /// 3^34, the smallest power of three past 2^53, and the double it rounds
+    /// to. `L` and its own `double()` image are one apart, so every ordered
+    /// comparison between them has an answer that going through an `f64`
+    /// cannot give: the conversion makes them the same bits.
+    const L: i64 = 16_677_181_699_666_569;
+
+    fn truth(op: NumOp, a: Value, b: Value) -> i64 {
+        match numeric(op, &a, &b) {
+            Ok(Value::Int(i)) => i,
+            other => panic!("{op:?} answered {other:?}"),
+        }
+    }
+
+    /// Measured against tclsh 9.0.4: `expr {$L == double($L)}` is 0 and
+    /// `expr {$L > double($L)}` is 1. Tcl orders an integer against a double
+    /// exactly, whatever the integer's width — the rounding that arithmetic
+    /// does is not a rule comparison shares.
+    #[test]
+    fn an_integer_past_two_to_the_fifty_third_orders_exactly_against_its_double() {
+        let (int, double) = (Value::Int(L), Value::Float(L as f64));
+        assert_eq!(double.clone(), Value::Float(16_677_181_699_666_568.0));
+
+        for (op, want) in [
+            (NumOp::Eq, 0),
+            (NumOp::Ne, 1),
+            (NumOp::Lt, 0),
+            (NumOp::Gt, 1),
+            (NumOp::Le, 0),
+            (NumOp::Ge, 1),
+        ] {
+            assert_eq!(truth(op, int.clone(), double.clone()), want, "{op:?} L,D");
+        }
+        // The mirrored pair, which must give the mirrored answer rather than
+        // whichever side happened to be tested.
+        for (op, want) in [
+            (NumOp::Eq, 0),
+            (NumOp::Ne, 1),
+            (NumOp::Lt, 1),
+            (NumOp::Gt, 0),
+            (NumOp::Le, 1),
+            (NumOp::Ge, 0),
+        ] {
+            assert_eq!(truth(op, double.clone(), int.clone()), want, "{op:?} D,L");
+        }
+    }
+
+    /// The first integer that a double cannot hold at all, and a negative one:
+    /// the sign must not flip which way the exact comparison goes.
+    #[test]
+    fn the_boundary_and_its_negative_order_exactly_too() {
+        let m = 9_007_199_254_740_993i64; // 2^53 + 1
+        assert_eq!(truth(NumOp::Eq, Value::Int(m), Value::Float(m as f64)), 0);
+        assert_eq!(truth(NumOp::Gt, Value::Int(m), Value::Float(m as f64)), 1);
+        assert_eq!(truth(NumOp::Lt, Value::Int(-L), Value::Float(-L as f64)), 1);
+        assert_eq!(truth(NumOp::Gt, Value::Int(-L), Value::Float(-L as f64)), 0);
+        assert_eq!(truth(NumOp::Eq, Value::Int(-L), Value::Float(-L as f64)), 0);
+    }
+
+    /// An integer a double holds exactly still compares equal, and two doubles
+    /// still compare as doubles — the exact path must not change either.
+    #[test]
+    fn exactly_representable_and_double_only_pairs_are_unchanged() {
+        assert_eq!(truth(NumOp::Eq, Value::Int(3), Value::Float(3.0)), 1);
+        assert_eq!(truth(NumOp::Lt, Value::Int(2), Value::Float(2.5)), 1);
+        assert_eq!(truth(NumOp::Gt, Value::Int(3), Value::Float(2.5)), 1);
+        assert_eq!(truth(NumOp::Eq, Value::Float(1.5), Value::Float(1.5)), 1);
+        assert_eq!(truth(NumOp::Lt, Value::Float(1.5), Value::Float(2.5)), 1);
+    }
+
+    /// IEEE 754's rule for a NaN operand survives the exact path: every
+    /// ordered comparison is false and `!=` is the one that is true. An
+    /// infinity is beyond every integer, in whichever direction its sign says.
+    #[test]
+    fn nan_and_infinity_keep_their_answers() {
+        let nan = Value::Float(f64::NAN);
+        for op in [NumOp::Eq, NumOp::Lt, NumOp::Gt, NumOp::Le, NumOp::Ge] {
+            assert_eq!(truth(op, Value::Int(L), nan.clone()), 0, "{op:?} L,nan");
+            assert_eq!(truth(op, nan.clone(), Value::Int(L)), 0, "{op:?} nan,L");
+        }
+        assert_eq!(truth(NumOp::Ne, Value::Int(L), nan.clone()), 1);
+        assert_eq!(truth(NumOp::Ne, nan, Value::Int(L)), 1);
+
+        let inf = Value::Float(f64::INFINITY);
+        assert_eq!(truth(NumOp::Lt, Value::Int(L), inf.clone()), 1);
+        assert_eq!(
+            truth(NumOp::Gt, Value::Int(L), Value::Float(f64::NEG_INFINITY)),
+            1
+        );
+        assert_eq!(truth(NumOp::Gt, inf, Value::Int(L)), 1);
+    }
+
+    /// Arithmetic is the other rule and must not follow comparison onto the
+    /// exact path: tclsh answers `expr {$L - double($L)}` with 0.0, not 1,
+    /// because a double operand promotes the integer. Measured against tclsh
+    /// 9.0.4.
+    #[test]
+    fn arithmetic_still_promotes_the_integer_to_a_double() {
+        let (int, double) = (Value::Int(L), Value::Float(L as f64));
+        assert_eq!(
+            numeric(NumOp::Sub, &int, &double),
+            Ok(Value::Float(0.0)),
+            "subtraction promotes rather than answering the exact 1"
+        );
+        assert_eq!(
+            numeric(NumOp::Add, &int, &double),
+            Ok(Value::Float(33_354_363_399_333_136.0))
+        );
+        assert_eq!(
+            numeric(NumOp::Mul, &int, &Value::Float(1.0)),
+            Ok(Value::Float(16_677_181_699_666_568.0))
+        );
     }
 }

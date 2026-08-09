@@ -11,6 +11,12 @@
 //! where a value comes back down into an `i64`, ordering against a double that
 //! rounds to the same bits, and the operators whose meaning is two's complement
 //! over an infinite word.
+//!
+//! A few cases are narrower than an `i64` on purpose. Exact ordering is not a
+//! bignum rule but an integer rule: `3**34` fits a machine integer and still
+//! has no double, so the same rounding that makes a bignum compare wrong makes
+//! it compare wrong. Those cases sit here rather than in a suite of their own
+//! because they are testing the same `runtime::big_cmp` the wide ones are.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -95,10 +101,35 @@ const PROGRAMS: &[&str] = &[
     // Against the infinities, which no integer reaches.
     "puts [expr {99999999999999999999 < 1e400}]",
     "puts [expr {99999999999999999999 > -1e400}]",
+    // ── exact ordering below `i64`, where width is not what decides it ────
+    // 3^34 fits a machine integer and still has no double: past 2^53 the
+    // conversion lands on a neighbour, so `3**34` and `double(3**34)` are one
+    // apart. `min`/`max` are the ordering these can reach today — the six
+    // comparison operators lower to native fusevm ops, which answer an
+    // integer-vs-double pair themselves and round doing it (BUGS.md).
+    "set l [expr {3**34}]\nputs [expr {min($l, double($l))}]",
+    "set l [expr {3**34}]\nputs [expr {max($l, double($l))}]",
+    "set l [expr {3**34}]\nputs [expr {min(double($l), $l)}]",
+    "set l [expr {3**34}]\nputs [expr {max(double($l), $l)}]",
+    // 2^53 + 1, the first integer a double cannot hold, and a negative one:
+    // the sign must not decide which way the exact ordering goes.
+    "puts [expr {min(9007199254740993, 9007199254740992.0)}]",
+    "puts [expr {max(9007199254740993, 9007199254740992.0)}]",
+    "puts [expr {min(-16677181699666569, -16677181699666568.0)}]",
+    "puts [expr {max(-16677181699666569, -16677181699666568.0)}]",
     // ── mixed with doubles, which makes the result a double ──────────────
     "puts [expr {99999999999999999999 + 0.5}]",
     "puts [expr {99999999999999999999 * 2.0}]",
     "puts [expr {99999999999999999999 / 2.0}]",
+    // Arithmetic promotes where ordering does not, and the same pair shows
+    // both rules: tclsh answers `0.0` here, not the exact `1` that ordering
+    // the two operands apart implies. A fix to the ordering rule that leaked
+    // into arithmetic would change these.
+    "set l [expr {3**34}]\nputs [expr {$l - double($l)}]",
+    "set l [expr {3**34}]\nputs [expr {$l + double($l)}]",
+    "set l [expr {3**34}]\nputs [expr {$l * 1.0}]",
+    "set l [expr {3**34}]\nputs [expr {$l / double($l)}]",
+    "set l [expr {3**34}]\nputs [expr {$l ** 1.0}]",
     // ── the value in the rest of the language ────────────────────────────
     "puts 99999999999999999999",
     "puts [expr {99999999999999999999}]",

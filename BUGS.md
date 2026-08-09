@@ -277,11 +277,15 @@ approximated, and nothing is silently mis-run.
   *checked* arithmetic overflows, so a loop that never leaves the word never
   builds a `BigInt`. A promoted value travels as its canonical decimal string —
   Tcl's own model, and one that needs no new `fusevm::Value` variant — and comes
-  back down to `Value::Int` the moment a result fits again. Ordering is exact at
-  any width rather than through a double, which is observable:
-  `expr {99999999999999999999 < 1e20}` is 1 while `== 1e20` is 0, though both
-  sides are the same double once converted (`runtime::big_cmp`,
-  `tests/bignum_differential.rs`).
+  back down to `Value::Int` the moment a result fits again. Ordering an integer
+  against a double is exact at every width rather than through a double, which
+  is observable twice over: `expr {99999999999999999999 < 1e20}` is 1 while
+  `== 1e20` is 0, and `expr {3**34 == double(3**34)}` is 0 with `>` 1 even
+  though `3**34` fits an `i64` — past 2^53 a machine integer rounds on the way
+  to a double exactly as a bignum does, so width is not the test. Tcl's
+  *arithmetic* on that same pair does promote (`expr {3**34 - double(3**34)}`
+  is `0.0`, not `1`), and only the comparison is exact (`runtime::big_cmp`,
+  `runtime::numeric`, `tests/bignum_differential.rs`).
 
   Two bounds are this frontend's own. A promoted integer may reach 2^20 bits,
   a little over 315,000 digits, and a wider one is refused: tclsh has no bound
@@ -918,6 +922,25 @@ The first few are not fuzzer findings — four belong to the event loop and four
 `encoding` — and they are listed first because each is a deliberate decision with
 the measurement behind it.
 
+- **`< > <= >= == !=` between an integer past 2^53 and a double round where
+  tclsh is exact.** Measured against tclsh 9.0.4: `set l [expr {3**34}]` is
+  16677181699666569 and `double($l)` is 16677181699666568, one apart, so tclsh
+  answers `==` 0 and `>` 1. tclrs answers 1 and 0. The rule is not in doubt and
+  the frontend already holds it — `runtime::numeric` orders any pair with an
+  integer in it through `runtime::big_cmp`, which
+  `runtime::numeric_hook_tests` asserts operator by operator in both operand
+  orders — but these six operators lower to fusevm's native `Op::NumLt` …
+  `Op::NumNe`, and `fusevm 0.17.0`'s `cmp_int_fast` answers a pair of native
+  numbers itself, through `to_float`, without consulting the hook. The next
+  fusevm release delegates such a pair instead, on the grounds that only the
+  frontend knows its language's rule, and this divergence closes with no
+  further change here. Ordering *is* already exact everywhere the hook is
+  reached: `min` and `max` go through `expr_math::extremum`, and
+  `tests/bignum_differential.rs` compares those at the same band. Making the
+  operators exact without the fusevm change would mean routing every
+  comparison with a substituted operand through an extension op, which costs
+  the tracing JIT every comparison loop — the trade this frontend declines
+  everywhere else it appears.
 - **`encoding names` answers what actually converts, not tclsh's list.** tclsh
   answers in the order of its own hash table and includes the three escape-
   sequence encodings it can load; this one is sorted and omits them, because they
