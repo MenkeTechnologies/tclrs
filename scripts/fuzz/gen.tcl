@@ -43,8 +43,8 @@
 #   inside an open `catch` region; procedures call procedures along a call graph
 #   that cannot cycle; `eval` nests several levels; a `catch` wraps a counted
 #   loop that calls into all of it.
-# * **Refusals are generated, not avoided** — at `REFUSAL_RATE`. See the comment
-#   there.
+# * **The corners are generated, not avoided** — at `RARE_SHAPE_RATE`. See the
+#   comment there.
 #
 # Out of reach, and correctly so: `{*}` expansion, `regexp`, `upvar`,
 # `namespace` and file I/O are outside tclrs's command set entirely, so
@@ -173,17 +173,17 @@ set POOL_INDEX [list 0 1 2 3 -1 end end-1 end+1 5 0x2 1_0 \
 set POOL_GLOB [list * a* *b "a?c" "\[ab\]*" "" x "a*b*c" \
     "\\*" "\[a-c\]" "\[!ab\]" "?" "**" "é*" "*😀*" "\[\]" "a\[b"]
 
-# `string is` classes. The first list is what tclrs answers; the second is what
-# it recognises and then refuses, because the class needs the Unicode category
-# tables that are not built (`src/cmd_string.rs`). The refused ones are drawn on
-# purpose and at a low rate: the case becomes a SKIP with the refusal's own
-# wording, which is the coverage that turns into a comparison on the day the
-# tables land. Non-ASCII subjects reach the answered classes from the value pool
-# and are refused there for the same reason, which is a skip the report counts.
+# `string is` classes, in two lists. The second held the four that needed the
+# Unicode category tables and were refused until those landed; all four are
+# answered now and are compared like the rest, so the split is a draw weight and
+# no longer a skip. It is kept because the four are still the ones a class table
+# is most likely to get wrong. What *is* still refused is a code point tclsh 9.0.4
+# categorises and Unicode 16.0 does not, which the value pool reaches through the
+# answered classes — that one is a skip the report counts.
 set POOL_STRCLASS [list alnum alpha ascii boolean control digit double entier \
     false integer list lower space true upper wideinteger wordchar xdigit]
 
-set POOL_STRCLASS_REFUSED [list graph print punct dict]
+set POOL_STRCLASS_RARE [list graph print punct dict]
 
 # `format`'s specifier matrix is built rather than listed — see `fmt_spec`. This
 # pool is the hand-written spellings that a random build does not reach: the
@@ -278,26 +278,30 @@ proc value {} {
 
 set UNSET_RATE 4
 
-# How often a statement is drawn from a shape tclrs *recognises and refuses* —
-# `array` on a procedure local, `eval` inside a procedure body, `lsort -command`,
-# `string is punct`, `string wordstart`, `dict unset`, and the rest of the
-# "recognised and then refused" table in README [0x05].
+# How often a statement is drawn from the corner of a command rather than its
+# middle — `array` on a procedure local, `eval` inside a procedure body,
+# `lsort -command`, `string is punct`, `string wordstart`, `dict update`, and the
+# rest.
 #
-# These are generated on purpose: a refusal is counted under its own wording as a
-# SKIP, and a shape that is generated now becomes a comparison the day the
-# refusal goes, where a shape the generator routes around is a hole nobody can
-# see. The rate is low because every one of these refusals is decided while
-# *compiling*, so one of them anywhere in a case takes the whole case out of
-# comparison. Measured on 200 cases at depth 4, seed 1: with these shapes drawn
-# at roughly one in two the run was 88 skips and 22 passes; at 8 it is 29 skips
-# and 48 passes, and every one of the wordings still reaches the report. It is
-# one number, so the trade between reach and comparison is in one place and shows
-# up as the size of the SKIP bucket in every run rather than as a hidden constant.
-set REFUSAL_RATE 8
+# Every one of those was a *refusal* when this rate was chosen, which is why the
+# name and the comments here said so and why the rate is low: a refusal is
+# decided while compiling, so one of them anywhere in a case took the whole case
+# out of comparison and into the SKIP bucket. All of them have since landed.
+# Measured on 200 cases at depth 4, seed 1: the SKIP bucket is 1, and the one
+# entry in it is `format %a`.
+#
+# So this is now a draw weight and not a trade. The shapes are still the corners
+# — the argument forms each command gained last, and the ones most likely to be
+# got wrong — and drawing them rarely means most statements exercise the common
+# path. Whether the rate should now go *up*, since these cost a comparison
+# nothing any more, is a real question and a separate change: raising it changes
+# what every seed generates, and that belongs in a run of its own with the bucket
+# counts before and after.
+set RARE_SHAPE_RATE 8
 
-proc refused {} {
-    global REFUSAL_RATE
-    return [rchance $REFUSAL_RATE]
+proc rare_shape {} {
+    global RARE_SHAPE_RATE
+    return [rchance $RARE_SHAPE_RATE]
 }
 
 proc reset_case {} {
@@ -686,7 +690,7 @@ proc leaf_stmt {ctx} {
         # that already works, and it is drawn alongside so the array path
         # through a procedure is measured too.
         if {$INPROC} {
-            if {[refused]} {
+            if {[rare_shape]} {
                 return [local_array_stmt]
             }
             return "puts [word 1]"
@@ -718,7 +722,7 @@ proc leaf_stmt {ctx} {
         # there anyway so the refusal is a counted skip rather than a hole; a
         # `catch` around it is a comparison in both engines, so that context is
         # no longer routed around either.
-        if {$INPROC && ![refused]} {
+        if {$INPROC && ![rare_shape]} {
             return "puts [word 1]"
         }
         return [eval_stmt]
@@ -739,7 +743,7 @@ proc leaf_stmt {ctx} {
             }
         }
         if {$INPROC} {
-            if {[refused] && [llength $LOCALS] > 0} {
+            if {[rare_shape] && [llength $LOCALS] > 0} {
                 return "unset [rpick $LOCALS]"
             }
             return "puts [word 1]"
@@ -834,33 +838,31 @@ proc list_stmt {} {
 # `lsearch(n)` and `lsort(n)` are almost entirely option surface, and a single
 # option drawn from a flat list — which is what this used to be — never reaches a
 # combination. Both build a run of one to three options instead, from the whole
-# documented set: the ones tclrs answers, and the ones it recognises through the
-# reference option parser and then refuses (`lsearch -regexp is not supported
-# yet`, `lsort -command is not supported yet`, README [0x05]). A refused option
-# makes the case a SKIP under that wording, which is the coverage that turns into
-# a comparison when the option lands.
+# documented set. It is split in two lists: the options each command had first,
+# and the ones it gained last — `-regexp`, `-sorted`, `-dictionary`, `-nocase`,
+# `-index`, `-stride`, `-command`, which were refusals when the split was made
+# and are all answered now. Every one is compared against tclsh today; the second
+# list is drawn rarely, which is what `RARE_SHAPE_RATE` is.
 #
 # `-start`'s index comes from the small pool and never from `POOL_INDEX`: a
 # negative start against an empty list is a SIGSEGV in tclsh 9.0.4 (BUGS.md,
 # "Defects in the reference implementation"), and a case the reference cannot
 # survive has no behavior to compare against.
 
-# The options are split by whether tclrs answers them, and the refused ones are
-# drawn at `REFUSAL_RATE` — see the comment there. Every option in the manual is
-# in one list or the other, so the split is a rate, not a filter: nothing is
-# unreachable.
+# Every option in the manual is in one list or the other, so the split is a rate
+# and not a filter: nothing is unreachable.
 set OPTS_LSEARCH_MODE [list -exact -glob]
 set OPTS_LSEARCH_TYPE [list -ascii -integer -real]
 set OPTS_LSEARCH_MOD [list -all -inline -not -increasing -decreasing --]
-set OPTS_LSEARCH_REFUSED [list -regexp -sorted -dictionary -nocase -bisect \
+set OPTS_LSEARCH_RARE [list -regexp -sorted -dictionary -nocase -bisect \
     -subindices "-index 0" "-index 1" "-stride 2" "-stride 3"]
 
 proc lsearch_opts {} {
     global OPTS_LSEARCH_MODE OPTS_LSEARCH_TYPE OPTS_LSEARCH_MOD
-    global OPTS_LSEARCH_REFUSED POOL_SMALL
+    global OPTS_LSEARCH_RARE POOL_SMALL
     set opts [list]
-    if {[refused]} {
-        lappend opts [rpick $OPTS_LSEARCH_REFUSED]
+    if {[rare_shape]} {
+        lappend opts [rpick $OPTS_LSEARCH_RARE]
     }
     if {[rchance 55]} {
         lappend opts [rpick $OPTS_LSEARCH_MODE]
@@ -883,14 +885,14 @@ proc lsearch_opts {} {
 
 set OPTS_LSORT_ORDER [list -ascii -integer -real]
 set OPTS_LSORT_MOD [list -increasing -decreasing -unique -indices --]
-set OPTS_LSORT_REFUSED [list -dictionary -nocase "-index 0" "-index end" \
+set OPTS_LSORT_RARE [list -dictionary -nocase "-index 0" "-index end" \
     "-stride 2" "-stride 3" "-command cmp0" "-command cmp1"]
 
 proc lsort_opts {} {
-    global OPTS_LSORT_ORDER OPTS_LSORT_MOD OPTS_LSORT_REFUSED
+    global OPTS_LSORT_ORDER OPTS_LSORT_MOD OPTS_LSORT_RARE
     set opts [list]
-    if {[refused]} {
-        lappend opts [rpick $OPTS_LSORT_REFUSED]
+    if {[rare_shape]} {
+        lappend opts [rpick $OPTS_LSORT_RARE]
     }
     if {[rchance 50]} {
         lappend opts [rpick $OPTS_LSORT_ORDER]
@@ -910,22 +912,21 @@ proc lsort_opts {} {
 # allows, including the optional arguments that a fixed spelling never reaches:
 # `-nocase` and `-length` on the comparisons, the start index of `first` and the
 # last index of `last`, the first/last range of the case conversions, `-strict`
-# and `-failindex` on `is`, and the two subcommands tclrs recognises and refuses
-# (`wordstart`, `wordend`). A refused option or subcommand makes the case a SKIP
-# under the refusal's own wording, and that is the point: the shape is generated
-# now, so the day the option lands the corpus already exercises it.
+# and `-failindex` on `is`, and the two subcommands `wordstart` and `wordend`.
+# Those three were refusals when this was written and are answered now; they are
+# still drawn rarely, which is what `RARE_SHAPE_RATE` is.
 
-# `-nocase` is recognised and refused by tclrs (a case-folding table that matches
-# Tcl's is what it waits on, README [0x05]), so it is drawn at a low rate.
+# `-nocase` is answered now — it was a refusal, waiting on a case-folding table
+# that matches Tcl's — and is still drawn at the low rate that split gave it.
 proc nocase {} {
-    if {[refused]} {
+    if {[rare_shape]} {
         return " -nocase"
     }
     return ""
 }
 
 proc string_stmt {} {
-    global POOL_INDEX POOL_GLOB POOL_STRCLASS POOL_STRCLASS_REFUSED POOL_SMALL
+    global POOL_INDEX POOL_GLOB POOL_STRCLASS POOL_STRCLASS_RARE POOL_SMALL
     set s [rint 100]
     set a [value]
     set b [value]
@@ -1001,8 +1002,10 @@ proc string_stmt {} {
         return [string_is_stmt $a]
     }
     if {$s < 91} {
-        # Recognised and refused: `string wordstart` / `wordend`.
-        if {[refused]} {
+        # `string wordstart` / `wordend`: a refusal when this was written, and
+        # a comparison now. Still refused past ASCII, which the value pool
+        # reaches.
+        if {[rare_shape]} {
             return "puts \[string [rpick [list wordstart wordend]] $a [rpick $POOL_INDEX]\]"
         }
         return "puts \[string range $a [rpick $POOL_INDEX] [rpick $POOL_INDEX]\]"
@@ -1023,21 +1026,22 @@ proc string_stmt {} {
 
 # `string is CLASS ?-strict? ?-failindex VAR? STRING`.
 #
-# The class comes from the answered set most of the time and from the refused set
-# the rest — the four classes that need the Unicode category tables. Non-ASCII
-# subjects are refused by the *answered* classes too, which is the other half of
-# the same gap and reaches it from the value pool rather than the class pool.
+# The class comes from the common set most of the time and from the rare one the
+# rest — the four that needed the Unicode category tables and were refused until
+# those landed. A code point tclsh 9.0.4 categorises and Unicode 16.0 does not is
+# still refused by *every* class, which the value pool reaches rather than the
+# class pool.
 proc string_is_stmt {a} {
-    global POOL_STRCLASS POOL_STRCLASS_REFUSED
+    global POOL_STRCLASS POOL_STRCLASS_RARE
     set class [rpick $POOL_STRCLASS]
     if {[rchance 15]} {
-        set class [rpick $POOL_STRCLASS_REFUSED]
+        set class [rpick $POOL_STRCLASS_RARE]
     }
     set opts ""
     if {[rchance 25]} {
         append opts " -strict"
     }
-    if {[refused]} {
+    if {[rare_shape]} {
         append opts " -failindex [fresh fi]"
     }
     return "puts \[string is $class$opts $a\]"
@@ -1189,8 +1193,10 @@ proc local_dict_stmt {} {
     if {$r < 86} {
         return "set $d \[dict create a 1\]; puts \[dict merge \$$d \[dict create [value] [value]\]\]"
     }
-    # Recognised and refused: a subcommand outside the implemented set.
-    if {[refused]} {
+    # A subcommand from the far end of the ensemble. Every name here is
+    # implemented now; `with` and `info` are the two the list still names that
+    # are not, and those two are skips.
+    if {[rare_shape]} {
         return "set $d \[dict create a 1 b 2\]; dict [rpick [list unset append \
             incr lappend replace update filter for with getwithdefault]] $d [value]"
     }
@@ -1420,14 +1426,14 @@ proc gen_coroutine {} {
         } elseif {$shape < 73} {
             # Suspended inside a bounded loop: one trip, so still one yield.
             lappend stmts "set __y {}; for \{set __i$i 0\} \{\$__i$i < 1\} \{incr __i$i\} \{set __y \[yield y$i\]\}"
-        } elseif {$shape < 90 || ![refused]} {
+        } elseif {$shape < 90 || ![rare_shape]} {
             # Suspended inside an open `catch` region.
             lappend stmts "set __y {}; catch \{set __y \[yield y$i\]\} __e$i"
         } else {
             # Suspended after a nested `eval` has run in the coroutine's own
-            # context. tclrs refuses `eval` inside a procedure body and a
-            # coroutine's body is one, so this shape is a counted skip today;
-            # drawn rarely for that reason.
+            # context. `eval` inside a procedure body was refused when this was
+            # written and a coroutine's body is one, so this was a counted skip;
+            # it is a comparison now, and still drawn rarely.
             lappend stmts "eval \{puts pre$i\}; set __y \[yield y$i\]"
         }
         lappend stmts "puts got:\$__y"
