@@ -2023,7 +2023,19 @@ fn format_string(fmt: &str, args: &[String]) -> Result<String, String> {
                 value,
             )?,
             'e' | 'E' | 'f' | 'g' | 'G' => floating(conv, flags, precision, value)?,
-            'a' | 'A' => return Err(format!("the \"%{conv}\" conversion is not supported yet")),
+            // The one conversion Tcl does not perform: it builds the C
+            // conversion and hands the double to the platform library
+            // (`generic/tclStringObj.c:2480-2547`), so what `%a` prints is the
+            // C library's answer and not Tcl's — and the C libraries this crate
+            // is built against do not agree. See BUGS.md; the wording names the
+            // library rather than promising a port.
+            'a' | 'A' => {
+                return Err(format!(
+                    "the \"%{conv}\" conversion is not supported: tclsh hands it to the platform \
+                     C library, whose answer differs between the libraries this frontend is \
+                     built against"
+                ))
+            }
             other => return Err(format!("bad field specifier \"{other}\"")),
         };
         push_padded(&mut out, converted, flags, width)?;

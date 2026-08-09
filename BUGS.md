@@ -716,13 +716,46 @@ approximated, and nothing is silently mis-run.
   now named as unsupported rather than reported as a bad option, which said
   `bad option "-about": must be … -about …`. `regsub -about` is untouched — it
   really is a bad option there, and that message is already tclsh's.
-- **`format %a` and `%A`.** `%a` is C's hexadecimal-float form and is a faithful
-  port waiting to be written. `%A` is not: tclsh 9.0.4 answers `-xX0p+0` for
-  `format %A -0.0` and `IxF` for `format %A Inf` (measured), which is its
-  uppercasing walking over the `0x` prefix and the `inf` spelling. Implementing
-  `%a` alone would leave the pair half-done, and implementing `%A` means deciding
-  whether to reproduce that — the same decision `regsub -all -expanded` records
+- **`format %a` and `%A`.** These are the one conversion Tcl does not perform.
+  Every other one is computed in `Tcl_AppendFormatToObj`; for `a`, `A`, `e`,
+  `E`, `f`, `g` and `G` it rebuilds the C conversion specifier and calls the
+  platform library — `snprintf(bytes, segment->length, spec, d)`,
+  `generic/tclStringObj.c:2547`. For the decimal forms that is still a fixed
+  answer, and they are implemented here. For `%a` it is not: what tclsh prints
+  is the C library's, and the C libraries this crate's release matrix builds
+  against — macOS, Linux glibc, Linux musl — need not agree.
+
+  They do not. The C standard fixes only part of the form: ISO/IEC 9899:2011
+  §7.21.6.1p8 says there is "one hexadecimal digit (which is nonzero if the
+  argument is a normalized floating-point number and is otherwise unspecified)
+  before the decimal-point character", so a *subnormal* has no defined leading
+  digit — the tclsh measured here answers `0x1p-1074` for
+  `format %a 4.9406564584124654e-324`, normalising it, where the standard
+  permits `0x0.…p-1022`.
+
+  Worse, the rounding is not the standard's either. Measured against tclsh
+  9.0.4 on macOS:
+
+      format %.0a 1.5        →  0x1p+0      (round-half-even gives 0x2p+0)
+      format %.1a 1.09375    →  0x1.1p+0    (0x1.18 ties; even is 0x1.2p+0)
+
+  That is a known macOS libc bug, not a Tcl one — Apple Developer Forums thread
+  803076, "printf %a/%A misrounding (C99 compliance violation) when guard digit
+  is 8", reports the same shape and adds that it is not even monotonic:
+  `%.0a` of 1.5, 1.53, 1.55, 1.56 prints `0x1p+0 0x2p+0 0x1p+0 0x2p+0` where
+  C99 requires `0x2p+0` throughout.
+
+  So there is no single right answer to port. Writing the standard's `%a` makes
+  the differential run *here* diverge; writing this libc's makes the crate wrong
+  on the two Linux targets and bakes a documented libc bug into it. Neither is a
+  port of Tcl. `%A` carries a second decision on top: tclsh 9.0.4 answers
+  `-xX0p+0` for `format %A -0.0` and `IxF` for `format %A Inf` (measured) — its
+  uppercasing walking over the `0x` prefix and the `inf` spelling — which is the
+  same "reproduce an upstream bug?" question `regsub -all -expanded` records
   below, and one that belongs in its own change rather than as a side effect.
+
+  What did change is the wording: the refusal names the C library rather than
+  saying "not supported *yet*", which promised a port that is not writable.
 - **A `dict` written into an array element.** `dict set a(1) k v` and
   `dict incr a(1) k` are refused: the target travels as a variable *place* — a
   name index or a frame slot — and an array element is neither. Both work on a
