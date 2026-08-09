@@ -1458,13 +1458,13 @@ fn a_split_character_in_the_junk_diagnostic_does_not_panic() {
 /// A refusal decided at *run* time is catchable, so a `catch` around it sees a
 /// message where tclsh saw an answer.
 ///
-/// `lsearch -sorted` and `lsort -nocase` are recognised by the reference option
-/// parser and refused when the command runs, so `catch` captures the refusal and
-/// the script carries on with it as a value — the harness calls the case a
-/// divergence rather than a skip, because tclrs exited 0. The refusals decided
-/// while *compiling* — `string wordstart` beyond ASCII — are not catchable and
-/// do make the case a skip. Both halves are pinned here so the distinction
-/// cannot drift without a test failing.
+/// `dict with` is recognised by the reference subcommand table and refused when
+/// the command runs, so `catch` captures the refusal and the script carries on
+/// with it as a value — the harness calls the case a divergence rather than a
+/// skip, because tclrs exited 0. The refusals decided while *compiling* —
+/// `string wordstart` beyond ASCII — are not catchable and do make the case a
+/// skip. Both halves are pinned here so the distinction cannot drift without a
+/// test failing.
 #[test]
 fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
     let Some(tclsh) = tclsh() else {
@@ -1473,15 +1473,22 @@ fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
     };
     diverges(
         &tclsh,
+        "set d {a 1}\ncatch {dict with d {}} m; puts m:$m",
+        out("m:\n"),
+        out("m:dict with is not supported yet\n"),
+    );
+    // `lsearch -sorted` and `lsort -nocase` stood here as the two examples of a
+    // catchable run-time refusal until both landed; they are the same programs,
+    // asserted as agreements now.
+    agrees(
+        &tclsh,
         "catch {lsearch -sorted {a} b} m; puts m:$m",
         out("m:-1\n"),
-        out("m:lsearch -sorted -increasing is not supported yet\n"),
     );
-    diverges(
+    agrees(
         &tclsh,
         "catch {lsort -nocase {a}} m; puts m:$m",
         out("m:a\n"),
-        out("m:lsort -nocase is not supported yet\n"),
     );
     // `string is punct` used to sit here as the compile-time half of the
     // distinction — refused before `catch` could run. It is answered now, from

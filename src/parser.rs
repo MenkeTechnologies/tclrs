@@ -158,6 +158,10 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
         pos: 0,
         line: 1,
         depth: 0,
+        subst: SubstFlags::default(),
+        collect: false,
+        scripts: Vec::new(),
+        mark: 0,
     };
     let script = p.parse_script(false)?;
     // A `]` with no opening `[` reaches here as an unconsumed terminator.
@@ -180,6 +184,10 @@ pub(crate) fn substitution_at(src: &str, at: usize) -> Result<Option<(Part, usiz
         pos: at,
         line: 1,
         depth: 0,
+        subst: SubstFlags::default(),
+        collect: false,
+        scripts: Vec::new(),
+        mark: 0,
     };
     Ok(p.parse_dollar()?.map(|part| (part, p.pos)))
 }
@@ -191,6 +199,10 @@ pub(crate) fn command_at(src: &str, at: usize) -> Result<(Script, usize), ParseE
         pos: at + 1,
         line: 1,
         depth: 0,
+        subst: SubstFlags::default(),
+        collect: false,
+        scripts: Vec::new(),
+        mark: 0,
     };
     let script = p.parse_script(true)?;
     if p.peek() != Some(b']') {
@@ -208,6 +220,10 @@ pub(crate) fn quoted_at(src: &str, at: usize) -> Result<(Vec<Part>, usize), Pars
         pos: at + 1,
         line: 1,
         depth: 0,
+        subst: SubstFlags::default(),
+        collect: false,
+        scripts: Vec::new(),
+        mark: 0,
     };
     let parts = p.parse_parts(Ctx::Quoted, false)?;
     p.pos += 1; // closing quote
@@ -227,6 +243,10 @@ pub(crate) fn backslash_at(src: &str, at: usize) -> (String, usize) {
         pos: at,
         line: 1,
         depth: 0,
+        subst: SubstFlags::default(),
+        collect: false,
+        scripts: Vec::new(),
+        mark: 0,
     };
     let mut out = String::new();
     if p.at(1) == Some(b'\n') {
@@ -246,6 +266,10 @@ pub(crate) fn braced_at(src: &str, at: usize) -> Result<(String, usize), ParseEr
         pos: at,
         line: 1,
         depth: 0,
+        subst: SubstFlags::default(),
+        collect: false,
+        scripts: Vec::new(),
+        mark: 0,
     };
     let text = p.parse_braced()?;
     Ok((text, p.pos))
@@ -260,6 +284,61 @@ enum Ctx {
     Quoted,
     /// An array index inside `$name(...)`: `)` ends it.
     Index,
+    /// A whole value read as one word, which nothing but the end of the input
+    /// ends: what `subst` substitutes over. `ParseTokens` reaches this by being
+    /// called with an empty stop mask (`generic/tclParse.c:1921`), so a space, a
+    /// `;`, a `"` and a `]` are all ordinary text here.
+    All,
+}
+
+/// Which of the three substitutions a [`Ctx::All`] scan performs.
+///
+/// The three `subst` options each clear one, and a cleared one makes its
+/// introducer a single character of literal text rather than the start of a
+/// construct — `ParseTokens`' `noSubstVars` / `noSubstCmds` / `noSubstBS`
+/// (`generic/tclParse.c:1057-1059`). Applying them while scanning, rather than
+/// unpicking a parse afterwards, is what makes `subst -nobackslashes {a\[b]c}`
+/// substitute the command: the backslash is text and the `[` after it still
+/// opens a substitution, which is what tclsh 9.0.4 answers (measured).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SubstFlags {
+    pub backslashes: bool,
+    pub commands: bool,
+    pub variables: bool,
+}
+
+impl Default for SubstFlags {
+    fn default() -> Self {
+        SubstFlags {
+            backslashes: true,
+            commands: true,
+            variables: true,
+        }
+    }
+}
+
+/// One piece of a value being substituted.
+///
+/// [`Part`] with the command substitutions kept as *source* rather than as a
+/// parsed [`Script`]. The reference interpreter compiles and caches a nested
+/// script by its text, and so does this one ([`crate::cache`]), so `subst` runs
+/// the text between the brackets exactly as `eval` runs its argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubstPart {
+    Lit(String),
+    Var(String),
+    Elem { name: String, index: Vec<SubstPart> },
+    Script(String),
+}
+
+/// What [`subst_parts`] read: the parts to substitute, and the syntax error
+/// that stops the substitution *after* they have run, if there was one.
+pub struct SubstParse {
+    pub parts: Vec<SubstPart>,
+    /// A parse failure. The reference implementation substitutes the good
+    /// prefix and its side effects happen before this is reported, which is why
+    /// it travels beside the parts instead of replacing them.
+    pub error: Option<ParseError>,
 }
 
 struct Parser<'a> {
@@ -269,6 +348,107 @@ struct Parser<'a> {
     /// How many command substitutions and array indices are open at the cursor —
     /// the recursion this parser does, bounded by [`MAX_NESTING_DEPTH`].
     depth: usize,
+    /// Which substitutions a [`Ctx::All`] scan performs. Ignored in every other
+    /// context, where all three always apply.
+    subst: SubstFlags,
+    /// Where the [`Ctx::All`] construct being scanned started. Only that scan
+    /// writes it, so after a failure it names the top-level `$` or `[` that
+    /// failed — which is what the recovery in [`subst_parts`] needs and what
+    /// `Tcl_Parse.term` carries in the reference implementation.
+    mark: usize,
+    /// Whether to record the source of each command substitution as it closes.
+    /// On only for a `subst` scan, and only *outside* any bracket: a `[...]`
+    /// inside another one is part of that one's text and is never run on its
+    /// own, so recording it would leave an entry nothing consumes.
+    collect: bool,
+    /// The text between the brackets of each command substitution recorded,
+    /// in the order the scan closed them — which is source order, and is the
+    /// order [`with_sources`] walks the parts in.
+    scripts: Vec<String>,
+}
+
+impl<'a> Parser<'a> {
+    fn over(src: &'a [u8], subst: SubstFlags) -> Parser<'a> {
+        Parser {
+            src,
+            pos: 0,
+            line: 1,
+            depth: 0,
+            subst,
+            mark: 0,
+            collect: true,
+            scripts: Vec::new(),
+        }
+    }
+}
+
+/// Pair a value's parts with the sources recorded for the command
+/// substitutions in them.
+///
+/// Both sequences are in source order — the scanner records a `[...]` when it
+/// consumes the closing bracket, and this walk visits parts left to right — so
+/// one iterator is the whole of the correspondence. A recorded source with no
+/// part to take it, or the other way round, is impossible by construction: the
+/// scanner records exactly when it pushes a [`Part::Script`] outside a bracket,
+/// and those are exactly the parts this walk reaches.
+fn with_sources(parts: Vec<Part>, scripts: &mut std::vec::IntoIter<String>) -> Vec<SubstPart> {
+    parts
+        .into_iter()
+        .map(|part| match part {
+            Part::Lit(text) => SubstPart::Lit(text),
+            Part::Var(name) => SubstPart::Var(name),
+            Part::Elem { name, index } => SubstPart::Elem {
+                name,
+                index: with_sources(index, scripts),
+            },
+            Part::Script(_) => SubstPart::Script(scripts.next().unwrap_or_default()),
+        })
+        .collect()
+}
+
+/// Read a value the way `subst` reads it: one word's worth of parts, running to
+/// the end of the input, with the three substitutions the flags admit.
+///
+/// A port of `TclSubstParse` (`generic/tclParse.c:1901-2073`), recovery
+/// included: when the scan fails, everything before the construct that failed
+/// is still substituted — and still runs — before the caller reports the error.
+/// That is observable, not bookkeeping: `subst {[puts hi][}` writes `hi` and
+/// *then* fails with `missing close-bracket` in tclsh 9.0.4 (measured).
+pub fn subst_parts(src: &str, flags: SubstFlags) -> SubstParse {
+    let bytes = src.as_bytes();
+    let mut p = Parser::over(bytes, flags);
+    match p.parse_parts(Ctx::All, false) {
+        Ok(parts) => SubstParse {
+            parts: with_sources(parts, &mut p.scripts.into_iter()),
+            error: None,
+        },
+        Err(e) => {
+            let mark = p.mark;
+            // The tokens of the first attempt are gone, so the prefix is read
+            // again — the same thing `TclSubstParse` does for the same reason.
+            // It parsed once already, so it cannot fail now.
+            let mut head = Parser::over(&bytes[..mark], flags);
+            let parts = head.parse_parts(Ctx::All, false).unwrap_or_default();
+            let mut parts = with_sources(parts, &mut head.scripts.into_iter());
+            // An unterminated `[` still runs the complete commands inside it;
+            // an unterminated `${` or `$name(` runs nothing, and the reference
+            // implementation drops the half-read variable rather than reading a
+            // scalar of that name.
+            if bytes.get(mark) == Some(&b'[') {
+                let inner = &bytes[mark + 1..];
+                let end = Parser::over(inner, flags).complete_command_text();
+                if end > 0 {
+                    parts.push(SubstPart::Script(
+                        String::from_utf8_lossy(&inner[..end]).into_owned(),
+                    ));
+                }
+            }
+            SubstParse {
+                parts,
+                error: Some(e),
+            }
+        }
+    }
 }
 
 impl<'a> Parser<'a> {
@@ -332,6 +512,42 @@ impl<'a> Parser<'a> {
             commands.push(Command { words, line });
         }
         Ok(Script { commands })
+    }
+
+    /// How much of an unterminated `[`'s text still runs: everything before the
+    /// last command separator the scan reached.
+    ///
+    /// `TclSubstParse`'s bracket recovery (`generic/tclParse.c:2015-2066`) parses
+    /// commands out of the unterminated substitution until one fails or the text
+    /// runs out, and gives the substitution token everything up to the last
+    /// *separator* it saw — so a command the missing bracket cut short does not
+    /// run, and the ones before it do. `subst {a[puts hi; puts there}` writes
+    /// `hi` and then fails, in tclsh 9.0.4 and here.
+    fn complete_command_text(&mut self) -> usize {
+        let mut end = 0;
+        loop {
+            self.skip_between_commands();
+            if self.pos >= self.src.len() {
+                return end;
+            }
+            loop {
+                if self.parse_word(false).is_err() {
+                    return end;
+                }
+                if !self.skip_word_gap() || self.at_command_end(false) {
+                    break;
+                }
+            }
+            // Only a command a `;` or a newline closed is complete; one that ran
+            // to the end of the text is the one the bracket was meant to close.
+            match self.peek() {
+                Some(b';') | Some(b'\n') => {
+                    end = self.pos;
+                    self.bump();
+                }
+                _ => return end,
+            }
+        }
     }
 
     /// Consume separators and comments between commands.
@@ -509,9 +725,15 @@ impl<'a> Parser<'a> {
                 match ctx {
                     Ctx::Quoted => return Err(self.error("missing \"")),
                     Ctx::Index => return Err(self.error("missing )")),
-                    Ctx::Bare => break,
+                    Ctx::Bare | Ctx::All => break,
                 }
             };
+            // Where the construct about to be read starts. Only the whole-value
+            // scan records it, and only it needs to: after a failure there it
+            // names the `$` or `[` to blame, which is the recovery point.
+            if ctx == Ctx::All {
+                self.mark = self.pos;
+            }
             match b {
                 b'"' if ctx == Ctx::Quoted => break,
                 b')' if ctx == Ctx::Index => break,
@@ -523,6 +745,22 @@ impl<'a> Parser<'a> {
                 }
                 b' ' | b'\t' | b'\r' | b'\n' | b';' if ctx == Ctx::Bare => break,
                 b']' if ctx == Ctx::Bare && nested => break,
+                // `subst -nobackslashes`, `-nocommands` and `-novariables`: the
+                // introducer is one character of text and whatever follows it is
+                // read on its own terms. Ahead of the arms that would open a
+                // construct, and only reachable from the whole-value scan.
+                b'\\' if ctx == Ctx::All && !self.subst.backslashes => {
+                    self.bump();
+                    lit.push('\\');
+                }
+                b'[' if ctx == Ctx::All && !self.subst.commands => {
+                    self.bump();
+                    lit.push('[');
+                }
+                b'$' if ctx == Ctx::All && !self.subst.variables => {
+                    self.bump();
+                    lit.push('$');
+                }
                 // Rule 9: outside braces and quotes the folded space is a word
                 // separator, so it ends the word rather than joining it.
                 b'\\' if self.at(1) == Some(b'\n') => {
@@ -536,11 +774,22 @@ impl<'a> Parser<'a> {
                 b'[' => {
                     flush(&mut lit, &mut parts);
                     self.bump();
+                    let opened = self.pos;
                     self.descend()?;
-                    let inner = self.parse_script(true)?;
+                    // A `[...]` inside this one belongs to its text and is never
+                    // run on its own, so nothing inside is recorded.
+                    let collecting = std::mem::replace(&mut self.collect, false);
+                    let inner = self.parse_script(true);
+                    self.collect = collecting;
+                    let inner = inner?;
                     self.depth -= 1;
                     if self.peek() != Some(b']') {
                         return Err(self.error("missing close-bracket"));
+                    }
+                    if self.collect {
+                        self.scripts.push(
+                            String::from_utf8_lossy(&self.src[opened..self.pos]).into_owned(),
+                        );
                     }
                     self.bump();
                     parts.push(Part::Script(inner));

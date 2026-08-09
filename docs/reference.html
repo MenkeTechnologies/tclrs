@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. Every one of the 336 names the current tclrs build implements: 78 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. Every one of the 338 names the current tclrs build implements: 80 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -126,15 +126,15 @@
 
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>LANGUAGE REFERENCE</h2>
-      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 78 commands,
+      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 80 commands,
       169 ensemble subcommands, the <code>expr</code> ladder, the
       <code>string is</code> classes and the <code>format</code> conversions &mdash; each with the
       signature the compiler reports and a description written from what the code does.
-      336 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
+      338 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
       <section class="tutorial-section">
         <h2>Chapters</h2>
         <ul class="chapter-index">
-          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">78</span></li>
+          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">80</span></li>
           <li><a href="#ch-string">The <code>string</code> ensemble</a> <span class="chapter-count">23</span></li>
           <li><a href="#ch-array">The <code>array</code> ensemble</a> <span class="chapter-count">13</span></li>
           <li><a href="#ch-dict">The <code>dict</code> ensemble</a> <span class="chapter-count">22</span></li>
@@ -147,7 +147,7 @@
 
       <section class="tutorial-section" id="ch-commands">
         <h2>Commands</h2>
-        <p class="chapter-meta">78 entries</p>
+        <p class="chapter-meta">80 entries</p>
         <p>Every command the current build compiles. A name absent from this
         chapter is <code>invalid command name "&hellip;"</code> at <em>compile</em>
         time, not a runtime lookup that fails &mdash; resolving the name while
@@ -159,11 +159,11 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">78</div>
+            <div class="stat-val">80</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">137/169</div>
+            <div class="stat-val">138/169</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -572,11 +572,23 @@
 </code></pre>
           <p>The string ensemble. Subcommands, options and the <code>string is</code> class are resolved while compiling.</p>
         </article>
+        <article class="doc-entry" id="doc-cmd-subst">
+          <h3><a class="doc-anchor" href="#doc-cmd-subst">#</a> <code>subst</code></h3>
+          <pre><code class="lang-tcl">subst ?-nobackslashes? ?-nocommands? ?-novariables? string
+</code></pre>
+          <p>Perform the substitutions of a double-quoted word on a value, against the calling frame: a <code>$name</code> in it is that frame's variable and a <code>[cmd]</code> in it runs there. Each option makes its introducer literal text rather than the start of a construct. A command substitution's failure is trapped the way the reference implementation traps it — an error propagates, a <code>break</code> ends the substitution keeping what it has, a <code>continue</code> drops that one substitution — while a plain variable read is not trapped, so a missing variable is an error.</p>
+        </article>
         <article class="doc-entry" id="doc-cmd-switch">
           <h3><a class="doc-anchor" href="#doc-cmd-switch">#</a> <code>switch</code></h3>
           <pre><code class="lang-tcl">switch ?-option ...? string ?pattern body ...? ?default body?
 </code></pre>
           <p>Run the body of the first pattern that matches, <code>-exact</code> or <code>-glob</code>.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-throw">
+          <h3><a class="doc-anchor" href="#doc-cmd-throw">#</a> <code>throw</code></h3>
+          <pre><code class="lang-tcl">throw type message
+</code></pre>
+          <p>Raise <code>message</code> as an error, the type having been checked to be a list of at least one element. The <code>-errorcode</code> the type becomes is part of the return-options dictionary, whose error entries this frontend does not model.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-tcl-findLibrary">
           <h3><a class="doc-anchor" href="#doc-cmd-tcl-findLibrary">#</a> <code>tcl_findLibrary</code></h3>
@@ -883,7 +895,7 @@
 
       <section class="tutorial-section" id="ch-dict">
         <h2>The <code>dict</code> ensemble</h2>
-        <p class="chapter-meta">22 subcommands recognised &middot; 18 implemented &middot; 4 refused</p>
+        <p class="chapter-meta">22 subcommands recognised &middot; 19 implemented &middot; 3 refused</p>
         <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
         <article class="doc-entry" id="doc-dict-append">
           <h3><a class="doc-anchor" href="#doc-dict-append">#</a> <code>dict append</code></h3>
@@ -907,7 +919,7 @@
           <h3><a class="doc-anchor" href="#doc-dict-filter">#</a> <code>dict filter</code></h3>
           <pre><code class="lang-tcl">dict filter dictionary filterType arg ?arg ...?
 </code></pre>
-          <p>The pairs kept by one of three filters: <code>key</code> and <code>value</code> take glob patterns and are built here — any of several patterns matching keeps the pair, and no pattern keeps nothing. The <code>script {k v} body</code> form is not: it needs a body run per pair against caller variables, which is the same machinery <code>dict map</code> wants.</p>
+          <p>The pairs kept by one of three filters. <code>key</code> and <code>value</code> take glob patterns — any of several matching keeps the pair, and no pattern keeps nothing. <code>script {k v} body</code> runs the body per pair and keeps the pair its result calls true, and keeps what it has collected when a <code>break</code> ends the walk.</p>
         </article>
         <article class="doc-entry" id="doc-dict-for">
           <h3><a class="doc-anchor" href="#doc-dict-for">#</a> <code>dict for</code></h3>
@@ -962,8 +974,7 @@
           <h3><a class="doc-anchor" href="#doc-dict-map">#</a> <code>dict map</code></h3>
           <pre><code class="lang-tcl">dict map {keyVarName valueVarName} dictionary script
 </code></pre>
-          <p><code>dict for</code> that collects each iteration's result as the new value for that key, yielding a dict of the same keys. Not built here — it wants the per-iteration result plumbing <code>lmap</code> has and the pair cursor <code>dict for</code> has, together.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>dict map is not supported yet</code></p>
+          <p><code>dict for</code> that collects each iteration's result as the new value for the key the key variable holds when the body ends. A <code>break</code> throws the whole accumulation away, which is where it parts from <code>dict filter</code>'s script form.</p>
         </article>
         <article class="doc-entry" id="doc-dict-merge">
           <h3><a class="doc-anchor" href="#doc-dict-merge">#</a> <code>dict merge</code></h3>

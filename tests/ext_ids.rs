@@ -25,6 +25,7 @@ fn all_ids() -> Vec<(&'static str, u16)> {
         ("MATCH", ext::MATCH),
         ("ERROR", ext::ERROR),
         ("CATCH_END", ext::CATCH_END),
+        ("THROW", ext::THROW),
         ("CORO_CREATE", ext::CORO_CREATE),
         ("CORO_RESUME", ext::CORO_RESUME),
         ("CORO_YIELD", ext::CORO_YIELD),
@@ -131,6 +132,9 @@ fn blocks() -> Vec<Block> {
                 // already taken by `proc`, `{*}` and `DYN_CALL`.
                 ("EVAL_FRAME", ext::EVAL_FRAME),
                 ("APPLY", ext::APPLY),
+                // `subst` is the fourth: it runs the commands its
+                // value spells against the calling frame.
+                ("SUBST", ext::SUBST),
             ],
         ),
         // `info`'s ids used to be four entries in the EVENT block above and are

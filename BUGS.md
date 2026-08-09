@@ -81,7 +81,12 @@ approximated, and nothing is silently mis-run.
   while compiling: a variable of `::foo` is the interpreter variable `foo::v`, a
   procedure of `::foo` is registered as `foo::p`, and an unqualified name
   written inside `::foo` reaches the namespace's before the root's — the
-  two-step search of `TclGetNamespaceForQualName`. `namespace qualifiers` and
+  two-step search of `TclGetNamespaceForQualName`. A *qualified* name is never a
+  procedure's local, which is the same rule read the other way: `TclLookupSimpleVar`
+  consults a frame's compiled locals only for a name with no `::` in it. Handing
+  one a frame slot instead made `proc f {} {return $::a}` answer the empty string
+  for a global the script had set, with nothing to show that it had — tclsh 9.0.4
+  answers the value. `namespace qualifiers` and
   `namespace tail` are ports of `NamespaceQualifiersCmd` and `NamespaceTailCmd`
   and are folded when their argument is written out. The queries — `exists`,
   `children`, `which`, `origin`, `parent` — read a registry the interpreter
@@ -101,10 +106,42 @@ approximated, and nothing is silently mis-run.
   value stack and the call frames to the region's entry state and resumes at the
   handler, so an error raised inside a procedure the guarded script called is
   caught correctly (`src/control.rs`).
+- **`subst`.** `subst ?-nobackslashes? ?-nocommands? ?-novariables? string`
+  (`src/cmd_subst.rs`, `parser::subst_parts`). The value is read as one word's
+  worth of parts running to the end of the input — `ParseTokens` with an empty
+  stop mask, so a space, a `;`, a `"` and a `]` are all ordinary text — and each
+  option makes its introducer one character of text rather than the start of a
+  construct, which is where `subst -nobackslashes {a\[set b]c}` still substitutes
+  the command. Nothing is settled while compiling, because nothing can be: the
+  string is a value, and `Tcl_NRSubstObj` compiles it at the moment the command
+  runs too.
+
+  Two things it would be easy to get quietly wrong, and neither is:
+
+  * **Which frame.** A `$name` inside the value is the *calling* frame's
+    variable and a `[cmd]` runs there, so the whole substitution happens inside
+    the projection `runtime::in_frame` opens — the same one `uplevel` and an
+    `eval` in a body run inside. Running it against the interpreter's globals
+    would read and write the wrong variables inside a procedure and never say so.
+  * **What a substitution's failure does.** `TclSubstCompile` puts a command
+    substitution inside a `catch` range and a plain variable read outside one, so
+    `subst {$nosuch}` is an error while `subst {x[break]y}` is `x`,
+    `subst {x[continue]y}` is `xy`, and `subst {x[return Q]y}` is `xQy`. A syntax
+    error is reported *after* everything before it has substituted and run —
+    `subst {[puts hi][}` writes `hi` and then fails — and an unterminated `[`
+    still runs the complete commands inside it, which is `TclSubstParse`'s own
+    recovery. 74 programs against tclsh in `tests/subst_differential.rs`.
+- **`throw`.** `throw type message`, with the type checked to be a list of at
+  least one element when the command runs (`Tcl_ThrowObjCmd`). The
+  `-errorcode` the type becomes is part of the options dictionary, whose error
+  entries are the gap recorded below for `return -errorcode`.
 - **Lists.** List parsing and canonical quoting ported from `TclFindElement` and
   `TclScanElement` / `TclConvertElement` (`src/list.rs`), plus `list`,
   `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`,
-  `lsearch`, `lsort`, `join`, `split`, `concat`, `lassign`, `lset`, `lpop`,
+  `lsearch`, `lsort` (every option, `-command` included — the comparison is
+  invoked as a command, so it sees the interpreter's variables and not the
+  caller's locals, which is where `Tcl_EvalObjv` leaves it),
+  `join`, `split`, `concat`, `lassign`, `lset`, `lpop`,
   `ledit`, `lrepeat`, `lremove`, `lseq` and `lmap` (`src/cmd_list.rs`). `in` and
   `ni` test string membership. Index expressions (`end`, `end±n`, `m±n`) follow
   `Tcl_GetIntForIndex`. `lappend` reaches its variable itself instead of taking
@@ -112,14 +149,27 @@ approximated, and nothing is silently mis-run.
   growing a list is linear rather than quadratic; a list another variable holds
   is copied instead of extended, which is what keeps that invisible to a script.
 - **Associative data.** Array variables (`a(k)`), `array` — `exists`, `get`,
-  `names`, `set`, `size`, `unset` — and `dict` — `create`, `exists`, `get`,
-  `for`, `incr`, `keys`, `merge`, `remove`, `set`, `size`, `values`
+  `names`, `set`, `size`, `unset` — and `dict` — `append`, `create`, `exists`,
+  `filter`, `for`, `get`, `getdef`, `getwithdefault`, `incr`, `keys`, `lappend`,
+  `map`, `merge`, `remove`, `replace`, `set`, `size`, `unset`, `values`
   (`src/assoc.rs`). `dict incr` counts a missing key as zero and promotes past
   an `i64` as Tcl's integers do, and it refuses a non-integer with `incr`'s own
   wording rather than an `expr` operand error.
-  `dict for` is emitted by the same `Compiler::rotated_loop` every other loop
-  goes through, over a cursor the VM's own `ArrayLen` / `ArrayGet` walk. An
-  array works inside a procedure as well as at the top level: every one of its
+  `dict for`, `dict map` and `dict filter … script` are one walk under three
+  endings, emitted by the same `Compiler::rotated_loop` every other loop goes
+  through. The walk's state — the flattened pairs, the cursor, and what has been
+  collected — rides the VM stack, pushed before the loop and read through the top
+  of it, the way `lmap`'s accumulator does: with the cursor in a hidden global
+  instead, a `dict for` whose body re-entered the same `dict for` clobbered the
+  outer walk's position and the outer loop stopped after one pair with nothing to
+  show for it. The three endings are the reference implementation's and they are
+  not the same: `dict for` answers the empty string, `dict filter` keeps what it
+  collected however the walk ended, and `dict map` throws its accumulation away
+  when a `break` ended the walk (`DictMapLoopCallback`,
+  `generic/tclDictObj.c:2992-3013`). `dict map` reads the key from the *variable*
+  after the body has run, so a body that reassigns `$k` moves the pair, and
+  `dict filter` keeps the dictionary's own key and value instead.
+  An array works inside a procedure as well as at the top level: every one of its
   ops takes the variable's place — a name index in the global table, or a frame
   slot written as `-(slot + 1)` — so a local array belongs to its activation and
   two frames of a recursive procedure do not share one.
@@ -625,16 +675,46 @@ approximated, and nothing is silently mis-run.
   The list is `BEYOND_UNICODE_16` in `src/cmd_string.rs`; regenerate it when the
   crate's Unicode version catches up, at which point it should be empty.
 - **Subcommands and options recognised and then refused.** `array startsearch`
-  and the other search subcommands; `dict` subcommands outside the implemented
-  set, and `dict set` or `dict incr` into an array element; `string`
+  and the other search subcommands; `dict update`, `dict with` and `dict info`;
+  `dict set` or `dict incr` into an array element; `string`
   subcommands outside the
   implemented set; `format` conversions outside the
-  implemented set; `lsort -command`;
+  implemented set; `regexp -about`;
   `error`'s `info` and `code` arguments; `return`'s options other than
   `-code` and `-level`. They go through the reference option parser first,
   so abbreviation and ambiguity behave as tclsh does, and are then refused.
-  `lsort -command` waits on a way to call back into the interpreter from inside
-  a sort, which the ops this frontend emits have no route for.
+  `lsort -command`, `dict map` and `dict filter … script` were on this list until
+  the change that added `subst`; what each of the three still open waits on is
+  named below.
+- **`dict update`.** The write-back is a `finally`: the variables go back into the
+  dictionary however the body ended — after an error, a `break` or a `return`
+  (`FinalizeDictUpdate`, `generic/tclDictObj.c:3544-3620`). Every other loop and
+  walk this compiler emits ends one way, so the shape has no lowering here yet;
+  the `catch` region is the machinery it would be built from.
+- **`dict with`.** The variables it creates are named by the dictionary's *keys*,
+  which are values. That is the same wall as `set $name 1` — a procedure's locals
+  are frame slots settled while the script is read, and a name that only exists at
+  run time has no slot to be given. See "Non-literal variable and body words".
+- **`dict info`.** The answer is `Tcl_HashStats` on the dictionary's own hash
+  table: a bucket count, the distribution of chain lengths, and an average search
+  distance. Reproducing it means reproducing tclsh's hash function, its bucket
+  growth policy and its insertion order — the internals of a container this
+  frontend does not have, and an approximation of them would be a number that
+  looks like a measurement and is not one.
+- **`regexp -about`.** The group count is easy; the second element is not. It is
+  the reference engine's own compile-time telemetry — `REG_UUNPORT`,
+  `REG_UNONPOSIX`, `REG_ULOCALE`, `REG_UEMPTYMATCH`, `REG_UBOUNDS` and the rest —
+  set from inside `regcomp.c` as it builds an NFA. This engine is a different one,
+  so those bits would have to be *inferred* from the pattern rather than reported,
+  and an inferred answer to "what did the compiler notice" is a guess wearing a
+  measurement's clothes.
+- **`format %a` and `%A`.** `%a` is C's hexadecimal-float form and is a faithful
+  port waiting to be written. `%A` is not: tclsh 9.0.4 answers `-xX0p+0` for
+  `format %A -0.0` and `IxF` for `format %A Inf` (measured), which is its
+  uppercasing walking over the `0x` prefix and the `inf` spelling. Implementing
+  `%a` alone would leave the pair half-done, and implementing `%A` means deciding
+  whether to reproduce that — the same decision `regsub -all -expanded` records
+  below, and one that belongs in its own change rather than as a side effect.
 - **A `dict` written into an array element.** `dict set a(1) k v` and
   `dict incr a(1) k` are refused: the target travels as a variable *place* — a
   name index or a frame slot — and an array element is neither. Both work on a
@@ -1037,9 +1117,10 @@ with a sign, and carries `nan` / `inf` in its value pools.
   `s`, not the padding as a whole. Reached only because the generator builds the
   specifier from its axes rather than drawing a fixed spelling.
 - **A refusal decided at run time is catchable, so `catch` sees a message where
-  tclsh saw an answer.** `catch {lsort -command x {a b}} m` leaves `m` as
-  `lsort -command is not supported yet` and the script runs on, where tclsh
-  sorts. The refusals decided while
+  tclsh saw an answer.** `catch {dict with d {}} m` leaves `m` as
+  `dict with is not supported yet` and the script runs on, where tclsh
+  explodes the dictionary. (`lsort -command` was the example here until it
+  landed.) The refusals decided while
   *compiling* — `string is punct`, `switch -matchvar` — are not catchable and do
   take the whole case out of comparison as a skip. The two halves are pinned
   together, because which side a refusal falls on is what decides whether the
@@ -1350,8 +1431,9 @@ than an unexamined one. Measured against the 2000-program run above.
   generated yet, so the run above says nothing about them either; what does is
   `tests/list_commands_differential.rs`.
 - **`array` on a procedure local, `unset` of one, and `eval` inside a procedure
-  body** *are* generated now, at `REFUSAL_RATE` — so are `lsort -command` and
-  the `dict` subcommands outside the implemented set. Each lands in the skip bucket under the refusal's own wording,
+  body** *are* generated now, at `REFUSAL_RATE` — so are the `dict` subcommands
+  outside the implemented set (`lsort -command` was one of these until it
+  landed, and its case in the run below became a pass). Each lands in the skip bucket under the refusal's own wording,
   which is coverage waiting for the refusal to go rather than a hole. The rate is
   low because these refusals are decided while compiling, so one of them anywhere
   takes the whole case out of comparison: at 8 percent the run is 215 skips of

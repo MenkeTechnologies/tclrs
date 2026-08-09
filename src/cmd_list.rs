@@ -25,7 +25,7 @@ use crate::assoc::Target;
 use crate::compiler::{ext, CompileError, Compiler, Place};
 use crate::list;
 use crate::parser::Word;
-use crate::runtime::{place_at, place_of, take_var, to_tcl_string, var_cell};
+use crate::runtime::{place_at, place_of, take_var, to_tcl_string, var_cell, Shared};
 
 // ── compiling ────────────────────────────────────────────────────────────
 
@@ -365,6 +365,26 @@ pub(crate) fn run(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     Ok(())
 }
 
+/// `lsort`, with the interpreter its `-command` may need.
+///
+/// The one list command with an arm of its own in the extension closure. Which
+/// options a call carries is not known until it runs — `lsort $opt $list` is
+/// ordinary Tcl — so the op cannot be chosen while compiling, and the
+/// interpreter is therefore handed to every `lsort` and used by the one in a
+/// hundred that says `-command`.
+///
+/// The comparison runs against the interpreter's own variables rather than the
+/// calling frame's, because `Tcl_EvalObjv` invokes a *command*: a procedure it
+/// names has a frame of its own, and a global it reads is a global. Projecting
+/// the caller's frame here instead would hide exactly those globals.
+pub(crate) fn lsort_op(interp: &Shared, vm: &mut VM, arg: u8) -> Result<(), String> {
+    let mut args: Vec<String> = (0..arg).map(|_| to_tcl_string(&vm.pop())).collect();
+    args.reverse();
+    let result = crate::runtime::at_global(interp, vm, |interp| lsort(&args, Some(interp)))?;
+    vm.push(Value::Str(Arc::new(result)));
+    Ok(())
+}
+
 fn dispatch(id: u16, args: &[String]) -> Result<String, String> {
     match id {
         ext::LIST => Ok(list::join(args)),
@@ -380,7 +400,7 @@ fn dispatch(id: u16, args: &[String]) -> Result<String, String> {
         ext::LINSERT => linsert(&args[0], &args[1], &args[2..]),
         ext::LREPLACE => lreplace(&args[0], &args[1], &args[2], &args[3..]),
         ext::LSEARCH => lsearch(args),
-        ext::LSORT => lsort(args),
+        ext::LSORT => lsort(args, None),
         ext::JOIN => {
             let sep = args.get(1).map(String::as_str).unwrap_or(" ");
             Ok(list::split(&args[0])?.join(sep))
@@ -843,6 +863,8 @@ enum DataType {
     Dictionary,
     Integer,
     Real,
+    /// `-command`: the script compares, so there is no key to derive.
+    Command,
 }
 
 fn lsearch(args: &[String]) -> Result<String, String> {
@@ -1180,6 +1202,84 @@ enum Key {
     Dictionary(String),
     Integer(i64),
     Real(f64),
+    /// `-command`: the element itself, which the script's comparison command is
+    /// handed. `SortCompare` keeps the value rather than a derived key for this
+    /// mode too (`collationKey.objValuePtr`).
+    Command(String),
+}
+
+/// How `lsort` orders two collation keys.
+///
+/// Every built-in mode is decided by [`compare_keys`] from the keys alone.
+/// `-command` is not: it calls back into the interpreter once per pair, which is
+/// why the sort has to be told how to compare rather than knowing.
+pub(crate) enum Comparator<'a> {
+    Builtin,
+    Command {
+        interp: &'a Shared,
+        /// The comparison command's words, with the two elements appended per
+        /// call — `Tcl_ListObjReplace` on the last two, as `SortCompare` does.
+        prefix: Vec<String>,
+        /// The first failure. `SortCompare` answers 0 for every pair after one
+        /// has failed, "so as to preserve the error message", and this is that
+        /// state: once it is set the sort finishes without calling out again
+        /// and the command reports what is in here.
+        failed: RefCell<Option<String>>,
+    },
+}
+
+impl Comparator<'_> {
+    fn keys(&self, a: &Key, b: &Key) -> std::cmp::Ordering {
+        let Comparator::Command {
+            interp,
+            prefix,
+            failed,
+        } = self
+        else {
+            return compare_keys(a, b);
+        };
+        if failed.borrow().is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        let (Key::Command(x), Key::Command(y)) = (a, b) else {
+            return std::cmp::Ordering::Equal;
+        };
+        let mut words = prefix.clone();
+        words.push(x.clone());
+        words.push(y.clone());
+        match call(interp, &words) {
+            Ok(order) => order.cmp(&0),
+            Err(msg) => {
+                *failed.borrow_mut() = Some(msg);
+                std::cmp::Ordering::Equal
+            }
+        }
+    }
+
+    /// The failure that stopped the sort, if one did.
+    fn failure(&self) -> Option<String> {
+        match self {
+            Comparator::Builtin => None,
+            Comparator::Command { failed, .. } => failed.borrow().clone(),
+        }
+    }
+}
+
+/// Run the comparison command on one pair and read its answer.
+///
+/// `Tcl_EvalObjv` invokes the words as a command, so the two elements are
+/// arguments and not text to re-parse; joining them as a list and evaluating
+/// that is how this frontend reaches a command whose name is only a value, the
+/// same route `{*}` expansion takes. The result must be an `int`:
+/// `TclGetIntFromObj` failing for any reason — a non-number, or one past the
+/// range — is reported with `SortCompare`'s single message.
+fn call(interp: &Shared, words: &[String]) -> Result<i32, String> {
+    let value = crate::runtime::run_source(interp, &list::join(words)).map_err(|e| e.msg)?;
+    let text = crate::runtime::to_tcl_string(&value);
+    list::wide(&text)
+        .ok()
+        .and_then(|n| i32::try_from(n).ok())
+        .ok_or_else(|| "-compare command returned non-integer result".to_string())
 }
 
 /// The collation key one element sorts by.
@@ -1190,6 +1290,7 @@ fn key_of(text: &str, data: DataType) -> Result<Key, String> {
         DataType::Dictionary => Key::Dictionary(text.to_string()),
         DataType::Integer => Key::Integer(list::wide(text)?),
         DataType::Real => Key::Real(list::double(text)?),
+        DataType::Command => Key::Command(text.to_string()),
     })
 }
 
@@ -1353,6 +1454,7 @@ fn lsort_stride(
     order: Order,
     indices: bool,
     index_path: &[String],
+    cmp: &Comparator,
 ) -> Result<String, String> {
     // With `-stride`, the *first* `-index` value picks which element of the
     // group carries the key, and only the rest of the path is walked into it.
@@ -1375,7 +1477,7 @@ fn lsort_stride(
     // A stable sort keeps equal groups in the order they were written, which is
     // what the reference merge sort does with them.
     keyed.sort_by(|a, b| {
-        let ord = compare_keys(&a.0, &b.0);
+        let ord = cmp.keys(&a.0, &b.0);
         if order.increasing {
             ord
         } else {
@@ -1391,7 +1493,7 @@ fn lsort_stride(
         // equal — and the same rule the element-wise sort in this file follows.
         if order.unique {
             if let Some((next, _)) = keyed.get(i + 1) {
-                if compare_keys(key, next).is_eq() {
+                if cmp.keys(key, next).is_eq() {
                     continue;
                 }
             }
@@ -1407,8 +1509,9 @@ fn lsort_stride(
     Ok(list::join(&out))
 }
 
-fn lsort(args: &[String]) -> Result<String, String> {
+fn lsort(args: &[String], interp: Option<&Shared>) -> Result<String, String> {
     let mut data = DataType::Ascii;
+    let mut command: Vec<String> = Vec::new();
     let mut increasing = true;
     let mut unique = false;
     let mut indices = false;
@@ -1433,6 +1536,19 @@ fn lsort(args: &[String]) -> Result<String, String> {
             "-nocase" => nocase = true,
             "-real" => data = DataType::Real,
             "-unique" => unique = true,
+            // `-command` is a sort *mode*, so a later `-integer` replaces it
+            // and a later `-command` replaces that, exactly as the mode the
+            // other options set is replaced.
+            "-command" => {
+                let Some(value) = args.get(i + 1) else {
+                    return Err(
+                        "\"-command\" option must be followed by comparison command".to_string()
+                    );
+                };
+                command = list::split(value)?;
+                data = DataType::Command;
+                i += 1;
+            }
             "-index" => {
                 let Some(value) = args.get(i + 1) else {
                     return Err("\"-index\" option must be followed by list index".to_string());
@@ -1464,19 +1580,35 @@ fn lsort(args: &[String]) -> Result<String, String> {
         data = DataType::AsciiNoCase;
     }
 
+    // The comparison the sort will use. `-command` without an interpreter to
+    // run it in cannot happen: the op that has one is the only lowering.
+    let cmp = match (data, interp) {
+        (DataType::Command, Some(interp)) => Comparator::Command {
+            interp,
+            prefix: command,
+            failed: RefCell::new(None),
+        },
+        _ => Comparator::Builtin,
+    };
+
     let items = list::split(&args[args.len() - 1])?;
     if stride > 1 {
         if !items.len().is_multiple_of(stride) {
             return Err("list size must be a multiple of the stride length".to_string());
         }
-        return lsort_stride(
+        let out = lsort_stride(
             &items,
             stride,
             data,
             Order { increasing, unique },
             indices,
             &index_path,
+            &cmp,
         );
+        return match cmp.failure() {
+            Some(msg) => Err(msg),
+            None => out,
+        };
     }
     let mut elements = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
@@ -1502,14 +1634,14 @@ fn lsort(args: &[String]) -> Result<String, String> {
         let mut j = 0;
         while j < RUNS && sublists[j].is_some() {
             let left = sublists[j].take();
-            head = merge(&mut elements, left, head, order);
+            head = merge(&mut elements, left, head, order, &cmp);
             j += 1;
         }
         sublists[j.min(RUNS - 1)] = head;
     }
     let mut head = sublists[0];
     for &run in &sublists[1..] {
-        head = merge(&mut elements, run, head, order);
+        head = merge(&mut elements, run, head, order, &cmp);
     }
 
     let mut sorted = Vec::new();
@@ -1522,7 +1654,12 @@ fn lsort(args: &[String]) -> Result<String, String> {
         });
         cursor = elements[i].next;
     }
-    Ok(list::join(&sorted))
+    // A comparison command that failed stops the sort with its own message,
+    // not with a half-sorted list.
+    match cmp.failure() {
+        Some(msg) => Err(msg),
+        None => Ok(list::join(&sorted)),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1553,8 +1690,14 @@ fn compare_keys(a: &Key, b: &Key) -> std::cmp::Ordering {
     }
 }
 
-fn compare(elements: &[Element], a: usize, b: usize, order: Order) -> std::cmp::Ordering {
-    let ordering = compare_keys(&elements[a].key, &elements[b].key);
+fn compare(
+    elements: &[Element],
+    a: usize,
+    b: usize,
+    order: Order,
+    cmp: &Comparator,
+) -> std::cmp::Ordering {
+    let ordering = cmp.keys(&elements[a].key, &elements[b].key);
     if order.increasing {
         ordering
     } else {
@@ -1570,13 +1713,14 @@ fn merge(
     left: Option<usize>,
     right: Option<usize>,
     order: Order,
+    cmp: &Comparator,
 ) -> Option<usize> {
     let (Some(first_left), Some(first_right)) = (left, right) else {
         return left.or(right);
     };
     let (mut left, mut right) = (left, right);
 
-    let ordering = compare(elements, first_left, first_right, order);
+    let ordering = compare(elements, first_left, first_right, order, cmp);
     let head = if ordering.is_gt() || (ordering.is_eq() && order.unique) {
         if ordering.is_eq() {
             left = elements[first_left].next;
@@ -1590,7 +1734,7 @@ fn merge(
 
     let mut tail = head;
     while let (Some(l), Some(r)) = (left, right) {
-        let ordering = compare(elements, l, r, order);
+        let ordering = compare(elements, l, r, order, cmp);
         let take_right = if order.unique {
             ordering.is_ge()
         } else {

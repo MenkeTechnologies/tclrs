@@ -237,6 +237,31 @@ const FIXED: &[&str] = &[
     "puts [dict filter {a 1 b 2} key]",
     "puts [dict filter {aa 1 bb 2 cc 3} key a* c*]",
     "puts [catch {dict filter {a 1} bogus} m]\nputs $m",
+    // ── dict filter … script ──
+    "puts [dict filter {a 1 b 2 c 3} script {k v} {expr {$v > 1}}]",
+    "puts [dict filter {a 1 b 2 c 3} script {k v} {if {$k eq \"c\"} break; expr 1}]",
+    "puts [dict filter {a 1 b 2 c 3} script {k v} {if {$k eq \"b\"} continue; expr 1}]",
+    "puts [dict filter {} script {k v} {expr 1}]x",
+    "puts [catch {dict filter {a 1} script {k v} {set k}} m]\nputs $m",
+    "puts [catch {dict filter {a 1} script {k} {expr 1}} m]\nputs $m",
+    "puts [dict filter {a 1} script {k v} {set k Z; expr 1}]",
+    "proc p {} {set d {a 1 b 2}\nreturn [dict filter $d script {k v} {expr {$v==2}}]}\nputs [p]",
+    // ── dict map ──
+    "puts [dict map {k v} {a 1 b 2 c 3} {expr {$v*2}}]",
+    "puts [dict map {k v} {a 1 b 2 c 3} {if {$k eq \"b\"} break; expr {$v*2}}]",
+    "puts [dict map {k v} {a 1 b 2 c 3} {if {$k eq \"b\"} continue; expr {$v*2}}]",
+    "puts [dict map {k v} {} {set k}]x",
+    "puts [dict map {k v} {a 1} {set k Z; set v}]",
+    "puts [catch {dict map {k v} {a 1 b} {set k}} m]\nputs $m",
+    "puts [catch {dict map {k} {a 1} {set k}} m]\nputs $m",
+    "puts [catch {dict map {k v} {a 1} {error boom}} m]\nputs $m",
+    "puts [dict map {k v} {a {p 1}} {dict map {i j} $v {expr {$j*3}}}]",
+    "proc p {} {set d {x 1 y 2}\nreturn [dict map {k v} $d {expr {$v+10}}]}\nputs [p]",
+    // A walk whose body re-enters the same walk. The state is per-invocation,
+    // so the outer one still visits every pair; a shared cursor made it stop
+    // after the first.
+    "proc w {d n} {set out {}\ndict for {k v} $d {lappend out $k$n\nif {$n < 2} {set out [concat $out [w $d [expr {$n+1}]]]}}\nreturn $out}\nputs [w {a 1 b 2} 0]",
+    "proc m {d n} {return [dict map {k v} $d {if {$n < 2} {m $d [expr {$n+1}]} else {set v}}]}\nputs [m {a 1 b 2} 0]",
     // ── the two together ──
     "array set a {x 1 y 2}\nputs [dict get [array get a] y]\nputs [dict size [array get a]]",
     "array set a {x 1 y 2 z 3}\nset d [array get a]\nputs [dict exists $d z]\nputs [dict exists $d w]",
@@ -451,21 +476,15 @@ fn unimplemented_subcommands_are_refused() {
         ),
         ("array for {k v} a {}", "array for is not supported yet"),
         ("array names a -regexp x", "needs regexp support"),
-        // `dict filter` is implemented for the two glob filters; the `script`
-        // filter is what it still refuses, because that one runs a body per
-        // pair against caller variables.
-        (
-            "dict filter {a 1} script {k v} {expr 1}",
-            "dict filter script is not supported yet",
-        ),
         // `dict incr` is implemented; what it still refuses is an array element
         // as the target, which is `dict set`'s limitation and now also its own.
         (
             "set a(1) x\ndict incr a(1) k",
             "array element is not supported yet",
         ),
+        // `dict filter … script` and `dict map` were refused here until they
+        // landed; what they answer is now compared against tclsh in `FIXED`.
         ("dict with d {}", "dict with is not supported yet"),
-        ("dict map {k v} {a 1} {}", "dict map is not supported yet"),
         ("dict update d k x {}", "dict update is not supported yet"),
         ("dict info {a 1}", "dict info is not supported yet"),
         (

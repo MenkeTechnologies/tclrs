@@ -1043,6 +1043,13 @@ impl Compiler {
                 };
                 self.dict_for(vars, dict, body)
             }
+            "map" => {
+                let [vars, dict, body] = rest else {
+                    return self
+                        .error("wrong # args: should be \"dict map {keyVarName valueVarName} dictionary script\"");
+                };
+                self.dict_map(vars, dict, body)
+            }
             "incr" => {
                 let (name, key, by) = match rest {
                     [name, key] => (name, key, None),
@@ -1130,7 +1137,16 @@ impl Compiler {
                 let which = match self.literal_of(which, "dict filter type")? {
                     "key" => 0,
                     "value" => 1,
-                    "script" => return self.error("dict filter script is not supported yet"),
+                    "script" => {
+                        let [vars, body] = patterns else {
+                            return self.error(
+                                "wrong # args: should be \"dict filter dictionary script {keyVarName valueVarName} filterScript\"",
+                            );
+                        };
+                        let (vars, body) = (vars.clone(), body.clone());
+                        let dict = dict.clone();
+                        return self.dict_filter_script(&dict, &vars, &body);
+                    }
                     // The reference implementation only reaches this when the
                     // command runs, so `catch {dict filter {a 1} bogus}` is a
                     // caught error there rather than a script that refuses to
@@ -1199,65 +1215,261 @@ impl Compiler {
         Ok(())
     }
 
-    /// `dict for {k v} $d {body}` — a cursor over the key/value pairs, which the
-    /// VM's own `ArrayLen`/`ArrayGet` walk.
+    /// `dict for {k v} $d {body}` — a walk over the key/value pairs.
     fn dict_for(&mut self, vars: &Word, dict: &Word, body: &Word) -> Result<(), CompileError> {
-        let text = self.literal_of(vars, "dict for variable list")?;
+        let names = self.dict_each_vars("dict for", vars)?;
+        self.dict_each_init(dict)?;
+        let script = self.body_of(body)?;
+        self.dict_each(&names, |c| c.emit_body(&script))?;
+        // `dict for` has no value of its own.
+        self.dict_each_step(Step::Discard, 0);
+        Ok(())
+    }
+
+    /// `dict map {k v} $d {body}` — `dict for` that collects.
+    ///
+    /// Each iteration puts the body's *result* under the key the key variable
+    /// holds when the body has finished, which is what `DictMapLoopCallback`
+    /// reads (`generic/tclDictObj.c:3005-3012`) — so a body that reassigns `$k`
+    /// changes the key the pair lands under, as it does in tclsh 9.0.4
+    /// (measured: `dict map {k v} {a 1} {set k Z; set v}` is `Z 1`).
+    ///
+    /// A `break` throws the whole accumulation away rather than keeping what it
+    /// had: the callback resets the result and leaves without ever setting it to
+    /// the accumulator (`:2995-3003`). `dict filter` — the same walk otherwise —
+    /// keeps its accumulation on a `break`, which is why the two endings differ.
+    fn dict_map(&mut self, vars: &Word, dict: &Word, body: &Word) -> Result<(), CompileError> {
+        let names = self.dict_each_vars("dict map", vars)?;
+        self.dict_each_init(dict)?;
+        let script = self.body_of(body)?;
+        let key = names.0.clone();
+        self.dict_each(&names, |c| {
+            c.emit_body_value(&script)?;
+            // The key is read *after* the body, from the variable the body may
+            // have reassigned.
+            c.emit_get_var(&key);
+            c.dict_each_step(Step::Collect, -2);
+            Ok(())
+        })?;
+        self.dict_each_step(Step::MapResult, 0);
+        Ok(())
+    }
+
+    /// `dict filter $d script {k v} {body}` — `dict for` that keeps the pairs
+    /// whose body answers true.
+    ///
+    /// The pair kept is the dictionary's own key and value, not what the two
+    /// variables hold afterwards (`generic/tclDictObj.c:3410-3412`), and a
+    /// `break` ends the walk while *keeping* what it has collected — the arm at
+    /// `:3414` resets only the interpreter result and falls through to the
+    /// `TCL_OK` ending.
+    fn dict_filter_script(
+        &mut self,
+        dict: &Word,
+        vars: &Word,
+        body: &Word,
+    ) -> Result<(), CompileError> {
+        let names = self.dict_each_vars("dict filter", vars)?;
+        self.dict_each_init(dict)?;
+        let script = self.body_of(body)?;
+        self.dict_each(&names, |c| {
+            c.emit_body_value(&script)?;
+            // The body's value is a Tcl boolean, refused in `expr`'s own
+            // wording when it is not one.
+            c.emit(Op::Extended(ext::BOOL, 0), 0);
+            c.dict_each_step(Step::Keep, -1);
+            Ok(())
+        })?;
+        self.dict_each_step(Step::FilterResult, 0);
+        Ok(())
+    }
+
+    /// The two variable names one of these walks assigns.
+    fn dict_each_vars(
+        &mut self,
+        what: &str,
+        vars: &Word,
+    ) -> Result<(String, String), CompileError> {
+        let text = self.literal_of(vars, &format!("{what} variable list"))?;
         let names = split(text, "list").map_err(|msg| CompileError {
             msg,
             line: self.line,
         })?;
-        let [key_name, value_name] = names.as_slice() else {
-            return self.error("must have exactly two variable names");
+        let [key, value] = names.as_slice() else {
+            // The reference interpreter only reaches this when the command runs
+            // — `TclCompileDictForCmd` declines to compile a walk whose variable
+            // list is not a pair and leaves it to `DictForNRCmd` — so
+            // `catch {dict for {k} {a 1} {}}` catches it there. Marked so the
+            // failure becomes code rather than a refusal to compile.
+            return Err(self.deferrable_err("must have exactly two variable names".to_string()));
         };
-        let (key_name, value_name) = (key_name.clone(), value_name.clone());
+        Ok((key.clone(), value.clone()))
+    }
 
-        // Hidden globals, named so that no Tcl variable name can collide.
-        let tag = self.b.current_pos();
-        let pairs = self.b.add_name(&format!("\u{0}dict for pairs {tag}"));
-        let cursor = self.b.add_name(&format!("\u{0}dict for cursor {tag}"));
-
+    /// Put the walk's state on the stack, where it stays for the whole loop.
+    fn dict_each_init(&mut self, dict: &Word) -> Result<(), CompileError> {
         self.word(dict)?;
         self.emit(Op::Extended(ext::DICT_PAIRS, 0), 0);
-        self.emit(Op::SetVar(pairs), -1);
-        self.emit(Op::LoadInt(0), 1);
-        self.emit(Op::SetVar(cursor), -1);
-
-        let script = self.body_of(body)?;
-        self.rotated_loop(
-            |c| {
-                c.scalar_set_guard(&key_name);
-                c.emit(Op::GetVar(cursor), 1);
-                c.emit(Op::ArrayGet(pairs), 0);
-                c.emit_set_var(&key_name);
-
-                c.scalar_set_guard(&value_name);
-                c.emit(Op::GetVar(cursor), 1);
-                c.emit(Op::LoadInt(1), 1);
-                c.emit(Op::Add, -1);
-                c.emit(Op::ArrayGet(pairs), 0);
-                c.emit_set_var(&value_name);
-
-                c.emit_body(&script)
-            },
-            |c| {
-                c.emit(Op::GetVar(cursor), 1);
-                c.emit(Op::LoadInt(2), 1);
-                c.emit(Op::Add, -1);
-                c.emit(Op::SetVar(cursor), -1);
-                Ok(())
-            },
-            |c| {
-                c.emit(Op::GetVar(cursor), 1);
-                c.emit(Op::ArrayLen(pairs), 1);
-                c.emit(Op::NumLt, -1);
-                Ok(())
-            },
-        )?;
-        // `dict for` has no value of its own.
-        self.push_empty();
+        self.dict_each_step(Step::Init, 0);
         Ok(())
     }
+
+    fn dict_each_step(&mut self, step: Step, delta: i32) {
+        self.emit(Op::Extended(ext::DICT_EACH, step as u8), delta);
+    }
+
+    /// The loop: assign the two variables from the pair the cursor is on, run
+    /// `body`, and step past that pair.
+    fn dict_each<F>(&mut self, names: &(String, String), body: F) -> Result<(), CompileError>
+    where
+        F: FnOnce(&mut Self) -> Result<(), CompileError>,
+    {
+        let (key, value) = names.clone();
+        self.rotated_loop(
+            |c| {
+                c.dict_each_step(Step::Take, 2);
+                c.scalar_set_guard(&value);
+                c.emit_set_var(&value);
+                c.scalar_set_guard(&key);
+                c.emit_set_var(&key);
+                body(c)
+            },
+            |c| {
+                c.dict_each_step(Step::Advance, 0);
+                Ok(())
+            },
+            |c| {
+                c.dict_each_step(Step::More, 1);
+                Ok(())
+            },
+        )
+    }
+}
+
+/// One step of the walk [`ext::DICT_EACH`] performs, in the op's inline operand.
+#[derive(Clone, Copy)]
+pub(crate) enum Step {
+    /// `[pairs]` → the walk's state.
+    Init = 0,
+    /// `[state]` → `[state, 1]` while a pair remains.
+    More = 1,
+    /// `[state]` → `[state, key, value]` for the pair the cursor is on.
+    Take = 2,
+    /// `[state]` → `[state]`, past that pair.
+    Advance = 3,
+    /// `dict map`: `[state, value, key]` → `[state]`, the pair recorded.
+    Collect = 4,
+    /// `dict filter`: `[state, keep]` → `[state]`, the pair at the cursor
+    /// recorded when `keep` is true.
+    Keep = 5,
+    /// `[state]` → the accumulation, or the empty string when a `break` left
+    /// the walk unfinished.
+    MapResult = 6,
+    /// `[state]` → the accumulation, whatever ended the walk.
+    FilterResult = 7,
+    /// `[state]` → the empty string. What `dict for` answers.
+    Discard = 8,
+}
+
+impl Step {
+    fn of(arg: u8) -> Option<Step> {
+        Some(match arg {
+            0 => Step::Init,
+            1 => Step::More,
+            2 => Step::Take,
+            3 => Step::Advance,
+            4 => Step::Collect,
+            5 => Step::Keep,
+            6 => Step::MapResult,
+            7 => Step::FilterResult,
+            8 => Step::Discard,
+            _ => return None,
+        })
+    }
+}
+
+/// The walk's state as it sits on the VM stack: the flattened pairs, then the
+/// index of the pair being visited, then what has been collected.
+fn dict_each_op(vm: &mut VM, arg: u8) -> Result<(), String> {
+    const CORRUPT: &str = "corrupt dict walk state";
+    let Some(step) = Step::of(arg) else {
+        return Err(CORRUPT.to_string());
+    };
+    if let Step::Init = step {
+        let Value::Array(pairs) = vm.pop() else {
+            return Err(CORRUPT.to_string());
+        };
+        vm.push(Value::Array(vec![
+            Value::Array(pairs),
+            Value::Int(0),
+            Value::Str(Arc::new(String::new())),
+        ]));
+        return Ok(());
+    }
+    // Everything else reads the state where it sits, under whatever the step
+    // consumes, so that a `break` unwinding the stack to the loop's entry depth
+    // leaves it exactly where the result step will look.
+    let taken = match step {
+        Step::Collect => 2,
+        Step::Keep => 1,
+        _ => 0,
+    };
+    let mut popped = Vec::with_capacity(taken);
+    for _ in 0..taken {
+        popped.push(vm.pop());
+    }
+    let Some(Value::Array(state)) = vm.stack.last_mut() else {
+        return Err(CORRUPT.to_string());
+    };
+    let [Value::Array(pairs), Value::Int(cursor), Value::Str(acc)] = state.as_mut_slice() else {
+        return Err(CORRUPT.to_string());
+    };
+    let at = *cursor as usize;
+    match step {
+        Step::Init => unreachable!("handled above"),
+        Step::More => {
+            let more = at < pairs.len();
+            vm.push(Value::Int(more as i64));
+        }
+        Step::Take => {
+            let key = pairs.get(at).cloned().unwrap_or(Value::Undef);
+            let value = pairs.get(at + 1).cloned().unwrap_or(Value::Undef);
+            vm.push(key);
+            vm.push(value);
+        }
+        Step::Advance => *cursor += 2,
+        Step::Collect => {
+            // Pushed value first, then key, so the key came off first.
+            let [key, value] = popped.as_slice() else {
+                return Err(CORRUPT.to_string());
+            };
+            let next = dict_set(acc, &[to_tcl_string(key)], to_tcl_string(value))?;
+            *acc = Arc::new(next);
+        }
+        Step::Keep => {
+            let keep = popped.first().is_some_and(|v| tcl_int(v).unwrap_or(0) != 0);
+            if keep {
+                let key = pairs.get(at).cloned().unwrap_or(Value::Undef);
+                let value = pairs.get(at + 1).cloned().unwrap_or(Value::Undef);
+                let next = dict_set(acc, &[to_tcl_string(&key)], to_tcl_string(&value))?;
+                *acc = Arc::new(next);
+            }
+        }
+        Step::MapResult | Step::FilterResult | Step::Discard => {
+            // A walk that ran out of pairs left the cursor past the end; a
+            // `break` left it on the pair it stopped at, and that is the one
+            // ending whose accumulation `dict map` throws away.
+            let finished = at >= pairs.len();
+            let result = match step {
+                Step::Discard => String::new(),
+                Step::MapResult if !finished => String::new(),
+                _ => acc.to_string(),
+            };
+            vm.pop();
+            vm.push(Value::Str(Arc::new(result)));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) const ARRAY_SUBCOMMANDS: &[&str] = &[
@@ -1679,6 +1891,7 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             push_str(vm, dict_incr(&to_tcl_string(&current), &key, &by)?);
             Ok(())
         }
+        ext::DICT_EACH => dict_each_op(vm, arg),
         ext::DICT_PAIRS => {
             let dict = pop_str(vm);
             let d = Dict::parse(&dict)?;

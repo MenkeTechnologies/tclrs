@@ -699,6 +699,19 @@ fn overflow_value_index(chunk: &Chunk, offset: usize) -> usize {
     chunk.names.len() + 1 + offset
 }
 
+/// One variable of the interpreter's table, by the name a *running* command
+/// spells — an alias `upvar` made is followed, as every other read of the table
+/// follows it.
+///
+/// The compiler reaches variables by slot or by name index, both settled while
+/// the script is read. `subst` cannot: the value it substitutes is only a value
+/// when the command runs, so the name it names is too. See [`crate::cmd_subst`].
+pub(crate) fn read_global(interp: &Shared, name: &str) -> Option<Value> {
+    let state = interp.lock().expect("interpreter lock");
+    let key = state.alias_of(name);
+    state.globals.get(key).cloned()
+}
+
 impl State {
     /// The name an alias stands for, or the name itself. One step is enough for
     /// every alias this frontend makes — a chain would need `upvar` to an alias,
@@ -1392,6 +1405,16 @@ impl Hooks {
                 ext::EVAL_FRAME => eval_frame_op(&interp, vm, arg),
                 ext::UPLEVEL => uplevel_op(&interp, vm, arg),
                 ext::APPLY => apply_op(&interp, vm, arg),
+                // `subst` reads the calling frame's variables and runs the
+                // commands its value spells against that frame, so it is the
+                // fourth op of this kind rather than one more entry in the
+                // plain `extension` below.
+                ext::SUBST => crate::cmd_subst::subst_op(&interp, vm, arg),
+                // `lsort` is dispatched here rather than with the rest of the
+                // list block, because `-command` calls back into the
+                // interpreter once per compared pair — and whether a given call
+                // says `-command` is only known when it runs.
+                ext::LSORT => crate::cmd_list::lsort_op(&interp, vm, arg).map_err(TclError::plain),
                 // `info globals` / `vars` answer from the interpreter's own
                 // table, not the chunk's name pool: `argc`, `argv` and `argv0`
                 // are set by the host and are interned only if the script
@@ -1641,6 +1664,25 @@ fn absolute(name: &str) -> String {
     }
 }
 
+/// Run `body` against the interpreter's own variable table, with the running
+/// chunk's variables written out first and read back afterwards.
+///
+/// What an `eval` at a script's top level does, and what an op that calls a
+/// *command* needs — `lsort -command`'s comparison, which `Tcl_EvalObjv`
+/// invokes at the current level rather than as a script in the caller's frame.
+/// Without the write-out a command it calls would not see what the running
+/// chunk has assigned and not yet flushed.
+pub(crate) fn at_global<T, E>(
+    interp: &Shared,
+    vm: &mut VM,
+    body: impl FnOnce(&Shared) -> Result<T, E>,
+) -> Result<T, E> {
+    flush(&vm.chunk, interp, &vm.globals);
+    let result = body(interp);
+    vm.globals = reproject(&vm.chunk, interp, &vm.globals);
+    result
+}
+
 fn eval_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     let mut args = Vec::with_capacity(argc as usize);
     for _ in 0..argc {
@@ -1815,6 +1857,28 @@ fn run_in_frame(
     up: usize,
     declared: &str,
 ) -> Result<(), TclError> {
+    let value = in_frame(interp, vm, up, declared, |interp| run_source(interp, src))?;
+    vm.push(value);
+    Ok(())
+}
+
+/// The projection [`run_in_frame`] runs a script inside, as a scope any op can
+/// borrow.
+///
+/// Split out because a script is not the only thing that has to run against the
+/// calling frame: `subst` reads that frame's variables and runs the commands its
+/// value spells, and `lsort -command` calls a comparison command per pair. Each
+/// is several evaluations inside *one* projection, so the exchange — the running
+/// chunk's variables out, the frame's in, the slots read back — belongs here and
+/// not in each caller. Doing any of them against the globals instead would read
+/// and write the wrong variables inside a procedure without ever saying so.
+pub(crate) fn in_frame<T>(
+    interp: &Shared,
+    vm: &mut VM,
+    up: usize,
+    declared: &str,
+    body: impl FnOnce(&Shared) -> Result<T, TclError>,
+) -> Result<T, TclError> {
     let names: Vec<String> = vm.slot_names_at(up).to_vec();
     let frame = match vm.frames.len().checked_sub(up + 1) {
         // A frame with no name for its slots — the base frame, a scope frame, or
@@ -1822,10 +1886,9 @@ fn run_in_frame(
         // script runs against the globals, as an ordinary `eval` does.
         Some(_) if names.is_empty() => {
             flush(&vm.chunk, interp, &vm.globals);
-            let result = run_source(interp, src);
+            let result = body(interp);
             vm.globals = seed(&vm.chunk, interp);
-            vm.push(result?);
-            return Ok(());
+            return result;
         }
         Some(index) => index,
         None => return Err(TclError::plain("bad level".to_string())),
@@ -1860,7 +1923,7 @@ fn run_in_frame(
     }
     interp.lock().expect("interpreter lock").globals = view;
 
-    let result = run_source(interp, src);
+    let result = body(interp);
 
     let after = std::mem::take(&mut interp.lock().expect("interpreter lock").globals);
     for (slot, name) in names.iter().enumerate() {
@@ -1883,8 +1946,7 @@ fn run_in_frame(
     }
     interp.lock().expect("interpreter lock").globals = outer;
     vm.globals = seed(&vm.chunk, interp);
-    vm.push(result?);
-    Ok(())
+    result
 }
 
 /// `apply lambdaExpr ?arg …?`: `[lambda, arg …]`.
@@ -3386,6 +3448,18 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         // `error` and `return -code error` raise the message as the error, so
         // the enclosing `catch` — or the caller of `eval` — receives it.
         ext::ERROR => Err(to_tcl_string(&vm.pop())),
+        // `throw type message`. The type has to be a list of at least one
+        // element — `Tcl_ThrowObjCmd` asks `TclListObjLength` and then its own
+        // length test — and the message is then raised as an ordinary error.
+        ext::THROW => {
+            let message = to_tcl_string(&vm.pop());
+            let kind = to_tcl_string(&vm.pop());
+            match list::split(&kind) {
+                Err(e) => Err(e),
+                Ok(items) if items.is_empty() => Err("type must be non-empty list".to_string()),
+                Ok(_) => Err(message),
+            }
+        }
         // The ranges are tested from the highest base down, so that a lower
         // one's `id >= BASE` does not swallow a higher module's ops.
         //

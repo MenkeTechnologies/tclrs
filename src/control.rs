@@ -307,6 +307,25 @@ impl Compiler {
         Ok(())
     }
 
+    /// `throw type message`.
+    ///
+    /// The type is a *value*, and whether it is a well-formed list of at least
+    /// one element is decided when the command runs — `Tcl_ThrowObjCmd` reaches
+    /// `TclListObjLength` there, so `catch {throw "\{" x}` is a caught error in
+    /// tclsh rather than a script that will not compile, and `throw $t $m` is
+    /// ordinary. Both words therefore ride on the stack.
+    pub(crate) fn cmd_throw(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        let [kind, message] = args else {
+            return self.error("wrong # args: should be \"throw type message\"");
+        };
+        self.word(kind)?;
+        self.word(message)?;
+        self.emit(Op::Extended(ext::THROW, 0), -2);
+        // Control has left; the value keeps the depth arithmetic honest.
+        self.push_empty();
+        Ok(())
+    }
+
     /// Store the top of the stack in `var`, or discard it when `catch` was
     /// given no variable to write.
     fn store_or_drop(&mut self, var: Option<&str>) {

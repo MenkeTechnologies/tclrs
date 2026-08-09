@@ -387,16 +387,16 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Expressions | `expr` |
 | Control flow | `if` / `elseif` / `else`, `while`, `for`, `foreach`, `switch` (`-exact`, `-glob`), `break`, `continue` |
 | Procedures | `proc`, `return` (with `-code` — `ok`, `error`, `return`, `break`, `continue` or any integer — and `-level`), `apply` |
-| Errors | `catch` (with a result variable and an options variable), `error`; Tcl return codes across every boundary — a `break` or `continue` out of an `eval`, `uplevel` or `source` script reaches the loop, and one out of a procedure reaches its caller |
+| Errors | `catch` (with a result variable and an options variable), `error`, `throw`; Tcl return codes across every boundary — a `break` or `continue` out of an `eval`, `uplevel` or `source` script reaches the loop, and one out of a procedure reaches its caller |
 | Coroutines | `coroutine`, `yield`, `yieldto`, `info coroutine` |
 | Namespaces | `namespace` — `eval`, `current`, `qualifiers`, `tail`, `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`, `import`, `forget`, `origin`, `which`, `ensemble exists` / `create` / `configure`; `variable`; `rename` |
 | The event loop | `after` — `ms`, `ms script`, `idle script`, `cancel`, `info`; `update`, `update idletasks`; `vwait` |
 | Scope | `uplevel`, `upvar`, `apply` |
 | Introspection | `info` — `args`, `body`, `commands`, `complete`, `coroutine`, `default`, `exists`, `functions`, `globals`, `hostname`, `level`, `library`, `locals`, `nameofexecutable`, `patchlevel`, `procs`, `script`, `sharedlibextension`, `tclversion`, `vars` |
 | Packages | `package` — `files`, `forget`, `ifneeded`, `names`, `prefer`, `present`, `provide`, `require`, `unknown`, `vcompare`, `versions`, `vsatisfies` |
-| Run-time evaluation | `eval`, `source`, `tcl_findLibrary` |
+| Run-time evaluation | `eval`, `subst`, `source`, `tcl_findLibrary` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
-| Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `append`, `create`, `exists`, `filter` (`key` and `value`), `for`, `get`, `getdef`, `getwithdefault`, `incr`, `keys`, `lappend`, `merge`, `remove`, `replace`, `set`, `size`, `unset`, `values` |
+| Associative data | `array` — `exists`, `get`, `names`, `set`, `size`, `unset`; `dict` — `append`, `create`, `exists`, `filter` (`key`, `value` and `script`), `for`, `get`, `getdef`, `getwithdefault`, `incr`, `keys`, `lappend`, `map`, `merge`, `remove`, `replace`, `set`, `size`, `unset`, `values` |
 | Regular expressions | `regexp`, `regsub` — with `-nocase`, `-all`, `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`, `-start` and `--`; `switch -regexp` and `lsearch -regexp` take one too |
 | Strings | `format`, `scan`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright`, `wordend`, `wordstart` |
 | Channels | `open`, `close`, `gets`, `read`, `flush`, `eof`, `seek`, `tell`, `fconfigure`, and `puts` to a channel; `stdin`, `stdout` and `stderr` |
@@ -488,7 +488,7 @@ would suggest.
 | **Parsing** | `TclFindElement`: whitespace separates elements, a leading brace or quote delimits one, and backslash sequences resolve everywhere except inside braces — the same escape table as rule 9, reached through the same code. |
 | **Formatting** | `TclScanElement` / `TclConvertElement`, including the historical mode where an element needing protection only because of a `]` or an internal `"` has those escaped while its braces are left bare: `list {a]b}` is `a\]b`, not `{a]b}`. An empty element is `{}`, and a leading `#` is quoted in the first element only. |
 | **Indices** | `end`, `end±n`, `m±n` and the integer grammar (`0x` / `0o` / `0b` / `0d` prefixes, `_` separators), resolved as `Tcl_GetIntForIndex` resolves them. |
-| **`lsort`** | The reference merge sort, element for element — with `-unique` the algorithm rather than the ordering decides which of two equal elements survives, so a library sort would give a different answer. |
+| **`lsort`** | The reference merge sort, element for element — with `-unique` the algorithm rather than the ordering decides which of two equal elements survives, so a library sort would give a different answer. `-command` calls back into the interpreter once per compared pair and skips every later pair once one has failed, which is how `SortCompare` keeps the *first* failure's message. |
 | **`lsearch`** | The reference option parsing, including unique-prefix abbreviation and the rule that `-integer` / `-real` only apply in `-exact` mode. |
 | **`foreach`** | Any number of variable lists and value lists; the longest list fixes the iteration count and shorter ones supply empty values. The loop state rides the VM stack rather than a variable a script could reach, and is read in place, so no copy happens per iteration. |
 | **`lappend`** | The op reaches the variable itself rather than taking its value through `GetVar`, so the list's string is unshared while it runs and the new elements are appended to it — growing a list is linear, not quadratic. What makes that safe without re-deriving the elements is identity: the value the last `lappend` produced is remembered, and a string that *is* that value is known to be canonical without a scan. A list another variable holds is copied instead, since the string it shares must not change under it. |
@@ -764,10 +764,10 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | A variable or body word that is not literal (`set $name …`) | the word is refused where a literal is required |
 | An array variable in a `foreach` variable list | `array variables are not supported yet` |
 | `array startsearch` and the other search subcommands | `array startsearch is not supported yet` |
-| `dict` subcommands outside the implemented set — `map`, `update`, `with`, `info`, and `filter script`; `dict set` into an array element | `dict map is not supported yet` |
+| `dict update` and `dict with` — the first needs a write-back that survives however the body ended, the second names variables after the dictionary's *keys*, which are values; `dict info`, which reports the reference interpreter's hash-table statistics; `dict set` into an array element | `dict with is not supported yet` |
 | `string wordend` / `wordstart` past ASCII | `string wordend/wordstart: characters beyond ASCII need Unicode category tables, which are not built yet` |
-| `format %a` / `%A`; any other letter is `bad field specifier "n"` instead | `the "%a" conversion is not supported yet` |
-| `lsort -command`, which runs a script per comparison. Every other option of both commands is built: `lsearch -sorted` / `-bisect` / `-dictionary` / `-nocase` / `-index` / `-subindices` and `lsort -dictionary` / `-index` / `-nocase`, alongside `-regexp` and `-stride` | `lsort -command is not supported yet` |
+| `format %a` / `%A`; any other letter is `bad field specifier "n"` instead. `%a` is C's hexadecimal-float form and is a port waiting to be written; `%A` is not — tclsh 9.0.4 answers `-xX0p+0` for `format %A -0.0`, its uppercasing walking over the `0x` prefix | `the "%a" conversion is not supported yet` |
+| `regexp -about`. The group count is easy; the flag list is the reference engine's own compile-time telemetry (`REG_UUNPORT`, `REG_UNONPOSIX`, …), which a different engine can only guess at | `bad option "-about"` |
 | Redefining a built-in — including from a `proc` away from the top level; redefining a procedure *at the top level*; a procedure and a coroutine of the same name. A `proc` away from the top level is *not* refused: it binds its name when it runs | `redefining the built-in command "set" is not supported` |
 | `return -errorcode`, `-errorinfo` and `-options`. `-code` and `-level` are implemented, and so is `catch`'s options variable — which carries those two and not tclsh's `-errorstack` / `-errorcode` / `-errorinfo` / `-errorline` | `return option "-errorinfo" is not supported` |
 | `error`'s `info` and `code` arguments | `… the info and code arguments are not supported` |
@@ -1579,7 +1579,7 @@ counted loop, from inside a procedure and inside a `catch`, procedures that call
 procedures along an acyclic call graph, and `eval` nested several levels deep.
 
 Shapes that tclrs **recognises and refuses** — `array` on a procedure local,
-`lsort -command`, `string is punct`, `dict unset` — are generated on purpose at a
+`dict with`, `string is punct` — are generated on purpose at a
 low rate rather than avoided. Each lands in the skip bucket under the refusal's
 own wording, so the coverage is already in place on the day the refusal goes; the
 rate is one number in the generator (`REFUSAL_RATE`) because every one of those

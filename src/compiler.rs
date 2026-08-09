@@ -75,6 +75,16 @@ pub mod ext {
     /// code. `break` and `continue` outside any loop the chunk can see raise
     /// one, and so does every `return` whose code is not `ok`.
     pub const RAISE: u16 = 37;
+    /// `[type, message]` — `throw`. Raises `message` as an error once `type`
+    /// has been checked to be a list of at least one element, which is the
+    /// whole of `Tcl_ThrowObjCmd` (`generic/tclCmdMZ.c:3959-4002`) this
+    /// frontend can carry: the `-errorcode` the command's type word becomes is
+    /// part of the options dictionary, and that dictionary's error entries are
+    /// the gap BUGS.md records for `return -errorcode`.
+    ///
+    /// 38 rather than a new block: it needs nothing but the stack, and 38 and
+    /// 39 are the two ids the core space still had free.
+    pub const THROW: u16 = 38;
 
     // Coroutines (`coro`). Every one but [`CORO_INFO`] parks the VM with a
     // request the driver in [`crate::runtime`] services; see [`crate::coro`].
@@ -167,6 +177,20 @@ pub mod ext {
     pub const EVAL_FRAME: u16 = EVENT_BASE + 11;
     /// `[lambda, arg …]` with the count in the inline operand — `apply`.
     pub const APPLY: u16 = EVENT_BASE + 12;
+    /// `subst ?-nobackslashes? ?-nocommands? ?-novariables? string`:
+    /// `[declared, arg …]` with the count in the inline operand → the
+    /// substituted text.
+    ///
+    /// In this block for the reason the three above it are: the command runs
+    /// nested scripts, and it runs them — and reads its variables — against the
+    /// *calling* frame. Doing either against the globals instead would read the
+    /// wrong variables inside a procedure and never say so, which is why
+    /// [`crate::cmd_subst`] goes through the same projection `uplevel` does.
+    ///
+    /// Nothing is settled while compiling: which words are options, whether the
+    /// value parses, and where a parse of it fails are all decided when the op
+    /// runs, exactly as `TclNRSubstObjCmd` decides them.
+    pub const SUBST: u16 = EVENT_BASE + 13;
 
     /// `[name, arg …]` with the count in the inline operand — call the function
     /// an inline `rust { ... }` block exported. Emitted only for a name
@@ -469,6 +493,16 @@ pub mod ext {
     /// or value (`which` = 1) matches any of the glob patterns. No pattern
     /// matches nothing, which is what the reference implementation answers.
     pub const DICT_FILTER: u16 = ASSOC_BASE + 28;
+    /// The walk `dict for`, `dict map` and `dict filter … script` share, with
+    /// the step in the inline operand — see [`crate::assoc::Step`].
+    ///
+    /// The walk's state rides the VM stack, pushed before the loop and read
+    /// through the top of it, exactly as `lmap`'s does and for the same reason:
+    /// hidden globals gave one call site one cursor, so a `dict for` whose body
+    /// re-entered the same `dict for` clobbered the outer walk's position and
+    /// the outer loop stopped early with no error to show for it (measured
+    /// against tclsh 9.0.4, which visits every pair at every level).
+    pub const DICT_EACH: u16 = ASSOC_BASE + 29;
 
     /// Where the string commands' ops begin — the `string` ensemble, `append`
     /// and `format` — dispatched to [`crate::cmd_string`], which names them.
@@ -1125,6 +1159,16 @@ impl Compiler {
     /// mention. `None` outside a procedure body, and for a name that `global`
     /// has bound to the global of the same name.
     fn slot_of(&mut self, name: &str) -> Option<u16> {
+        // A qualified name is never a local. `TclLookupSimpleVar` only consults
+        // the frame's compiled locals for a name with no `::` in it; anything
+        // qualified goes to `TclGetNamespaceForQualName` and names a namespace
+        // variable — `::x` being the root namespace's. Handing one a frame slot
+        // instead made `proc f {} {return $::a}` answer the empty string for a
+        // global the script had set, with no error to show for it (tclsh 9.0.4
+        // answers the value).
+        if name.contains("::") {
+            return None;
+        }
         let scope = self.scope.as_mut()?;
         if scope.globals.contains(name) {
             return None;
@@ -1493,6 +1537,8 @@ impl Compiler {
         "global",
         "catch",
         "error",
+        "throw",
+        "subst",
         "array",
         "dict",
         "unset",
@@ -1609,6 +1655,8 @@ impl Compiler {
             "global" => self.ns_global(args),
             "catch" => self.cmd_catch(args),
             "error" => self.cmd_error(args),
+            "throw" => self.cmd_throw(args),
+            "subst" => crate::cmd_subst::compile(self, args),
             "array" => self.cmd_array(args),
             "dict" => self.cmd_dict(args),
             "unset" => self.cmd_unset(args),

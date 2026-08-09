@@ -407,9 +407,19 @@ pub const CORPUS: &[Entry] = &[
         summary: "The string ensemble. Subcommands, options and the `string is` class are resolved while compiling.",
     },
     Entry {
+        name: "subst",
+        synopsis: "subst ?-nobackslashes? ?-nocommands? ?-novariables? string",
+        summary: "Perform the substitutions of a double-quoted word on a value, against the calling frame: a `$name` in it is that frame's variable and a `[cmd]` in it runs there. Each option makes its introducer literal text rather than the start of a construct. A command substitution's failure is trapped the way the reference implementation traps it — an error propagates, a `break` ends the substitution keeping what it has, a `continue` drops that one substitution — while a plain variable read is not trapped, so a missing variable is an error.",
+    },
+    Entry {
         name: "switch",
         synopsis: "switch ?-option ...? string ?pattern body ...? ?default body?",
         summary: "Run the body of the first pattern that matches, `-exact` or `-glob`.",
+    },
+    Entry {
+        name: "throw",
+        synopsis: "throw type message",
+        summary: "Raise `message` as an error, the type having been checked to be a list of at least one element. The `-errorcode` the type becomes is part of the return-options dictionary, whose error entries this frontend does not model.",
     },
     Entry {
         name: "tcl_findLibrary",
@@ -986,7 +996,7 @@ const DICT_CORPUS: &[Entry] = &[
     Entry {
         name: "filter",
         synopsis: "dict filter dictionary filterType arg ?arg ...?",
-        summary: "The pairs kept by one of three filters: `key` and `value` take glob patterns and are built here — any of several patterns matching keeps the pair, and no pattern keeps nothing. The `script {k v} body` form is not: it needs a body run per pair against caller variables, which is the same machinery `dict map` wants.",
+        summary: "The pairs kept by one of three filters. `key` and `value` take glob patterns — any of several matching keeps the pair, and no pattern keeps nothing. `script {k v} body` runs the body per pair and keeps the pair its result calls true, and keeps what it has collected when a `break` ends the walk.",
     },
     Entry {
         name: "for",
@@ -1031,7 +1041,7 @@ const DICT_CORPUS: &[Entry] = &[
     Entry {
         name: "map",
         synopsis: "dict map {keyVarName valueVarName} dictionary script",
-        summary: "`dict for` that collects each iteration's result as the new value for that key, yielding a dict of the same keys. Not built here — it wants the per-iteration result plumbing `lmap` has and the pair cursor `dict for` has, together.",
+        summary: "`dict for` that collects each iteration's result as the new value for the key the key variable holds when the body ends. A `break` throws the whole accumulation away, which is where it parts from `dict filter`'s script form.",
     },
     Entry {
         name: "merge",
