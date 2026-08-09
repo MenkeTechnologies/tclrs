@@ -1793,10 +1793,7 @@ fn info_names_op(interp: &Shared, vm: &mut VM, which: u8) -> Result<(), TclError
         // the interpreter's table, and `eval {set v 1; info locals}` has to list
         // it.
         crate::cmd_info::FRAME_LOCALS => {
-            let declared = interp
-                .lock()
-                .expect("interpreter lock")
-                .frame_declared();
+            let declared = interp.lock().expect("interpreter lock").frame_declared();
             match declared {
                 None => Vec::new(),
                 Some(declared) => global_names_of(interp, vm)

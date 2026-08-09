@@ -815,7 +815,13 @@ fn lower(script: &Script, debug: bool, projected: bool) -> Result<fusevm::Chunk,
                 names,
             )
         } else {
-            let second = Compiler::run(script, first.seen_arrays, first.seen_runtime, debug, projected)?;
+            let second = Compiler::run(
+                script,
+                first.seen_arrays,
+                first.seen_runtime,
+                debug,
+                projected,
+            )?;
             let reads = second.tolerant_reads.clone();
             let incrs = second.incr_sites.clone();
             let procs = signature_table(&second);
@@ -1359,10 +1365,7 @@ impl Compiler {
                 // The binding is between two *variables*, so it is looked up by
                 // the table key rather than by the spelling the code used: after
                 // `upvar #0 a b`, `$b` and `$::b` are both the alias.
-                let key = match self
-                    .top_aliases
-                    .get(crate::cmd_namespace::store_key(&key))
-                {
+                let key = match self.top_aliases.get(crate::cmd_namespace::store_key(&key)) {
                     Some(target) => target.clone(),
                     None => key,
                 };
