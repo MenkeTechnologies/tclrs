@@ -704,11 +704,18 @@ approximated, and nothing is silently mis-run.
   looks like a measurement and is not one.
 - **`regexp -about`.** The group count is easy; the second element is not. It is
   the reference engine's own compile-time telemetry — `REG_UUNPORT`,
-  `REG_UNONPOSIX`, `REG_ULOCALE`, `REG_UEMPTYMATCH`, `REG_UBOUNDS` and the rest —
-  set from inside `regcomp.c` as it builds an NFA. This engine is a different one,
-  so those bits would have to be *inferred* from the pattern rather than reported,
-  and an inferred answer to "what did the compiler notice" is a guess wearing a
-  measurement's clothes.
+  `REG_UNONPOSIX`, `REG_ULOCALE`, `REG_UEMPTYMATCH`, `REG_UBOUNDS` and the rest
+  (`generic/tclRegexp.c:644-659`) — set from inside `regcomp.c` as it builds an
+  NFA: `regexp -about {a*}` is `0 REG_UEMPTYMATCH` and `regexp -about {[a-b]}` is
+  `0 REG_UUNPORT` (measured). This engine is a different one, so those bits would
+  have to be *inferred* from the pattern rather than reported, and an inferred
+  answer to "what did the compiler notice" is a guess wearing a measurement's
+  clothes. The tractable half is not separable either: the result is one
+  two-element list, so answering the count and guessing the flags is a wrong
+  list rather than a partial one. What did change is the *wording*: `-about` is
+  now named as unsupported rather than reported as a bad option, which said
+  `bad option "-about": must be … -about …`. `regsub -about` is untouched — it
+  really is a bad option there, and that message is already tclsh's.
 - **`format %a` and `%A`.** `%a` is C's hexadecimal-float form and is a faithful
   port waiting to be written. `%A` is not: tclsh 9.0.4 answers `-xX0p+0` for
   `format %A -0.0` and `IxF` for `format %A Inf` (measured), which is its

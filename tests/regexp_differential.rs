@@ -117,6 +117,11 @@ const ERRORS: &[&str] = &[
     "puts [catch {regexp -bogus {a} b} e]\nputs $e",
     "puts [catch {regsub -inline {a} abc X} e]\nputs $e",
     "puts [catch {regsub -bogus {a} b X} e]\nputs $e",
+    // `-about` is a `regexp` option and not a `regsub` one, so `regsub -about`
+    // really is a bad option and its wording is the reference implementation's.
+    // The `regexp` half cannot be here — tclsh answers it — and is pinned as a
+    // named refusal by `unsupported_are_constructs_are_refused`.
+    "puts [catch {regsub -about {a} b X} e]\nputs $e",
 ];
 
 fn tclsh() -> Option<PathBuf> {
@@ -246,6 +251,11 @@ fn unsupported_are_constructs_are_refused() {
         ("puts [regexp {foo\\M} \"foo b\"]", "word-end"),
         ("puts [regexp {[[.hyphen-minus.]]} -]", "collating element"),
         ("puts [regexp {[[=a=]]} a]", "equivalence class"),
+        // Not a construct but an option, and refused for a related reason: its
+        // second element is the reference engine's report on its own compile.
+        // Named rather than reported as a bad option, which is what it was —
+        // and `bad option "-about": must be … -about …` contradicts itself.
+        ("puts [regexp -about {(a)}]", "regexp -about is not supported yet"),
     ] {
         let err = tclrs::eval(program)
             .map(|o| format!("no error, printed {:?}", o.output))

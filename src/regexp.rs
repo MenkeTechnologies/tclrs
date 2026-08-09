@@ -120,6 +120,29 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
                 i += 1;
                 start = Some(value);
             }
+            // `regexp -about` is an option this frontend does not implement, so
+            // it is named rather than reported as a bad one — the rule `switch
+            // -matchvar` already follows. Reporting it as bad said `bad option
+            // "-about": must be … -about …`, which contradicts itself in one
+            // line. For `regsub` it *is* a bad option and falls through below,
+            // which is tclsh's answer there too (measured).
+            //
+            // What it waits on is the second element of its result. The first
+            // is the subexpression count and is easy; the second is a list of
+            // `re_info` bits — `REG_UEMPTYMATCH`, `REG_ULOCALE`, `REG_UUNPORT`
+            // and the rest (`generic/tclRegexp.c:644-659`) — that `regcomp.c`
+            // sets about *itself* as it builds an NFA. A different engine can
+            // only infer them, and the result is one list: half of it right and
+            // half of it guessed is a wrong list, not a partial one.
+            "-about" if !regsub => {
+                c.push_str(
+                    "regexp -about is not supported yet: its second element is the reference \
+                     engine's own compile-time telemetry, which this engine can only infer",
+                );
+                c.emit(Op::Extended(base_ext::ERROR, 0), -1);
+                c.push_empty();
+                return Ok(());
+            }
             // An unknown switch is a *runtime* error, as it is in tclsh: the
             // script compiles and the error is raised — and catchable — when
             // the command runs. `lsearch` behaves the same way here, and the
