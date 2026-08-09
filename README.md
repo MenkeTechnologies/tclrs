@@ -764,7 +764,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | A variable or body word that is not literal (`set $name …`) | the word is refused where a literal is required |
 | An array variable in a `foreach` variable list | `array variables are not supported yet` |
 | `array startsearch` and the other search subcommands | `array startsearch is not supported yet` |
-| `dict update` and `dict with` — the first needs a write-back that survives however the body ended, the second names variables after the dictionary's *keys*, which are values; `dict info`, which reports the reference interpreter's hash-table statistics; `dict set` into an array element | `dict with is not supported yet` |
+| `dict with`, which names variables after the dictionary's *keys*, which are values; `dict info`, which reports the reference interpreter's hash-table statistics; `dict set`, `dict incr` or `dict update` into an array element; `dict update`'s variable names when they are not literal | `dict with is not supported yet` |
 | `string wordend` / `wordstart` past ASCII | `string wordend/wordstart: characters beyond ASCII need Unicode category tables, which are not built yet` |
 | `format %a` / `%A`; any other letter is `bad field specifier "n"` instead. `%a` is C's hexadecimal-float form and is a port waiting to be written; `%A` is not — tclsh 9.0.4 answers `-xX0p+0` for `format %A -0.0`, its uppercasing walking over the `0x` prefix | `the "%a" conversion is not supported yet` |
 | `regexp -about`. The group count is easy; the flag list is the reference engine's own compile-time telemetry (`REG_UUNPORT`, `REG_UNONPOSIX`, …), which a different engine can only guess at | `bad option "-about"` |
@@ -872,6 +872,16 @@ unwinder. Every loop — `while`, `for`, `foreach`, `dict for` — is emitted by
 function, `Compiler::rotated_loop`, which is what keeps that arithmetic and the
 rotated branch layout the tracing JIT needs in a single place rather than
 repeated four times.
+
+Tcl has one shape that is neither: a *cleanup that runs however the body ended*.
+`dict update` writes its variables back into the dictionary after an error, a
+`break` and a `return` alike, because the reference implementation evaluates the
+body with the write-back already pushed as an NRE callback
+(`FinalizeDictUpdate`, `generic/tclDictObj.c:3539`). There is no NRE stack here,
+so `Compiler::finally_region` builds the same shape out of the `catch` region:
+the region absorbs every code so the cleanup runs, and then hands the code back
+on unchanged. One op, `ext::RERAISE`, is the whole of the difference between a
+`catch` and a `finally`.
 
 ---
 

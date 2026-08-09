@@ -262,6 +262,49 @@ const FIXED: &[&str] = &[
     // after the first.
     "proc w {d n} {set out {}\ndict for {k v} $d {lappend out $k$n\nif {$n < 2} {set out [concat $out [w $d [expr {$n+1}]]]}}\nreturn $out}\nputs [w {a 1 b 2} 0]",
     "proc m {d n} {return [dict map {k v} $d {if {$n < 2} {m $d [expr {$n+1}]} else {set v}}]}\nputs [m {a 1 b 2} 0]",
+    // ── dict update ──
+    //
+    // The write-back is a `finally`, so every ending the body can have is a
+    // separate case: the interesting ones are the endings that are *not* an
+    // ordinary result, because those are the ones an ending-shaped
+    // implementation would get wrong while still passing the first line here.
+    "set d {a 1 b 2}\ndict update d a x {set x 99}\nputs $d",
+    "set d {a 1 b 2}\nputs [dict update d a x {expr {$x + 10}}]",
+    "set d {a 1 b 2}\ndict update d a x b y {set x $y; set y 7}\nputs $d",
+    // A key the dictionary does not have leaves its variable *unset*, not empty.
+    "set d {a 1}\nputs [dict update d zz y {info exists y}]\nputs $d",
+    "set d {a 1}\ndict update d zz y {set y new}\nputs $d",
+    // Unsetting the variable removes the key.
+    "set d {a 1 b 2}\ndict update d a x {unset x}\nputs $d",
+    // An error still writes back, and the error still leaves the command.
+    "set d {a 1}\nputs [catch {dict update d a x {set x 5; error boom}} m]\nputs $m\nputs $d",
+    // So does a `break` bound for the enclosing loop.
+    "set d {a 1}\nforeach i {1 2 3} {dict update d a x {set x $i; break}}\nputs $d",
+    "set d {a 1}\nset seen {}\nforeach i {1 2 3} {dict update d a x {set x $i; continue}\nlappend seen $i}\nputs $d\nputs [list $seen]",
+    // And a `return`, which spends a level on the way out.
+    "proc p {} {set d {a 1}\ndict update d a x {set x 42; return $d}}\nputs [p]",
+    "proc p {} {upvar 1 d d\ndict update d a x {set x 42; return done}}\nset d {a 1}\nputs [p]\nputs $d",
+    // The dictionary variable going away drops the write-back silently.
+    "set d {a 1}\nputs [dict update d a x {unset d; set x 5}]\nputs [info exists d]",
+    // The variable becoming something that is not a dictionary fails *here*,
+    // after the body, replacing what the body left.
+    "set d {a 1}\nputs [catch {dict update d a x {set d \"q w e\"; set x 5}} m]\nputs $m\nputs $d",
+    // Refusals, all of them from the command rather than from the body.
+    "puts [catch {dict update nosuch k v {set v 1}} m]\nputs $m",
+    "set d \"a b c\"\nputs [catch {dict update d k v {set v 1}} m]\nputs $m",
+    "array set A {a 1}\nputs [catch {dict update A k v {set v 1}} m]\nputs $m",
+    "set d {a 1}\narray set x {q 1}\nputs [catch {dict update d a x {set x 5}} m]\nputs $m",
+    "puts [catch {dict update d k} m]\nputs $m",
+    "puts [catch {dict update d k v k2} m]\nputs $m",
+    // The keys are read once, before the body, and the body cannot change them.
+    "set d {a 1 b 2}\nset n 0\ndict update d [incr n; format a] x {set x 9}\nputs $n\nputs $d",
+    "set d {a 1 b 2}\nset k a\ndict update d $k x {set k b; set x 9}\nputs $d",
+    // Nested and recursive: an inner write-back must not be handed the outer
+    // one's record, which a single hidden one would have been.
+    "set d {a 1 b {c 2}}\ndict update d b inner {dict update inner c z {set z 9}}\nputs $d",
+    "proc walk {n} {set d [list k $n]\ndict update d k v {if {$n > 0} {walk [expr {$n-1}]}\nset v [expr {$v*2}]}\nputs $d}\nwalk 3",
+    // Inside a procedure the variables are frame slots, not globals.
+    "proc p {} {set d {a 1 b 2}\ndict update d a x {set x [expr {$x+1}]}\nreturn $d}\nputs [p]\nputs [info exists x]",
     // ── the two together ──
     "array set a {x 1 y 2}\nputs [dict get [array get a] y]\nputs [dict size [array get a]]",
     "array set a {x 1 y 2 z 3}\nset d [array get a]\nputs [dict exists $d z]\nputs [dict exists $d w]",
@@ -485,8 +528,19 @@ fn unimplemented_subcommands_are_refused() {
         // `dict filter … script` and `dict map` were refused here until they
         // landed; what they answer is now compared against tclsh in `FIXED`.
         ("dict with d {}", "dict with is not supported yet"),
-        ("dict update d k x {}", "dict update is not supported yet"),
         ("dict info {a 1}", "dict info is not supported yet"),
+        // `dict update` landed; what it answers is compared against tclsh in
+        // `FIXED`. What it still refuses is the two names it cannot resolve
+        // while compiling — an array element as the dictionary, and a computed
+        // variable name, which is the wall `set $name 1` meets.
+        (
+            "set a(1) x\ndict update a(1) k v {}",
+            "array element is not supported yet",
+        ),
+        (
+            "set d {a 1}\nset n v\ndict update d a $n {}",
+            "variable name must be a literal in this phase",
+        ),
         (
             "set a(1) x\ndict set a(1) k v",
             "array element is not supported yet",

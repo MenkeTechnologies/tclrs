@@ -85,6 +85,21 @@ pub mod ext {
     /// 38 rather than a new block: it needs nothing but the stack, and 38 and
     /// 39 are the two ids the core space still had free.
     pub const THROW: u16 = 38;
+    /// `[code, options, message]` — raise again exactly what a `catch` region's
+    /// handler was resumed with. The three values are the ones
+    /// [`crate::runtime::Interp::raise`] pushes, in that order, and the code and
+    /// the level are read back out of `options` rather than off the stack: the
+    /// integer pushed there is [`crate::runtime::TclError::visible_code`], which
+    /// is `TCL_RETURN` while a `return`'s levels are unspent, and re-raising
+    /// *that* would spend one level too few.
+    ///
+    /// This is what makes a handler a `finally` rather than a `catch`: the
+    /// region absorbs every code so the cleanup runs, and then hands the code
+    /// back on unchanged. `dict update` and `dict with` are built out of it —
+    /// `FinalizeDictUpdate` (`generic/tclDictObj.c:3545`) and
+    /// `FinalizeDictWith` (`:3696`) are NRE callbacks that run whatever the body
+    /// did and then `Tcl_RestoreInterpState` the saved result.
+    pub const RERAISE: u16 = 39;
 
     // Coroutines (`coro`). Every one but [`CORO_INFO`] parks the VM with a
     // request the driver in [`crate::runtime`] services; see [`crate::coro`].
@@ -503,6 +518,22 @@ pub mod ext {
     /// the outer loop stopped early with no error to show for it (measured
     /// against tclsh 9.0.4, which visits every pair at every level).
     pub const DICT_EACH: u16 = ASSOC_BASE + 29;
+    /// `dict update`'s binding half: `[name, place, (key, varName, varPlace) …,
+    /// count]` → the *record* the write-back needs, as a `Value::Array` of the
+    /// dictionary's name and place followed by one `(key, varPlace)` pair each.
+    ///
+    /// The keys are read here and kept, because the reference implementation
+    /// evaluates them once and hands the finalizer the list it built from them
+    /// (`generic/tclDictObj.c:3536-3539`): `dict update d [incr n] x {…}` leaves
+    /// `n` at 1 in tclsh 9.0.4, measured, whatever the body does to it.
+    pub const DICT_UPDATE_BIND: u16 = ASSOC_BASE + 30;
+    /// `dict update`'s write-back, run as the cleanup of a
+    /// [`Compiler::finally_region`](crate::compiler::Compiler): the record is
+    /// consumed from under the `arg` values the ending left on top of it, and
+    /// each key takes the value its variable now holds — or leaves the
+    /// dictionary, when the variable does not (`:3573-3591`, where a failed read
+    /// is "an instruction to remove the key").
+    pub const DICT_UPDATE_END: u16 = ASSOC_BASE + 31;
 
     /// Where the string commands' ops begin — the `string` ensemble, `append`
     /// and `format` — dispatched to [`crate::cmd_string`], which names them.

@@ -150,6 +150,31 @@ impl TclError {
         format!("-code {} -level {}", self.code, self.level)
     }
 
+    /// The inverse of [`TclError::options`]: rebuild the error a `catch`
+    /// region's handler was resumed with, so that a handler acting as a
+    /// `finally` can hand it back on unchanged ([`crate::compiler::ext::RERAISE`]).
+    ///
+    /// Beside `options` rather than anywhere else, because the two are one
+    /// format: an option this frontend learns to carry has to be written and
+    /// read in the same place or a re-raise silently drops it.
+    pub(crate) fn from_options(options: &str, msg: String) -> Self {
+        let mut error = TclError {
+            msg,
+            line: None,
+            code: TCL_ERROR,
+            level: 0,
+        };
+        let mut words = options.split_whitespace();
+        while let (Some(key), Some(value)) = (words.next(), words.next()) {
+            match key {
+                "-code" => error.code = value.parse().unwrap_or(TCL_ERROR),
+                "-level" => error.level = value.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+        error
+    }
+
     /// The message a code that reached the outermost level is reported with.
     /// A `break` nothing absorbed is not "the script returned 3"; it is the
     /// reference interpreter's `invoked "break" outside of a loop`.
@@ -1452,6 +1477,16 @@ impl Hooks {
                     let code = to_tcl_string(&vm.pop()).parse().unwrap_or(TCL_ERROR);
                     Err(TclError::coded(code, level, to_tcl_string(&vm.pop())))
                 }
+                // Its own arm for the same reason [`ext::RAISE`] is: it is the
+                // *other* op that produces a `TclError` carrying a code, and it
+                // reconstructs it from the option dictionary the handler was
+                // resumed with rather than from a code the compiler chose.
+                ext::RERAISE => {
+                    let msg = to_tcl_string(&vm.pop());
+                    let options = to_tcl_string(&vm.pop());
+                    vm.pop(); // the visible code, superseded by `options`
+                    Err(TclError::from_options(&options, msg))
+                }
                 _ => extension(vm, id, arg).map_err(TclError::plain),
             };
             if let Err(e) = outcome {
@@ -2449,6 +2484,19 @@ impl Machine {
                 vm.ip = resume;
                 return Ok(());
             }
+            // No region left in this context, but a procedure *call* is still a
+            // level even though it is not a region: `Op::Call` pushed the frame
+            // and only `Op::ReturnValue` would have popped it.
+            if e.level > 0 {
+                match self.spend_call_level(&mut e) {
+                    Some(true) => return Ok(()),
+                    Some(false) => {
+                        depth = self.vm(self.current).frames.len();
+                        continue;
+                    }
+                    None => {}
+                }
+            }
             if self.current == 0 {
                 return Err(e);
             }
@@ -2457,6 +2505,56 @@ impl Machine {
                 None => return Err(e),
             }
         }
+    }
+
+    /// Spend one `return` level against the innermost procedure activation on
+    /// this context's frame stack, ending the call when the code is then `ok`.
+    ///
+    /// [`call_in_chunk`] does exactly this where the boundary is a *chunk*
+    /// boundary; this is the same ending for the calls the compiler lowered to
+    /// `Op::Call`, which stay on one VM and are therefore invisible to it. The
+    /// two answers a caller needs: `Some(true)` — the call returned and the VM
+    /// is positioned to carry on; `Some(false)` — a level was spent and the code
+    /// carries on outwards; `None` — there was no activation to spend it at.
+    ///
+    /// Only reachable from a `return` the compiler could not lower to
+    /// `Op::ReturnValue`, which is one written inside a region — and until
+    /// [`Compiler::finally_region`](crate::compiler::Compiler) that meant one
+    /// inside a `catch`, which absorbs it before it ever gets here. A `return`
+    /// out of a `dict update` body is the first that reaches this: without it
+    /// `proc p {} {dict update d k v {return $d}}` ended the whole *script* with
+    /// the procedure's result instead of ending the procedure (measured against
+    /// tclsh 9.0.4, which prints the dictionary and carries on).
+    fn spend_call_level(&mut self, e: &mut TclError) -> Option<bool> {
+        let vm = self.vm(self.current);
+        // Frames that enter no subroutine — the base frame, an `Op::PushFrame`
+        // scope frame — are not Tcl levels, so they are dropped without one
+        // being spent. `Frame::entry_ip` is what tells the two apart, as it does
+        // for [`levels`].
+        let mut activation = None;
+        while let Some(frame) = vm.frames.last() {
+            let frame = frame.clone();
+            if frame.entry_ip.is_some() {
+                activation = Some(frame);
+                break;
+            }
+            vm.frames.pop();
+            vm.stack.truncate(frame.stack_base);
+        }
+        let frame = activation?;
+        vm.frames.pop();
+        // The same ending `Op::ReturnValue` performs: the callee's stack goes,
+        // the caller resumes past the call, and the value lands where the call's
+        // would have.
+        vm.stack.truncate(frame.stack_base);
+        *e = std::mem::replace(e, TclError::plain(String::new())).descend();
+        if e.visible_code() != TCL_OK {
+            return Some(false);
+        }
+        vm.stack
+            .push(Value::Str(Arc::new(std::mem::take(&mut e.msg))));
+        vm.ip = frame.return_ip;
+        Some(true)
     }
 
     /// The running coroutine's body returned: its value is the value of the

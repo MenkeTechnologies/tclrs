@@ -1076,7 +1076,7 @@ const DICT_CORPUS: &[Entry] = &[
     Entry {
         name: "update",
         synopsis: "dict update dictVarName key varName ?key varName ...? script",
-        summary: "Bind each named key's value to a variable, run the script, then write the variables back into the dict — and yield the script's own result. Not built here: it needs writes to caller variables to survive the body and be copied back afterwards.",
+        summary: "Bind each named key's value to a variable, run the script, then write the variables back into the dict — and yield the script's own result. The write-back is a `finally`: it happens after an error, a `break` or a `return` too, and a variable the body unset takes its key out of the dict. The variable names have to be literal here.",
     },
     Entry {
         name: "values",
@@ -1086,7 +1086,7 @@ const DICT_CORPUS: &[Entry] = &[
     Entry {
         name: "with",
         synopsis: "dict with dictVarName ?key ...? script",
-        summary: "`dict update` over *every* key at once: each key becomes a variable of that name for the duration of the script, and the variables are written back after. Not built here, for the same reason.",
+        summary: "`dict update` over *every* key at once: each key becomes a variable of that name for the duration of the script, and the variables are written back after. Not built here: the names come from the dictionary's keys, which are values, and a name that only exists at run time has no frame slot to be given.",
     },
 ];
 

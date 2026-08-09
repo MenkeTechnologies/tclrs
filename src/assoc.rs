@@ -1050,6 +1050,21 @@ impl Compiler {
                 };
                 self.dict_map(vars, dict, body)
             }
+            "update" => {
+                // `DictUpdateCmd` wants `objc >= 5` and an odd `objc`
+                // (`generic/tclDictObj.c:3500`); counted from here that is a
+                // variable, at least one key/variable pair, and a script.
+                let usage = "wrong # args: should be \"dict update dictVarName key varName ?key varName ...? script\"";
+                let [name, pairs @ .., body] = rest else {
+                    return self.error(usage);
+                };
+                if pairs.is_empty() || !pairs.len().is_multiple_of(2) {
+                    return self.error(usage);
+                }
+                let (name, body) = (name.clone(), body.clone());
+                let pairs = pairs.to_vec();
+                self.dict_update(&name, &pairs, &body)
+            }
             "incr" => {
                 let (name, key, by) = match rest {
                     [name, key] => (name, key, None),
@@ -1224,6 +1239,57 @@ impl Compiler {
         // `dict for` has no value of its own.
         self.dict_each_step(Step::Discard, 0);
         Ok(())
+    }
+
+    /// `dict update d k v ?k v …? {body}` — the pairs become variables for the
+    /// body, and go back into the dictionary however the body ended.
+    ///
+    /// The write-back is a `finally`, not an ending: `DictUpdateCmd` evaluates
+    /// the body with `FinalizeDictUpdate` already pushed as its NRE callback
+    /// (`generic/tclDictObj.c:3539`), so an error, a `break`, a `return` and an
+    /// ordinary result all reach it and all restore the body's own outcome
+    /// afterwards. [`Compiler::finally_region`] is that shape; this supplies the
+    /// two halves it runs.
+    ///
+    /// The variable names are literals here. tclsh reads them off the
+    /// substituted words, so `dict update d a $vn {…}` is ordinary there and is
+    /// refused here — the same wall every computed variable name meets in this
+    /// frontend, and the one `set $name 1` meets.
+    fn dict_update(
+        &mut self,
+        name: &Word,
+        pairs: &[Word],
+        body: &Word,
+    ) -> Result<(), CompileError> {
+        let Some(Target::Scalar(dict_name)) = target_of(name) else {
+            return self.error("dict update on an array element is not supported yet");
+        };
+        let script = self.body_of(body)?;
+        self.push_str(&dict_name);
+        // By place, not by value: the write-back has to reach the same variable
+        // the binding read, and a place reaches a frame slot as readily as a
+        // global.
+        let place = self.var_place_operand(&dict_name);
+        self.emit(Op::LoadInt(place), 1);
+        for pair in pairs.chunks(2) {
+            let [key, var] = pair else {
+                unreachable!("the pair count was checked by the caller");
+            };
+            self.word(key)?;
+            let var_name = self.var_name_of(var)?;
+            // The name rides too: the binding refuses an array in tclsh's own
+            // wording, `can't set "x": variable is array` (measured).
+            self.push_str(&var_name);
+            let var_place = self.var_place_operand(&var_name);
+            self.emit(Op::LoadInt(var_place), 1);
+        }
+        let count = pairs.len() / 2;
+        self.emit(Op::LoadInt(count as i64), 1);
+        self.emit(
+            Op::Extended(ext::DICT_UPDATE_BIND, 0),
+            -(3 * count as i32 + 2),
+        );
+        self.finally_region(ext::DICT_UPDATE_END, |c| c.emit_body_value(&script))
     }
 
     /// `dict map {k v} $d {body}` — `dict for` that collects.
@@ -1470,6 +1536,179 @@ fn dict_each_op(vm: &mut VM, arg: u8) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The record [`ext::DICT_UPDATE_BIND`] builds and [`ext::DICT_UPDATE_END`]
+/// consumes: where the dictionary variable lives, under what name, and which
+/// key goes back from which variable.
+///
+/// It rides the VM stack for the reason the `dict for` cursor does — a hidden
+/// global gave one call site one record, and `dict update` nests: the write-back
+/// of an inner one would have been handed the outer one's keys.
+struct DictUpdate {
+    name: String,
+    place: Place,
+    /// `(key, where that key's variable lives)`, in the order written.
+    bindings: Vec<(String, Place)>,
+}
+
+impl DictUpdate {
+    /// The record as one stack value: name, place, then each key beside its
+    /// variable's place.
+    fn encode(&self) -> Value {
+        let mut items = Vec::with_capacity(2 + self.bindings.len() * 2);
+        items.push(Value::Str(Arc::new(self.name.clone())));
+        items.push(Value::Int(self.place.encode()));
+        for (key, place) in &self.bindings {
+            items.push(Value::Str(Arc::new(key.clone())));
+            items.push(Value::Int(place.encode()));
+        }
+        Value::Array(items)
+    }
+
+    fn decode(value: &Value) -> Option<DictUpdate> {
+        let Value::Array(items) = value else {
+            return None;
+        };
+        let [name, place, rest @ ..] = items.as_slice() else {
+            return None;
+        };
+        let bindings = rest
+            .chunks_exact(2)
+            .map(|pair| {
+                let place = tcl_int(&pair[1]).ok()?;
+                Some((to_tcl_string(&pair[0]), Place::decode(place)))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(DictUpdate {
+            name: to_tcl_string(name),
+            place: Place::decode(tcl_int(place).ok()?),
+            bindings,
+        })
+    }
+}
+
+/// [`ext::DICT_UPDATE_BIND`]: read the dictionary, give each key's value to its
+/// variable, and leave the record the write-back will need.
+///
+/// `DictUpdateCmd` (`generic/tclDictObj.c:3490-3541`) in the same order: the
+/// variable must exist and must hold a dictionary, and only then is anything
+/// assigned — a key the dictionary does not have *unsets* its variable rather
+/// than emptying it, which is what makes `info exists` false inside the body.
+fn dict_update_bind(vm: &mut VM) -> Result<(), String> {
+    let count = pop_int(vm).max(0) as usize;
+    let mut bound: Vec<(String, String, Place)> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let place = place_of(vm);
+        let var = pop_str(vm);
+        let key = pop_str(vm);
+        bound.push((key, var, place));
+    }
+    bound.reverse();
+    let place = place_of(vm);
+    let name = pop_str(vm);
+
+    // `Tcl_ObjGetVar2(…, TCL_LEAVE_ERR_MSG)`: an absent variable is refused
+    // here, unlike every other `dict` subcommand that writes one.
+    let current = match peek(vm, place) {
+        Some(Value::Hash(_)) => return Err(format!("can't read \"{name}\": variable is array")),
+        Some(value) if *value != Value::Undef => to_tcl_string(value),
+        _ => return Err(format!("can't read \"{name}\": no such variable")),
+    };
+    let dict = Dict::parse(&current)?;
+
+    for (key, var, var_place) in &bound {
+        match dict.get(key) {
+            Some(value) => {
+                let value = Value::Str(Arc::new(value.to_string()));
+                let Some(cell) = crate::runtime::var_cell(vm, *var_place) else {
+                    return Err(format!("can't set \"{var}\": no frame to set it in"));
+                };
+                if matches!(cell, Value::Hash(_)) {
+                    return Err(format!("can't set \"{var}\": variable is array"));
+                }
+                *cell = value;
+            }
+            // `Tcl_UnsetVar2(…, 0)`: no flag, so a variable that was not there
+            // is not an error either.
+            None => {
+                if let Some(cell) = crate::runtime::var_cell(vm, *var_place) {
+                    *cell = Value::Undef;
+                }
+            }
+        }
+    }
+
+    let record = DictUpdate {
+        name,
+        place,
+        bindings: bound
+            .into_iter()
+            .map(|(key, _, place)| (key, place))
+            .collect(),
+    };
+    vm.push(record.encode());
+    Ok(())
+}
+
+/// [`ext::DICT_UPDATE_END`]: put the variables back into the dictionary,
+/// whatever ended the body.
+///
+/// `FinalizeDictUpdate` (`generic/tclDictObj.c:3545-3596`), including both of
+/// its silent paths: a dictionary variable that no longer exists means the whole
+/// write-back is dropped (`:3564-3570`), and a *variable* that no longer exists
+/// means its key leaves the dictionary (`:3580-3582`) — which is also what an
+/// `array set` over that variable does, since the read that fails is the same
+/// one (measured: the key is removed, not set to the array's list form).
+fn dict_update_end(vm: &mut VM, above: u8) -> Result<(), String> {
+    let record = take_record(vm, above)?;
+    let Some(record) = DictUpdate::decode(&record) else {
+        return Err("corrupt dict update record".to_string());
+    };
+
+    let current = match peek(vm, record.place) {
+        Some(value) if !matches!(value, Value::Hash(_)) && *value != Value::Undef => {
+            to_tcl_string(value)
+        }
+        // No dictionary variable to write back to: everything is dropped, and
+        // silently — the body's own result stands.
+        _ => return Ok(()),
+    };
+    // "Double-check that it is still a dictionary": a body that made it
+    // something else fails the command here, replacing whatever the body left.
+    let mut dict = Dict::parse(&current)?;
+
+    for (key, place) in &record.bindings {
+        match peek(vm, *place) {
+            Some(value) if !matches!(value, Value::Hash(_)) && *value != Value::Undef => {
+                dict.put(key.clone(), to_tcl_string(value));
+            }
+            _ => dict.remove(key),
+        }
+    }
+
+    let written = Value::Str(Arc::new(dict.to_list()));
+    match crate::runtime::var_cell(vm, record.place) {
+        Some(cell) => *cell = written,
+        None => return Err(format!("can't set \"{}\": no frame to set it in", record.name)),
+    }
+    Ok(())
+}
+
+/// Take the record a [`Compiler::finally_region`](crate::compiler::Compiler)
+/// left under the `above` values the ending put on top of it.
+///
+/// The stack is the only place a record can live and still be found by both
+/// endings: the driver unwinds to the region's entry depth before it resumes the
+/// handler, so everything pushed before the region survives at exactly the
+/// offset the compiler emitted.
+fn take_record(vm: &mut VM, above: u8) -> Result<Value, String> {
+    let at = vm
+        .stack
+        .len()
+        .checked_sub(usize::from(above) + 1)
+        .ok_or("corrupt finally record")?;
+    Ok(vm.stack.remove(at))
 }
 
 pub(crate) const ARRAY_SUBCOMMANDS: &[&str] = &[
@@ -1892,6 +2131,8 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             Ok(())
         }
         ext::DICT_EACH => dict_each_op(vm, arg),
+        ext::DICT_UPDATE_BIND => dict_update_bind(vm),
+        ext::DICT_UPDATE_END => dict_update_end(vm, arg),
         ext::DICT_PAIRS => {
             let dict = pop_str(vm);
             let d = Dict::parse(&dict)?;

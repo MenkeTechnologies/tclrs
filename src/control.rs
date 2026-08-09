@@ -291,6 +291,63 @@ impl Compiler {
         Ok(())
     }
 
+    /// Run `body` with a cleanup that happens *however the body ended* — Tcl's
+    /// `finally`, which `dict update` and `dict with` are built out of.
+    ///
+    /// The reference implementation writes one with NRE: `DictUpdateCmd` pushes
+    /// `FinalizeDictUpdate` as a callback and then evaluates the body, so the
+    /// callback runs on every path and `Tcl_RestoreInterpState` puts the body's
+    /// result — code and message alike — back afterwards
+    /// (`generic/tclDictObj.c:3539` and `:3545-3596`). There is no NRE stack
+    /// here, so the same shape is built out of the `catch` region: it absorbs
+    /// every code, the handler runs the cleanup, and [`ext::RERAISE`] hands the
+    /// code back on unchanged.
+    ///
+    /// The caller has already pushed a *record* — whatever the cleanup needs to
+    /// do its work — and that record sits below the region's stack mark, so the
+    /// driver's unwind to `frame.stack` leaves it untouched and the handler
+    /// finds it exactly where the ordinary path does. `cleanup` is emitted with
+    /// the number of values sitting on top of it as its inline operand: one on
+    /// the ordinary path (the body's value), three in the handler (the code, the
+    /// options and the message the driver pushed). It consumes the record and
+    /// nothing else, so the command leaves one value where the record was.
+    pub(crate) fn finally_region<F>(
+        &mut self,
+        cleanup: u16,
+        body: F,
+    ) -> Result<(), CompileError>
+    where
+        F: FnOnce(&mut Self) -> Result<(), CompileError>,
+    {
+        let entry = self.depth;
+
+        // The handler comes first so its op index is known when the region is
+        // opened, exactly as `catch`'s does; the ordinary path jumps over it.
+        let over = self.emit(Op::Jump(usize::MAX), 0);
+        let handler = self.b.current_pos();
+        self.depth = entry + 3;
+        self.emit(Op::Extended(cleanup, 3), -1);
+        // Control leaves here on every path, so nothing follows and the depth
+        // this arm reached never has to meet the ordinary path's.
+        self.emit(Op::Extended(ext::RERAISE, 0), -3);
+
+        let guarded = self.b.current_pos();
+        self.b.patch_jump(over, guarded);
+        self.depth = entry;
+        self.emit(Op::ExtendedWide(ext_wide::CATCH, handler), 0);
+        self.catch_depth += 1;
+        let compiled = body(self);
+        self.catch_depth -= 1;
+        compiled?;
+        self.emit(Op::Extended(ext::CATCH_END, 0), 0);
+        // A cleanup that fails does so *outside* the region, so its own error
+        // reaches whatever encloses the command rather than re-entering the
+        // handler — which is what `FinalizeDictUpdate` does when the write-back
+        // finds the variable is no longer a dictionary (`:3583`).
+        self.emit(Op::Extended(cleanup, 1), -1);
+        Ok(())
+    }
+
     /// `error message` — `info` and `code` set return options this frontend
     /// does not model.
     pub(crate) fn cmd_error(&mut self, args: &[Word]) -> Result<(), CompileError> {

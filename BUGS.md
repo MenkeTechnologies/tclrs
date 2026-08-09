@@ -675,8 +675,8 @@ approximated, and nothing is silently mis-run.
   The list is `BEYOND_UNICODE_16` in `src/cmd_string.rs`; regenerate it when the
   crate's Unicode version catches up, at which point it should be empty.
 - **Subcommands and options recognised and then refused.** `array startsearch`
-  and the other search subcommands; `dict update`, `dict with` and `dict info`;
-  `dict set` or `dict incr` into an array element; `string`
+  and the other search subcommands; `dict with` and `dict info`;
+  `dict set`, `dict incr` or `dict update` into an array element; `string`
   subcommands outside the
   implemented set; `format` conversions outside the
   implemented set; `regexp -about`;
@@ -684,13 +684,8 @@ approximated, and nothing is silently mis-run.
   `-code` and `-level`. They go through the reference option parser first,
   so abbreviation and ambiguity behave as tclsh does, and are then refused.
   `lsort -command`, `dict map` and `dict filter … script` were on this list until
-  the change that added `subst`; what each of the three still open waits on is
-  named below.
-- **`dict update`.** The write-back is a `finally`: the variables go back into the
-  dictionary however the body ended — after an error, a `break` or a `return`
-  (`FinalizeDictUpdate`, `generic/tclDictObj.c:3544-3620`). Every other loop and
-  walk this compiler emits ends one way, so the shape has no lowering here yet;
-  the `catch` region is the machinery it would be built from.
+  the change that added `subst`, and `dict update` until the change that built
+  the `finally` region; what each of the two still open waits on is named below.
 - **`dict with`.** The variables it creates are named by the dictionary's *keys*,
   which are values. That is the same wall as `set $name 1` — a procedure's locals
   are frame slots settled while the script is read, and a name that only exists at
