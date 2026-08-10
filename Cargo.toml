@@ -105,7 +105,7 @@ cc = { version = "1", optional = true }
 # disable) so codegen is not repaid on every process start; `aot` is the
 # closed-world compiler that lowers a whole `Chunk` to a relocatable object
 # (`src/aot.rs` here links one into a native executable).
-fusevm = { version = "0.17.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
+fusevm = { version = "0.22.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
 
 # The interactive line editor: history, completion menu, emacs/vi keymaps and
 # multi-line editing driven by the parser's own "still open" answer. Used by

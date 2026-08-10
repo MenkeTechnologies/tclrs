@@ -2025,10 +2025,10 @@ fn foreach_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                     }
                 }
             }
-            vm.push(Value::Array(vec![
+            vm.push(Value::array(vec![
                 Value::Int(0),
                 Value::Int(iterations as i64),
-                Value::Array(flat),
+                Value::array(flat),
             ]));
             Ok(())
         }
@@ -2057,7 +2057,7 @@ fn foreach_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let Value::Array(mut parts) = vm.pop() else {
                 return Err(CORRUPT.to_string());
             };
-            let Some(Value::Int(at)) = parts.first_mut() else {
+            let Some(Value::Int(at)) = Arc::make_mut(&mut parts).first_mut() else {
                 return Err(CORRUPT.to_string());
             };
             *at += 1;
@@ -2077,7 +2077,7 @@ fn lmap_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let Value::Array(mut parts) = vm.pop() else {
                 return Err(CORRUPT.to_string());
             };
-            parts.push(Value::Array(Vec::new()));
+            Arc::make_mut(&mut parts).push(Value::array(Vec::new()));
             vm.push(Value::Array(parts));
             Ok(())
         }
@@ -2086,10 +2086,10 @@ fn lmap_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let Value::Array(mut parts) = vm.pop() else {
                 return Err(CORRUPT.to_string());
             };
-            let Some(Value::Array(acc)) = parts.last_mut() else {
+            let Some(Value::Array(acc)) = Arc::make_mut(&mut parts).last_mut() else {
                 return Err(CORRUPT.to_string());
             };
-            acc.push(Value::Str(Arc::new(value)));
+            Arc::make_mut(acc).push(Value::Str(Arc::new(value)));
             vm.push(Value::Array(parts));
             Ok(())
         }
@@ -2097,7 +2097,7 @@ fn lmap_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let Value::Array(parts) = vm.pop() else {
                 return Err(CORRUPT.to_string());
             };
-            let Some(Value::Array(acc)) = parts.into_iter().next_back() else {
+            let Some(Value::Array(acc)) = parts.last() else {
                 return Err(CORRUPT.to_string());
             };
             let items: Vec<String> = acc.iter().map(to_tcl_string).collect();

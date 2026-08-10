@@ -938,7 +938,7 @@ pub(crate) fn intern_overflow(interp: &Shared, vm: &mut VM, key: &str) -> Result
     if vm.globals.len() <= value_at {
         vm.globals.resize(value_at + 1, Value::Undef);
     }
-    vm.globals[base] = Value::Array(
+    vm.globals[base] = Value::array(
         names
             .iter()
             .map(|n| Value::Str(Arc::new(n.clone())))
@@ -971,7 +971,7 @@ fn reproject(chunk: &Chunk, shared: &Shared, old: &[Value]) -> Vec<Value> {
     }
     let base = chunk.names.len();
     values.resize(base + 1 + names.len(), Value::Undef);
-    values[base] = Value::Array(
+    values[base] = Value::array(
         names
             .iter()
             .map(|n| Value::Str(Arc::new(n.clone())))

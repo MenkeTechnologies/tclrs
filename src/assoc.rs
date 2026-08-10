@@ -1529,7 +1529,7 @@ fn dict_each_op(vm: &mut VM, arg: u8) -> Result<(), String> {
         let Value::Array(pairs) = vm.pop() else {
             return Err(CORRUPT.to_string());
         };
-        vm.push(Value::Array(vec![
+        vm.push(Value::array(vec![
             Value::Array(pairs),
             Value::Int(0),
             Value::Str(Arc::new(String::new())),
@@ -1551,7 +1551,7 @@ fn dict_each_op(vm: &mut VM, arg: u8) -> Result<(), String> {
     let Some(Value::Array(state)) = vm.stack.last_mut() else {
         return Err(CORRUPT.to_string());
     };
-    let [Value::Array(pairs), Value::Int(cursor), Value::Str(acc)] = state.as_mut_slice() else {
+    let [Value::Array(pairs), Value::Int(cursor), Value::Str(acc)] = Arc::make_mut(state).as_mut_slice() else {
         return Err(CORRUPT.to_string());
     };
     let at = *cursor as usize;
@@ -1627,7 +1627,7 @@ impl DictUpdate {
             items.push(Value::Str(Arc::new(key.clone())));
             items.push(Value::Int(place.encode()));
         }
-        Value::Array(items)
+        Value::array(items)
     }
 
     fn decode(value: &Value) -> Option<DictUpdate> {
@@ -1810,14 +1810,14 @@ impl DictWith {
                     Bound::Var(link) => link.encode(),
                     Bound::Kept(value) => Value::Str(Arc::new(value.clone())),
                 };
-                Value::Array(vec![Value::Str(Arc::new(key.clone())), payload])
+                Value::array(vec![Value::Str(Arc::new(key.clone())), payload])
             })
             .collect();
-        Value::Array(vec![
+        Value::array(vec![
             Value::Str(Arc::new(self.name.clone())),
             Value::Int(self.place.encode()),
-            Value::Array(path),
-            Value::Array(keys),
+            Value::array(path),
+            Value::array(keys),
         ])
     }
 
@@ -2465,7 +2465,7 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                 flat.push(Value::Str(Arc::new(k)));
                 flat.push(Value::Str(Arc::new(v)));
             }
-            vm.push(Value::Array(flat));
+            vm.push(Value::array(flat));
             Ok(())
         }
         ext::DICT_REPLACE => {

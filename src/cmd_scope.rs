@@ -261,7 +261,7 @@ pub(crate) fn runtime_slot_alloc(vm: &mut VM, frame: usize, name: &str) -> Optio
     if slots.len() <= usize::from(slot) {
         slots.resize(usize::from(slot) + 1, Value::Undef);
     }
-    slots[base] = Value::Array(roster);
+    slots[base] = Value::array(roster);
     Some(slot)
 }
 
@@ -326,7 +326,7 @@ impl Link {
         if let Some(key) = &self.elem {
             parts.push(Value::Str(std::sync::Arc::new(key.clone())));
         }
-        Value::Array(parts)
+        Value::array(parts)
     }
 
     pub(crate) fn decode(value: &Value) -> Option<Link> {
@@ -1119,7 +1119,7 @@ mod tests {
             assert_eq!(Link::decode(&link.encode()), Some(link));
         }
         assert_eq!(Link::decode(&Value::Int(3)), None);
-        assert_eq!(Link::decode(&Value::Array(vec![Value::Int(0)])), None);
+        assert_eq!(Link::decode(&Value::array(vec![Value::Int(0)])), None);
     }
 
     #[test]
