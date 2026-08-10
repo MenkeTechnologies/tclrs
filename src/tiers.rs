@@ -123,16 +123,30 @@ pub fn inspect(chunk: &Chunk) -> Report {
         })
         .collect();
 
+    // The per-op probe below is a one-op chunk, so it cannot see the op that
+    // consumes a result. Since fusevm 0.22.0 that matters: a comparison or
+    // `LogNot` is block-eligible only when the very next op consumes the
+    // boolean as a truth value (`JumpIfTrue`/`JumpIfFalse`) or discards it
+    // (`Pop`), because the block tier's register lattice has no boolean kind.
+    // Alone in a one-op chunk such an op always looks refused.
+    //
+    // Whole-chunk eligibility is the conjunction of the per-op decisions, so an
+    // eligible chunk has no ineligible op by definition — asking at all would
+    // only produce that false positive. The list is therefore a diagnosis of
+    // why a chunk was refused, and is gathered only for a refused chunk.
+    let block_eligible = jit.is_block_eligible(chunk);
     let mut ineligible: BTreeMap<String, usize> = BTreeMap::new();
-    for op in &chunk.ops {
-        if !op_is_eligible(&jit, op) {
-            *ineligible.entry(op_name(op)).or_default() += 1;
+    if !block_eligible {
+        for op in &chunk.ops {
+            if !op_is_eligible(&jit, op) {
+                *ineligible.entry(op_name(op)).or_default() += 1;
+            }
         }
     }
 
     Report {
         ops: chunk.ops.len(),
-        block_eligible: jit.is_block_eligible(chunk),
+        block_eligible,
         block_compiled: jit.block_jit_is_compiled(chunk),
         largest_eligible_region: jit.find_jit_region(chunk),
         loops,
@@ -177,9 +191,13 @@ fn body_of(ops: &[Op], anchor: usize) -> Option<&[Op]> {
     Some(&ops[anchor..=close])
 }
 
-/// Whether fusevm's block tier accepts this op, asked by handing the JIT a
-/// chunk holding just that op. Whole-chunk eligibility is the conjunction of
-/// the per-op decision, so a one-op chunk isolates it.
+/// Whether fusevm's block tier accepts this op on its own, asked by handing the
+/// JIT a chunk holding just that op.
+///
+/// An approximation for an op whose eligibility depends on its neighbours — a
+/// comparison or `LogNot` needs the next op to consume the boolean — so
+/// [`inspect`] calls this only for a chunk fusevm has already refused, where the
+/// list is a diagnosis rather than the decision.
 fn op_is_eligible(jit: &JitCompiler, op: &Op) -> bool {
     let mut b = ChunkBuilder::new();
     b.emit(op.clone(), 1);
