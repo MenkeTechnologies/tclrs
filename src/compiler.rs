@@ -740,6 +740,92 @@ pub mod ext_wide {
 ///
 /// The first three wordings are Tcl's own and are pinned against tclsh by the
 /// differential suites, so they cannot drift here without a test noticing.
+/// `if`'s words, sorted into the branches they name.
+struct IfPlan<'a> {
+    /// `(expression, script)`, in the order they are tested.
+    branches: Vec<(&'a Word, &'a Word)>,
+    /// The `else` script, present or not.
+    otherwise: Option<&'a Word>,
+}
+
+/// Read `if expr ?then? body ?elseif expr ?then? body ...? ?else? ?body?`.
+///
+/// Ported from `Tcl_IfObjCmd`, whose grammar is looser than the synopsis in
+/// `if(n)` suggests in one way that matters: **the `else` keyword is
+/// optional**. What stands after the last body is the else script whatever it
+/// says, so `if {$x} {a} {b}` — a form ordinary Tcl is written in — is legal,
+/// and a stray word there is `extra words after "else" clause` rather than a
+/// complaint about the word itself. Both measured against tclsh 9.0.3.
+///
+/// The two arity diagnostics quote a *word*, which is the one detail this
+/// cannot always reproduce: tclsh quotes the substituted value and only the
+/// source is here. A literal word is quoted as written; a word that substitutes
+/// falls back to the keyword that introduced its clause. Recorded in BUGS.md.
+fn parse_if(args: &[Word]) -> Result<IfPlan<'_>, String> {
+    let mut branches = Vec::new();
+    let mut i = 0;
+    loop {
+        // `Tcl_IfObjCmd` quotes `objv[i-1]` here: the command name on the
+        // first pass and the `elseif` that led back on every later one.
+        let clause = match i {
+            0 => "if",
+            _ => args[i - 1].as_literal().unwrap_or("if"),
+        };
+        let Some(cond) = args.get(i) else {
+            return Err(format!(
+                "wrong # args: no expression after \"{clause}\" argument"
+            ));
+        };
+        // The expression's own text, which the next diagnostic quotes.
+        let mut following = cond.as_literal().unwrap_or(clause);
+        i += 1;
+        if i >= args.len() {
+            return Err(format!(
+                "wrong # args: no script following \"{following}\" argument"
+            ));
+        }
+        if args[i].as_literal() == Some("then") {
+            following = "then";
+            i += 1;
+        }
+        let Some(body) = args.get(i) else {
+            return Err(format!(
+                "wrong # args: no script following \"{following}\" argument"
+            ));
+        };
+        branches.push((cond, body));
+        i += 1;
+
+        if i >= args.len() {
+            return Ok(IfPlan {
+                branches,
+                otherwise: None,
+            });
+        }
+        if args[i].as_literal() == Some("elseif") {
+            i += 1;
+            continue;
+        }
+        // Anything else ends the chain. `else` is a keyword when it is written
+        // and nothing when it is not.
+        if args[i].as_literal() == Some("else") {
+            i += 1;
+            if i >= args.len() {
+                return Err("wrong # args: no script following \"else\" argument".to_string());
+            }
+        }
+        if i < args.len() - 1 {
+            return Err(
+                "wrong # args: extra words after \"else\" clause in \"if\" command".to_string(),
+            );
+        }
+        return Ok(IfPlan {
+            branches,
+            otherwise: Some(&args[i]),
+        });
+    }
+}
+
 fn defers_to_run_time(msg: &str) -> bool {
     msg.starts_with("wrong # args:")
         || msg.starts_with("invalid command name ")
@@ -2099,62 +2185,47 @@ impl Compiler {
         Ok(())
     }
 
+    /// `if expr ?then? body ?elseif expr ?then? body ...? ?else? ?body?`.
+    ///
+    /// Ported from `Tcl_IfObjCmd`, whose grammar is looser than the synopsis in
+    /// `if(n)` suggests in one way that matters: **the `else` keyword is
+    /// optional**. What stands after the last body is the else script whatever
+    /// it says, so `if {$x} {a} {b}` — a form ordinary Tcl is written in — is
+    /// legal, and a stray word there is `extra words after "else" clause`
+    /// rather than a complaint about the word itself. Both measured against
+    /// tclsh 9.0.3.
+    ///
+    /// The two arity diagnostics quote a *word*, which is the one detail this
+    /// cannot always reproduce: tclsh quotes the substituted value and the
+    /// compiler has only the source. A literal word is quoted as written; a
+    /// word that substitutes falls back to the keyword that introduced the
+    /// clause. Recorded in BUGS.md.
     fn cmd_if(&mut self, args: &[Word]) -> Result<(), CompileError> {
-        let mut i = 0;
+        // Read the whole command before emitting anything, so an arity refusal
+        // can be deferred the way tclsh's is: `Tcl_IfObjCmd` reaches every one
+        // of them while running, so `catch {if {1} {a} else {b} extra}` is 1
+        // there and an `if` nobody executes costs a script nothing.
+        let plan = match parse_if(args) {
+            Ok(plan) => plan,
+            Err(msg) => return self.defer(&msg, args),
+        };
+
         let mut end_jumps = Vec::new();
         let branch_depth = self.depth;
-
-        loop {
-            let Some(cond) = args.get(i) else {
-                return self.error("wrong # args: no expression after \"if\" argument");
-            };
+        for (cond, body) in &plan.branches {
             self.expr_word(cond)?;
             let jump_false = self.emit(Op::JumpIfFalse(usize::MAX), -1);
-
-            i += 1;
-            if args.get(i).and_then(|w| w.as_literal()) == Some("then") {
-                i += 1;
-            }
-            let Some(body) = args.get(i) else {
-                return self.error("wrong # args: no script following \"if\" argument");
-            };
             self.body(body)?;
-            i += 1;
-
             end_jumps.push(self.emit(Op::Jump(usize::MAX), 0));
             let else_start = self.b.current_pos();
             self.b.patch_jump(jump_false, else_start);
             // Each branch is compiled at the same entry depth.
             self.depth = branch_depth;
-
-            match args.get(i).and_then(|w| w.as_literal()) {
-                Some("elseif") => {
-                    i += 1;
-                    continue;
-                }
-                Some("else") => {
-                    i += 1;
-                    let Some(body) = args.get(i) else {
-                        return self.error("wrong # args: no script following \"else\" argument");
-                    };
-                    self.body(body)?;
-                    i += 1;
-                    break;
-                }
-                None if i == args.len() => {
-                    // No else: the value of a taken-nowhere `if` is empty.
-                    self.push_empty();
-                    break;
-                }
-                Some(other) => {
-                    return self.error(format!("expected \"elseif\" or \"else\", got \"{other}\""))
-                }
-                None => return self.error("non-literal clause after \"if\" body"),
-            }
         }
-
-        if i != args.len() {
-            return self.error("wrong # args: extra arguments after \"if\" script");
+        match plan.otherwise {
+            Some(body) => self.body(body)?,
+            // No else: the value of a taken-nowhere `if` is empty.
+            None => self.push_empty(),
         }
         let end = self.b.current_pos();
         for j in end_jumps {

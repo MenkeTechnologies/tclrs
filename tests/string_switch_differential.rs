@@ -201,10 +201,9 @@ fn switch_options_match_tclsh() {
 /// A bad option is refused with the interpreter's own wording, listing every
 /// option `switch` has rather than the three this frontend used to name.
 ///
-/// The *message* is compared, not the program's behavior: tclrs decides a bad
-/// option while compiling and tclsh while running, so `catch` sees one and not
-/// the other. That timing difference is the compile-time-refusal class recorded
-/// in BUGS.md and is not what this test is about.
+/// The *message* is compared here; that both engines now raise it at the same
+/// moment — when the command runs, so `catch` sees it and an unreached `switch`
+/// never does — is pinned by `switch_refusals_wait_for_the_command_to_run`.
 #[test]
 fn bad_switch_option_is_worded_as_tclsh_words_it() {
     let Some(tclsh) = tclsh() else {
@@ -236,35 +235,74 @@ fn bad_switch_option_is_worded_as_tclsh_words_it() {
     }
 }
 
-/// What is still refused says so, and says which option it was. `-matchvar` and
-/// `-indexvar` are named rather than reported as bad options, because a
-/// bad-option message would be a lie about what `switch` accepts.
+/// Every option `switch` names is one it runs. `-regexp`, `-matchvar` and
+/// `-indexvar` were each refused by name here until they landed; each is pinned
+/// as *working* now, so the day one starts refusing again this test says so.
 ///
-/// `-regexp` was on this list until the regular-expression engine landed; it is
-/// pinned as *working* below, so that the day it starts refusing again this
-/// test says so.
+/// What the two variables are *filled with* is compared against tclsh in
+/// `tests/regexp_differential.rs`, which is where the capture information they
+/// carry belongs. This test only pins that they are accepted at all.
 #[test]
-fn unsupported_switch_options_are_named() {
-    assert_eq!(
-        tclrs::eval("switch -regexp abc {a.c {puts hit}}")
-            .expect("switch -regexp is implemented")
-            .output,
-        "hit\n"
-    );
+fn every_named_switch_option_runs() {
     for (src, expected) in [
+        ("switch -regexp abc {a.c {puts hit}}", "hit\n"),
         (
-            "switch -matchvar m -regexp abc {a.c {puts hit}}",
-            "-matchvar",
+            "switch -matchvar m -regexp abc {{a(.)c} {puts $m}}",
+            "abc b\n",
         ),
         (
-            "switch -indexvar i -regexp abc {a.c {puts hit}}",
-            "-indexvar",
+            "switch -indexvar i -regexp abc {{a(.)c} {puts $i}}",
+            "{0 2} {1 1}\n",
+        ),
+        (
+            "switch -matchvar m -indexvar i -regexp abc {b {puts \"$m $i\"}}",
+            "b {1 1}\n",
         ),
     ] {
-        let err = tclrs::eval(src).expect_err("must be refused").to_string();
-        assert!(
-            err.contains(expected) && err.contains("not supported yet"),
-            "{src}: {err}"
+        assert_eq!(
+            tclrs::eval(src)
+                .unwrap_or_else(|e| panic!("{src} should run: {e}"))
+                .output,
+            expected,
+            "{src}"
+        );
+    }
+}
+
+/// `switch`'s refusals are the command's, not the script's: `Tcl_SwitchObjCmd`
+/// reaches every one of them while running, so a `switch` that is never
+/// executed costs a script nothing and one that is can be caught.
+///
+/// This is the half of the compile-time-refusal class BUGS.md records that
+/// `switch` used to sit outside: a bad option, an odd number of pattern words
+/// and a `-` body with nothing after it all took the whole script down while it
+/// was being read, where tclsh ran everything before them first.
+#[test]
+fn switch_refusals_wait_for_the_command_to_run() {
+    for src in [
+        "switch -bogus x {a b}",
+        "switch -- x {a}",
+        "switch -- x {a - }",
+        "switch -matchvar m -glob abc {a* {}}",
+        "switch -indexvar i -exact abc {abc {}}",
+    ] {
+        // Never reached: the script runs to its end and prints.
+        let skipped = format!("if {{0}} {{{src}}}\nputs reached");
+        assert_eq!(
+            tclrs::eval(&skipped)
+                .unwrap_or_else(|e| panic!("{src} should not be reached: {e}"))
+                .output,
+            "reached\n",
+            "{src}"
+        );
+        // Reached inside `catch`: the answer is 1 and the script survives.
+        let caught = format!("puts [catch {{{src}}}]");
+        assert_eq!(
+            tclrs::eval(&caught)
+                .unwrap_or_else(|e| panic!("{src} should be catchable: {e}"))
+                .output,
+            "1\n",
+            "{src}"
         );
     }
 }

@@ -20,6 +20,10 @@ use crate::compiler::{ext, ext_wide, CompileError, Compiler};
 use crate::list;
 use crate::parser::Word;
 
+/// `switch`'s own usage line, quoted by every arity refusal it makes.
+const SWITCH_USAGE: &str =
+    "wrong # args: should be \"switch ?-option ...? string ?pattern body ...? ?default body?\"";
+
 /// How `switch` compares its subject to a pattern.
 #[derive(Clone, Copy, PartialEq, Eq)]
 /// How a `switch` clause matches, as the low bit of [`ext::MATCH`]'s operand.
@@ -70,6 +74,8 @@ impl Compiler {
         let mut i = 0;
         let mut mode = Match::Exact;
         let mut nocase = false;
+        let mut matchvar: Option<String> = None;
+        let mut indexvar: Option<String> = None;
         // `switch(n)`: a leading `-` argument is an option only while at least
         // two arguments follow it — the subject and the patterns. That bound is
         // the interpreter's own (`Tcl_SwitchObjCmd` scans `i < objc-2`), and it
@@ -92,28 +98,63 @@ impl Compiler {
                 // this frontend's own wording rather than being mistaken for a
                 // bad option. `-regexp` needs the regular-expression engine.
                 "-regexp" => mode = Match::Regexp,
-                // Still refused: both need the match results handed back
-                // through a variable, which this lowering has nowhere to put.
+                // Both take the *next* word as a variable name, and both leave
+                // fewer than two arguments behind if that word was the subject:
+                // `Tcl_SwitchObjCmd` re-tests `i >= objc-2` after consuming it
+                // and reports the command's usage, which is what a missing name
+                // looks like from outside.
                 "-matchvar" | "-indexvar" => {
-                    return self.error(format!(
-                        "the {text} option of \"switch\" is not supported yet"
-                    ))
+                    if i + 2 >= args.len() {
+                        return Err(self.deferrable_err(SWITCH_USAGE));
+                    }
+                    let name = self.var_name_of(&args[i])?;
+                    i += 1;
+                    if text == "-matchvar" {
+                        matchvar = Some(name);
+                    } else {
+                        indexvar = Some(name);
+                    }
                 }
                 "--" => break,
+                // A bad option is `Tcl_GetIndexFromObj` inside the command's own
+                // implementation, so tclsh reports it when the command runs:
+                // deferred here for the reason `wrong # args` is.
                 other => {
-                    return self.error(format!(
+                    return Err(self.deferrable_err(format!(
                         "bad option \"{other}\": must be -exact, -glob, -indexvar, \
                          -matchvar, -nocase, -regexp, or --"
-                    ))
+                    )))
                 }
             }
         }
 
+        // Both variables are filled from the regular expression's capture
+        // information, so neither means anything without `-regexp`. tclsh tests
+        // `-indexvar` first and stops there, so `-matchvar m -indexvar i -glob`
+        // reports the index one — measured, and the order is visible.
+        if indexvar.is_some() && mode != Match::Regexp {
+            return Err(self.deferrable_err("-indexvar option requires -regexp option"));
+        }
+        if matchvar.is_some() && mode != Match::Regexp {
+            return Err(self.deferrable_err("-matchvar option requires -regexp option"));
+        }
+
         let Some(subject) = args.get(i) else {
-            return self
-                .error("wrong # args: should be \"switch ?-option ...? string ?pattern body ...? ?default body?\"");
+            return self.error(SWITCH_USAGE);
         };
         let clauses = self.switch_clauses(&args[i + 1..])?;
+
+        // The capture operand the two variables ride in: which of them was
+        // given, and where each lives. Zero when neither was, in which case
+        // every clause keeps the plain matcher.
+        let captures = match (&matchvar, &indexvar) {
+            (None, None) => None,
+            (m, x) => Some((
+                i64::from(m.is_some()) | i64::from(x.is_some()) << 1,
+                m.as_deref().map_or(0, |n| self.place_operand(n)),
+                x.as_deref().map_or(0, |n| self.place_operand(n)),
+            )),
+        };
 
         self.word(subject)?;
         let entry = self.depth;
@@ -127,6 +168,17 @@ impl Compiler {
                 // `default` matches anything, but only as the final pattern.
                 defaulted = true;
                 self.emit(Op::Pop, -1);
+                // No regular expression ran, so there is nothing to report:
+                // tclsh writes an empty list into both variables before the
+                // default body, which is not the same as leaving them alone —
+                // a `switch` that matches nothing at all and has no `default`
+                // does leave them alone. Measured both ways.
+                if let Some((given, m, x)) = captures {
+                    self.emit(Op::LoadInt(given), 1);
+                    self.emit(Op::LoadInt(m), 1);
+                    self.emit(Op::LoadInt(x), 1);
+                    self.emit(Op::Extended(crate::regexp::ext::SWITCH_CLEAR, 3), -3);
+                }
                 self.switch_body(&clause.body)?;
                 break;
             }
@@ -139,11 +191,27 @@ impl Compiler {
             // The string module's matcher, so `-nocase` folds exactly as
             // `string match -nocase` folds; it answers "1"/"0", which the
             // boolean op turns into the 1/0 the branch below tests.
-            self.emit(
-                Op::LoadInt(i64::from(mode as u8 | u8::from(nocase) << 1)),
-                1,
-            );
-            self.emit(Op::Extended(crate::cmd_string::ext::SWITCH_MATCH, 3), -2);
+            //
+            // `-matchvar`/`-indexvar` need what matched and not only whether
+            // something did, so those go to the regular-expression module's own
+            // op instead. It answers "1"/"0" too, which is why the two are
+            // interchangeable here.
+            match captures {
+                Some((given, m, x)) => {
+                    self.emit(Op::LoadInt(i64::from(nocase)), 1);
+                    self.emit(Op::LoadInt(given), 1);
+                    self.emit(Op::LoadInt(m), 1);
+                    self.emit(Op::LoadInt(x), 1);
+                    self.emit(Op::Extended(crate::regexp::ext::SWITCH_VARS, 6), -5);
+                }
+                None => {
+                    self.emit(
+                        Op::LoadInt(i64::from(mode as u8 | u8::from(nocase) << 1)),
+                        1,
+                    );
+                    self.emit(Op::Extended(crate::cmd_string::ext::SWITCH_MATCH, 3), -2);
+                }
+            }
             self.emit(Op::Extended(ext::BOOL, 0), 0);
             let miss = self.emit(Op::JumpIfFalse(usize::MAX), -1);
             self.emit(Op::Pop, -1);
@@ -172,9 +240,14 @@ impl Compiler {
         let mut patterns: Vec<(Option<String>, Option<Word>)> = Vec::new();
         let mut bodies: Vec<String> = Vec::new();
 
+        // Every refusal in this function is one `Tcl_SwitchObjCmd` makes while
+        // running: an odd number of words, a `-` body with nothing after it, a
+        // pattern list that will not parse. tclsh reaches none of them until
+        // the command is invoked, so `if {0} {switch -- x {a}}` costs a script
+        // nothing there and `catch {switch -- x {a}}` answers 1. Nothing has
+        // been emitted yet at this point, which is what lets them defer.
         if tail.is_empty() {
-            return self
-                .error("wrong # args: should be \"switch ?-option ...? string ?pattern body ...? ?default body?\"");
+            return Err(self.deferrable_err(SWITCH_USAGE));
         }
         if tail.len() == 1 {
             // The grouped form: the whole tail is one list, and because braces
@@ -182,15 +255,13 @@ impl Compiler {
             let text = self.literal_of(&tail[0], "switch pattern list")?;
             let elements = match list::split(text) {
                 Ok(elements) => elements,
-                Err(msg) => return self.error(msg),
+                Err(msg) => return Err(self.deferrable_err(msg)),
             };
             if elements.is_empty() {
-                return self.error(
-                    "wrong # args: should be \"switch ?-option ...? string ?pattern body ...? ?default body?\"",
-                );
+                return Err(self.deferrable_err(SWITCH_USAGE));
             }
             if !elements.len().is_multiple_of(2) {
-                return self.error("extra switch pattern with no body");
+                return Err(self.deferrable_err("extra switch pattern with no body"));
             }
             for pair in elements.chunks(2) {
                 patterns.push((Some(pair[0].clone()), None));
@@ -198,7 +269,7 @@ impl Compiler {
             }
         } else {
             if !tail.len().is_multiple_of(2) {
-                return self.error("extra switch pattern with no body");
+                return Err(self.deferrable_err("extra switch pattern with no body"));
             }
             for pair in tail.chunks(2) {
                 bodies.push(self.literal_of(&pair[1], "switch body")?.to_string());
@@ -215,10 +286,10 @@ impl Compiler {
             while bodies[at] == "-" {
                 at += 1;
                 if at >= bodies.len() {
-                    return self.error(format!(
+                    return Err(self.deferrable_err(format!(
                         "no body specified for pattern \"{}\"",
                         text.as_deref().unwrap_or_default()
-                    ));
+                    )));
                 }
             }
             clauses.push(Clause {

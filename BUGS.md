@@ -207,9 +207,19 @@ approximated, and nothing is silently mis-run.
   value holds is copied instead of extended.
 - **Regular expressions.** `regexp` and `regsub` with `-nocase`, `-all`,
   `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`,
-  `-start` and `--`, plus `switch -regexp` and `lsearch -regexp`
+  `-start`, `-command` and `--`, plus `switch -regexp` — with `-matchvar` and
+  `-indexvar` — `lsearch -regexp` and `array names -regexp`
   (`src/regexp.rs`). Match variables, `regsub`'s `&` / `\0` / `\1`…`\9`
   replacement, and Tcl's character — not byte — indices.
+
+  `regsub -command` invokes the third word as a *command prefix* rather than
+  expanding it as a template: the whole match and every subexpression are
+  appended to it and `Tcl_EvalObjv` runs the lot, once per match, and its
+  result is the replacement verbatim. `switch`'s two variables are filled from
+  the same capture information, and `-indexvar` follows `Tcl_SwitchObjCmd`'s
+  own rule for an empty match rather than `regexp -indices`'s — the two really
+  do differ, and `switch -indexvar i -regexp abc {{} {}}` is `-1 -1` where
+  `regexp -indices -inline {} abc` is `0 -1`.
 
   The engine underneath is the `regex` crate, not Henry Spencer's ARE, and the
   two are not the same language. Three differences are corrected in the
@@ -231,9 +241,24 @@ approximated, and nothing is silently mis-run.
   is used, so a script can catch it.
 
   A pattern neither the translation nor `regex` accepts reports
-  `cannot compile regular expression pattern: …` — the interpreter's wording,
-  with the engine's own complaint as the detail, which is not tclsh's: it says
-  `parentheses () not balanced` where this says `unclosed group`.
+  `cannot compile regular expression pattern: …`, and the detail is translated
+  back to `regcomp`'s own `REG_*` wording (`generic/regex/regerrs.h`): the two
+  engines detect the same defects but name them differently — the interpreter
+  names the construct, `regex` names the parse state it was in — so `(a` is
+  `parentheses () not balanced` here as it is there, rather than
+  `unclosed group`. Two grammar rules ARE has and `regex` does not are enforced
+  in the translation for the same reason, because without them the engine
+  answers where tclsh refuses: a `{` that does not begin a bound is an ordinary
+  character (`regexp {a{} "a{"` is 1, and `a{ 2}` is *not* two `a`s), and an
+  atom takes one quantifier plus an optional `?` meaning non-greedy, so `a**`,
+  `a?*`, `a{2}{3}` and `a*??` are all `invalid quantifier operand`.
+
+  **Not closed**: three patterns are still classified differently, because the
+  two engines detect them at different points rather than wording them
+  differently — `(?` is `invalid quantifier operand` in tclsh and `parentheses
+  () not balanced` here, `[a-\` is `brackets [] not balanced` there and
+  `invalid character range` here, and `[[:bogus:]]` is `invalid character
+  class` there and compiles here.
 - **`expr`.** The whole operator set of `expr(n)` with `expr(n)` precedence,
   compiled straight from a braced word with no runtime parse: `+ - * / % **`,
   unary `+ - ~ !`, `< > <= >= == !=`, `lt gt le ge eq ne`, `& ^ | << >>`,
@@ -498,12 +523,6 @@ approximated, and nothing is silently mis-run.
 - **The POSIX list form of an access mode.** `open $f {WRONLY CREAT TRUNC}`
   (`generic/tclIOUtil.c:1540-1600`) is refused by name; the `r`/`r+`/`w`/`w+`/
   `a`/`a+` strings are implemented.
-- **`switch -matchvar` and `-indexvar`.** Named rather than reported as bad
-  options, because `switch` does have them. Both hand the match and its indices
-  back through a variable, which the `switch` lowering has nowhere to put:
-  its clauses are compiled to one comparison op each. `-regexp` itself is
-  implemented.
-
 - **`foreach` and `dict for` reach no tier in any spelling**, procedure locals
   included. Their loop state is carried by frontend extension ops
   (`FOREACH_INIT` / `MORE` / `TAKE` / `ADVANCE`, `DICT_PAIRS`) and
@@ -1140,6 +1159,17 @@ fixes this.
   in tclsh, and `catch {nosuchcommand}` answers 1 instead of taking the script
   down (`Compiler::defer`, `src/compiler.rs`).
 
+  Three handlers that decided their own refusals *after* emitting ops were
+  outside that, and are inside it now, because a refusal raised mid-emit has
+  nothing to roll back. `switch` and `array names` read every option before
+  emitting anything, so a bad option, an odd number of pattern words, a `-`
+  body with nothing after it and a pattern list that will not parse all wait
+  for the command (`Tcl_GetIndexFromObj` and `Tcl_SwitchObjCmd` reach every one
+  of them while running). `if` reads its whole clause chain into a plan first,
+  for the same reason and with the same effect. `catch {switch -- x {a}}` is 1
+  rather than a dead script, and the `if` in a `switch` arm nobody selects
+  costs nothing — which is the shape the fuzzer's seed-1 case 00196 had.
+
   Measured on the 400-program run (seed 1, depth 3): **150 parity / 162
   divergence before the command half, 230 / 77 after it, and 269 / 31 once
   bodies were deferred too**. The `wrong # args` group went from 83 cases to
@@ -1287,7 +1317,7 @@ with a sign, and carries `nan` / `inf` in its value pools.
   `dict info is not supported yet` and the script runs on, where tclsh
   answers the hash-table statistics. (`lsort -command` was the example here
   until it landed, and `dict with` until it did.) The refusals decided while
-  *compiling* — `string is punct`, `switch -matchvar` — are not catchable and do
+  *compiling* — `string is punct`, `regexp -about` — are not catchable and do
   take the whole case out of comparison as a skip. The two halves are pinned
   together, because which side a refusal falls on is what decides whether the
   harness counts it as a skip or as a divergence.

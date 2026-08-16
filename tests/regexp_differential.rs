@@ -110,6 +110,75 @@ const PROGRAMS: &[&str] = &[
     "puts [lsearch -regexp {abc bcd} {^b}]",
     "puts [lsearch -all -regexp {abc bcd cde} {c}]",
     "puts [lsearch -regexp {abc bcd} {^z}]",
+    // `regsub -command`: the third word is a command prefix, called once per
+    // match with the whole match and every subexpression appended. Its result
+    // is the replacement verbatim, so `&` and `\1` are ordinary characters in
+    // it — the second program below is what proves that.
+    "proc up {args} {return [string toupper [lindex $args 0]]}\n\
+     puts [regsub -command {a(.)} banana up]",
+    "proc amp {m} {return {&\\1}}\nputs [regsub -command {a} banana amp]",
+    "proc up {args} {return [string toupper [lindex $args 0]]}\n\
+     puts [regsub -all -command {a(.)} banana up]",
+    "proc up {args} {return [string toupper [lindex $args 0]]}\n\
+     puts [regsub -command {x} banana up]",
+    // An empty match is a call too, and an empty result substitutes nothing.
+    "proc up {args} {return [string toupper [lindex $args 0]]}\n\
+     puts [regsub -all -command {b*} abc up]",
+    "proc up {args} {return [string toupper [lindex $args 0]]}\n\
+     puts [regsub -command {a} {} up]",
+    // A group that did not participate arrives as an empty argument, which is
+    // the shape of the whole argument list this pins.
+    "proc show {args} {return <[join $args -]>}\n\
+     puts [regsub -command {(x)?(b)} abc show]",
+    // The prefix is a *list*: its own words come first and the match after.
+    "puts [regsub -command {a} abc {string toupper}]",
+    "puts [regsub -all -command {a} banana {list x}]",
+    // With a variable name the answer is the count, and the string is written
+    // there — the same split the template form has.
+    "proc up {m} {return [string toupper $m]}\n\
+     set n [regsub -all -command {a} banana up out]\nputs \"$n $out\"",
+    // The calls run in order and against the interpreter's own variables, so a
+    // command that counts sees each match once.
+    "set s 0\nproc bump {m} {global s\nincr s\nreturn $s}\n\
+     puts [regsub -all -command {a} aaa bump]\nputs $s",
+    "proc r {m} {return $m}\nputs [regsub -start 2 -all -command {a} aaaa r]",
+    // `switch -matchvar` / `-indexvar`: what matched and where, per clause.
+    "puts [switch -matchvar m -regexp abc {{(b)(c)} {set m}}]",
+    "puts [switch -indexvar i -regexp abc {{(b)(c)} {set i}}]",
+    "puts [switch -matchvar m -indexvar i -regexp abc {b {list $m $i}}]",
+    "puts [switch -matchvar m -regexp abc {{(x)?(b)} {set m}}]",
+    "puts [switch -indexvar i -regexp abc {{(x)?(b)} {set i}}]",
+    // The `default` clause ran no pattern, so tclsh empties both rather than
+    // leaving what the script put there.
+    "set m PRE\nputs <[switch -matchvar m -regexp abc {z {list} default {set m}}]>",
+    "set i PRE\nputs <[switch -indexvar i -regexp abc {z {list} default {set i}}]>",
+    // Nothing matched and there was no `default`: both keep their old values.
+    "set m PRE\nset i PRE\nswitch -matchvar m -indexvar i -regexp zzz {a {}}\n\
+     puts \"$m $i\"",
+    // A `-` body shares the *next* clause's, and the pattern that matched is
+    // the one reported.
+    "set m {}\nswitch -matchvar m -regexp abc {x - b {}}\nputs $m",
+    // Character offsets, and the rule that is `switch`'s own: an empty match
+    // whose end is 0 is `-1 -1` here, where `regexp -indices` says `0 -1`.
+    "set i {}\nswitch -indexvar i -regexp abc {{} {}}\nputs $i",
+    "puts [regexp -indices -inline {} abc]",
+    "set i {}\nswitch -indexvar i -regexp abc {{c*} {}}\nputs $i",
+    "set i {}\nswitch -indexvar i -regexp abc {{x*$} {}}\nputs $i",
+    "set i {}\nswitch -indexvar i -regexp \u{e9}llo {{(l)(l)} {}}\nputs $i",
+    "set m {}\nswitch -matchvar m -regexp \u{e9}llo {l+ {}}\nputs $m",
+    "set i {}\nswitch -indexvar i -nocase -regexp ABC {b {}}\nputs $i",
+    // Inside a procedure the two variables are frame slots.
+    "proc p {} {switch -matchvar m -regexp abc {b {return $m}}}\nputs [p]",
+    // ARE reads a `{` that does not begin a bound as an ordinary character,
+    // where `regex` reads three of these four as malformed repetitions and the
+    // fourth as a two-fold one.
+    "puts [regexp -- \"a\\{\" \"a\\{\"]",
+    "puts [regexp -- {a{,2}} \"a{,2}\"]",
+    "puts [regexp -- {a{x}} \"a{x}\"]",
+    "puts [regexp -- {a{ 2}} \"a{ 2}\"]",
+    "puts [regexp -inline -- {a{2,3}} aaaa]",
+    "puts [regexp -inline -- {a{2,}} aaaa]",
+    "puts [regexp -inline -- {a{2}} aaaa]",
 ];
 
 /// Programs whose *error* must agree with the interpreter's, message included.
@@ -122,6 +191,51 @@ const ERRORS: &[&str] = &[
     // The `regexp` half cannot be here — tclsh answers it — and is pinned as a
     // named refusal by `unsupported_are_constructs_are_refused`.
     "puts [catch {regsub -about {a} b X} e]\nputs $e",
+    // `-command`'s prefix has to be a list of at least one element, and a
+    // failure inside the call is the command's failure.
+    "puts [catch {regsub -command {a} abc {}} e]\nputs $e",
+    "puts [catch {regsub -command {a} abc nosuchcmd} e]\nputs $e",
+    "proc bad {m} {error boom}\nputs [catch {regsub -command {a} abc bad} e]\nputs $e",
+    // Both `switch` variables are filled from capture information, so neither
+    // means anything without `-regexp`; `-indexvar` is tested first.
+    "puts [catch {switch -matchvar m -glob abc {a* {}}} e]\nputs $e",
+    "puts [catch {switch -indexvar i -exact abc {abc {}}} e]\nputs $e",
+    "puts [catch {switch -matchvar m -indexvar i -glob x {a b}} e]\nputs $e",
+    "puts [catch {switch -indexvar i -matchvar m -glob x {a b}} e]\nputs $e",
+    "puts [catch {switch -matchvar} e]\nputs $e",
+    "puts [catch {switch -indexvar} e]\nputs $e",
+    // The variables are untouched when the pattern will not compile.
+    "set m PRE\nputs [catch {switch -matchvar m -regexp abc {{a[} {}}} e]\nputs $e\nputs $m",
+    // `Tcl_SwitchObjCmd` reaches these while running, so a `switch` that is
+    // never executed costs a script nothing and `catch` answers 1.
+    "puts [catch {switch -- x {a}} e]\nputs $e",
+    "if {0} {switch -- x {a}}\nputs reached",
+    "puts [catch {switch -bogus x {a b}} e]\nputs $e",
+    "if {0} {switch -bogus x {a b}}\nputs reached",
+    "puts [catch {switch -- x {a - }} e]\nputs $e",
+    "puts [catch {switch -- x \"a \\{b\"} e]\nputs $e",
+    // The reference interpreter's own name for a rejected pattern, which is
+    // the construct rather than the parse state the engine was in.
+    "puts [catch {regexp -- {a[} x} e]\nputs $e",
+    "puts [catch {regexp -- {(a} x} e]\nputs $e",
+    "puts [catch {regexp -- {a)} x} e]\nputs $e",
+    "puts [catch {regexp -- {*} x} e]\nputs $e",
+    "puts [catch {regexp -- {a{2,1}} x} e]\nputs $e",
+    "puts [catch {regexp -- {[z-a]} x} e]\nputs $e",
+    "puts [catch {regexp -- \"a\\{1,\" x} e]\nputs $e",
+    // One quantifier per atom, plus a `?` on it meaning non-greedy. A second
+    // is `invalid quantifier operand` — which `regex` accepts with a different
+    // meaning, so these are wrong answers rather than missing errors.
+    "puts [catch {regexp -- {a**} aaa} e]\nputs $e",
+    "puts [catch {regexp -- {a?*} aaa} e]\nputs $e",
+    "puts [catch {regexp -- {a{2}{3}} aaa} e]\nputs $e",
+    "puts [catch {regexp -- {a*{2}} aaa} e]\nputs $e",
+    "puts [catch {regexp -- {a*??} aaa} e]\nputs $e",
+    // ... and the shapes that stay legal, so the rule does not over-reach.
+    "puts [catch {regexp -- {a*?} aaa} e]\nputs $e",
+    "puts [catch {regexp -- {a{2}?} aaa} e]\nputs $e",
+    "puts [catch {regexp -- {(a*)*} aaa} e]\nputs $e",
+    "puts [catch {regexp -- {[*]*} {*}} e]\nputs $e",
 ];
 
 fn tclsh() -> Option<PathBuf> {

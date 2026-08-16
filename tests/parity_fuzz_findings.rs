@@ -2390,3 +2390,67 @@ fn fixed_string_replace_on_an_empty_subject_does_not_abort() {
              {abc end end} -> ab abX\n"),
     );
 }
+
+/// `if`'s `else` keyword is optional, and its refusals are the command's.
+///
+/// Two defects in one handler, both found by the fuzzer's seed-1 case 00196
+/// (`tests/fuzz_corpus/message-compile-time-7405ece0.tcl`), whose `if` sat in a
+/// `switch` arm that never ran:
+///
+/// * The grammar was read from the synopsis in `if(n)` rather than from
+///   `Tcl_IfObjCmd`. The interpreter takes the word after the last body as the
+///   else script *whatever it says* — `if {$x} {a} {b}` is ordinary Tcl — and
+///   answers `extra words after "else" clause in "if" command` when more than
+///   one word is left. tclrs refused the whole form with a wording
+///   (`expected "elseif" or "else", got …`) the interpreter has no equivalent
+///   of.
+/// * The two arity diagnostics quote the word they stopped at, which tclrs
+///   answered with the literal `"if"` in every position.
+///
+/// Both are compile-time in tclrs and run-time in tclsh, so the refusals also
+/// had to move: they are decided before the handler emits anything now, which
+/// is what lets `Compiler::defer` carry them to the point the command runs.
+#[test]
+fn fixed_if_takes_the_interpreters_grammar_and_wording() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    // The keyword-less else, in each position it can stand.
+    agrees(&tclsh, "if {0} {puts a} {puts b}", out("b\n"));
+    agrees(&tclsh, "if {1} {puts a} {puts b}", out("a\n"));
+    agrees(&tclsh, "if {0} then {puts a} {puts b}", out("b\n"));
+    agrees(
+        &tclsh,
+        "if {0} {puts a} elseif {0} {puts b} {puts c}",
+        out("c\n"),
+    );
+    agrees(&tclsh, "puts [if {0} {expr 5} {expr 6}]", out("6\n"));
+    // The word quoted by each arity refusal.
+    for program in [
+        "if",
+        "if {1}",
+        "if {1} then",
+        "if {1} {puts a} elseif",
+        "if {1} {puts a} elseif {2}",
+        "if {1} {puts a} else",
+        "if {1} {puts a} else {puts b} extra",
+        "if {1} {puts a} bogus {puts b}",
+        "if {0} {} else {} junk",
+    ] {
+        let expected = reference(&tclsh, program);
+        assert!(
+            expected.error.starts_with("wrong # args: "),
+            "{program}: tclsh no longer reports an arity error: {expected:?}"
+        );
+        assert_eq!(subject(program), expected, "{program}");
+    }
+    // Reached only when the command is: the case the fuzzer minimised had its
+    // `if` inside a `switch` arm the subject never selected.
+    agrees(
+        &tclsh,
+        "switch -- 3 {* {if {1} {puts a} else {puts b} extra} default {puts d}}",
+        out("d\n"),
+    );
+    agrees(&tclsh, "puts [catch {if {1} {} else {} junk}]", out("1\n"));
+}

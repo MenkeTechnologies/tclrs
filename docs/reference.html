@@ -342,7 +342,7 @@
           <h3><a class="doc-anchor" href="#doc-cmd-if">#</a> <code>if</code></h3>
           <pre><code class="lang-tcl">if test ?then? body ?elseif test ?then? body ...? ?else? ?body?
 </code></pre>
-          <p>The first branch whose test is a true Tcl boolean; a test that is not a boolean is an error, not a false branch.</p>
+          <p>The first branch whose test is a true Tcl boolean; a test that is not a boolean is an error, not a false branch. The <code>else</code> keyword is optional: the word after the last body is the else script whatever it says.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-incr">
           <h3><a class="doc-anchor" href="#doc-cmd-incr">#</a> <code>incr</code></h3>
@@ -522,7 +522,7 @@
           <h3><a class="doc-anchor" href="#doc-cmd-regsub">#</a> <code>regsub</code></h3>
           <pre><code class="lang-tcl">regsub ?-option ...? exp string subSpec ?varName?
 </code></pre>
-          <p>Substitute for a regular expression's matches; the new string, or the count when a variable is named.</p>
+          <p>Substitute for a regular expression's matches; the new string, or the count when a variable is named. Under <code>-command</code> the subSpec is a command prefix called once per match with the match and its subexpressions, and its result is the replacement verbatim.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-rename">
           <h3><a class="doc-anchor" href="#doc-cmd-rename">#</a> <code>rename</code></h3>
@@ -582,7 +582,7 @@
           <h3><a class="doc-anchor" href="#doc-cmd-switch">#</a> <code>switch</code></h3>
           <pre><code class="lang-tcl">switch ?-option ...? string ?pattern body ...? ?default body?
 </code></pre>
-          <p>Run the body of the first pattern that matches, <code>-exact</code> or <code>-glob</code>.</p>
+          <p>Run the body of the first pattern that matches, <code>-exact</code>, <code>-glob</code> or <code>-regexp</code>. With <code>-regexp</code>, <code>-matchvar</code> and <code>-indexvar</code> name variables the matched text and its index pairs are written to.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-tcl-findLibrary">
           <h3><a class="doc-anchor" href="#doc-cmd-tcl-findLibrary">#</a> <code>tcl_findLibrary</code></h3>
@@ -850,7 +850,7 @@
           <h3><a class="doc-anchor" href="#doc-array-names">#</a> <code>array names</code></h3>
           <pre><code class="lang-tcl">array names arrayName ?mode? ?pattern?
 </code></pre>
-          <p>The element names, filtered by a glob pattern by default. <code>-exact</code> and <code>-glob</code> are accepted as the mode; <code>-regexp</code> is recognised and refused, because the filter runs where the regular-expression engine is not reachable.</p>
+          <p>The element names, filtered by a glob pattern by default. The mode may be <code>-exact</code>, <code>-glob</code> or <code>-regexp</code>; <code>-regexp</code> searches the name rather than anchoring to it, and never folds case.</p>
         </article>
         <article class="doc-entry" id="doc-array-nextelement">
           <h3><a class="doc-anchor" href="#doc-array-nextelement">#</a> <code>array nextelement</code></h3>

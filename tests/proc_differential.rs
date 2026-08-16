@@ -411,19 +411,19 @@ fn unsupported_procedure_constructs_are_refused() {
             "proc f {a args} {}\nf",
             "wrong # args: should be \"f a ?arg ...?\"",
         ),
-        // `-nocase` and `-regexp` are both implemented now; `-matchvar` and
-        // `-indexvar` are named rather than reported as bad options, because
-        // `switch` does have them and this frontend does not. A genuinely
-        // unknown option is still a bad option.
-        (
-            "switch -matchvar m -regexp a {a {}}",
-            "the -matchvar option",
-        ),
-        (
-            "switch -indexvar i -regexp a {a {}}",
-            "the -indexvar option",
-        ),
+        // Every option `switch` names is implemented now, so what is left here
+        // is a genuinely unknown one — and the two `-matchvar`/`-indexvar`
+        // shapes that are still refused, which are the ones that need
+        // `-regexp` and did not say it.
         ("switch -bogus a b {a {}}", "bad option \"-bogus\""),
+        (
+            "switch -matchvar m -glob a {a {}}",
+            "-matchvar option requires -regexp option",
+        ),
+        (
+            "switch -indexvar i -exact a {a {}}",
+            "-indexvar option requires -regexp option",
+        ),
         ("switch a {a}", "extra switch pattern with no body"),
         ("switch a {}", "wrong # args"),
         ("switch a", "wrong # args"),
@@ -436,16 +436,32 @@ fn unsupported_procedure_constructs_are_refused() {
         );
     }
 
-    // `-regexp` was on that list until the regular-expression engine landed.
-    // Pinned rather than dropped, so the day it starts refusing again this
-    // test says so; what it *matches* is compared against tclsh by
-    // `tests/regexp_differential.rs`.
-    assert_eq!(
-        tclrs::eval("puts [switch -regexp abc {^a {list one} default {list none}}]")
-            .expect("switch -regexp is implemented")
-            .output,
-        "one\n"
-    );
+    // `-regexp`, and then `-matchvar`/`-indexvar`, were on that list until each
+    // landed. Pinned rather than dropped, so the day one starts refusing again
+    // this test says so; what they *match* and *report* is compared against
+    // tclsh by `tests/regexp_differential.rs`.
+    for (src, expected) in [
+        (
+            "puts [switch -regexp abc {^a {list one} default {list none}}]",
+            "one\n",
+        ),
+        (
+            "switch -matchvar m -regexp abc {{a(.)c} {puts $m}}",
+            "abc b\n",
+        ),
+        (
+            "switch -indexvar i -regexp abc {{a(.)c} {puts $i}}",
+            "{0 2} {1 1}\n",
+        ),
+    ] {
+        assert_eq!(
+            tclrs::eval(src)
+                .unwrap_or_else(|e| panic!("{src} is implemented: {e}"))
+                .output,
+            expected,
+            "{src}"
+        );
+    }
 }
 
 /// The run-time table is the fallback, never the rule: a name the compiler can

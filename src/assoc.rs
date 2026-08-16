@@ -895,13 +895,15 @@ impl Compiler {
                 };
                 let mode = mode.to_string();
                 if !matches!(mode.as_str(), "-exact" | "-glob" | "-regexp") {
-                    return self.error(format!(
+                    // `Tcl_GetIndexFromObj` is reached from the command's own
+                    // implementation, so tclsh reports a bad option when the
+                    // command runs: `if {0} {array names a -bogus x}` costs a
+                    // script nothing there and `catch` answers 1. Deferrable for
+                    // the same reason `wrong # args` is — nothing has been
+                    // emitted yet, so the refusal becomes code in the branch.
+                    return Err(self.deferrable_err(format!(
                         "bad option \"{mode}\": must be -exact, -glob, or -regexp"
-                    ));
-                }
-                if mode == "-regexp" {
-                    return self
-                        .error("array names -regexp needs regexp support, which is not built yet");
+                    )));
                 }
                 self.pattern_args(pattern, &mode)?;
                 self.emit(Op::LoadInt(slot), 1);
@@ -2256,7 +2258,7 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         ext::ARR_NAMES => {
             let place = place_of(vm);
             let filter = pop_filter(vm);
-            let mut names = selected(vm, place, &filter);
+            let mut names = selected(vm, place, &filter)?;
             names.sort();
             vm.push(Value::Str(Arc::new(join(&names))));
             Ok(())
@@ -2264,7 +2266,7 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         ext::ARR_GET => {
             let place = place_of(vm);
             let filter = pop_filter(vm);
-            let mut names = selected(vm, place, &filter);
+            let mut names = selected(vm, place, &filter)?;
             names.sort();
             let mut flat = Vec::with_capacity(names.len() * 2);
             for name in names {
@@ -2289,7 +2291,7 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                     }
                 }
                 Some(_) => {
-                    let doomed = selected(vm, place, &filter);
+                    let doomed = selected(vm, place, &filter)?;
                     if let Some(Value::Hash(map)) = crate::runtime::var_cell(vm, place) {
                         for name in doomed {
                             map.remove(&name);
@@ -2631,18 +2633,37 @@ pub(crate) fn element_map(vm: &mut VM, place: Place) -> Option<&mut HashMap<Stri
 }
 
 /// The element names of an array that pass the filter.
-fn selected(vm: &VM, place: Place, filter: &Option<(String, String)>) -> Vec<String> {
+///
+/// Fallible because of `-regexp`: the pattern is compiled, and a pattern that
+/// will not compile is the command's error rather than an empty answer —
+/// `array names a -regexp {a[}` reports `cannot compile regular expression
+/// pattern: …` in tclsh, the same wording `regexp` gives for the same pattern.
+fn selected(
+    vm: &VM,
+    place: Place,
+    filter: &Option<(String, String)>,
+) -> Result<Vec<String>, String> {
     let Some(Value::Hash(map)) = peek(vm, place) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    map.keys()
-        .filter(|k| match filter {
+    let mut names = Vec::new();
+    for k in map.keys() {
+        let keep = match filter {
             Some((mode, pattern)) if mode == "-exact" => k.as_str() == pattern,
+            // `Tcl_RegExpMatch`: the pattern is searched for anywhere in the
+            // name, not anchored to it, and case is never folded — `array
+            // names` has no `-nocase`.
+            Some((mode, pattern)) if mode == "-regexp" => {
+                crate::regexp::matches_anywhere(pattern, k, false)?
+            }
             Some((_, pattern)) => string_match(k, pattern),
             None => true,
-        })
-        .cloned()
-        .collect()
+        };
+        if keep {
+            names.push(k.clone());
+        }
+    }
+    Ok(names)
 }
 
 /// Pop the `mode`, `pattern`, "was a pattern given" triple.

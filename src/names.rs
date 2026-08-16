@@ -214,7 +214,7 @@ pub const CORPUS: &[Entry] = &[
     Entry {
         name: "if",
         synopsis: "if test ?then? body ?elseif test ?then? body ...? ?else? ?body?",
-        summary: "The first branch whose test is a true Tcl boolean; a test that is not a boolean is an error, not a false branch.",
+        summary: "The first branch whose test is a true Tcl boolean; a test that is not a boolean is an error, not a false branch. The `else` keyword is optional: the word after the last body is the else script whatever it says.",
     },
     Entry {
         name: "incr",
@@ -364,7 +364,7 @@ pub const CORPUS: &[Entry] = &[
     Entry {
         name: "regsub",
         synopsis: "regsub ?-option ...? exp string subSpec ?varName?",
-        summary: "Substitute for a regular expression's matches; the new string, or the count when a variable is named.",
+        summary: "Substitute for a regular expression's matches; the new string, or the count when a variable is named. Under `-command` the subSpec is a command prefix called once per match with the match and its subexpressions, and its result is the replacement verbatim.",
     },
     Entry {
         name: "rename",
@@ -414,7 +414,7 @@ pub const CORPUS: &[Entry] = &[
     Entry {
         name: "switch",
         synopsis: "switch ?-option ...? string ?pattern body ...? ?default body?",
-        summary: "Run the body of the first pattern that matches, `-exact` or `-glob`.",
+        summary: "Run the body of the first pattern that matches, `-exact`, `-glob` or `-regexp`. With `-regexp`, `-matchvar` and `-indexvar` name variables the matched text and its index pairs are written to.",
     },
     Entry {
         name: "tcl_findLibrary",
@@ -943,7 +943,7 @@ const ARRAY_CORPUS: &[Entry] = &[
     Entry {
         name: "names",
         synopsis: "array names arrayName ?mode? ?pattern?",
-        summary: "The element names, filtered by a glob pattern by default. `-exact` and `-glob` are accepted as the mode; `-regexp` is recognised and refused, because the filter runs where the regular-expression engine is not reachable.",
+        summary: "The element names, filtered by a glob pattern by default. The mode may be `-exact`, `-glob` or `-regexp`; `-regexp` searches the name rather than anchoring to it, and never folds case.",
     },
     Entry {
         name: "nextelement",

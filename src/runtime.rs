@@ -1585,6 +1585,12 @@ impl Hooks {
                 // interpreter once per compared pair — and whether a given call
                 // says `-command` is only known when it runs.
                 ext::LSORT => crate::cmd_list::lsort_op(&interp, vm, arg).map_err(TclError::plain),
+                // `regsub` for the same reason: `-command` calls back into the
+                // interpreter once per match, and whether a given call says
+                // `-command` is only known when it runs.
+                crate::regexp::ext::REGSUB => {
+                    crate::regexp::regsub_op(&interp, vm, arg).map_err(TclError::plain)
+                }
                 // `info globals` / `vars` answer from the interpreter's own
                 // table, not the chunk's name pool: `argc`, `argv` and `argv0`
                 // are set by the host and are interned only if the script

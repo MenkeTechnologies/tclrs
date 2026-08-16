@@ -96,6 +96,20 @@ const FIXED: &[&str] = &[
     "array set a {-exact 1 b 2}\nputs [array names a -exact]",
     "array set a {x 1}\nputs [array names a -glob x]",
     "array set a {ab 1 b 2}\nputs [array names a {[ab]b}]",
+    // `-regexp` searches the name rather than anchoring to it, which is what
+    // separates it from `-glob`: `b` finds `ab` here and `b*` would not.
+    "array set a {ab 1 zz 2}\nputs [array names a -regexp b]",
+    "array set a {ab 1 zz 2}\nputs [array names a -regexp {^a}]",
+    "array set a {ab 1 zz 2}\nputs [lsort [array names a -regexp {}]]",
+    // No `-nocase`: the fold `-glob` would do through `string match -nocase` is
+    // not available here, so a capital pattern finds nothing.
+    "array set a {Ab 1}\nputs [array names a -regexp {^a}]|",
+    // A literal `-regexp` element is still only a mode when it stands in the
+    // mode position, so this is `array names` with a one-element pattern.
+    "array set a {-regexp 1 b 2}\nputs [array names a -exact -regexp]",
+    // Inside a procedure the array is a frame slot rather than a global-table
+    // entry, and the filter reaches it through the place either way.
+    "proc p {} {array set a {ab 1 zz 2}\nreturn [array names a -regexp {^a}]}\nputs [p]",
     "array set a {ab 1 zc 2 zz 3}\nputs [array size a]\nputs [array names a a?]x",
     "array set a {x 1}\nputs [array si a]",
     "puts [array size never]\nputs [array names never]\nputs [array get never]",
@@ -530,6 +544,9 @@ fn associative_errors_match_tclsh() {
         "array bogus q",
         "array s q",
         "array set q {a 1}\narray names q -bogus a",
+        // A `-regexp` pattern the engine will not compile is the command's own
+        // error, with the same wording `regexp` gives for the same pattern.
+        "array set q {a 1}\narray names q -regexp {a[}",
         "array exists q x",
         "array set q",
         // The dict command.
@@ -598,7 +615,9 @@ fn unimplemented_subcommands_are_refused() {
             "array startsearch is not supported yet",
         ),
         ("array for {k v} a {}", "array for is not supported yet"),
-        ("array names a -regexp x", "needs regexp support"),
+        // `array names -regexp` landed; what it answers is compared against
+        // tclsh in `FIXED`, and a pattern that will not compile is in the
+        // error corpus.
         // `dict incr` is implemented; what it still refuses is an array element
         // as the target, which is `dict set`'s limitation and now also its own.
         (
