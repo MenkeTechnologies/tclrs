@@ -217,6 +217,48 @@ pub mod ext {
     /// runs, exactly as `TclNRSubstObjCmd` decides them.
     pub const SUBST: u16 = EVENT_BASE + 13;
 
+    // ── variables whose *name* the script computes ───────────────────────
+    // `set $n`, `unset $n`, `incr $n`, `append $n`, `info exists $n`: the four
+    // ops below are what a variable access lowers to when the name is not a
+    // literal, and they are in this block because each resolves that name the
+    // way a computed `upvar` target is resolved — through the interpreter, so a
+    // name the chunk's table does not carry can be interned against the
+    // interpreter's variables. See [`crate::cmd_scope::dynamic_link`].
+    //
+    // Numbered above [`SUBST`] rather than into the `+ 4` … `+ 7` gap, which is
+    // left free deliberately: a chunk cached on disk carries the id and not the
+    // name, so an id that once meant `info exists` must never mean anything
+    // else.
+    /// `[declared, name]` → what the variable that name spells holds.
+    ///
+    /// `arg` says what an *unset* variable answers, because the three commands
+    /// that read one disagree: 0 refuses, as `$x` does; 1 answers `0`, which is
+    /// what `incr` needs to create a counter at zero; 2 answers the empty
+    /// string, which is what `append` and `lappend` need to create a variable by
+    /// extending it. [`LINK_GET`] takes the same flag for the first two.
+    pub const DYN_GET: u16 = EVENT_BASE + 14;
+    /// `[value, declared, name]` → nothing, having stored the value in the
+    /// variable that name spells, creating it if it did not exist. A store, so
+    /// it leaves the stack as it found it — the caller `Dup`s when the command
+    /// yields what it assigned, exactly as [`Compiler::emit_set_var`]'s callers
+    /// do.
+    ///
+    /// The name rides on *top*, above the value, which is the opposite of
+    /// [`DYN_GET`]'s order and is what lets `append` and `incr` evaluate a
+    /// computed name exactly once: the read leaves `[name, value]`, and from
+    /// there this order is three stack ops away. See
+    /// [`Compiler::dyn_write_back`].
+    pub const DYN_SET: u16 = EVENT_BASE + 15;
+    /// `[declared, name]` → nothing, having unset the variable that name spells.
+    /// `arg` is 1 when an absent variable is an error, which is `unset` without
+    /// `-nocomplain`.
+    pub const DYN_UNSET: u16 = EVENT_BASE + 16;
+    /// `[declared, name]` → 1 when the variable that name spells is set, 0
+    /// otherwise. Never creates it: `info exists $n` must not make `n`'s value a
+    /// variable by asking about it.
+    pub const DYN_EXISTS: u16 = EVENT_BASE + 17;
+    // ── end of the computed-name block ───────────────────────────────────
+
     /// `[name, arg …]` with the count in the inline operand — call the function
     /// an inline `rust { ... }` block exported. Emitted only for a name
     /// [`crate::rust_ffi::is_exported`] answered for while compiling.
@@ -1005,6 +1047,23 @@ pub(crate) enum Body {
     Deferred(String),
 }
 
+/// What reading an unset variable answers, for the commands that read one
+/// through a name the script computed. See [`ext::DYN_GET`].
+///
+/// A property of the *command*, not of the variable: `$x` refuses, `incr x`
+/// creates a counter at zero, and `append x`/`lappend x` create the variable by
+/// extending nothing. The literal-name path settles the same three by choosing
+/// between `scalar_get`, a tolerant read site and `elem_get_tolerant`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Absent {
+    /// `can't read "name": no such variable`, which is what `$x` gives.
+    Refuse = 0,
+    /// `0` — `incr`.
+    Zero = 1,
+    /// `""` — `append` and `lappend`.
+    Empty = 2,
+}
+
 /// Where a variable lives once the script is lowered: a frame slot inside a
 /// procedure body, a name index in the VM's global table anywhere else, or —
 /// for a name `upvar` bound — a frame slot holding a *link* to one of those,
@@ -1411,6 +1470,93 @@ impl Compiler {
         let mut names: Vec<&str> = scope.globals.iter().map(String::as_str).collect();
         names.sort_unstable();
         Some(crate::list::join(&names))
+    }
+
+    // ── variables whose name the script computes ─────────────────────────
+    //
+    // `set $n 1` names a variable this compiler cannot resolve: the name is a
+    // value. The four helpers below lower such an access to the ops that
+    // resolve it when they run, which is what a Tcl interpreter does with every
+    // variable access anyway. Each pushes the body's `global` declarations
+    // first — see [`Compiler::declared_globals`] for why the run time cannot
+    // recover them.
+    //
+    // Nothing here is a fallback in the sense of being weaker. A literal name
+    // still resolves while compiling and still lowers to the same one or two
+    // ops it always did; these run only for the access whose name is a value,
+    // and they give it the answers tclsh gives.
+
+    /// Push the `global`/`variable` declarations the enclosing body made, as the
+    /// first operand every computed-name op takes. Empty at a script's top
+    /// level, where there is no frame and every name is a global anyway.
+    fn push_declared(&mut self) {
+        let declared = self.declared_globals().unwrap_or_default();
+        self.push_str(&declared);
+    }
+
+    /// Read the variable a computed name spells. `absent` is what an unset one
+    /// answers — see [`ext::DYN_GET`] for why the choice belongs to the caller.
+    pub(crate) fn dyn_get(&mut self, name: &Word, absent: Absent) -> Result<(), CompileError> {
+        self.push_declared();
+        self.word(name)?;
+        self.emit(Op::Extended(ext::DYN_GET, absent as u8), -1);
+        Ok(())
+    }
+
+    /// Store the value already on the stack into the variable a computed name
+    /// spells, leaving the stack as it was found — the same contract
+    /// [`Compiler::emit_set_var`] has.
+    ///
+    /// `[value]` → `[value, declared, name]`, which is the order [`ext::DYN_SET`]
+    /// reads, so nothing has to be swapped past the value.
+    pub(crate) fn dyn_store(&mut self, name: &Word) -> Result<(), CompileError> {
+        self.push_declared();
+        self.word(name)?;
+        self.emit(Op::Extended(ext::DYN_SET, 0), -3);
+        Ok(())
+    }
+
+    /// Open a read-modify-store on a computed name: `[]` → `[name, value]`,
+    /// having evaluated the name **once**.
+    ///
+    /// `append $n x` and `incr $n` read the variable and write it back, and the
+    /// word that spells its name may be a command substitution — `append [pick]
+    /// x` runs `pick` once in tclsh, as every command's words are substituted
+    /// once. So the name is evaluated, kept on the stack under the value, and
+    /// consumed by [`Compiler::dyn_write_back`], rather than compiled twice.
+    pub(crate) fn dyn_read_modify(&mut self, name: &Word, absent: Absent) -> Result<(), CompileError> {
+        self.word(name)?; //             [name]
+        self.emit(Op::Dup, 1); //        [name, name]
+        self.push_declared(); //         [name, name, declared]
+        self.emit(Op::Swap, 0); //       [name, declared, name]
+        self.emit(Op::Extended(ext::DYN_GET, absent as u8), -1); // [name, value]
+        Ok(())
+    }
+
+    /// Close one: `[name, result]` → `[result]`, having stored the result in the
+    /// variable, which is the value these commands yield.
+    pub(crate) fn dyn_write_back(&mut self) {
+        self.emit(Op::Dup, 1); //        [name, result, result]
+        self.emit(Op::Rot, 0); //        [result, result, name]
+        self.push_declared(); //         [result, result, name, declared]
+        self.emit(Op::Swap, 0); //       [result, result, declared, name]
+        self.emit(Op::Extended(ext::DYN_SET, 0), -3); // [result]
+    }
+
+    /// Unset the variable a computed name spells.
+    pub(crate) fn dyn_unset(&mut self, name: &Word, complain: bool) -> Result<(), CompileError> {
+        self.push_declared();
+        self.word(name)?;
+        self.emit(Op::Extended(ext::DYN_UNSET, u8::from(complain)), -2);
+        Ok(())
+    }
+
+    /// Whether the variable a computed name spells is set.
+    pub(crate) fn dyn_exists(&mut self, name: &Word) -> Result<(), CompileError> {
+        self.push_declared();
+        self.word(name)?;
+        self.emit(Op::Extended(ext::DYN_EXISTS, 0), -1);
+        Ok(())
     }
 
     /// Where a variable lives, for an op that reaches it itself rather than
@@ -1948,6 +2094,19 @@ impl Compiler {
 
     fn cmd_set(&mut self, args: &[Word]) -> Result<(), CompileError> {
         match args.len() {
+            // `set $n` and `set $n v`: the variable's name is a value, so both
+            // the name and the whole resolution belong to run time. Tcl reads
+            // every variable that way; this compiler resolves the literal case
+            // ahead of time and falls back here for the rest.
+            1 | 2 if assoc::target_of(&args[0]).is_none() => {
+                if args.len() == 1 {
+                    return self.dyn_get(&args[0], Absent::Refuse);
+                }
+                self.word(&args[1])?;
+                // `set` yields the value it assigned.
+                self.emit(Op::Dup, 1);
+                self.dyn_store(&args[0])
+            }
             1 => match self.target_of(&args[0])? {
                 Target::Scalar(name) => {
                     self.scalar_get(&name);
@@ -2144,7 +2303,23 @@ impl Compiler {
                 ));
             }
         }
-        let name = match self.target_of(name)? {
+        // `incr $v` resolves its variable when it runs, for the reason `set $v`
+        // does. The read tolerates absence there too — `incr` on a variable
+        // that does not exist creates it at zero.
+        let Some(target) = assoc::target_of(name) else {
+            self.dyn_read_modify(name, Absent::Zero)?;
+            match by {
+                Some(w) => self.word(w)?,
+                None => {
+                    self.emit(Op::LoadInt(1), 1);
+                }
+            }
+            self.incr_sites.push(self.b.current_pos());
+            self.emit(Op::Add, -1);
+            self.dyn_write_back();
+            return Ok(());
+        };
+        let name = match target {
             Target::Scalar(name) => name,
             Target::Elem { name, index } => return self.elem_incr(&name, &index, by),
         };

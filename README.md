@@ -781,7 +781,8 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `clock scan` without `-format`, and `clock`'s `-locale` outside the root catalogue | `clock scan: the free-form parser is not supported yet; use -format` |
 | A `clock` instant before the Gregorian changeover, where the calendar depends on the locale | `clock: dates before the Gregorian changeover of 1752-09-14 are not supported yet` |
 | `file attributes`, `link`, `stat`, `lstat`, `channels`, `system`, `tempfile`, `tempdir`, `volumes` | `file stat is not supported yet: it needs an interface this frontend has not built` |
-| A variable or body word that is not literal (`set $name …`) | the word is refused where a literal is required |
+| An ensemble *subcommand* that is not literal (`string $sub x`, `info $sub v`, `array $sub a`) | `subcommand must be a literal in this phase` |
+| A *body* word that is not literal (`while $cond $body`), a `foreach` / `lmap` / `lassign` variable list, `dict update`'s variable names, and the array name of `array exists` / `names` / `size` / `get` / `set` / `unset` | the word is refused where a literal is required |
 | An array variable in a `foreach` variable list | `array variables are not supported yet` |
 | `array startsearch` and the other search subcommands | `array startsearch is not supported yet` |
 | `dict info`, which reports the hash-table statistics of the *object* rather than of the value — two dictionaries with the same string answer differently when one of them shrank, and a third answer again once a list holds one, so it needs a dict that retains its table *and* a count of what holds it, [see BUGS.md](BUGS.md); `dict set`, `dict incr`, `dict update` or `dict with` into an array element; `dict update`'s variable names when they are not literal | `dict info is not supported yet` |

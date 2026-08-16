@@ -224,7 +224,13 @@ impl Compiler {
         let [target] = args else {
             return self.error("wrong # args: should be \"info exists varName\"");
         };
-        match self.target_of(target)? {
+        // `info exists $n` asks about the variable *that name spells*, which is
+        // only known when it runs. The op it lowers to creates nothing, for the
+        // same reason this one does not.
+        let Some(target) = crate::assoc::target_of(target) else {
+            return self.dyn_exists(target);
+        };
+        match target {
             crate::assoc::Target::Scalar(name) => {
                 let place = self.var_place_operand(&name);
                 self.emit(Op::LoadInt(place), 1);

@@ -404,6 +404,25 @@ const FIXED: &[&str] = &[
     "array set a {x 1 y 2 z 3}\nset d [array get a]\nputs [dict exists $d z]\nputs [dict exists $d w]",
     "dict for {k v} {alpha 1 beta 2} {set counts($k) $v}\nputs [array size counts]\nputs $counts(beta)",
     "set d {}\nset i 0\nwhile {$i < 4} {dict set d k$i $i; incr i}\nputs $d\nputs [dict size $d]",
+    // ── naming an element of a variable that is not an array ──
+    //
+    // Which verb the refusal uses is not uniform in tclsh, and the difference is
+    // where each command's lookup happens rather than anything about the
+    // variable: `incr` reads before it writes and answers `can't read`, while
+    // `append` and `lappend` read tolerantly and are refused by the store, which
+    // answers `can't set`. A plain read answers `can't read`.
+    "set b 1\nputs [catch {set b(1)} m]:$m",
+    "set b 1\nputs [catch {incr b(1)} m]:$m",
+    "set b 1\nputs [catch {append b(1) x} m]:$m",
+    "set b 1\nputs [catch {lappend b(1) x} m]:$m",
+    "set b 1\nputs [catch {set b(1) v} m]:$m",
+    "set b 1\nputs [catch {unset b(1)} m]:$m",
+    // The same three commands on a name that is not a variable at all, and on an
+    // array missing that one element, answer differently again.
+    "puts [catch {set nope(1)} m]:$m",
+    "set a(9) x\nputs [catch {set a(1)} m]:$m",
+    "set a(9) x\nputs [catch {unset a(1)} m]:$m",
+    "set a(9) x\nincr a(1) 3\nappend a(2) q\nlappend a(3) e\nputs [lsort [array names a]]",
 ];
 
 /// The selection sort that turns `array get`'s undefined order into a defined

@@ -803,7 +803,11 @@ impl Compiler {
 
         for word in &args[i..] {
             let Some(target) = target_of(word) else {
-                return self.error("variable name must be a literal in this phase");
+                // `unset $n` resolves its variable when it runs. An `a(i)`
+                // spelling the name happens to carry is an element there too,
+                // which is what the op's own split makes of it.
+                self.dyn_unset(word, complain)?;
+                continue;
             };
             match target {
                 Target::Scalar(name) => {
@@ -2132,6 +2136,14 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                 Some(Value::Undef) | None => {
                     return Err(format!("can't read \"{name}({index})\": no such variable"))
                 }
+                // A variable that exists and is not an array is refused by the
+                // *store* rather than here when the read is the tolerant one:
+                // measured, `append b(1) x` and `lappend b(1) x` on a scalar `b`
+                // answer `can't set "b(1)": variable isn't array` in tclsh 9.0.3,
+                // because `Tcl_AppendObjCmd`'s read is `TCL_LEAVE_ERR_MSG`-free
+                // and the failure surfaces at `Tcl_ObjSetVar2`. Refusing here
+                // gave the same complaint under the wrong verb.
+                Some(_) if tolerant => empty(),
                 Some(_) => {
                     return Err(format!(
                         "can't read \"{name}({index})\": variable isn't array"
@@ -2157,6 +2169,17 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let by = tcl_int(&vm.pop())?;
             let index = pop_str(vm);
             let name = pop_str(vm);
+            // `incr` reads before it writes, so a variable that is not an array
+            // is refused under `read` — measured, `incr b(1)` on a scalar `b`
+            // answers `can't read "b(1)": variable isn't array` in tclsh 9.0.3,
+            // where `append b(1) x` answers `can't set`. `TclIncrObjCmd` looks
+            // the element up with `TCL_LEAVE_ERR_MSG` before incrementing, which
+            // is the difference.
+            if matches!(peek(vm, place), Some(v) if !matches!(v, Value::Hash(_) | Value::Undef)) {
+                return Err(format!(
+                    "can't read \"{name}({index})\": variable isn't array"
+                ));
+            }
             let map = element_map(vm, place)
                 .ok_or_else(|| format!("can't set \"{name}({index})\": variable isn't array"))?;
             // A missing element counts as zero, as a missing scalar does.

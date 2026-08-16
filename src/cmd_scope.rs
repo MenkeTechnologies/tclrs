@@ -370,10 +370,24 @@ impl Compiler {
     /// Publish the slot names of the body just lowered, so a live frame running
     /// it can be addressed by name. Called where the body's scope is discarded —
     /// by `crate::procs::cmd_proc` and by [`Compiler::emit_lambda`] below.
+    ///
+    /// A name `upvar` bound is published too, at the slot its [`Link`] descriptor
+    /// lives in. It is a name of the frame — `upvar 1 $v y` makes `y` as much a
+    /// local as `set y` does, and tclsh's `varTablePtr` holds both the same way —
+    /// so a nested `upvar 1 y q`, a `dict with` key `y` and a computed `set $n`
+    /// with `n` holding `y` must all find it. Each of those follows the
+    /// descriptor rather than reading the slot, which is what [`link_of_home`]
+    /// is for; publishing without following would hand them the descriptor
+    /// itself.
+    ///
+    /// Not the same table `crate::procs::slot_names_of` builds: that one is the
+    /// *projection* an `eval` inside the body runs against, and a slot holding a
+    /// descriptor has no value to project.
     pub(crate) fn publish_slot_names(&mut self, scope: &Scope, entry: usize, end: usize) {
         let mut names: Vec<(String, u16)> = scope
             .locals
             .iter()
+            .chain(scope.links.iter())
             .map(|(name, slot)| (name.clone(), *slot))
             .collect();
         names.sort_by_key(|(_, slot)| *slot);
@@ -706,7 +720,13 @@ fn resolve_target(
     } else {
         frame_home(vm, target, &base)?
     };
-    let link = Link { home, elem };
+    // The slot may hold a descriptor rather than a value, when the target is
+    // itself a name the *target's* frame bound with `upvar`. Linking to the
+    // descriptor's slot would make the new link point at the descriptor; tclsh
+    // links to what the chain ends at, so `upvar 1 y q` in a body whose caller
+    // did `upvar 1 $v y` reaches the caller's caller's variable.
+    let link = link_of_home(vm, &Link { home, elem: elem.clone() })
+        .unwrap_or(Link { home, elem });
     if link.elem.is_some() {
         materialize_array(vm, &link, other)?;
     }
@@ -839,7 +859,10 @@ pub(crate) fn dict_with_home(
         return Ok(Some(Link { home, elem }));
     }
     if let Some(home) = frame_home_opt(vm, level, &base)? {
-        return Ok(Some(Link { home, elem }));
+        // A key naming a slot that holds an `upvar` descriptor binds what the
+        // descriptor points at, for the reason [`resolve_target`] states.
+        let link = Link { home, elem };
+        return Ok(Some(link_of_home(vm, &link).unwrap_or(link)));
     }
     // A key the body never wrote as a variable still becomes one — `dict with`
     // assigns *every* key of the dictionary (`generic/tclDictObj.c:3808-3816`),
@@ -910,6 +933,329 @@ fn pop_slot(vm: &mut VM) -> u16 {
         Value::Int(n) => n as u16,
         other => to_tcl_string(&other).parse().unwrap_or(0),
     }
+}
+
+// ── variables whose name the script computes ─────────────────────────────
+//
+// `set $n 1`, `incr $n`, `unset $n`, `info exists $n`. The name is a value, so
+// none of the compile-time resolution [`Compiler::var_place`] does is available
+// — which is what the compiler used to refuse with `variable name must be a
+// literal in this phase`. The resolution happens here instead, and it is the
+// same one a computed `upvar` target and a `dict with` key already get: a
+// `::`-qualified name and a name at a script's own top level are the
+// interpreter's, a bare name inside a procedure is that activation's, and an
+// `a(i)` spelling is one element of an array.
+
+/// Where the variable that `name` spells lives, resolved in the frame the
+/// command is running in.
+///
+/// `declared` is the enclosing body's `global` and `variable` declarations as a
+/// Tcl list, pushed by the compiler because only it knows them — `global g`
+/// leaves no trace in the frame, and a bare `$g` after it reads the *global*
+/// rather than a local. Without this, `global g; set $n 1` with `n` holding `g`
+/// would create a procedure-local `g` and leave the global untouched.
+///
+/// An `upvar`'d name resolves to the slot holding its [`Link`] descriptor, so
+/// the descriptor is followed here: after `upvar 1 $other y`, `set $n 5` with
+/// `n` holding `y` must write the caller's variable, not overwrite the link.
+pub(crate) fn dynamic_link(
+    interp: &Shared,
+    vm: &mut VM,
+    name: &str,
+    declared: &str,
+) -> Result<Link, TclError> {
+    let (base, elem) = split_element(name);
+    let level = crate::runtime::current_level(vm);
+    let is_global = level == 0
+        || base.contains("::")
+        || crate::list::split(declared).is_ok_and(|names| names.iter().any(|n| *n == base));
+    if is_global {
+        let home = Home::Global(global_home(interp, vm, &base)?);
+        return Ok(Link { home, elem });
+    }
+    let home = match frame_home_opt(vm, level, &base)? {
+        Some(home) => home,
+        // A name the compiled body never mentioned becomes a run-time local of
+        // this activation, which is what tclsh's own frame does with one.
+        None => {
+            let Some(frame) = crate::runtime::frame_of_level(vm, level) else {
+                return Err(TclError::plain(format!(
+                    "can't resolve \"{name}\": no variable context here"
+                )));
+            };
+            let slot = runtime_slot_alloc(vm, frame, &base).ok_or_else(|| {
+                TclError::plain(format!(
+                    "can't resolve \"{name}\": there is no procedure activation to hold it"
+                ))
+            })?;
+            Home::Slot {
+                frame: u16::try_from(frame).map_err(|_| TclError::plain("call stack too deep"))?,
+                slot,
+            }
+        }
+    };
+    // The slot may itself hold an `upvar` descriptor, in which case the variable
+    // is wherever that points.
+    let link = Link { home, elem };
+    Ok(link_of_home(vm, &link).unwrap_or(link))
+}
+
+/// [`ext::DYN_GET`]: `[declared, name]` → what that variable holds.
+///
+/// The three ways a read can fail are told apart the way `$a` and `$a(i)` tell
+/// them apart, because they are the same three: the variable is unset, it is an
+/// array and was read as a scalar, or it is a scalar and was read as an element.
+pub(crate) fn dyn_get_op(interp: &Shared, vm: &mut VM, absent: u8) -> Result<(), TclError> {
+    let name = to_tcl_string(&vm.pop());
+    let declared = to_tcl_string(&vm.pop());
+    let link = dynamic_link(interp, vm, &name, &declared)?;
+    // What an unset variable answers is the reading command's business: `incr`
+    // creates a counter at zero and `append`/`lappend` create the variable by
+    // extending nothing. See `crate::compiler::Absent`.
+    let missing = |absent: u8| match absent {
+        1 => Ok(Value::Int(0)),
+        2 => Ok(Value::Str(std::sync::Arc::new(String::new()))),
+        _ => Err(TclError::plain(format!(
+            "can't read \"{name}\": no such variable"
+        ))),
+    };
+    // The base cell, read without the element applied — the three ways a read
+    // can fail are told apart by what it holds, and `read_link` collapses all
+    // three into `None`. The same three [`ext::ELEM_GET`] tells apart for a name
+    // the script wrote out, in the same words, because they are the same
+    // failures reached by a different route.
+    let base = read_link(
+        vm,
+        &Link {
+            home: link.home,
+            elem: None,
+        },
+    )
+    .cloned();
+    let value = match (&link.elem, base) {
+        // A scalar read of a variable that holds an array is its own refusal,
+        // and the one a bare `read_link` cannot give: it would answer with the
+        // array's internal shape.
+        (None, Some(Value::Hash(_))) => {
+            return Err(TclError::plain(format!(
+                "can't read \"{name}\": variable is array"
+            )))
+        }
+        (None, Some(v)) if v != Value::Undef => v,
+        (None, _) => missing(absent)?,
+        (Some(key), Some(Value::Hash(map))) => match map.get(key) {
+            Some(v) if *v != Value::Undef => v.clone(),
+            _ if absent != 0 => missing(absent)?,
+            _ => {
+                return Err(TclError::plain(format!(
+                    "can't read \"{name}\": no such element in array"
+                )))
+            }
+        },
+        (Some(_), Some(Value::Undef) | None) => missing(absent)?,
+        // The variable exists and is not an array, so the element names nothing
+        // that could ever be there. Which command says so depends on how far it
+        // gets, and tclsh is measurably not uniform about it: `incr b(1)` on a
+        // scalar `b` answers `can't read`, because `TclIncrObjCmd` reads before
+        // it writes, while `append b(1) x` and `lappend b(1) x` answer `can't
+        // set` — their read is the fully tolerant one and the refusal comes from
+        // the store. So the empty-answering read passes this through and lets
+        // [`dyn_set_op`] give it its own words.
+        (Some(_), Some(_)) if absent == 2 => Value::Str(std::sync::Arc::new(String::new())),
+        (Some(_), Some(_)) => {
+            return Err(TclError::plain(format!(
+                "can't read \"{name}\": variable isn't array"
+            )))
+        }
+    };
+    vm.push(value);
+    Ok(())
+}
+
+/// [`ext::DYN_SET`]: `[value, declared, name]` → nothing, having stored it.
+///
+/// The name on top rather than under the value, for the reason the op's own
+/// documentation gives: it is what lets `append` and `incr` keep the name they
+/// already evaluated on the stack across the read and the store.
+pub(crate) fn dyn_set_op(interp: &Shared, vm: &mut VM) -> Result<(), TclError> {
+    let name = to_tcl_string(&vm.pop());
+    let declared = to_tcl_string(&vm.pop());
+    let value = vm.pop();
+    let link = dynamic_link(interp, vm, &name, &declared)?;
+    if link.elem.is_none() {
+        if let Some(Value::Hash(_)) = read_link(vm, &link) {
+            return Err(TclError::plain(format!(
+                "can't set \"{name}\": variable is array"
+            )));
+        }
+    }
+    let Some(cell) = write_link(vm, &link) else {
+        return Err(TclError::plain(format!(
+            "can't set \"{name}\": variable isn't array"
+        )));
+    };
+    *cell = value;
+    Ok(())
+}
+
+/// [`ext::DYN_UNSET`]: `[declared, name]` → nothing.
+///
+/// `complain` is `unset` without `-nocomplain`, whose refusal names the variable
+/// exactly as the literal path's [`ext::UNSET_VAR`] does.
+pub(crate) fn dyn_unset_op(interp: &Shared, vm: &mut VM, complain: bool) -> Result<(), TclError> {
+    let name = to_tcl_string(&vm.pop());
+    let declared = to_tcl_string(&vm.pop());
+    let link = dynamic_link(interp, vm, &name, &declared)?;
+    let existed = match &link.elem {
+        None => match write_link(vm, &link) {
+            Some(cell) if *cell != Value::Undef => {
+                *cell = Value::Undef;
+                true
+            }
+            _ => false,
+        },
+        // Removed rather than emptied, for the reason [`unset_link`] states: a
+        // key left holding nothing would still be listed by `array names`.
+        //
+        // An element of a variable that is *not* an array is its own refusal,
+        // in the words [`ext::UNSET_ELEM`] gives it — and `-nocomplain` silences
+        // that one too, which is what `TclObjUnsetVar2` does with it.
+        Some(key) => {
+            let key = key.clone();
+            match base_cell(vm, &link) {
+                // A key the array does not hold is "no such element in array",
+                // not "no such variable" — the array itself is right there.
+                Some(Value::Hash(map)) => {
+                    if map.remove(&key).is_some() {
+                        true
+                    } else {
+                        return if complain {
+                            Err(TclError::plain(format!(
+                                "can't unset \"{name}\": no such element in array"
+                            )))
+                        } else {
+                            Ok(())
+                        };
+                    }
+                }
+                Some(Value::Undef) | None => false,
+                Some(_) => {
+                    return if complain {
+                        Err(TclError::plain(format!(
+                            "can't unset \"{name}\": variable isn't array"
+                        )))
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+        }
+    };
+    if complain && !existed {
+        return Err(TclError::plain(format!(
+            "can't unset \"{name}\": no such variable"
+        )));
+    }
+    Ok(())
+}
+
+/// [`ext::DYN_EXISTS`]: `[declared, name]` → 1 or 0.
+///
+/// Nothing is created: resolving through [`dynamic_link`] would grow a run-time
+/// slot for a name the body never mentioned, and `info exists $n` asking about a
+/// variable must not be what brings it into being. So a name with no slot and no
+/// global entry is simply absent, which is the answer either way.
+pub(crate) fn dyn_exists_op(vm: &mut VM, interp: &Shared) -> Result<(), TclError> {
+    let name = to_tcl_string(&vm.pop());
+    let declared = to_tcl_string(&vm.pop());
+    let (base, elem) = split_element(&name);
+    let level = crate::runtime::current_level(vm);
+    let is_global = level == 0
+        || base.contains("::")
+        || crate::list::split(&declared).is_ok_and(|names| names.iter().any(|n| *n == base));
+
+    let home = if is_global {
+        let key = crate::cmd_namespace::store_key(&base).to_string();
+        match vm
+            .chunk
+            .names
+            .iter()
+            .position(|n| crate::cmd_namespace::store_key(n) == key)
+            .and_then(|idx| u16::try_from(idx).ok())
+        {
+            Some(idx) => Some(Home::Global(idx)),
+            // Not in this chunk's projection: the interpreter may still carry
+            // it, and asking there costs nothing and creates nothing.
+            None => {
+                let held = crate::runtime::global_value(interp, &key);
+                let set = match (&held, &elem) {
+                    (None, _) | (Some(Value::Undef), _) => false,
+                    (Some(Value::Hash(map)), Some(key)) => {
+                        matches!(map.get(key), Some(v) if *v != Value::Undef)
+                    }
+                    (Some(_), Some(_)) => false,
+                    (Some(_), None) => true,
+                };
+                vm.push(Value::Int(i64::from(set)));
+                return Ok(());
+            }
+        }
+    } else {
+        match frame_home_opt(vm, level, &base)? {
+            Some(home) => Some(home),
+            None => crate::runtime::frame_of_level(vm, level)
+                .and_then(|frame| {
+                    runtime_slot(vm, frame, &base).map(|slot| (frame, slot))
+                })
+                .and_then(|(frame, slot)| {
+                    Some(Home::Slot {
+                        frame: u16::try_from(frame).ok()?,
+                        slot,
+                    })
+                }),
+        }
+    };
+    let set = match home {
+        None => false,
+        Some(home) => {
+            let link = Link { home, elem };
+            // An `upvar`'d name is whatever it points at, and a link that was
+            // never made is nothing at all.
+            let link = match link_of_home(vm, &link) {
+                Some(followed) => followed,
+                None => link,
+            };
+            matches!(read_link(vm, &link), Some(v) if *v != Value::Undef)
+        }
+    };
+    vm.push(Value::Int(i64::from(set)));
+    Ok(())
+}
+
+/// The link a resolved slot itself holds, if it holds one, with this link's own
+/// element applied to it.
+///
+/// Every path that resolves a *name* to a frame slot ends here, because a slot
+/// may hold an `upvar` descriptor rather than a value and the variable is then
+/// wherever that points. An element spelled on this name wins over the
+/// descriptor's own key: `a(i)` where `a` was bound to an array names element
+/// `i` of that array.
+///
+/// `None` when the slot holds an ordinary value, which is the common case and
+/// leaves the caller's own link standing.
+fn link_of_home(vm: &VM, link: &Link) -> Option<Link> {
+    let Home::Slot { frame, slot } = link.home else {
+        return None;
+    };
+    let inner = vm
+        .frames
+        .get(usize::from(frame))
+        .and_then(|f| f.slots.get(usize::from(slot)))
+        .and_then(Link::decode)?;
+    Some(Link {
+        home: inner.home,
+        elem: link.elem.clone().or(inner.elem),
+    })
 }
 
 /// The place a link's *home* is, for the ops that take a place operand. The

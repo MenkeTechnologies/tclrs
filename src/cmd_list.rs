@@ -107,6 +107,20 @@ fn lappend(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     let Some((name, values)) = args.split_first() else {
         return c.error("wrong # args: should be \"lappend varName ?value ...?\"");
     };
+    // `lappend $n x` names its variable with a value, so it is the same
+    // read-extend-store shape with the computed-name ops standing in for the
+    // read and the store. The read tolerates absence: `lappend` on a variable
+    // that does not exist creates it, exactly as it does for a literal name.
+    if crate::assoc::target_of(name).is_none() {
+        let count = arg_count(c, values.len() + 1)?;
+        c.dyn_read_modify(name, crate::compiler::Absent::Empty)?;
+        for value in values {
+            c.word(value)?;
+        }
+        c.emit(Op::Extended(ext::LAPPEND, count), -(values.len() as i32));
+        c.dyn_write_back();
+        return Ok(());
+    }
     // An array element is the read-extend-store shape below, with the element
     // read and written in place of the variable: `lappend a(i) x` extends one
     // element, which tclsh takes and this compiler used to refuse.

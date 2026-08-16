@@ -462,6 +462,30 @@ impl Compiler {
         let Some(target) = args.first() else {
             return self.error("wrong # args: should be \"append varName ?value ...?\"");
         };
+        // `append $n x`: the variable's name is a value, so it is the same
+        // read-concatenate-store shape with the computed-name ops standing in
+        // for the read and the store. The read answers the empty string for a
+        // variable that does not exist, which is how `append` creates one.
+        //
+        // `ext::APPEND` is handed the *name* twice over — once as the first
+        // operand it reports a bad value under, once under the value it
+        // concatenates onto — so the name word is compiled once and duplicated;
+        // see [`Compiler::dyn_read_modify`].
+        if crate::assoc::target_of(target).is_none() {
+            self.dyn_read_modify(target, crate::compiler::Absent::Empty)?;
+            // `[name, value]` → `[name, name, value]`: the op wants the name
+            // under the value as its diagnostic operand, and `dyn_write_back`
+            // wants the one at the bottom.
+            self.emit(Op::Dup2, 2);
+            self.emit(Op::Rot, 0);
+            self.emit(Op::Pop, -1);
+            for w in &args[1..] {
+                self.word(w)?;
+            }
+            self.string_op(ext::APPEND, args.len() + 1)?;
+            self.dyn_write_back();
+            return Ok(());
+        }
         // An array element appends in place too: the element is read, the values
         // are concatenated onto it, and it is stored back. `append b(j) hi there`
         // is `hithere`, which tclsh answers and this compiler used to refuse.

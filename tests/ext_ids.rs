@@ -135,6 +135,13 @@ fn blocks() -> Vec<Block> {
                 // `subst` is the fourth: it runs the commands its
                 // value spells against the calling frame.
                 ("SUBST", ext::SUBST),
+                // A variable whose *name* the script computed. In this block
+                // because each resolves that name through the interpreter, the
+                // way a computed `upvar` target is resolved.
+                ("DYN_GET", ext::DYN_GET),
+                ("DYN_SET", ext::DYN_SET),
+                ("DYN_UNSET", ext::DYN_UNSET),
+                ("DYN_EXISTS", ext::DYN_EXISTS),
             ],
         ),
         // `info`'s ids used to be four entries in the EVENT block above and are

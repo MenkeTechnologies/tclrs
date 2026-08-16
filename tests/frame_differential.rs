@@ -214,6 +214,75 @@ const PROGRAMS: &[&str] = &[
     "puts [catch {apply {{a}} 1} m]:$m",
     "puts [catch {apply {{a} {expr 1} :: extra} 1} m]:$m",
     "puts [catch {apply notalambda} m]:$m",
+    // ── a variable whose *name* the script computes ──
+    //
+    // `set $n 1` is the same indirection `upvar` is, without the link: the name
+    // is a value, so which variable it is depends on the frame the command runs
+    // in. That is why these belong here rather than beside the other `set`
+    // cases — every line below would pass against the globals and still be
+    // wrong inside a procedure.
+    "set n foo\nset $n 42\nputs $foo",
+    "set n foo\nputs [set $n 42]",
+    "set foo 7\nset n foo\nputs [set $n]",
+    "set n c\nincr $n\nincr $n 4\nputs $c",
+    "set s pre\nset n s\nputs [append $n X Y]\nputs $s",
+    "set n s\nappend $n abc def\nputs $s",
+    "set n L\nlappend $n a b\nputs [lappend $n c]\nputs $L",
+    // The name is one word of the command, so it is substituted once — a
+    // command substitution spelling it must not run twice.
+    "set c 0\nproc nm {} {incr ::c\nreturn v}\nset v 1\nappend [nm] X\nputs \"$v $c\"",
+    "set c 0\nproc nm {} {incr ::c\nreturn v}\nset v 1\nincr [nm]\nputs \"$v $c\"",
+    "set c 0\nproc nm {} {incr ::c\nreturn v}\nlappend [nm] a\nputs \"$v $c\"",
+    // Inside a procedure it is that activation's variable, not a global.
+    "proc f {} {set a 1\nset n a\nreturn [set $n]}\nputs [f]",
+    "proc f {} {set n a\nset $n 9\nreturn $a}\nputs [f]",
+    "proc f {} {set n zz\nset $n 3}\nf\nputs [info exists ::zz]",
+    "proc f {} {set n q\nset $n 1\nreturn [lsort [info locals]]}\nputs [f]",
+    // ...unless the body declared it global, which leaves no trace in the frame
+    // and so has to be carried to the op that resolves the name.
+    "set g 0\nproc f {} {global g\nset n g\nset $n 5}\nf\nputs $g",
+    "set g 0\nproc f {} {global g\nset n g\nincr $n 2}\nf\nputs $g",
+    "proc f {} {set n ::h\nset $n 6}\nf\nputs $h",
+    // A name `upvar` bound resolves to what the link points at, not to the
+    // descriptor sitting in its slot.
+    "proc p {vn} {upvar 1 $vn y\nset n y\nset $n 77}\nset z 0\np z\nputs $z",
+    "proc p {vn} {upvar 1 $vn y\nset n y\nincr $n 5}\nset z 1\np z\nputs $z",
+    // ...which is the same following a second `upvar` through the first needs,
+    // and a `dict with` key naming such a name.
+    "proc a {vn} {upvar 1 $vn y\nb}\nproc b {} {upvar 1 y q\nset q 5}\nset z 0\na z\nputs $z",
+    "proc a {vn} {upvar 1 $vn y\nset d [dict create y 9]\ndict with d {}\nputs $y}\nset z 0\na z\nputs $z",
+    // `info exists` must not bring the variable into being by asking.
+    "set n v\nputs [info exists $n]",
+    "set v 1\nset n v\nputs [info exists $n]",
+    "set n v\nputs [info exists $n][info exists v]",
+    "proc f {} {set n nope\nreturn [info exists $n][llength [info locals]]}\nputs [f]",
+    // `unset` through a computed name, and what an absent one answers.
+    "set v 1\nset n v\nunset $n\nputs [info exists v]",
+    "set n v\nputs [catch {unset $n} m]:$m",
+    "set n v\nunset -nocomplain $n\nputs ok",
+    // An `a(i)` spelling the name carries is an array element there too.
+    "set a(1) x\nset n a(1)\nputs [set $n]",
+    "set n a(2)\nset $n y\nputs [array names a]",
+    "set n a(3)\nset $n z\nunset $n\nputs [array names a]",
+    // Reading a whole array as a scalar, and an element of a scalar, refuse the
+    // way the written-out spellings refuse. The three ways an element read can
+    // fail are three different messages, and a computed name reaches all three.
+    "set a(1) x\nset n a\nputs [catch {set $n} m]:$m",
+    "set b 1\nset n b(1)\nputs [catch {set $n} m]:$m",
+    "set n c(1)\nputs [catch {set $n} m]:$m",
+    "set a(9) x\nset n a(1)\nputs [catch {set $n} m]:$m",
+    "set b 1\nset n b(1)\nputs [catch {set $n v} m]:$m",
+    "set a(1) x\nset n a\nputs [catch {set $n v} m]:$m",
+    // ...and so does an unset of one.
+    "set b 1\nset n b(1)\nputs [catch {unset $n} m]:$m",
+    "set a(9) x\nset n a(1)\nputs [catch {unset $n} m]:$m",
+    "set b 1\nset n b(1)\nunset -nocomplain $n\nputs ok",
+    "set a(9) x\nset n a(1)\nunset -nocomplain $n\nputs ok",
+    // A tolerant read — the one `append` and `incr` do — creates the variable
+    // rather than refusing, but only where the name could ever have been one.
+    "set b 1\nset n b(1)\nputs [catch {append $n x} m]:$m",
+    "set b 1\nset n b(1)\nputs [catch {incr $n} m]:$m",
+    "set a(9) x\nset n a(1)\nappend $n q\nputs [lsort [array names a]]",
 ];
 
 fn tclsh() -> Option<PathBuf> {

@@ -454,7 +454,12 @@ approximated, and nothing is silently mis-run.
   whether or not anything ever is, as `TclObjLookupVar`'s `createPart1` does;
   `upvar #0 other local` written out is still a
   compile-time binding through `Compiler::var_place`, so the common case costs
-  the body nothing. `upvar` outside a procedure makes two globals one variable,
+  the body nothing. A name a body itself bound with `upvar` is published among
+  that body's slot names (`Compiler::publish_slot_names`), so a *second* `upvar`
+  through it, a `dict with` key naming it and a computed `set $n` all find it —
+  and each follows the descriptor in the slot rather than reading it, which is
+  what makes `upvar 1 y q` in a body whose caller wrote `upvar 1 $v y` reach the
+  caller's caller's variable. `upvar` outside a procedure makes two globals one variable,
   in the interpreter's own table (`runtime::alias_global`). `apply` of a lambda
   written out is compiled as an anonymous procedure, with its own frame slots
   and entered by `Op::Call`, so it costs a call and nothing else.
@@ -922,11 +927,26 @@ approximated, and nothing is silently mis-run.
   `tempfile`, `tempdir` and `volumes`.** Each is recognised, so an abbreviation
   resolves as tclsh resolves it, and then refused by name. `glob -types` in its
   two-element attribute form is refused the same way.
-- **Non-literal variable and body words.** A variable name or a body that is
-  itself the result of substitution (`set $name 1`, `while $cond $body`) is
-  refused. Every command that names a variable is bound by this one rule, so
-  `incr $n`, `array exists $n` and `info exists $n` all refuse where tclsh
-  resolves the name at run time.
+- **Non-literal subcommand, body and variable-list words.** A word that is
+  itself the result of substitution is refused where the lowering needs it while
+  compiling. What remains is three groups:
+  - an ensemble *subcommand* — `string $sub x`, `info $sub v`, `array $sub a`,
+    and the same for `clock`, `file`, `encoding`, `namespace` and `dict` — since
+    each subcommand lowers to a different shape and a computed one has none;
+  - a *body* or condition, as in `while $cond $body`;
+  - a variable *list* rather than a single name: `foreach` / `lmap` / `lassign`
+    variable lists, `dict update`'s variable names, and the array name of
+    `array exists` / `names` / `size` / `get` / `set` / `unset`.
+
+  A single computed variable *name* is no longer among them. `set $n`,
+  `set $n v`, `incr $n ?by?`, `append $n …`, `lappend $n …`, `unset $n` and
+  `info exists $n` resolve the name when the command runs, as tclsh does —
+  including an `a(i)` spelling the name carries, a name inside a procedure
+  (which is that activation's local, growing a run-time slot when the compiled
+  body never mentioned it), a name the body declared with `global` or
+  `variable`, and a name `upvar` bound, which resolves to what the link points
+  at rather than to the descriptor. See `crate::cmd_scope::dynamic_link` and the
+  computed-name programs in `tests/frame_differential.rs`.
 - **Editor tooling.** No LSP, no DAP, no inline `rust {}` FFI. `--disasm`,
   `--dump-tokens` and `--dump-ast` exist, the zsh completion is
   `completions/_tclrs` and the man page is `man/man1/tclrs.1`, and

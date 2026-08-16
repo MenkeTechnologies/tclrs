@@ -1566,6 +1566,16 @@ impl Hooks {
                 // string the module below returns, so it is dispatched here.
                 ext::LINK_GET => crate::cmd_scope::link_get(vm, arg == 1),
                 ext::LINK_SET => crate::cmd_scope::link_set(vm),
+                // A variable whose *name* the script computed — `set $n 1`,
+                // `unset $n`, `incr $n`, `info exists $n`. Here for exactly the
+                // reason `upvar` with a computed target is: the name is a value,
+                // so it may be one the chunk's table does not carry, and
+                // reaching it means interning it against the interpreter's own
+                // variables. See `crate::cmd_scope::dynamic_link`.
+                ext::DYN_GET => crate::cmd_scope::dyn_get_op(&interp, vm, arg),
+                ext::DYN_SET => crate::cmd_scope::dyn_set_op(&interp, vm),
+                ext::DYN_UNSET => crate::cmd_scope::dyn_unset_op(&interp, vm, arg == 1),
+                ext::DYN_EXISTS => crate::cmd_scope::dyn_exists_op(vm, &interp),
                 // ── end of the event block ───────────────────────────────
                 // ── the ops that run a script in another frame ───────────
                 // `eval` inside a body, `uplevel` and `apply`. Each needs the
