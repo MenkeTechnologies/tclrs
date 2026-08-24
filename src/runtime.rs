@@ -4262,7 +4262,15 @@ fn canonical_number(v: Value) -> Result<Value, String> {
 }
 
 /// Take a variable's value, leaving its place empty.
+///
+/// A value is taken rather than read when it is about to be changed in place,
+/// which needs its string unshared — so the list-splitting cache in
+/// [`crate::cmd_list`], whose entries are shares, is emptied first. This is the
+/// one door a value leaves its variable through, which is why the call is here
+/// rather than at each of the three commands that grow one. See
+/// `crate::cmd_list::SPLIT` for what the invariant is worth.
 pub(crate) fn take_var(vm: &mut VM, place: Place) -> Value {
+    crate::cmd_list::forget_split();
     match var_cell(vm, place) {
         Some(value) => std::mem::replace(value, Value::Undef),
         None => Value::Undef,

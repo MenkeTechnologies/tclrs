@@ -847,3 +847,104 @@ fn unimplemented_options_are_refused() {
         );
     }
 }
+
+/// A list read by index must see every change made to it since the last read.
+///
+/// `src/cmd_list.rs` remembers the elements of the last few lists it split, so
+/// that a loop reading one by index parses it once rather than once per turn —
+/// which is what stops such a loop being quadratic in the list's length. That
+/// cache is keyed on the value's *identity*, which is a pointer, and every
+/// program below changes a list between two reads of it, through each of the
+/// commands that can change one where it stands. What they pin is the property
+/// the cache must not cost: that the second read answers from the list as it
+/// now is, and that a copy taken before the change does not follow it.
+///
+/// It is worth saying what this does *not* prove. Simply removing the cache's
+/// invalidation hook does not make these fail, because an entry holds a share
+/// of the list's string and `Arc::get_mut` refuses to mutate a shared one — so
+/// a cached list is copied rather than grown and the copy has an identity of
+/// its own. These are a guard on the read path (the fast `lindex` that answers
+/// from an entry, and the eviction order behind it), not on that invariant.
+///
+/// Each program is compared against tclsh rather than against a written
+/// expectation, as everything else in this file is: a wrong answer here is a
+/// plausible-looking value, not an error, and only the reference settles it.
+#[test]
+fn a_list_read_by_index_sees_every_change() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+
+    let programs = [
+        // lappend, which grows the variable's own string in place.
+        "set l {a b c}\nputs [lindex $l 0][llength $l]\nlappend l d\nputs [lindex $l 3][llength $l]",
+        // The same, read at the end rather than the start, so a stale length
+        // shows as well as stale elements.
+        "set l {a}\nputs [lindex $l end]\nlappend l b c\nputs [lindex $l end][llength $l]",
+        // lset, which rewrites an element where it stands.
+        "set l {a b c}\nputs [lindex $l 1]\nlset l 1 X\nputs [lindex $l 1][llength $l]",
+        // lpop, which shortens it.
+        "set l {a b c}\nputs [lindex $l 2][llength $l]\nlpop l\nputs [lindex $l end][llength $l]",
+        // ledit, which replaces a range.
+        "set l {a b c d}\nputs [lindex $l 1][llength $l]\nledit l 1 2 X Y Z\nputs [lindex $l 1][llength $l]",
+        // A plain assignment, which replaces the value rather than changing it.
+        "set l {a b c}\nputs [lindex $l 0]\nset l {x y}\nputs [lindex $l 0][llength $l]",
+        // `append` to the same variable, which is a string operation on what a
+        // list command had already split.
+        "set l {a b}\nputs [lindex $l 1][llength $l]\nappend l { c}\nputs [lindex $l 2][llength $l]",
+        // Two lists alive at once, read alternately: neither may answer with
+        // the other's elements.
+        "set a {1 2 3}\nset b {x y}\nputs [lindex $a 0][lindex $b 0][lindex $a 2][lindex $b 1]\nlappend a 4\nlappend b z\nputs [lindex $a 3][lindex $b 2][llength $a][llength $b]",
+        // A copy taken before the change must not follow it — the aliasing case
+        // that a cache keyed on identity has to get right in the other
+        // direction.
+        "set a {1 2}\nset b $a\nputs [lindex $b 1]\nlappend a 3\nputs \"[lindex $b end][llength $b] [lindex $a end][llength $a]\"",
+        // The loop the cache exists for, with the list changing under it.
+        "set l {}\nset out {}\nfor {set i 0} {$i < 20} {incr i} {\n  lappend l $i\n  append out [lindex $l end],[lindex $l 0],[llength $l] \n}\nputs $out",
+        // A procedure's local list, so the value lives in a frame slot rather
+        // than a VM global — a different `Place`, the same identity question.
+        "proc p {} {\n  set l {a b}\n  set out [lindex $l 1]\n  lappend l c\n  return $out[lindex $l 2][llength $l]\n}\nputs [p]",
+        // `upvar`, where two names reach one value.
+        "proc p {name} {\n  upvar 1 $name l\n  set out [lindex $l 0]\n  lappend l z\n  return $out[lindex $l end]\n}\nset v {q r}\nputs [p v][lindex $v end][llength $v]",
+        // A list an element of which is itself a list, read through a nested
+        // index — the path that does not take the cache — after a change.
+        "set l {{a b} {c d}}\nputs [lindex $l 1 0]\nlset l 1 0 X\nputs [lindex $l 1 0][lindex $l 0 1]",
+        // More lists alive at once than the cache holds entries for, read in a
+        // rotation, so that every one of them is evicted and re-split at least
+        // once while the others are still being read.
+        "set out {}\nforeach n {1 2 3 4 5 6} { set l$n [list $n a$n b$n] }\nfor {set turn 0} {$turn < 3} {incr turn} {\n  foreach n {1 2 3 4 5 6} {\n    append out [lindex [set l$n] 0][lindex [set l$n] end][llength [set l$n]]\n  }\n}\nputs $out",
+        // The same, with one of them growing between the turns.
+        "set out {}\nforeach n {1 2 3 4 5 6} { set l$n [list $n] }\nfor {set turn 0} {$turn < 3} {incr turn} {\n  lappend l3 $turn\n  foreach n {1 2 3 4 5 6} {\n    append out [lindex [set l$n] end][llength [set l$n]],\n  }\n}\nputs $out",
+        // A list whose elements need quoting, so that the cached split and a
+        // fresh one could differ in more than length.
+        "set l [list {a b} {} {c\td}]\nputs [llength $l]|[lindex $l 0]|[lindex $l 1]|\nlappend l {e f}\nputs [llength $l]|[lindex $l 3]|[lindex $l 0]|",
+    ];
+
+    let mut failures = Vec::new();
+    for program in programs {
+        let (expected, error) = reference(&tclsh, program);
+        assert!(
+            error.is_none(),
+            "tclsh rejected program:\n{program}\n{}",
+            error.unwrap_or_default()
+        );
+        match tclrs::eval(program) {
+            Ok(outcome) if outcome.output == expected => {}
+            Ok(outcome) => failures.push(format!(
+                "program:\n{program}\n  tclsh: {expected:?}\n  tclrs: {:?}",
+                outcome.output
+            )),
+            Err(e) => failures.push(format!(
+                "program:\n{program}\n  tclsh: {expected:?}\n  tclrs failed: {e}"
+            )),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} programs diverge:\n\n{}",
+        failures.len(),
+        programs.len(),
+        failures.join("\n\n")
+    );
+}

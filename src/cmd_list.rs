@@ -372,11 +372,118 @@ pub(crate) fn run(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     if matches!(id, ext::LSET | ext::LPOP | ext::LEDIT) {
         return list_var_op(vm, id, arg);
     }
-    let mut args: Vec<String> = (0..arg).map(|_| to_tcl_string(&vm.pop())).collect();
-    args.reverse();
-    let result = dispatch(id, &args)?;
+    let mut values: Vec<Value> = (0..arg).map(|_| vm.pop()).collect();
+    values.reverse();
+    // `lindex` and `llength` read a list without changing it, and a loop
+    // repeats them over the same one. Both go through [`elements`], which
+    // splits a value once rather than once per command — see the cache's own
+    // note; every other op takes the string it is handed.
+    let result = match id {
+        ext::LINDEX => lindex_op(&values)?,
+        ext::LLENGTH if values.len() == 1 => elements(&values[0])?.len().to_string(),
+        _ => {
+            let args: Vec<String> = values.iter().map(to_tcl_string).collect();
+            dispatch(id, &args)?
+        }
+    };
     vm.push(Value::Str(Arc::new(result)));
     Ok(())
+}
+
+// ── the split cache ──────────────────────────────────────────────────────
+
+thread_local! {
+    /// The elements of the last few lists a read-only list command split.
+    ///
+    /// Without it, `for {set i 0} {$i < $n} {incr i} {lindex $l $i}` splits the
+    /// whole list once per turn, so a loop that reads a list by index is
+    /// quadratic in its length — 9.5 seconds against tclsh's 0.024 at n=8000,
+    /// measured before this existed. The reference implementation does not pay
+    /// that because a `Tcl_Obj` holds a list representation beside its string
+    /// and the parse happens once; this is the same idea with the state kept
+    /// here rather than on the value.
+    ///
+    /// Identity is a pointer comparison, as [`CANONICAL`]'s is, and the entry
+    /// holds the `Arc` so the address it compares cannot be reused by a
+    /// different string while it is remembered.
+    ///
+    /// Holding it is also what makes an entry impossible to invalidate. A
+    /// list's string changes under it only where [`append_canonical`] or
+    /// `crate::cmd_string`'s in-place append reaches for `Arc::get_mut`, and
+    /// that returns `None` while anything else holds a share — so a cached list
+    /// is copied rather than grown, and the copy has an identity of its own.
+    /// [`forget_split`] releases the share at the one door a value leaves its
+    /// variable through, so growth in place stays available; measured, it
+    /// changes no benchmark here either way, and it is kept so that the cache's
+    /// safety does not rest on the reference-count test inside `Arc::get_mut`.
+    ///
+    /// Four entries rather than one, so that a loop reading two lists — the
+    /// shape `foreach` over one and `lindex` into another produces — hits on
+    /// both instead of evicting each in turn.
+    static SPLIT: RefCell<Vec<(Arc<String>, Arc<Vec<String>>)>> = const {
+        RefCell::new(Vec::new())
+    };
+}
+
+/// How many splits are remembered at once.
+const SPLIT_ENTRIES: usize = 4;
+
+/// The elements of a list value, split once per value rather than once per
+/// command. See [`SPLIT`].
+fn elements(value: &Value) -> Result<Arc<Vec<String>>, String> {
+    let Value::Str(text) = value else {
+        // A number is its own single element and was never a list to begin
+        // with; nothing repeats over one, so nothing is remembered.
+        return Ok(Arc::new(list::split(&to_tcl_string(value))?));
+    };
+    let hit = SPLIT.with(|cache| {
+        cache
+            .borrow()
+            .iter()
+            .find(|(key, _)| Arc::ptr_eq(key, text))
+            .map(|(_, items)| Arc::clone(items))
+    });
+    if let Some(items) = hit {
+        return Ok(items);
+    }
+    let items = Arc::new(list::split(text)?);
+    SPLIT.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() == SPLIT_ENTRIES {
+            cache.remove(0);
+        }
+        cache.push((Arc::clone(text), Arc::clone(&items)));
+    });
+    Ok(items)
+}
+
+/// Let go of every remembered split.
+///
+/// Called from `crate::runtime::take_var`, which is where a value leaves its
+/// variable to be changed in place: the string must be unshared for that, and
+/// an entry here is a share of it. See [`SPLIT`] for why that is an invariant
+/// worth stating rather than a speed-up.
+pub(crate) fn forget_split() {
+    SPLIT.with(|cache| cache.borrow_mut().clear());
+}
+
+/// `lindex`, reading its list through the split cache when the call is the
+/// common one: a single index into a flat list.
+///
+/// Every other form — no index at all, several of them, or one that is itself
+/// a list of indices — descends into sub-lists that are strings of their own
+/// and have no identity to remember, so it takes [`lindex`]'s general path.
+fn lindex_op(values: &[Value]) -> Result<String, String> {
+    let indices: Vec<String> = values[1..].iter().map(to_tcl_string).collect();
+    if indices.len() == 1 && list::index(&indices[0], i64::MAX - 1).is_ok() {
+        let items = elements(&values[0])?;
+        let at = list::index(&indices[0], items.len() as i64 - 1)?;
+        if at < 0 || at >= items.len() as i64 {
+            return Ok(String::new());
+        }
+        return Ok(items[at as usize].clone());
+    }
+    lindex(&to_tcl_string(&values[0]), &indices)
 }
 
 /// `lsort`, with the interpreter its `-command` may need.

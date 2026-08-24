@@ -495,6 +495,7 @@ would suggest.
 | **`lsearch`** | The reference option parsing, including unique-prefix abbreviation and the rule that `-integer` / `-real` only apply in `-exact` mode. |
 | **`foreach`** | Any number of variable lists and value lists; the longest list fixes the iteration count and shorter ones supply empty values. The loop state rides the VM stack rather than a variable a script could reach, and is read in place, so no copy happens per iteration. |
 | **`lappend`** | The op reaches the variable itself rather than taking its value through `GetVar`, so the list's string is unshared while it runs and the new elements are appended to it — growing a list is linear, not quadratic. What makes that safe without re-deriving the elements is identity: the value the last `lappend` produced is remembered, and a string that *is* that value is known to be canonical without a scan. A list another variable holds is copied instead, since the string it shares must not change under it. |
+| **`lindex` and `llength`** | The other half of that problem: reading a list by index re-derived every element per command, so a loop walking one was quadratic in its length. The elements of the last few lists split are kept, keyed on the value's identity, so a loop over one list parses it once. Reading a list by index at 8,000 elements went from 9.538 s of CPU to 0.066 s and became linear; `tests/list_differential.rs` pins that a list changed between two reads answers with what it now holds. |
 
 ### Growing a variable
 
@@ -1434,6 +1435,20 @@ now takes 1.3 / 13.5 / 154.5 ms — linear in the element count — against 48,4
 6,926 ms for 50,000 before, which is the quadratic curve. tclsh takes 163.8 ms
 for the 500,000-element run, so the two are level where tclsh used to be 2,000×
 ahead.
+
+**A list is split once per value, not once per command.** `lappend` above is
+half of the problem; the other half is reading a list back. Every list command
+re-derives its elements from a string, so `for {set i 0} {$i < $n} {incr i}
+{lindex $l $i}` parsed the whole list once per turn and the loop was quadratic
+in its length — 0.595 / 2.382 / 9.538 s of CPU at 2,000 / 4,000 / 8,000
+elements, against tclsh's 0.018 / 0.018 / 0.024, because a `Tcl_Obj` there
+carries a list representation beside its string and the parse happens once.
+`src/cmd_list.rs` now keeps the elements of the last few lists it split, keyed
+on the value's identity — a pointer comparison, with the entry holding the
+value so the address cannot be reused under it. The same three runs are 0.021 /
+0.035 / 0.066 s, linear, and building a list is unaffected: an entry is a share
+of the string, so a cached list is copied rather than grown in place, and the
+copy has an identity of its own.
 
 **`append` builds a string in place, and so does `set x "$x…"`.**
 `string_build` is the same problem in the other data type, and it was the row
