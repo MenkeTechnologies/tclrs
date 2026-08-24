@@ -3906,6 +3906,11 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             crate::cmd_info::extension(vm, id, arg)
         }
         // ── end of the info block ────────────────────────────────────────
+        // ── the binary block ─────────────────────────────────────────────
+        // Bounded, and ahead of the two open-ended arms below it, for the
+        // reason the `info` arm above states.
+        id if crate::cmd_binary::is_op(id) => crate::cmd_binary::extension(vm, id, arg),
+        // ── end of the binary block ──────────────────────────────────────
         // ── the encoding block ───────────────────────────────────────────
         id if crate::cmd_encoding::is_op(id) => crate::cmd_encoding::extension(vm, id, arg),
         // ── end of the encoding block ────────────────────────────────────

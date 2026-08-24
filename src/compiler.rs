@@ -721,6 +721,14 @@ pub mod ext {
     /// rather than `id >= INFO_BASE` — which would claim whatever block is
     /// added above it next.
     pub const INFO_END: u16 = INFO_BASE + BLOCK;
+    // ── the binary block ─────────────────────────────────────────────────
+    /// The `binary` ensemble, dispatched to [`crate::cmd_binary`]. Bounded like
+    /// the two blocks below it, so that adding a block above this one does not
+    /// silently route its ops here.
+    pub const BINARY_BASE: u16 = SUBSYSTEM_BASE + 9 * BLOCK;
+    /// One past the `binary` block.
+    pub const BINARY_END: u16 = BINARY_BASE + BLOCK;
+    // ── end of the binary block ──────────────────────────────────────────
 }
 
 /// Wide extension opcode ids, whose payload is a `usize` rather than a byte.
@@ -1891,6 +1899,8 @@ impl Compiler {
         "upvar",
         "apply",
         "package",
+        // ── cmd_binary ────────────────────────────────────────────────────
+        "binary",
     ];
 
     fn command(&mut self, cmd: &Command) -> Result<(), CompileError> {
@@ -2033,6 +2043,13 @@ impl Compiler {
             // like every other builtin.
             "encoding" => crate::cmd_encoding::compile(self, args),
             // ── end of the encoding ensemble ─────────────────────────────
+            // ── the binary ensemble ──────────────────────────────────────
+            // One arm, as `encoding` above is: the whole of the lowering —
+            // including which words are options — lives in
+            // [`crate::cmd_binary`]. Ahead of the namespace block below, like
+            // every other builtin.
+            "binary" => crate::cmd_binary::compile(self, args),
+            // ── end of the binary ensemble ───────────────────────────────
             // ── namespaces, `rename` and `source` ────────────────────────
             // One block, so that the module owning them merges as one hunk.
             // It sits here — after every builtin, before the procedures —

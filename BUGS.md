@@ -686,8 +686,8 @@ approximated, and nothing is silently mis-run.
   a chunk's variables are a slot vector taken on entry, and two entries of it
   cannot become one slot afterwards. Written out rather than computed, the pair is
   a compile-time binding (`Compiler::top_aliases`) and is coherent everywhere.
-- **Every command outside those above.** `binary`, `interp`, `socket`, `exec`,
-  `trace`, … An unknown command name is `invalid command name
+- **Every command outside those above.** `interp`, `socket`, `exec`, `trace`,
+  `try`, … An unknown command name is `invalid command name
   "…"`, raised when the command runs — `puts [catch {nosuchcmd} m]` is `1` —
   because the compiler lowers that refusal as code rather than deciding it (see
   `Compiler::defer`).
@@ -904,6 +904,28 @@ approximated, and nothing is silently mis-run.
   2.0**64}` is 0 in tclsh itself), so the divergence is in the reference
   interpreter's shortest-representation formatter, and `expr {2.0**64}` showed
   it before any math function existed.
+- **Three `binary` answers this frontend does not reproduce, all of them the
+  reference interpreter reading memory it does not own.**
+  - `binary format` with an `X` field of count zero followed by any further
+    field **crashes** tclsh 9.0.4 with a segmentation fault: `binary format X0c1
+    1`, `binary format {X0 f1} 1.5` and `binary format c1X0c1 1 2` all die with
+    signal 11. Any other count is fine (`binary format X2c1 1` answers), and so
+    is `X0` as the last field (`binary format X0` is the empty string). This
+    frontend treats `X0` as the no-op move the manual page describes.
+  - `binary decode uuencode` of a line whose length character declares more
+    bytes than its characters carry reads past the end of that line: `binary
+    decode uuencode !` is one byte in tclsh where the line holds none, and
+    `binary decode uuencode "616263"` ends in two bytes that are not in the
+    input. This frontend decodes only what the line holds. The `-strict` refusal
+    for the same inputs — `short uuencode data` — *is* reproduced, including its
+    two different length rules for a line a terminator follows and the last line
+    of a message.
+  - `binary decode uuencode` of a **truncated final group** (fewer than four
+    characters left) reads the characters that are not there. Tcl's own
+    *encoder* emits such a group, so the round trip is affected: `binary encode
+    uuencode ab` is `"9V(` and decoding it in tclsh reads a fourth character
+    from beyond the string. The bytes the declared length asks for are the same
+    in both, and the round trip agrees; what differs is the padding beyond them.
 - **`clock` before the Gregorian changeover.** tclsh reckons a date earlier than
   its locale's `GREGORIAN_CHANGE_DATE` in the Julian calendar, and that date
   differs per locale — 2299161 for the root catalogue, 2361222 for `en`, later

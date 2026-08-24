@@ -176,6 +176,18 @@ fn blocks() -> Vec<Block> {
             vec![("CLOCK_BASE", ext::CLOCK_BASE)],
         ),
         ("FILE", ext::FILE_BASE, vec![("FILE_BASE", ext::FILE_BASE)]),
+        // `binary`'s own block, above `info`'s — and bounded like it, so that
+        // the guard chain reaches it before the open-ended arms below.
+        (
+            "BINARY",
+            ext::BINARY_BASE,
+            vec![
+                ("FORMAT", tclrs::cmd_binary::ext::FORMAT),
+                ("SCAN", tclrs::cmd_binary::ext::SCAN),
+                ("ENCODE", tclrs::cmd_binary::ext::ENCODE),
+                ("DECODE", tclrs::cmd_binary::ext::DECODE),
+            ],
+        ),
         (
             "ENCODING",
             ext::ENCODING_BASE,
@@ -247,9 +259,11 @@ fn the_block_map_is_ordered() {
         assert!(ext::CHANNEL_END == ext::CHANNEL_BASE + ext::BLOCK);
         assert!(ext::CHANNEL_END == ext::NS_BASE);
         assert!(ext::INFO_END == ext::INFO_BASE + ext::BLOCK);
-        // The `info` block is the highest one allocated, so its range test is
+        assert!(ext::BINARY_END == ext::BINARY_BASE + ext::BLOCK);
+        // The `binary` block is the highest one allocated, so its range test is
         // what a new block added above it would have to stand ahead of.
         assert!(ext::ENCODING_BASE < ext::INFO_BASE);
+        assert!(ext::INFO_END <= ext::BINARY_BASE);
     };
     // Every core op is below the first module block, or the guard chain in
     // `runtime::extension` would reach it before its own arm.

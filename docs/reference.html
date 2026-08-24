@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. Every one of the 338 names the current tclrs build implements: 80 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. Every one of the 339 names the current tclrs build implements: 81 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -126,15 +126,15 @@
 
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>LANGUAGE REFERENCE</h2>
-      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 80 commands,
+      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 81 commands,
       169 ensemble subcommands, the <code>expr</code> ladder, the
       <code>string is</code> classes and the <code>format</code> conversions &mdash; each with the
       signature the compiler reports and a description written from what the code does.
-      338 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
+      339 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
       <section class="tutorial-section">
         <h2>Chapters</h2>
         <ul class="chapter-index">
-          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">80</span></li>
+          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">81</span></li>
           <li><a href="#ch-string">The <code>string</code> ensemble</a> <span class="chapter-count">23</span></li>
           <li><a href="#ch-array">The <code>array</code> ensemble</a> <span class="chapter-count">13</span></li>
           <li><a href="#ch-dict">The <code>dict</code> ensemble</a> <span class="chapter-count">22</span></li>
@@ -147,7 +147,7 @@
 
       <section class="tutorial-section" id="ch-commands">
         <h2>Commands</h2>
-        <p class="chapter-meta">80 entries</p>
+        <p class="chapter-meta">81 entries</p>
         <p>Every command the current build compiles. A name absent from this
         chapter is <code>invalid command name "&hellip;"</code> at <em>compile</em>
         time, not a runtime lookup that fails &mdash; resolving the name while
@@ -159,7 +159,7 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">80</div>
+            <div class="stat-val">81</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
@@ -199,6 +199,12 @@
           <pre><code class="lang-tcl">array subcommand ?arg ...?
 </code></pre>
           <p>The array ensemble, over a variable rather than a value: an array is never itself a value.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-binary">
+          <h3><a class="doc-anchor" href="#doc-cmd-binary">#</a> <code>binary</code></h3>
+          <pre><code class="lang-tcl">binary subcommand ?arg ...?
+</code></pre>
+          <p>The binary ensemble: build a byte string from values (<code>format</code>), take values back out of one (<code>scan</code>), and convert between bytes and base64, hex or uuencode text (<code>encode</code>, <code>decode</code>). A byte string here is a string whose every character is below U+0100.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-break">
           <h3><a class="doc-anchor" href="#doc-cmd-break">#</a> <code>break</code></h3>

@@ -405,6 +405,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Math functions | The whole of `mathfunc(n)` inside `expr`: `abs`, `acos`, `asin`, `atan`, `atan2`, `bool`, `ceil`, `cos`, `cosh`, `double`, `entier`, `exp`, `floor`, `fmod`, `hypot`, `int`, `isfinite`, `isinf`, `isnan`, `isnormal`, `isqrt`, `issubnormal`, `isunordered`, `log`, `log10`, `max`, `min`, `pow`, `rand`, `round`, `sin`, `sinh`, `sqrt`, `srand`, `tan`, `tanh`, `wide` |
 | Time | `clock` — `seconds`, `milliseconds`, `microseconds`, `clicks`, `format`, `scan` (with `-format`), `add`; `-gmt`, `-timezone` (a numeric offset or any zone with a `TZif` file) and the root locale |
 | Encodings | `encoding` — `convertfrom`, `convertto` (with `-profile tcl8` / `strict` / `replace` and `-failindex`), `dirs`, `names`, `profiles`, `system`, `user`; see [Encodings](#encodings) for which |
+| Binary data | `binary` — `format` and `scan` over every field type (`a`, `A`, `C`, `b`, `B`, `h`, `H`, `c`, `s`, `S`, `t`, `i`, `I`, `n`, `w`, `W`, `m`, `f`, `r`, `R`, `d`, `q`, `Q`, `x`, `X`, `@`) with the `u` flag and `*` counts; `encode` and `decode` for `base64`, `hex` and `uuencode`, with `-maxlen`, `-wrapchar` and `-strict` |
 | Filesystem | `file` — `atime`, `copy`, `delete`, `dirname`, `executable`, `exists`, `extension`, `home`, `isdirectory`, `isfile`, `join`, `mkdir`, `mtime`, `nativename`, `normalize`, `owned`, `pathtype`, `readable`, `readlink`, `rename`, `rootname`, `separator`, `size`, `split`, `tail`, `tildeexpand`, `type`, `writable`; `glob` with `-directory`, `-join`, `-nocomplain`, `-path`, `-tails` and `-types`; `pwd`; `cd` |
 
 Command substitution works on any of them.
@@ -765,6 +766,40 @@ initial value is where its own library was installed. And `identity` and
 `binary` are not encodings: measured, tclsh 9.0.4 answers `unknown encoding
 "identity"` for both, so this frontend does too rather than reviving a Tcl 8
 spelling.
+
+### Binary data
+
+A byte string in Tcl 9 is a string whose every character is below U+0100, and
+that is what `binary` produces and consumes here — `binary format c 200` is the
+one character U+00C8, exactly as in tclsh. `src/cmd_binary.rs` is a port of
+`generic/tclBinary.c` rather than a reading of `binary(n)`, because four of its
+rules are not in the manual page and each one is observable:
+
+* A field specifier is a type character, an optional `u` flag and an optional
+  count, in that order, with *leading* blanks skipped. The `bad field specifier`
+  message names the character the format pointer was on before that skip, which
+  is why `binary format {c 3} 1 2` reports a blank rather than the `3` that
+  actually stopped it.
+* `binary format` runs two passes. The first resolves every count, checks that
+  an argument exists for each field that consumes one, and computes the length;
+  only the second looks at a value. So `binary format b3c x` is `not enough
+  arguments for all format specifiers` and not a complaint about `x`.
+* `x` *writes* null bytes rather than skipping over what is already there, and
+  the result's length is a high-water mark rather than the cursor — both of
+  which only show once `X` or `@` has moved the cursor back. `binary format
+  {su1X8s0x3} 1 255` is three null bytes.
+* A field with no count takes its argument whole and a field with a count of one
+  takes the argument's first element, so `binary format c {2 5}` is `expected
+  integer but got a list` while `binary format c1 {2 5}` is one byte.
+
+The integer fields truncate modulo the field's width at the precision Tcl 9's
+integers actually have: `binary format c 99999999999999999999` is that number's
+low byte, not a refusal and not a saturated `i64`.
+
+`tests/binary_differential.rs` compares the whole surface against tclsh, and
+`every_field_type_round_trips_through_tclsh` drives every field type through
+`format` and back through `scan` at every count form and both flag settings as
+one generated program.
 
 ---
 

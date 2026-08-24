@@ -97,6 +97,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "The array ensemble, over a variable rather than a value: an array is never itself a value.",
     },
     Entry {
+        name: "binary",
+        synopsis: "binary subcommand ?arg ...?",
+        summary: "The binary ensemble: build a byte string from values (`format`), take values back out of one (`scan`), and convert between bytes and base64, hex or uuencode text (`encode`, `decode`). A byte string here is a string whose every character is below U+0100.",
+    },
+    Entry {
         name: "break",
         synopsis: "break",
         summary: "Leave the innermost loop. The stack is unwound by a count the compiler knows statically.",
@@ -493,6 +498,7 @@ pub fn subcommands(command: &str) -> &'static [&'static str] {
         "clock" => cmd_clock::SUBCOMMANDS,
         "file" => cmd_file::SUBCOMMANDS,
         "encoding" => crate::cmd_encoding::SUBCOMMANDS,
+        "binary" => crate::cmd_binary::SUBCOMMANDS,
         _ => &[],
     }
 }
@@ -513,12 +519,37 @@ pub fn subcommand_corpus(command: &str) -> &'static [Entry] {
         "clock" => CLOCK_CORPUS,
         "file" => FILE_CORPUS,
         "encoding" => ENCODING_CORPUS,
+        "binary" => BINARY_CORPUS,
         "info" => INFO_CORPUS,
         "namespace" => NAMESPACE_CORPUS,
         "package" => PACKAGE_CORPUS,
         _ => &[],
     }
 }
+
+/// The `binary` subcommands, in the order [`subcommands`] lists them.
+const BINARY_CORPUS: &[Entry] = &[
+    Entry {
+        name: "decode",
+        synopsis: "binary decode base64|hex|uuencode ?-strict? data",
+        summary: "The bytes an encoded text stands for. Without `-strict` the decoders forgive what a re-flowed message does to their input; with it they name the first character that does not belong.",
+    },
+    Entry {
+        name: "encode",
+        synopsis: "binary encode base64|hex|uuencode ?-maxlen len? ?-wrapchar char? data",
+        summary: "A byte string as readable text. `hex` takes no options; the other two wrap their output at `-maxlen` characters with `-wrapchar` between the lines, and uuencode refuses a line length outside 5 to 85 or a wrap character that would defeat its own decoder.",
+    },
+    Entry {
+        name: "format",
+        synopsis: "binary format formatString ?arg ...?",
+        summary: "Build a byte string from values, field by field: text (`a`, `A`), bit and hex digit strings (`b`, `B`, `h`, `H`), integers of one to eight bytes in either byte order, floats and doubles, and the cursor moves `x`, `X` and `@`.",
+    },
+    Entry {
+        name: "scan",
+        synopsis: "binary scan value formatString ?varName ...?",
+        summary: "The inverse, writing each field into a variable and answering how many were written. The data running out stops the scan rather than failing it, so a variable past that point is left alone. A `u` after the type character reads an integer field unsigned.",
+    },
+];
 
 /// The `encoding` subcommands, in the order [`subcommands`] lists them.
 const ENCODING_CORPUS: &[Entry] = &[

@@ -26,6 +26,7 @@ pub mod cmd_after;
 pub mod cmd_channel;
 pub mod cmd_clock;
 /// `encoding` — transcoding, and the tables it is done with.
+pub mod cmd_binary;
 pub mod cmd_encoding;
 pub mod cmd_file;
 /// `info` — what the interpreter knows about itself.
