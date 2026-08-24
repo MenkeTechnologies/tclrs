@@ -27,6 +27,9 @@ use std::sync::Arc;
 
 use fusevm::{Op, Value, VM};
 
+use num_bigint::{BigInt, BigUint, Sign};
+use num_traits::Zero;
+
 use crate::compiler::{CompileError, Compiler};
 use crate::parser::Word;
 use crate::runtime::{place_at, take_var, tcl_str, to_tcl_string, var_cell};
@@ -948,6 +951,23 @@ fn parse_int(text: &str) -> Option<i64> {
             .saturating_add(d as i64);
     }
     Some(if lit.negative { -value } else { value })
+}
+
+/// The same syntax [`parse_int`] reads, at the precision Tcl 9's integers
+/// actually have. `format` needs it: a conversion truncates modulo its width,
+/// and a saturated `i64` has already lost the bits the truncation would keep.
+pub(crate) fn parse_big(text: &str) -> Option<BigInt> {
+    let lit = scan_int(text)?;
+    let digits: String = lit.digits.chars().filter(|c| *c != '_').collect();
+    let value = BigUint::parse_bytes(digits.as_bytes(), lit.radix)?;
+    Some(BigInt::from_biguint(
+        if lit.negative && !value.is_zero() {
+            Sign::Minus
+        } else {
+            Sign::Plus
+        },
+        value,
+    ))
 }
 
 struct IntLit {
@@ -2224,6 +2244,21 @@ fn digit_run(f: &[char], from: usize) -> usize {
 /// An integer conversion. Without a size modifier Tcl truncates to 32 bits;
 /// `ll` skips truncation altogether and prints a sign with the magnitude, which
 /// is how a bignum would come out.
+///
+/// The truncation is *modular*, not saturating, and the value it truncates is
+/// the script's own — which in Tcl 9 is arbitrary precision. That is why the
+/// arithmetic here runs on a `BigInt` rather than on an `i64`: reading the
+/// argument into an `i64` first would clamp `2**64` to `i64::MAX` and print
+/// `-1` where `Tcl_AppendFormatToObj` prints `0`, because it reduces the whole
+/// bignum modulo the conversion's width (`generic/tclStringObj.c`, the
+/// `TCL_NUMBER_BIG` arm of the integer conversions). tclsh 9.0.4:
+///
+/// ```text
+/// format %d  18446744073709551616  ->  0
+/// format %d  18446744073709551617  ->  1
+/// format %ld 18446744073709551615  ->  -1
+/// format %lx 18446744073709551615  ->  ffffffffffffffff
+/// ```
 fn integer(
     conv: char,
     flags: Flags,
@@ -2231,7 +2266,7 @@ fn integer(
     size: Width,
     value: &str,
 ) -> Result<Signed, String> {
-    let n = parse_int(value.trim_matches(is_ascii_space)).ok_or_else(|| {
+    let n = parse_big(value.trim_matches(is_ascii_space)).ok_or_else(|| {
         format!(
             "expected integer but got {}",
             crate::runtime::named(value, 50)
@@ -2246,25 +2281,36 @@ fn integer(
     };
 
     let (negative, magnitude) = if size == Width::Untruncated {
-        if conv == 'u' {
+        // Nothing was truncated, so there is no width whose bit pattern could
+        // stand in for a negative value: tclsh refuses only then, and prints
+        // the magnitude for every value that is not negative
+        // (`format %llu 340282366920938463463374607431768211457` is that
+        // number back, `format %llu -1` is this refusal).
+        if conv == 'u' && n.sign() == Sign::Minus {
             return Err("unsigned bignum format is invalid".to_string());
         }
-        (n < 0, n.unsigned_abs())
+        // Sign and magnitude, printed apart: `format %llx -1` is `-1` in tclsh
+        // and not `ffff...`, because nothing was truncated to a width whose
+        // top bit could carry the sign.
+        (n.sign() == Sign::Minus, n.magnitude().clone())
     } else {
-        let truncated = match size {
-            Width::Bits16 => n as i16 as i64,
-            Width::Bits32 => n as i32 as i64,
-            _ => n,
+        let bits = match size {
+            Width::Bits16 => 16u32,
+            Width::Bits32 => 32,
+            _ => 64,
         };
-        if signed_conv {
-            (truncated < 0, truncated.unsigned_abs())
+        // The two's-complement bit pattern: the value reduced into
+        // `0 ..= 2**bits - 1`. num-bigint's bitwise operators act on the
+        // two's-complement form with infinite sign extension, so masking off
+        // the low `bits` is that reduction and it works for a negative value
+        // without a separate branch.
+        let modulus = BigUint::from(1u8) << bits;
+        let mask = BigInt::from(modulus.clone() - BigUint::from(1u8));
+        let pattern = (&n & &mask).magnitude().clone();
+        if signed_conv && pattern >= (BigUint::from(1u8) << (bits - 1)) {
+            (true, modulus - pattern)
         } else {
-            let unsigned = match size {
-                Width::Bits16 => truncated as u16 as u64,
-                Width::Bits32 => truncated as u32 as u64,
-                _ => truncated as u64,
-            };
-            (false, unsigned)
+            (false, pattern)
         }
     };
 
@@ -2301,13 +2347,18 @@ fn integer(
         }
     }
     // `%p` prefixes a zero too; every other conversion follows C and does not.
-    if flags.hash && (magnitude != 0 || conv == 'p') {
+    if flags.hash && (!magnitude.is_zero() || conv == 'p') {
         prefix.push_str(match conv {
             'o' => "0o",
             'x' | 'p' => "0x",
             'X' => "0x",
             'b' => "0b",
             'd' | 'i' => "0d",
+            // `%#u` prints no prefix, but `%#llu` prints `0d`: the untruncated
+            // conversions share one arm in `Tcl_AppendFormatToObj`, so an
+            // unsigned bignum is decorated as a decimal is. tclsh 9.0.4:
+            // `format %#u 1` is `1` and `format %#llu 1` is `0d1`.
+            'u' if size == Width::Untruncated => "0d",
             _ => "",
         });
     }
@@ -2476,13 +2527,25 @@ fn strip_zeroes(s: &str) -> &str {
 }
 
 /// Tcl's double parser, which also takes the integer spellings.
-fn parse_double(text: &str) -> Option<f64> {
+pub(crate) fn parse_double(text: &str) -> Option<f64> {
     let body = text.trim_matches(is_ascii_space);
     if let Some(lit) = scan_int(body) {
-        let mut value = 0f64;
-        for d in lit.digits.chars().filter_map(|c| c.to_digit(lit.radix)) {
-            value = value * lit.radix as f64 + d as f64;
-        }
+        // Rust's own parser, because it is correctly rounded and a digit-by-
+        // digit `value * radix + d` accumulation in `f64` is not: nineteen
+        // decimal digits accumulate enough error to move the result several
+        // thousand ULP, and `format %f 9223372036854775807` printed
+        // `9223372036854777856.000000` where tclsh 9.0.4 prints
+        // `9223372036854775808.000000`. A radix other than ten goes through a
+        // bignum only to be re-spelled in decimal, so the same correctly
+        // rounded parser answers for `0x`, `0o` and `0b` too. An overflow is
+        // an infinity here as it is in tclsh, not a refusal.
+        let digits: String = lit.digits.chars().filter(|c| *c != '_').collect();
+        let decimal = if lit.radix == 10 {
+            digits
+        } else {
+            BigUint::parse_bytes(digits.as_bytes(), lit.radix)?.to_string()
+        };
+        let value: f64 = decimal.parse().unwrap_or(f64::INFINITY);
         // An integer spelling is converted as an integer, and an integer has no
         // negative zero — so `format %.2f -0` prints `0.00` where the *double*
         // `-0.0` prints `-0.00`. Measured against tclsh 9.0.4, which agrees for
