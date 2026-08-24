@@ -1463,6 +1463,21 @@ so the ARE-to-`regex` rewrite is paid once as well: the same loop went from
 would, that the flags are part of the key, and that a pattern which will not
 compile is refused on every call rather than only the first.
 
+**A chunk is entered without copying it.** A procedure whose body was compiled
+into another chunk — every procedure defined inside `eval`, `namespace eval` or
+a `source`d file — runs on a VM of its own over that chunk, and `fusevm::VM::new`
+takes a `Chunk` by value, so entering it copied the whole program per call.
+`src/runtime.rs` keeps a VM per chunk between runs: `VM::reset` clears every
+other part of the machine and takes the chunk by value, so the chunk is moved
+out of the VM and straight back into it and nothing is copied. 20,000 calls into
+a chunk of 600 procedures went from 17.276 s of CPU to 7.843 s. A VM is taken
+out of the pool while it runs, so a recursive or re-entrant call builds one of
+its own. What is left is not the copy: the same call into a *small* chunk is
+unchanged at about 2 s for 200,000 calls, against 0.009 s for the same procedure
+written at the top level and 0.088 s for tclsh, so the per-call scaffolding
+around the run — the variable projection in and out, the hooks, the interpreter
+lock — is the next thing to look at.
+
 **`append` builds a string in place, and so does `set x "$x…"`.**
 `string_build` is the same problem in the other data type, and it was the row
 where tclrs and tclsh were level: both copied the whole accumulated string every

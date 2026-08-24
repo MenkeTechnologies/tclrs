@@ -629,6 +629,66 @@ pub(crate) fn call_in_chunk(
     }
 }
 
+thread_local! {
+    /// A VM per chunk, kept between runs of it.
+    ///
+    /// `fusevm::VM::new` takes a `Chunk` by value, so entering a chunk copies
+    /// its whole program — the op vector, the constant pool and the name table.
+    /// That copy is paid per *call* for a procedure whose body was compiled
+    /// into another chunk, which is every procedure defined inside `eval`,
+    /// `namespace eval` or a `source`d file: 200,000 calls of a two-line
+    /// procedure defined in an `eval` cost 2.009 s of CPU where the same
+    /// procedure written at the top level cost 0.009 s, and a profile of the
+    /// first had `Op::clone` and the copy out of the op slice at the top of it.
+    ///
+    /// Keeping the VM lets the program stay where it is. [`VM::reset`] clears
+    /// every other part of the machine and takes the chunk by value, so the
+    /// chunk is moved out of the VM and straight back into it and nothing is
+    /// copied. The entry holds the `Arc` it was built from, so the pointer it
+    /// is found by cannot be reused by a different chunk while it is held.
+    ///
+    /// A VM is taken *out* while it runs and put back afterwards, so a
+    /// recursive or re-entrant call builds one of its own rather than
+    /// disturbing the run above it.
+    static VMS: std::cell::RefCell<Vec<(Arc<Chunk>, VM)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// How many chunks keep a VM. Each entry holds a copy of that chunk's program,
+/// so this is a memory bound as much as a hit-rate one; a script alternating
+/// between more chunks than this pays the copy on the ones that fall out.
+const POOLED_VMS: usize = 8;
+
+/// A VM positioned to run `chunk`, reusing the one this chunk last ran on.
+fn acquire_vm(chunk: &Arc<Chunk>) -> VM {
+    let pooled = VMS.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let at = pool.iter().position(|(key, _)| Arc::ptr_eq(key, chunk))?;
+        Some(pool.remove(at).1)
+    });
+    match pooled {
+        Some(mut vm) => {
+            // Out and straight back in: `VM::reset` takes a chunk by value, and
+            // handing it the VM's own program is what makes the reset free.
+            let program = std::mem::take(&mut vm.chunk);
+            vm.reset(program);
+            vm
+        }
+        None => VM::new((**chunk).clone()),
+    }
+}
+
+/// Give a finished VM back, so the next run of `chunk` need not copy it.
+fn release_vm(chunk: &Arc<Chunk>, vm: VM) {
+    VMS.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() >= POOLED_VMS {
+            pool.remove(0);
+        }
+        pool.push((Arc::clone(chunk), vm));
+    });
+}
+
 /// A chunk interns its own name table, so the slot holding a given variable
 /// differs from chunk to chunk and a slot vector cannot be carried from one run
 /// to the next. The interpreter's map is the authority; a chunk's slots are a
@@ -2545,7 +2605,7 @@ impl Machine {
         at: Option<(usize, Vec<Value>)>,
     ) -> Result<Value, TclError> {
         let hooks = Hooks::new(Arc::clone(shared));
-        let mut main = VM::new((*chunk).clone());
+        let mut main = acquire_vm(&chunk);
         hooks.install(&mut main);
         let globals = seed(&chunk, shared);
         if let Some((entry, actuals)) = at {
@@ -2589,6 +2649,13 @@ impl Machine {
             current: 0,
         };
         let outcome = machine.drive();
+        // The machine's first context is the VM this run started on; a
+        // coroutine's is not, and is dropped with the machine. Only the first
+        // goes back to the pool, and only if the run left it there — a
+        // coroutine switch can take it.
+        if let Some(vm) = machine.contexts[0].vm.take() {
+            release_vm(&machine.chunk, vm);
+        }
         // The variables a failing script did set are still set, as they are in
         // the reference interpreter, so the write-back happens either way.
         flush(&machine.chunk, shared, &machine.globals);
