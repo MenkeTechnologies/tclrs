@@ -199,6 +199,15 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
         flags |= F_INTO_VAR;
     }
 
+    // The match variables are resolved before anything is emitted. A name the
+    // script computed is a refusal this command has not yet written code for,
+    // which is what lets `Compiler::command` defer it — `if {0} {regexp a b $v}`
+    // then costs the script nothing, as it costs tclsh nothing.
+    let var_names = vars
+        .iter()
+        .map(|word| c.var_name_of(word))
+        .collect::<Result<Vec<_>, _>>()?;
+
     c.emit(Op::LoadInt(flags), 1);
     match start {
         Some(word) => c.word(word)?,
@@ -212,9 +221,8 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
     // A variable travels as where it lives, not as its value: the op assigns to
     // it. Encoded one operand per variable — the index shifted up by one with
     // the frame-slot bit at the bottom — so the operand count stays the arity.
-    for word in vars {
-        let name = c.var_name_of(word)?;
-        let encoded = c.place_operand(&name);
+    for name in &var_names {
+        let encoded = c.place_operand(name);
         c.emit(Op::LoadInt(encoded), 1);
     }
 
@@ -462,8 +470,31 @@ thread_local! {
     /// Compiled patterns, keyed by the translated source. A `regexp` in a loop
     /// compiles its pattern once; without this it would compile per iteration,
     /// which is the cost that makes a matcher unusable in a script.
-    static CACHE: RefCell<HashMap<String, Regex>> = RefCell::new(HashMap::new());
+    ///
+    /// The entry is an `Arc<Regex>` and *not* a `Regex`, which is not a detail:
+    /// a `regex::Regex` carries a pool of per-search scratch caches, and the
+    /// lazy DFA it builds while matching lives in one of them. Handing out a
+    /// `clone()` of the `Regex` hands out a fresh, empty pool, so every call
+    /// determinized the pattern again from nothing — 236 samples in
+    /// `ByteClassRepresentatives::next` and the whole `regex_automata::hybrid`
+    /// state machinery under a four-second profile of a matching loop, with the
+    /// pattern compilation itself nowhere in it. Sharing one `Regex` through an
+    /// `Arc` is what the crate is built for: 200,000 matches of
+    /// `^[a-z]+([0-9]+)$` went from 7.507 s of CPU to 2.177 s, a debug build
+    /// measured against tclsh 9.0.4's 0.374 s for the same script.
+    /// Keyed by the pattern *as the script wrote it* together with the flags,
+    /// not by what [`translate`] makes of it, so that the ARE-to-`regex`
+    /// rewrite is paid once per pattern as well. A pattern that does not
+    /// translate is not stored, so its refusal is raised on every call and not
+    /// only the first.
+    static CACHE: RefCell<HashMap<(i64, String), Arc<Regex>>> = RefCell::new(HashMap::new());
 }
+
+/// How many compiled patterns one thread keeps. At the limit the whole cache is
+/// dropped rather than one entry chosen, which is [`crate::cache::ChunkCache`]'s
+/// rule and holds for the same reason: a script that reaches it is building
+/// fresh patterns, where no eviction order would have kept the useful one.
+const CACHE_CAPACITY: usize = 1024;
 
 /// The reference interpreter's name for a rejected pattern.
 ///
@@ -499,12 +530,13 @@ fn regerror(detail: &str) -> &str {
     }
 }
 
-fn compiled(are: &str, flags: i64) -> Result<Regex, String> {
+fn compiled(are: &str, flags: i64) -> Result<Arc<Regex>, String> {
+    let key = (flags, are.to_string());
+    if let Some(re) = CACHE.with(|cache| cache.borrow().get(&key).map(Arc::clone)) {
+        return Ok(re);
+    }
     let translated = translate(are, flags)?;
     CACHE.with(|cache| {
-        if let Some(re) = cache.borrow().get(&translated) {
-            return Ok(re.clone());
-        }
         let re = Regex::new(&translated).map_err(|e| {
             // The interpreter's wording, with the engine's own complaint as the
             // detail — reworded from a multi-line report to one line.
@@ -519,7 +551,12 @@ fn compiled(are: &str, flags: i64) -> Result<Regex, String> {
                 regerror(first)
             )
         })?;
-        cache.borrow_mut().insert(translated, re.clone());
+        let re = Arc::new(re);
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= CACHE_CAPACITY {
+            cache.clear();
+        }
+        cache.insert(key, Arc::clone(&re));
         Ok(re)
     })
 }

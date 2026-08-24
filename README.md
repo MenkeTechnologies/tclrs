@@ -1450,6 +1450,19 @@ value so the address cannot be reused under it. The same three runs are 0.021 /
 of the string, so a cached list is copied rather than grown in place, and the
 copy has an identity of its own.
 
+**One compiled regular expression, not one per match.** Patterns were already
+cached by text, but the entry was handed out as a *clone* of the `regex::Regex`
+— and a clone carries an empty pool of match caches, so the lazy DFA was rebuilt
+on every call. A profile of 200,000 matches had `ByteClassRepresentatives::next`
+and the whole `regex_automata::hybrid` state machinery at the top and the
+pattern compilation itself nowhere in it. The entry is an `Arc<Regex>` now,
+shared as the crate intends, and is keyed on the pattern as the script wrote it
+so the ARE-to-`regex` rewrite is paid once as well: the same loop went from
+7.507 s of CPU to 1.925 s, against tclsh's 0.374 s.
+`tests/regexp_differential.rs` pins that a reused pattern answers as a fresh one
+would, that the flags are part of the key, and that a pattern which will not
+compile is refused on every call rather than only the first.
+
 **`append` builds a string in place, and so does `set x "$x…"`.**
 `string_build` is the same problem in the other data type, and it was the row
 where tclrs and tclsh were level: both copied the whole accumulated string every

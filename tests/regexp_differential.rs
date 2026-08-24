@@ -381,3 +381,48 @@ fn unsupported_are_constructs_are_refused() {
         );
     }
 }
+
+/// A pattern reused across calls must answer as if it had been compiled afresh
+/// each time.
+///
+/// `src/regexp.rs` keeps compiled patterns in a per-thread map so that a
+/// `regexp` in a loop compiles once — the entry is an `Arc<Regex>`, shared
+/// rather than cloned, because a clone of a `regex::Regex` carries an empty
+/// pool of match caches and the lazy DFA would be rebuilt on every call. Three
+/// things that arrangement can get wrong, each pinned below:
+///
+/// * **Per-match state leaking between calls.** Every program repeats a pattern
+///   over several subjects, in an order where a shared cursor, a shared capture
+///   set or a leftover anchor would show as a wrong answer rather than an error.
+/// * **A key that ignores the flags.** The same pattern text is matched with
+///   and without `-nocase` and `-line` in one program: an entry found by text
+///   alone answers the second with the first one's engine.
+/// * **A refusal remembered as a success, or a success as a refusal.** A
+///   pattern that will not compile is used repeatedly, alternating with one that
+///   does, so a cache that stored the failure — or that stopped raising after
+///   the first call — is visible.
+#[test]
+fn a_reused_pattern_answers_as_a_fresh_one_would() {
+    compare_all(
+        &[
+            // The same pattern over many subjects, captures included.
+            "set out {}\nforeach s {abc1 xyz22 q 333 a0} {\n  if {[regexp {^([a-z]+)([0-9]+)$} $s m a b]} {\n    append out \"$m|$a|$b \"\n  } else {\n    append out \"-|$s \"\n  }\n}\nputs $out",
+            // Anchors and `-all`, whose iteration keeps a cursor.
+            "set out {}\nforeach s {aaa {} bab aXa} {\n  append out [regexp -all {a} $s],\n  append out [regexp -all -inline {a.} $s],\n}\nputs $out",
+            // One pattern text, three different option sets.
+            "set p {^ab}\nset s \"xy\\nABc\"\nputs [regexp $p $s][regexp -nocase $p $s][regexp -line $p $s][regexp -line -nocase $p $s][regexp $p ab]",
+            // The same, through regsub, which compiles by the same route.
+            "set p {a+}\nputs [regsub -all $p aaabaa X][regsub $p aaabaa X][regsub -all -nocase $p AaAbaa X]",
+            // `switch -regexp` and `lsearch -regexp` reach the same cache.
+            "set out {}\nforeach s {a1 b2 c3} {\n  switch -regexp -- $s {\n    {^a} {append out A}\n    {^[bc]} {append out B}\n    default {append out ?}\n  }\n}\nappend out [lsearch -regexp {a1 b2 c3} {^b}][lsearch -regexp {a1 b2 c3} {^a}]\nputs $out",
+            // A pattern that cannot compile, used repeatedly and interleaved
+            // with one that can.
+            "for {set i 0} {$i < 4} {incr i} {\n  puts [catch {regexp {a(} x} m]:$m\n  puts [regexp {a+} aa]\n}",
+            "for {set i 0} {$i < 3} {incr i} {\n  puts [catch {regexp {a[} x} m]:$m\n  puts [catch {regexp {a{2,1}} x} n]:$n\n  puts [regexp {b} ab]\n}",
+            // Enough distinct patterns in one script that the map is doing real
+            // work, each answered twice so a wrong entry shows on the repeat.
+            "set ps {a b {a|b} {[ab]} {a*} {a+} {^a} {a$} {(a)(b)} {a{2}} {\\d} {[[:alpha:]]} {(?i)A} {a.c}}\nset out {}\nforeach p $ps { append out [regexp -- $p abc] }\nappend out |\nforeach p $ps { append out [regexp -- $p abc] }\nputs $out",
+        ],
+        "reused pattern",
+    );
+}
