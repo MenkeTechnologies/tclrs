@@ -4,10 +4,14 @@
 //! `clock format` is worse than one that says it cannot answer:
 //!
 //! * `seconds`, `milliseconds`, `microseconds`, `clicks` — complete.
-//! * `format` — the whole token set of tclsh 9.0.4's `FmtSTokenMap`
-//!   (`generic/tclClockFmt.c`) plus the locale-format expansions
-//!   `::tcl::clock::LocalizeFormat` performs (`library/clock.tcl`), in the
-//!   root locale's message catalogue.
+//! * `format` — the whole token set of tclsh 9.0.4's `FmtSTokenMap`, the
+//!   `%E` and `%O` maps beside it (`generic/tclClockFmt.c`) and the
+//!   locale-format expansions `::tcl::clock::LocalizeFormat` performs
+//!   (`library/clock.tcl`).
+//! * `-locale` — every catalogue the release ships, read from the vendored
+//!   copies in [`crate::clock_msgs`] through [`crate::clock_locale`]. A name
+//!   with no catalogue anywhere in its fallback chain is the root locale, as
+//!   it is there.
 //! * `scan` — the `-format` form only. tclsh's free-form parser is a
 //!   several-thousand-line grammar over relative words, month names, ISO
 //!   forms and time zone abbreviations; it is refused by name rather than
@@ -21,21 +25,23 @@
 //!
 //! Refused, each with its own message:
 //!
-//! * Any instant before the Gregorian changeover. tclsh reckons earlier dates
-//!   in the Julian calendar, and *which* earlier dates depends on the locale —
-//!   `GREGORIAN_CHANGE_DATE` is 2299161 for the root locale and 2361222 for
-//!   `en`, which is what this machine's tclsh resolves to. The dates this
-//!   module answers for are the ones every one of those settings agrees on.
-//! * `-locale` naming anything but the root locale. The month and day names,
-//!   the AM/PM words and the `%x`/`%X`/`%c` expansions all come from the
-//!   locale, and tclsh reads them from its `msgs/` catalogue.
+//! * Any instant before the Gregorian changeover of 1752-09-14, which tclsh
+//!   reckons in the Julian calendar and this module has no calendar for. See
+//!   [`EARLIEST`], and note the date is not the locale's.
 //! * A POSIX `TZ` *rule* string (`EST5EDT,M3.2.0,M11.1.0`) with no matching
-//!   zone file, and the `%E`/`%O` locale-modified tokens.
+//!   zone file, and a time zone named by abbreviation in `clock scan`.
+//! * `clock scan` with `-base`, and without `-format`.
+//!
+//! Not refused but not tclsh's answer either: a `clock scan` whose format
+//! names a weekday and no day of the month reads the weekday as choosing a day
+//! within the base week there, and is ignored here — the base date this
+//! frontend would need is the same one `-base` is refused for.
 
 use std::sync::Arc;
 
 use fusevm::{Op, Value, VM};
 
+use crate::clock_locale::Catalog;
 use crate::compiler::{CompileError, Compiler};
 use crate::parser::Word;
 use crate::runtime::{tcl_str, to_tcl_string, Num};
@@ -169,11 +175,19 @@ fn listing(table: &[&str]) -> String {
 
 // ── the calendar ─────────────────────────────────────────────────────────
 
-/// The first instant this module will reckon: 1752-09-14T00:00:00Z, which is
-/// `GREGORIAN_CHANGE_DATE` 2361222 — the changeover the `en` locale uses, and
-/// the latest one that still precedes every date a script is likely to ask
-/// about. Before it the answer depends on the locale's calendar, and this
-/// module has one calendar.
+/// The first instant this module will reckon: 1752-09-14T00:00:00Z, Julian day
+/// 2361222. Before it tclsh reckons in the Julian calendar and this module has
+/// one calendar, so it refuses rather than answering a Gregorian date for a
+/// Julian one.
+///
+/// The changeover is not the locale's. Catalogues carry a
+/// `GREGORIAN_CHANGE_DATE` and `clock.tcl` sets one for a dozen languages, but
+/// Tcl 9's formatter passes the compile-time `GREGORIAN_CHANGE_DATE`
+/// (`generic/tclClock.c`) to `TclConvertUTCToLocal` and never reads the
+/// catalogue's — measured: `clock format -11676096000 -format %Y-%m-%d -gmt 1`
+/// answers `1599-12-22` under `-locale en`, `it`, `ru`, `el` and the root
+/// locale alike, and `1752-09-02` is the last Julian date every one of them
+/// writes.
 const EARLIEST: i64 = -6_857_222_400;
 
 fn too_early() -> String {
@@ -283,7 +297,16 @@ impl Civil {
     fn julian_day(&self) -> i64 {
         self.epoch_day + 2440588
     }
+
+    /// Seconds since local midnight — `DateInfo.secondOfDay`, which the tokens
+    /// that write a time of day are all derived from.
+    fn second_of_day(&self) -> i64 {
+        self.hour as i64 * 3600 + self.minute as i64 * 60 + self.second as i64
+    }
 }
+
+/// `SECONDS_PER_DAY`, which the Julian-day and stardate tokens divide by.
+const SECONDS_PER_DAY: i64 = 86_400;
 
 // ── time zones ───────────────────────────────────────────────────────────
 
@@ -527,67 +550,46 @@ fn system_zone() -> Result<Zone, String> {
 
 // ── the message catalogue ────────────────────────────────────────────────
 
-const MONTHS_ABBREV: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-const MONTHS_FULL: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-const DAYS_ABBREV: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const DAYS_FULL: [&str; 7] = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-];
+/// `::tcl::clock::LocalizeFormat`'s substitution list for one catalogue
+/// (`library/clock.tcl:852`), in its order. Each entry is expanded through the
+/// entries already in the list before it joins them, which is what lets `%c`
+/// be written in terms of `%X` and `%X` in terms of `%T`.
+fn format_map(cat: &Catalog) -> Vec<(String, String)> {
+    let mut map = vec![
+        ("%%".to_string(), "%%".to_string()),
+        ("%D".to_string(), "%m/%d/%Y".to_string()),
+        ("%+".to_string(), "%a %b %e %H:%M:%S %Z %Y".to_string()),
+    ];
+    for (key, value) in [
+        ("%EY", &cat.locale_year_format),
+        ("%T", &cat.time_format_24_secs),
+        ("%R", &cat.time_format_24),
+        ("%r", &cat.time_format_12),
+        ("%X", &cat.time_format),
+        ("%EX", &cat.locale_time_format),
+        ("%x", &cat.date_format),
+        ("%Ex", &cat.locale_date_format),
+        ("%c", &cat.date_time_format),
+        ("%Ec", &cat.locale_date_time_format),
+    ] {
+        let expanded = string_map(&map, value);
+        map.push((key.to_string(), expanded));
+    }
+    map
+}
 
-/// `::tcl::clock::LocalizeFormat`'s substitutions, in its order — later
-/// entries expand into earlier ones, so the order is significant. The values
-/// are the root locale's `msgcat` catalogue (`library/clock.tcl`), with the
-/// nesting already resolved.
-const FORMAT_ALIASES: &[(&str, &str)] = &[
-    ("%%", "%%"),
-    ("%D", "%m/%d/%Y"),
-    ("%+", "%a %b %e %H:%M:%S %Z %Y"),
-    ("%T", "%H:%M:%S"),
-    ("%R", "%H:%M"),
-    ("%r", "%I:%M:%S %P"),
-    ("%EX", "%H:%M:%S"),
-    ("%X", "%H:%M:%S"),
-    ("%Ex", "%m/%d/%Y"),
-    ("%x", "%m/%d/%Y"),
-    ("%Ec", "%a %b %e %H:%M:%S %Y"),
-    ("%c", "%a %b %e %H:%M:%S %Y"),
-];
-
-/// Expand the locale format groups the way `LocalizeFormat` does: one
-/// left-to-right pass in which `%%` maps to itself, so an escaped percent
-/// cannot start a group.
-fn localize(format: &str) -> String {
-    let mut out = String::with_capacity(format.len());
-    let mut rest = format;
+/// Tcl's `string map`: one left-to-right pass over the subject in which the
+/// first pair that matches at a position wins and its replacement is not
+/// rescanned. `%%` maps to itself, so an escaped percent cannot start a group.
+fn string_map(map: &[(String, String)], text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
     'outer: while !rest.is_empty() {
-        if rest.starts_with('%') {
-            for (from, to) in FORMAT_ALIASES {
-                if rest.starts_with(from) {
-                    out.push_str(to);
-                    rest = &rest[from.len()..];
-                    continue 'outer;
-                }
+        for (from, to) in map {
+            if rest.starts_with(from.as_str()) {
+                out.push_str(to);
+                rest = &rest[from.len()..];
+                continue 'outer;
             }
         }
         let ch = rest.chars().next().expect("not empty");
@@ -595,6 +597,29 @@ fn localize(format: &str) -> String {
         rest = &rest[ch.len_utf8()..];
     }
     out
+}
+
+/// A `string map` pair list: what to look for and what to write instead.
+type Substitutions = Arc<Vec<(String, String)>>;
+
+thread_local! {
+    /// `::tcl::clock::LocFmtMap`: the substitution list per locale, since
+    /// building it reads ten catalogue entries and expands each one.
+    static LOC_FMT_MAP: std::cell::RefCell<std::collections::HashMap<String, Substitutions>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Expand the locale format groups the way `LocalizeFormat` does.
+fn localize(format: &str, cat: &Catalog) -> String {
+    let map = LOC_FMT_MAP.with(|cache| {
+        if let Some(hit) = cache.borrow().get(&cat.name) {
+            return hit.clone();
+        }
+        let built = Arc::new(format_map(cat));
+        cache.borrow_mut().insert(cat.name.clone(), built.clone());
+        built
+    });
+    string_map(&map, format)
 }
 
 // ── formatting ───────────────────────────────────────────────────────────
@@ -631,7 +656,7 @@ fn offset_text(offset: i32) -> String {
     }
 }
 
-fn format_time(seconds: i64, format: &str, zone: &Zone) -> Result<String, String> {
+fn format_time(seconds: i64, format: &str, zone: &Zone, cat: &Catalog) -> Result<String, String> {
     if seconds < EARLIEST {
         return Err(too_early());
     }
@@ -640,77 +665,224 @@ fn format_time(seconds: i64, format: &str, zone: &Zone) -> Result<String, String
         .checked_add(state.offset as i64)
         .ok_or_else(overflow)?;
     let civil = civil_of(local);
-    let expanded = localize(format);
+    let expanded = localize(format, cat);
     let mut out = String::with_capacity(expanded.len() + 16);
     let mut rest = expanded.as_str();
     while let Some(at) = rest.find('%') {
         out.push_str(&rest[..at]);
         rest = &rest[at + 1..];
-        let Some(token) = rest.chars().next() else {
+        // `%E` and `%O` select a token map of their own, and a character that
+        // is in neither this map nor the plain one leaves the whole group —
+        // percent, modifier and all — in the output.
+        let modifier = rest.chars().next().filter(|c| matches!(c, 'E' | 'O'));
+        let after = match modifier {
+            Some(m) => &rest[m.len_utf8()..],
+            None => rest,
+        };
+        let Some(token) = after.chars().next() else {
             // A trailing `%` is itself, as tclsh's scanner leaves it.
             out.push('%');
+            if let Some(m) = modifier {
+                out.push(m);
+            }
             return Ok(out);
         };
-        rest = &rest[token.len_utf8()..];
-        match one_token(token, &civil, seconds, state) {
-            Some(text) => out.push_str(&text),
+        match one_token(modifier, token, &civil, seconds, local, state, cat)? {
+            Some(text) => {
+                out.push_str(&text);
+                rest = &after[token.len_utf8()..];
+            }
             // A token that is in no map is copied through unchanged, which is
             // what tclsh does for `%F` and `%i` — measured, not assumed.
-            None => {
-                out.push('%');
-                out.push(token);
-            }
+            // `rest` still points at the modifier, or at the token when there
+            // was none, so the next pass copies the rest of the group.
+            None => out.push('%'),
         }
     }
     out.push_str(rest);
     Ok(out)
 }
 
-/// One `%`-token's text, or `None` when the token is not one tclsh's
-/// `FmtSTokenMap` carries.
-fn one_token(token: char, civil: &Civil, seconds: i64, state: &State) -> Option<String> {
+/// One `%`-token's text, or `Ok(None)` when the token is in no map — in which
+/// case the caller copies the group through. `modifier` is the `E` or `O` that
+/// picked `FmtETokenMap` or `FmtOTokenMap` over `FmtSTokenMap`. The error is
+/// [`indexed`]'s.
+fn one_token(
+    modifier: Option<char>,
+    token: char,
+    civil: &Civil,
+    seconds: i64,
+    local: i64,
+    state: &State,
+    cat: &Catalog,
+) -> Result<Option<String>, String> {
     let weekday = civil.iso_weekday();
     let hour12 = match civil.hour % 12 {
         0 => 12,
         other => other,
     };
-    Some(match token {
-        '%' => "%".to_string(),
-        'd' => pad(civil.day as i64, 2, '0'),
-        'e' => pad(civil.day as i64, 2, ' '),
-        'm' => pad(civil.month as i64, 2, '0'),
-        'N' => pad(civil.month as i64, 2, ' '),
-        'b' | 'h' => MONTHS_ABBREV[(civil.month - 1) as usize].to_string(),
-        'B' => MONTHS_FULL[(civil.month - 1) as usize].to_string(),
-        'y' => pad(civil.year.rem_euclid(100), 2, '0'),
-        'Y' => pad(civil.year, 4, '0'),
-        'C' => pad(civil.year.div_euclid(100), 2, '0'),
-        'H' => pad(civil.hour as i64, 2, '0'),
-        'M' => pad(civil.minute as i64, 2, '0'),
-        'S' => pad(civil.second as i64, 2, '0'),
-        'I' => pad(hour12 as i64, 2, '0'),
-        'k' => pad(civil.hour as i64, 2, ' '),
-        'l' => pad(hour12 as i64, 2, ' '),
-        'p' => if civil.hour < 12 { "AM" } else { "PM" }.to_string(),
-        'P' => if civil.hour < 12 { "am" } else { "pm" }.to_string(),
-        'a' => DAYS_ABBREV[(weekday % 7) as usize].to_string(),
-        'A' => DAYS_FULL[(weekday % 7) as usize].to_string(),
-        'u' => weekday.to_string(),
-        'w' => (weekday % 7).to_string(),
-        'U' => pad(civil.week_of_year(0), 2, '0'),
-        'W' => pad(civil.week_of_year(1), 2, '0'),
-        'V' => pad(civil.iso_week().1, 2, '0'),
-        'g' => pad(civil.iso_week().0.rem_euclid(100), 2, '0'),
-        'G' => pad(civil.iso_week().0, 4, '0'),
-        'j' => pad(civil.day_of_year(), 3, '0'),
-        'J' => pad(civil.julian_day(), 7, '0'),
-        's' => seconds.to_string(),
-        'n' => "\n".to_string(),
-        't' => "\t".to_string(),
-        'z' => offset_text(state.offset),
-        'Z' => state.abbreviation.clone(),
-        _ => return None,
+    Ok(match modifier {
+        // `FmtETokenMap`, whose index is `EJjys` with `C` aliased onto `y`.
+        Some('E') => Some(match token {
+            'E' => if civil.year <= 0 { &cat.bce } else { &cat.ce }.clone(),
+            'J' => julian_fraction(civil.julian_day(), civil.second_of_day(), 0),
+            'j' => julian_fraction(
+                civil.julian_day(),
+                civil.second_of_day(),
+                SECONDS_PER_DAY / 2,
+            ),
+            'y' | 'C' => era_year(token, civil, local, cat),
+            's' => local.to_string(),
+            _ => return Ok(None),
+        }),
+        // `FmtOTokenMap`, whose index is `dmyHIMSuw` with `ekl` aliased onto
+        // `dHI`. Every entry writes its value as a locale numeral.
+        Some('O') => {
+            let value = match token {
+                'd' | 'e' => civil.day as i64,
+                'm' => civil.month as i64,
+                'y' => civil.year.rem_euclid(100),
+                'H' | 'k' => civil.hour as i64,
+                'I' | 'l' => hour12 as i64,
+                'M' => civil.minute as i64,
+                'S' => civil.second as i64,
+                'u' => weekday as i64,
+                'w' => (weekday % 7) as i64,
+                _ => return Ok(None),
+            };
+            Some(indexed(&cat.numerals, value)?)
+        }
+        // `FmtSTokenMap`.
+        _ => Some(match token {
+            '%' => "%".to_string(),
+            'd' => pad(civil.day as i64, 2, '0'),
+            'e' => pad(civil.day as i64, 2, ' '),
+            'm' => pad(civil.month as i64, 2, '0'),
+            'N' => pad(civil.month as i64, 2, ' '),
+            'b' | 'h' => indexed(&cat.months_abbrev, civil.month as i64 - 1)?,
+            'B' => indexed(&cat.months_full, civil.month as i64 - 1)?,
+            'y' => pad(civil.year.rem_euclid(100), 2, '0'),
+            'Y' => pad(civil.year, 4, '0'),
+            'C' => pad(civil.year.div_euclid(100), 2, '0'),
+            'H' => pad(civil.hour as i64, 2, '0'),
+            'M' => pad(civil.minute as i64, 2, '0'),
+            'S' => pad(civil.second as i64, 2, '0'),
+            'I' => pad(hour12 as i64, 2, '0'),
+            'k' => pad(civil.hour as i64, 2, ' '),
+            'l' => pad(hour12 as i64, 2, ' '),
+            // `%p` is the catalogue's word upper-cased and `%P` is the word as
+            // it stands — `ClockFmtToken_AMPM_Proc` reads the same two entries
+            // for both and only `p` calls `Tcl_UtfToUpper`.
+            'p' => meridiem(civil, cat).to_uppercase(),
+            'P' => meridiem(civil, cat).to_string(),
+            'a' => indexed(&cat.days_abbrev, (weekday % 7) as i64)?,
+            'A' => indexed(&cat.days_full, (weekday % 7) as i64)?,
+            'u' => weekday.to_string(),
+            'w' => (weekday % 7).to_string(),
+            'U' => pad(civil.week_of_year(0), 2, '0'),
+            'W' => pad(civil.week_of_year(1), 2, '0'),
+            'V' => pad(civil.iso_week().1, 2, '0'),
+            'g' => pad(civil.iso_week().0.rem_euclid(100), 2, '0'),
+            'G' => pad(civil.iso_week().0, 4, '0'),
+            'j' => pad(civil.day_of_year(), 3, '0'),
+            'J' => pad(civil.julian_day(), 7, '0'),
+            's' => seconds.to_string(),
+            'n' => "\n".to_string(),
+            't' => "\t".to_string(),
+            'z' => offset_text(state.offset),
+            'Z' => state.abbreviation.clone(),
+            'Q' => stardate(civil),
+            _ => return Ok(None),
+        }),
     })
+}
+
+/// One entry of a catalogue list. Past its end tclsh's `Tcl_ListObjIndex`
+/// fails and `ClockFormat` reports that with no message at all — measured:
+/// `clock format 946684800 -format %a -gmt 1 -locale mt` raises an empty error
+/// under `errorCode NONE`, because `mt.msg` ships six weekday abbreviations
+/// and that instant is a Saturday.
+fn indexed(list: &[String], at: i64) -> Result<String, String> {
+    usize::try_from(at)
+        .ok()
+        .and_then(|i| list.get(i))
+        .cloned()
+        .ok_or_else(String::new)
+}
+
+/// The catalogue's `AM` or `PM` word for this time of day.
+fn meridiem<'c>(civil: &Civil, cat: &'c Catalog) -> &'c str {
+    if civil.hour < 12 {
+        &cat.am
+    } else {
+        &cat.pm
+    }
+}
+
+/// `%EC` and `%Ey` — `ClockFmtToken_LocaleERAYear_Proc`. With no era covering
+/// the instant the two are the century and the year within it; with one they
+/// are the era's name and the year counted from the era's own epoch, that year
+/// written as a locale numeral while it fits in two digits.
+fn era_year(token: char, civil: &Civil, local: i64, cat: &Catalog) -> String {
+    let Some(era) = cat.era_at(local) else {
+        return if token == 'C' {
+            pad(civil.year.div_euclid(100), 2, '0')
+        } else {
+            pad(civil.year.rem_euclid(100), 2, '0')
+        };
+    };
+    if token == 'C' {
+        return era.name.clone();
+    }
+    let year = civil.year - era.year;
+    match usize::try_from(year).ok().and_then(|y| cat.numerals.get(y)) {
+        Some(numeral) => numeral.clone(),
+        None => pad(year, 2, '0'),
+    }
+}
+
+/// `%EJ` and `%Ej` — `ClockFmtToken_JDN_Proc`. The Julian day with the time of
+/// day as a fraction, `offset` being the moment the day is reckoned from:
+/// midnight for the calendar day number and noon for the astronomical one.
+fn julian_fraction(julian_day: i64, second_of_day: i64, offset: i64) -> String {
+    let mut day = julian_day;
+    let mut fraction = second_of_day - offset;
+    if fraction < 0 {
+        day -= 1;
+        fraction += SECONDS_PER_DAY;
+    }
+    let mut sign = "";
+    if fraction != 0 && day < 0 {
+        // Stepping the integer part towards zero would lose the sign of a
+        // day that rounds to `-0`, so the sign is written out instead.
+        day += 1;
+        if day == 0 {
+            sign = "-";
+        }
+        fraction = SECONDS_PER_DAY - fraction;
+    }
+    if fraction == 0 || fraction == SECONDS_PER_DAY / 2 {
+        let half = if fraction == 0 { '0' } else { '5' };
+        return format!("{sign}{day}.{half}");
+    }
+    // Eight digits, rounded, with the trailing zeroes cut.
+    let scaled = (fraction as f64 * 100_000_000.0 / SECONDS_PER_DAY as f64 + 0.5) as i64;
+    let digits = pad(scaled, 8, '0');
+    format!("{sign}{day}.{}", digits.trim_end_matches('0'))
+}
+
+/// `%Q` — `ClockFmtToken_StarDate_Proc`, whose epoch is 1946.
+fn stardate(civil: &Civil) -> String {
+    let day = civil.day_of_year() - 1;
+    let year_length = if is_leap(civil.year) { 366 } else { 365 };
+    let fraction_of_year = 1000 * day / year_length;
+    let tenth = civil.second_of_day() / (SECONDS_PER_DAY / 10);
+    format!(
+        "Stardate {}{}.{}",
+        pad(civil.year - 1946, 2, '0'),
+        pad(fraction_of_year, 3, '0'),
+        pad(if tenth < 0 { 10 + tenth } else { tenth }, 1, '0')
+    )
 }
 
 // ── scanning ─────────────────────────────────────────────────────────────
@@ -732,6 +904,9 @@ struct Scanned {
     hour_is_12: bool,
     epoch: Option<i64>,
     offset: Option<i32>,
+    /// The weekday the input named, 1 for Monday through 7 for Sunday. tclsh
+    /// checks it against the date rather than ignoring it.
+    weekday: Option<u32>,
 }
 
 fn no_match() -> String {
@@ -749,12 +924,73 @@ fn take_digits(text: &[char], at: &mut usize, max: usize) -> Option<i64> {
     (*at != start).then_some(value)
 }
 
+/// Lower-case one character, one for one — `Tcl_UtfToLower`, which the index
+/// tree's keys and the input are both put through. A folding that expanded a
+/// character into two would move the input position off the character it
+/// matched, so only the first is taken.
+fn lower(c: char) -> char {
+    c.to_lowercase().next().unwrap_or(c)
+}
+
+/// Match the leading run of the input that names exactly one of the tables'
+/// entries, where the tables share an index space — `TclStrIdxTreeSearch` over
+/// the radix trie `ClockMCGetMultiListIdxTree` builds from the abbreviated and
+/// the full list together (`generic/tclStrIdxTree.c:91`). A node a split
+/// created carries a value only when its whole subtree agrees on one, so the
+/// search reads as far as the input keeps matching some entry and answers only
+/// if everything still matching means the same thing.
+///
+/// A name may therefore be abbreviated as far as it stays unique. Measured
+/// against tclsh: `clock scan "13 f 2009" -format {%d %b %Y} -locale fr` is
+/// February, because `févr.` is the only French month beginning with `f`;
+/// `j` is refused because `janv.`, `juin` and `juil.` all do, and `ju` because
+/// two still do. `Marc` is March, one character short of the full name.
+fn take_prefix(text: &[char], at: &mut usize, tables: &[&[String]]) -> Option<usize> {
+    let matches = |entry: &str, len: usize| {
+        entry.chars().count() >= len
+            && entry
+                .chars()
+                .take(len)
+                .enumerate()
+                .all(|(i, e)| text.get(*at + i).is_some_and(|&c| lower(c) == lower(e)))
+    };
+    // How far the input goes on matching some entry, which is where the walk
+    // through the tree stops.
+    let mut len = 0;
+    for entry in tables.iter().flat_map(|t| t.iter()) {
+        let reached = entry
+            .chars()
+            .enumerate()
+            .take_while(|(i, e)| text.get(*at + i).is_some_and(|&c| lower(c) == lower(*e)))
+            .count();
+        len = len.max(reached);
+    }
+    if len == 0 {
+        return None;
+    }
+    // Everything still matching there has to mean one thing.
+    let mut value = None;
+    for table in tables {
+        for (index, entry) in table.iter().enumerate() {
+            if !matches(entry, len) {
+                continue;
+            }
+            if value.is_some_and(|found| found != index) {
+                return None;
+            }
+            value = Some(index);
+        }
+    }
+    *at += len;
+    value
+}
+
 /// Match one of a table's entries case-insensitively, longest first so that
 /// `January` is not read as `Jan` with `uary` left over.
-fn take_name(text: &[char], at: &mut usize, table: &[&str]) -> Option<usize> {
+fn take_name<S: AsRef<str>>(text: &[char], at: &mut usize, table: &[S]) -> Option<usize> {
     let mut best: Option<(usize, usize)> = None;
     for (i, name) in table.iter().enumerate() {
-        let chars: Vec<char> = name.chars().collect();
+        let chars: Vec<char> = name.as_ref().chars().collect();
         if text.len() - *at >= chars.len()
             && text[*at..*at + chars.len()]
                 .iter()
@@ -774,9 +1010,9 @@ fn take_name(text: &[char], at: &mut usize, table: &[&str]) -> Option<usize> {
 /// `%l` do, and tclsh's scanner skips space ahead of every numeric field.
 const NUMERIC_TOKENS: &str = "deEmNyYCHkIlMSjsUWVGgu w";
 
-fn scan_time(input: &str, format: &str, zone: &Zone) -> Result<i64, String> {
+fn scan_time(input: &str, format: &str, zone: &Zone, cat: &Catalog) -> Result<i64, String> {
     let text: Vec<char> = input.chars().collect();
-    let pattern: Vec<char> = localize(format).chars().collect();
+    let pattern: Vec<char> = localize(format, cat).chars().collect();
     let mut got = Scanned::default();
     let mut at = 0usize;
     let mut p = 0usize;
@@ -826,15 +1062,17 @@ fn scan_time(input: &str, format: &str, zone: &Zone) -> Result<i64, String> {
             'd' | 'e' => got.day = Some(digits(&mut at, 2)? as u32),
             'm' | 'N' => got.month = Some(digits(&mut at, 2)? as u32),
             'b' | 'h' | 'B' => {
-                let index = take_name(&text, &mut at, &MONTHS_FULL)
-                    .or_else(|| take_name(&text, &mut at, &MONTHS_ABBREV))
+                let index = take_prefix(&text, &mut at, &[&cat.months_full, &cat.months_abbrev])
                     .ok_or_else(no_match)?;
                 got.month = Some(index as u32 + 1);
             }
             'a' | 'A' => {
-                take_name(&text, &mut at, &DAYS_FULL)
-                    .or_else(|| take_name(&text, &mut at, &DAYS_ABBREV))
+                // The list is Sunday-first and `dayOfWeek` is Monday-first, so
+                // `ClockScnToken_DayOfWeek_Proc` decrements the 1-based index
+                // it gets and reads a resulting 0 as 7.
+                let index = take_prefix(&text, &mut at, &[&cat.days_full, &cat.days_abbrev])
                     .ok_or_else(no_match)?;
+                got.weekday = Some(if index == 0 { 7 } else { index as u32 });
             }
             'y' => got.year_in_century = Some(digits(&mut at, 2)?),
             'Y' => got.year = Some(digits(&mut at, 4)?),
@@ -848,7 +1086,8 @@ fn scan_time(input: &str, format: &str, zone: &Zone) -> Result<i64, String> {
             'S' => got.second = Some(digits(&mut at, 2)? as u32),
             'j' => got.day_of_year = Some(digits(&mut at, 3)?),
             'p' | 'P' => {
-                let index = take_name(&text, &mut at, &["AM", "PM"]).ok_or_else(no_match)?;
+                let index = take_prefix(&text, &mut at, &[&[cat.am.clone(), cat.pm.clone()]])
+                    .ok_or_else(no_match)?;
                 got.pm = Some(index == 1);
             }
             's' => {
@@ -859,10 +1098,14 @@ fn scan_time(input: &str, format: &str, zone: &Zone) -> Result<i64, String> {
                 let value = digits(&mut at, 19)?;
                 got.epoch = Some(if negative { -value } else { value });
             }
-            // Read and discarded: the day of the week is implied by the date,
-            // and tclsh's scanner also lets a wrong one through.
             'u' | 'w' => {
-                digits(&mut at, 1)?;
+                let day = digits(&mut at, 1)?;
+                if day > 7 {
+                    return Err("day of week is greater than 7".to_string());
+                }
+                // `%w` numbers Sunday 0 and `%u` numbers it 7; both reach
+                // `dayOfWeek` through the same `if (val == 0) val = 7`.
+                got.weekday = Some(if day == 0 { 7 } else { day as u32 });
             }
             'U' | 'W' | 'V' => {
                 digits(&mut at, 2)?;
@@ -957,6 +1200,16 @@ fn assemble(got: Scanned, zone: &Zone) -> Result<i64, String> {
             days_from_civil(year, month, day)
         }
     };
+    // A weekday in the input is checked against the date, not ignored — but
+    // only once the date stands on its own. With a year and no day tclsh reads
+    // the weekday as *choosing* the day, which needs the base date this
+    // frontend does not carry yet.
+    if let Some(named) = got.weekday {
+        let dated_day = dated && (got.day.is_some() || got.day_of_year.is_some());
+        if dated_day && civil_of(days * 86400).iso_weekday() != named {
+            return Err("unable to convert input string: invalid day of week".to_string());
+        }
+    }
     let local = days * 86400
         + hour as i64 * 3600
         + got.minute.unwrap_or(0) as i64 * 60
@@ -1059,9 +1312,19 @@ struct Options {
     gmt: Option<bool>,
     timezone: Option<String>,
     base: Option<i64>,
+    locale: Option<String>,
 }
 
 impl Options {
+    /// The message catalogue `-locale` asks for. With no `-locale` the answer
+    /// is the current locale, which `::tcl::clock::EnterLocale` reads from
+    /// `mclocale` and msgcat initialises from the environment — so an
+    /// unadorned `clock format` answers in the caller's language, as tclsh's
+    /// does.
+    fn catalog(&self) -> Result<Arc<Catalog>, String> {
+        crate::clock_locale::enter(self.locale.as_deref().unwrap_or("current"))
+    }
+
     /// Resolve the zone the options ask for.
     fn zone(&self) -> Result<Zone, String> {
         if self.gmt.is_some() && self.timezone.is_some() {
@@ -1083,6 +1346,7 @@ fn options(words: &[Value], allowed: &[&str], usage: &str) -> Result<Options, St
         gmt: None,
         timezone: None,
         base: None,
+        locale: None,
     };
     let mut i = 0;
     while i < words.len() {
@@ -1101,19 +1365,11 @@ fn options(words: &[Value], allowed: &[&str], usage: &str) -> Result<Options, St
             "-gmt" => out.gmt = Some(crate::runtime::tcl_bool(value)?),
             "-timezone" => out.timezone = Some(to_tcl_string(value)),
             "-base" => out.base = Some(seconds_of(value)?),
-            // The locale decides the month and day names, the AM/PM words and
-            // the `%c`/`%x`/`%X` expansions; only the root catalogue is here.
-            "-locale" => {
-                let locale = to_tcl_string(value);
-                if !matches!(
-                    locale.to_ascii_lowercase().as_str(),
-                    "" | "c" | "posix" | "current" | "system"
-                ) {
-                    return Err(format!(
-                        "clock: the locale \"{locale}\" is not supported yet; only the root locale is built in"
-                    ));
-                }
-            }
+            // The locale decides the month and day names, the AM/PM and era
+            // words, the `%c`/`%x`/`%X` expansions, the digits `%O…` writes
+            // and the Gregorian changeover. Every name resolves: one with no
+            // catalogue anywhere in its fallback chain is the root locale.
+            "-locale" => out.locale = Some(to_tcl_string(value)),
             _ => unreachable!("the option table and this match are one list"),
         }
         i += 2;
@@ -1203,7 +1459,10 @@ fn run_format(words: &[Value]) -> Result<Value, String> {
     )?;
     let zone = opts.zone()?;
     let format = opts.format.as_deref().unwrap_or(DEFAULT_FORMAT);
-    Ok(Value::Str(Arc::new(format_time(seconds, format, &zone)?)))
+    let cat = opts.catalog()?;
+    Ok(Value::Str(Arc::new(format_time(
+        seconds, format, &zone, &cat,
+    )?)))
 }
 
 fn run_scan(words: &[Value]) -> Result<Value, String> {
@@ -1224,7 +1483,13 @@ fn run_scan(words: &[Value]) -> Result<Value, String> {
             "clock scan: the free-form parser is not supported yet; use -format".to_string(),
         );
     };
-    Ok(Value::Int(scan_time(&to_tcl_string(input), format, &zone)?))
+    let cat = opts.catalog()?;
+    Ok(Value::Int(scan_time(
+        &to_tcl_string(input),
+        format,
+        &zone,
+        &cat,
+    )?))
 }
 
 fn run_add(words: &[Value]) -> Result<Value, String> {
@@ -1289,9 +1554,11 @@ mod tests {
     #[test]
     fn a_known_instant_formats() {
         let utc = Zone::fixed(0, "GMT");
-        let out = format_time(1234567890, DEFAULT_FORMAT, &utc).expect("formats");
+        let out =
+            format_time(1234567890, DEFAULT_FORMAT, &utc, &Catalog::default()).expect("formats");
         assert_eq!(out, "Fri Feb 13 23:31:30 GMT 2009");
-        let iso = format_time(1234567890, "%G-W%V-%u %j %U %W", &utc).expect("formats");
+        let iso = format_time(1234567890, "%G-W%V-%u %j %U %W", &utc, &Catalog::default())
+            .expect("formats");
         assert_eq!(iso, "2009-W07-5 044 06 06");
     }
 
@@ -1300,7 +1567,7 @@ mod tests {
     #[test]
     fn early_dates_are_refused() {
         let utc = Zone::fixed(0, "GMT");
-        let err = format_time(EARLIEST - 1, "%Y", &utc).expect_err("refused");
+        let err = format_time(EARLIEST - 1, "%Y", &utc, &Catalog::default()).expect_err("refused");
         assert!(err.contains("Gregorian changeover"), "{err}");
     }
 

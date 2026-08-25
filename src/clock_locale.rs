@@ -220,33 +220,90 @@ pub fn system_locale() -> String {
 /// in its chain is the root locale, which is why `clock format … -locale zz`
 /// answers in English rather than failing.
 pub fn catalog(locale: &str) -> Catalog {
+    resolve(locale).0
+}
+
+/// The catalogue and, when one of the files in the chain would not parse, the
+/// message Tcl's parser stops with.
+fn resolve(locale: &str) -> (Catalog, Option<&'static str>) {
     let name = match locale.to_lowercase().as_str() {
         "system" | "current" => system_locale(),
         _ => locale.to_string(),
     };
     let chain = preferences(&name);
     let mut merged = Catalog::default();
+    let mut broken = None;
     // The chain arrives most-specific-first; merging runs the other way so a
     // derived locale overwrites what it inherited.
     for step in chain.iter().rev() {
-        apply(&mut merged, step);
+        broken = apply(&mut merged, step).or(broken);
     }
     // `L` is the locale that was asked for, not the last one that had
     // something to say — `mcMerge` sets it on the branch where the catalogue
     // is missing too.
     merged.name = chain[0].clone();
-    merged
+    (merged, broken)
 }
 
-/// Merge one locale's own settings into `into`.
-fn apply(into: &mut Catalog, locale: &str) {
+thread_local! {
+    /// `::tcl::clock::mcMergedCat`: a merged catalogue per locale name, so a
+    /// `clock format` in a loop reads the `.msg` text once rather than once a
+    /// call. Keyed by the word the script wrote, since `system` and `current`
+    /// resolve through the environment.
+    static MERGED: std::cell::RefCell<std::collections::HashMap<String, std::sync::Arc<Catalog>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// The catalogue files whose parse error has already been raised once, so
+    /// it is not raised again — see [`enter`].
+    static REPORTED: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// The catalogue a command should use, or the error loading it raises.
+///
+/// `::tcl::clock::EnterLocale` calls `mcpackagelocale set`, which `source`s the
+/// `.msg` files of the chain that are not loaded yet — so a file that is not
+/// valid Tcl fails the *first* command that asks for it and no later one, the
+/// locale being marked loaded either way. `he.msg` is such a file. Measured, in
+/// one tclsh: `clock format 0 -format %c -locale he` raises `extra characters
+/// after close-quote`, and the identical command right after it answers.
+pub fn enter(locale: &str) -> Result<std::sync::Arc<Catalog>, String> {
+    let built = cached(locale);
+    let broken = resolve(locale).1;
+    if let Some(message) = broken {
+        let first = REPORTED.with(|seen| seen.borrow_mut().insert(built.name.clone()));
+        if first {
+            return Err(message.to_string());
+        }
+    }
+    Ok(built)
+}
+
+/// [`catalog`], memoised. The catalogues are immutable — a script cannot add
+/// one — so a merge can be shared rather than repeated.
+pub fn cached(locale: &str) -> std::sync::Arc<Catalog> {
+    MERGED.with(|merged| {
+        if let Some(hit) = merged.borrow().get(locale) {
+            return hit.clone();
+        }
+        let built = std::sync::Arc::new(catalog(locale));
+        merged
+            .borrow_mut()
+            .insert(locale.to_string(), built.clone());
+        built
+    })
+}
+
+/// Merge one locale's own settings into `into`, reporting the parse error if
+/// its file has one.
+fn apply(into: &mut Catalog, locale: &str) -> Option<&'static str> {
     // `clock.tcl` sets these after loading the catalogue files, so they are
     // applied first and a file of the same locale can still override them.
     if let Some((_, date)) = CHANGE_DATES.iter().find(|(name, _)| *name == locale) {
         into.gregorian_change_date = *date;
     }
-    if let Ok(at) = CATALOGUES.binary_search_by(|(name, _)| (*name).cmp(locale)) {
-        read_catalogue(into, CATALOGUES[at].1);
+    match CATALOGUES.binary_search_by(|(name, _)| (*name).cmp(locale)) {
+        Ok(at) => read_catalogue(into, CATALOGUES[at].1),
+        Err(_) => None,
     }
 }
 
@@ -259,7 +316,15 @@ fn apply(into: &mut Catalog, locale: &str) {
 /// lines do not all have one of those shapes, so a release that changed the
 /// shape fails there — loudly, at the point the data enters the tree — instead
 /// of here.
-fn read_catalogue(into: &mut Catalog, text: &str) {
+///
+/// One shipped catalogue is not valid Tcl. `he.msg` writes its era words with
+/// an unescaped quote inside the quoted word, so `source`ing it stops there
+/// with `extra characters after close-quote` and every `mcset` below that line
+/// never runs — measured: `clock format 1234567890 -format %x -locale he`
+/// answers `02/13/2009`, the root locale's order, though `he.msg` sets
+/// `DATE_FORMAT "%d/%m/%Y"` four lines further down. Reading stops at the same
+/// place here, so the same keys are missing.
+fn read_catalogue(into: &mut Catalog, text: &str) -> Option<&'static str> {
     let mut lines = text.lines().peekable();
     while let Some(line) = lines.next() {
         let Some(rest) = line.trim_start().strip_prefix("::msgcat::mcset ") else {
@@ -271,9 +336,11 @@ fn read_catalogue(into: &mut Catalog, text: &str) {
             continue;
         };
         let value = value.trim();
-        let value = if let Some(head) = value.strip_prefix("[list") {
-            // A list continued with `\` until a line ends in `]`.
-            let mut collected = head.to_string();
+        let value = if value.starts_with("[list") {
+            // A list continued with `\` until a line ends in `]`. The `[list`
+            // stays on the front: it is how [`elements`] tells this shape from
+            // a single quoted word that is itself a list.
+            let mut collected = value.to_string();
             if !collected.trim_end().ends_with(']') {
                 for more in lines.by_ref() {
                     collected.push(' ');
@@ -285,21 +352,29 @@ fn read_catalogue(into: &mut Catalog, text: &str) {
             }
             collected
         } else {
+            // A quoted word whose text carries another quote is where Tcl's
+            // parser stops, and nothing below it in the file is read.
+            if let Some(inner) = value.strip_prefix('"') {
+                if !inner.ends_with('"') || inner[..inner.len() - 1].contains('"') {
+                    return Some("extra characters after close-quote");
+                }
+            }
             value.to_string()
         };
         set(into, key, &value);
     }
+    None
 }
 
 /// One catalogue entry. `raw` is the value as the file wrote it: a `"…"` word,
 /// a run of `"…"` words from a `[list …]`, or a bare number.
 fn set(into: &mut Catalog, key: &str, raw: &str) {
     match key {
-        "MONTHS_FULL" => into.months_full = quoted_words(raw),
-        "MONTHS_ABBREV" => into.months_abbrev = quoted_words(raw),
-        "DAYS_OF_WEEK_FULL" => into.days_full = quoted_words(raw),
-        "DAYS_OF_WEEK_ABBREV" => into.days_abbrev = quoted_words(raw),
-        "LOCALE_NUMERALS" => into.numerals = quoted_words(raw),
+        "MONTHS_FULL" => into.months_full = elements(raw),
+        "MONTHS_ABBREV" => into.months_abbrev = elements(raw),
+        "DAYS_OF_WEEK_FULL" => into.days_full = elements(raw),
+        "DAYS_OF_WEEK_ABBREV" => into.days_abbrev = elements(raw),
+        "LOCALE_NUMERALS" => into.numerals = elements(raw),
         "AM" => into.am = unquote(raw),
         "PM" => into.pm = unquote(raw),
         "BCE" => into.bce = unquote(raw),
@@ -337,6 +412,18 @@ fn unquote(raw: &str) -> String {
         .and_then(|rest| rest.strip_suffix('"'))
         .unwrap_or(trimmed)
         .to_string()
+}
+
+/// A list-valued entry, as its elements. The catalogues write one of two
+/// shapes and they are not interchangeable: `[list "a" "b" …]`, whose elements
+/// are the quoted words, and a single quoted word that is itself a list —
+/// `zh.msg`'s `LOCALE_NUMERALS "〇 一 二 …"`, which is a hundred elements and
+/// not one.
+fn elements(raw: &str) -> Vec<String> {
+    if raw.trim_start().starts_with("[list") {
+        return quoted_words(raw);
+    }
+    crate::list::split(&unquote(raw)).unwrap_or_default()
 }
 
 /// The `"a"\ "b"\ … "z"]` body of a `[list …]`, as its elements.
@@ -397,7 +484,10 @@ mod tests {
     #[test]
     fn a_chain_runs_from_the_name_to_the_root() {
         assert_eq!(preferences("de_DE"), ["de_de", "de", ""]);
-        assert_eq!(preferences("en_US_roman"), ["en_us_roman", "en_us", "en", ""]);
+        assert_eq!(
+            preferences("en_US_roman"),
+            ["en_us_roman", "en_us", "en", ""]
+        );
         assert_eq!(preferences(""), [""]);
     }
 
@@ -449,9 +539,26 @@ mod tests {
     }
 
     #[test]
+    fn a_list_written_as_one_quoted_word_is_still_a_list() {
+        // `zh.msg` writes LOCALE_NUMERALS as a single quoted word rather than
+        // a `[list …]`, and it is a hundred elements. Measured:
+        // `llength [dict get [::tcl::clock::mcget zh] LOCALE_NUMERALS]` is 100
+        // and `lindex … 0` is 〇.
+        let chinese = catalog("zh");
+        assert_eq!(chinese.numerals.len(), 100);
+        assert_eq!(chinese.numerals[0], "〇");
+        assert_eq!(chinese.numerals[21], "廿一");
+        // and the `[list …]` shape still reads as its words.
+        assert_eq!(catalog("de").months_abbrev[2], "Mrz");
+    }
+
+    #[test]
     fn a_codeset_and_a_modifier_are_dropped() {
         assert_eq!(convert_locale("de_DE.UTF-8"), Some("de_DE".to_string()));
-        assert_eq!(convert_locale("sr_RS@latin"), Some("sr_RS_latin".to_string()));
+        assert_eq!(
+            convert_locale("sr_RS@latin"),
+            Some("sr_RS_latin".to_string())
+        );
         assert_eq!(convert_locale(".UTF-8"), None);
     }
 }

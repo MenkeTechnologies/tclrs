@@ -100,6 +100,76 @@ const PROGRAMS: &[&str] = &[
     "set now [clock seconds]\nputs [expr {[clock scan [clock format $now -gmt 1 -format {%Y-%m-%d %H:%M:%S}] -format {%Y-%m-%d %H:%M:%S} -gmt 1] == $now}]",
 ];
 
+/// `-locale`: the message catalogue, the `%E`/`%O` token maps and the
+/// locale-dependent format groups.
+///
+/// One program per locale-sensitive behaviour rather than per locale, since
+/// the whole shipped catalogue set is swept in a single program below. These
+/// run in one tclrs process while each reaches tclsh as its own, so a
+/// behaviour that fires only on a locale's first use appears exactly once
+/// here — see the `he` program.
+const LOCALE_PROGRAMS: &[&str] = &[
+    // The names, words and format groups a locale supplies.
+    "foreach l {de fr es ja zh ru it pt nl sv pl tr ko} {puts [clock format 1234567890 -gmt 1 -locale $l -format {%a|%A|%b|%B|%p|%P}]}",
+    "foreach l {de fr es ja zh ru en_GB en_US it} {puts [clock format 1234567890 -gmt 1 -locale $l -format {%x|%X|%c|%r|%D|%T|%R|%+}]}",
+    "foreach l {de fr ja zh ru} {puts [clock format 1234567890 -gmt 1 -locale $l -format {%Ex|%EX|%Ec|%EY}]}",
+    // A locale inherits from its language, and a name with no catalogue
+    // anywhere in its chain is the root locale rather than an error.
+    "foreach l {es_BO es_AR de_AT de_CH fr_CA pt_BR zz_ZZ qqq xx_YY_zz {}} {puts [clock format 1234567890 -gmt 1 -locale $l -format {%B|%x|%A}]}",
+    // `system` and `current` name the same catalogue, and a codeset or a
+    // modifier on the name is dropped.
+    "foreach l {system current C POSIX de_DE.UTF-8 sr_RS@latin} {puts [clock format 1234567890 -gmt 1 -locale $l -format {%B %x}]}",
+    // The era tokens, in a locale that has eras and in one that has none.
+    "foreach t {-1000000000 0 600220800 1234567890 1556668800 1600000000} {puts [clock format $t -gmt 1 -locale ja -format {%EE|%EC|%Ey|%EY}]}",
+    "foreach t {-1000000000 0 1234567890} {puts [clock format $t -gmt 1 -locale en_US -format {%EE|%EC|%Ey|%EY}]}",
+    // The locale numerals `%O…` writes, in the one locale that supplies its
+    // own and in one that inherits the root's digits.
+    "foreach t {0 1234567890 946684800} {puts [clock format $t -gmt 1 -locale zh -format {%Od|%Oe|%Om|%Oy|%OH|%Ok|%OI|%Ol|%OM|%OS|%Ou|%Ow}]}",
+    "foreach t {0 1234567890} {puts [clock format $t -gmt 1 -locale de -format {%Od|%Om|%Oy|%OH|%OM|%OS|%Ou|%Ow}]}",
+    // The Julian day tokens and the stardate, which no locale changes but
+    // which only `%E` reaches.
+    "foreach t {0 1 43199 43200 43201 86399 1234567890 -6857222400 -6857136000} {puts [clock format $t -gmt 1 -format {%EJ|%Ej|%Es|%Q}]}",
+    // A group whose token is in neither map keeps its percent, its modifier
+    // and all.
+    "puts [clock format 1234567890 -gmt 1 -format {%EQ|%Oq|%F|%i|%E|%O|%}]",
+    // The changeover is the same for every locale: Tcl 9 formats from the
+    // compile-time date and never reads the catalogue's, so the locales that
+    // set a later one still answer Gregorian above it.
+    "foreach l {en it ru el {}} {puts [clock format -6857222400 -gmt 1 -locale $l -format {%Y-%m-%d}]}",
+    // `mt.msg` ships six weekday abbreviations, so `%a` on a Saturday indexes
+    // past the end of the list and tclsh reports that with no message at all.
+    "puts [catch {clock format 946684800 -gmt 1 -locale mt -format %a} m]\nputs [list $m]\nputs [clock format 0 -gmt 1 -locale mt -format %a]",
+    // `he.msg` is not valid Tcl — its era words carry an unescaped quote — so
+    // sourcing it stops there. The first command to ask for the locale raises
+    // the parser's message and the next one answers, with every key below the
+    // bad line missing. This is the only `he` program in the file: the
+    // behaviour fires once per process and tclrs runs them all in one.
+    "puts [catch {clock format 0 -gmt 1 -locale he -format %c} m]\nputs $m\nputs [clock format 1234567890 -gmt 1 -locale he -format {%x|%B|%EE}]",
+    // Scanning reads the locale's names and its AM/PM words too.
+    "puts [clock scan {13 Februar 2009} -format {%d %B %Y} -gmt 1 -locale de]",
+    "puts [clock scan {13 fév 2009} -format {%d %b %Y} -gmt 1 -locale fr]",
+    "puts [clock scan {2009-02-13 11:31:30 nachm.} -format {%Y-%m-%d %I:%M:%S %P} -gmt 1 -locale de]",
+    "puts [clock scan {13.02.2009} -format %x -gmt 1 -locale de]",
+    "puts [catch {clock scan {13 February 2009} -format {%d %B %Y} -gmt 1 -locale de} m]\nputs $m",
+    // A name may be abbreviated as far as it stays unique, and no further.
+    "foreach s {f fé fév févr {févr.} février FÉV ja jan janv juin juil mar mars mai} {puts [clock scan \"13 $s 2009\" -format {%d %b %Y} -gmt 1 -locale fr]}",
+    "foreach s {j ju jui m ma} {puts [catch {clock scan \"13 $s 2009\" -format {%d %b %Y} -gmt 1 -locale fr} m]\nputs $m}",
+    "foreach s {Ja Jan January F Fe Feb Febr February Marc Sep Sept September} {puts [clock scan \"13 $s 2009\" -format {%d %b %Y} -gmt 1]}",
+    "foreach s {J M} {puts [catch {clock scan \"13 $s 2009\" -format {%d %b %Y} -gmt 1} m]\nputs $m}",
+    "foreach s {F Fr Fri Frid Friday} {puts [clock scan \"$s 13 Feb 2009\" -format {%a %d %b %Y} -gmt 1]}",
+    "foreach s {a am AM p pm PM} {puts [clock scan \"2009-02-13 11:31:30 $s\" -format {%Y-%m-%d %I:%M:%S %P} -gmt 1]}",
+    "foreach s {n nachm vorm} {puts [clock scan \"2009-02-13 11:31:30 $s\" -format {%Y-%m-%d %I:%M:%S %P} -gmt 1 -locale de]}",
+    "foreach s {a am p pm} {puts [catch {clock scan \"2009-02-13 11:31:30 $s\" -format {%Y-%m-%d %I:%M:%S %P} -gmt 1 -locale de} m]\nputs $m}",
+    // A weekday in the input is checked against the date rather than ignored,
+    // and `%w`'s Sunday 0 and `%u`'s Sunday 7 are the same day.
+    "foreach {f s} {{%a %d %b %Y} {Fri 13 Feb 2009} {%u %d %b %Y} {5 13 Feb 2009} {%w %d %b %Y} {5 13 Feb 2009} {%A %d %b %Y} {Friday 13 Feb 2009} {%a %Y-%j} {Fri 2009-044}} {puts [clock scan $s -format $f -gmt 1]}",
+    "foreach {f s} {{%a %d %b %Y} {Sat 13 Feb 2009} {%u %d %b %Y} {6 13 Feb 2009} {%w %d %b %Y} {6 13 Feb 2009} {%u %d %b %Y} {0 13 Feb 2009} {%u %d %b %Y} {7 13 Feb 2009} {%w %d %b %Y} {0 13 Feb 2009} {%A %d %b %Y} {Saturday 13 Feb 2009} {%a %Y-%j} {Sat 2009-044} {%u %d %b %Y} {9 13 Feb 2009}} {puts [catch {clock scan $s -format $f -gmt 1} m]\nputs $m}",
+    "foreach {f s} {{%a %d %b %Y} {Fr 13 Feb 2009} {%a %d %b %Y} {Freitag 13 Feb 2009}} {puts [clock scan $s -format $f -gmt 1 -locale de]}",
+    // The same catalogue read twice answers the same, which is what the
+    // memoised merge has to preserve.
+    "foreach i {1 2 3} {puts [clock format 1234567890 -gmt 1 -locale de_AT -format {%B %x %A}]}",
+];
+
 /// Programs that need a zone file from the system's `tzdata`.
 const ZONE_PROGRAMS: &[&str] = &[
     "foreach t {1234567890 0 1000000000 1609459200 4102444800} {puts [clock format $t -format {%Y-%m-%dT%H:%M:%S %Z %z} -timezone :America/New_York]}",
@@ -182,6 +252,48 @@ fn clock_matches_tclsh() {
         return;
     };
     compare(&tclsh, PROGRAMS);
+}
+
+#[test]
+fn locales_match_tclsh() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    compare(&tclsh, LOCALE_PROGRAMS);
+}
+
+/// Every catalogue the release ships, over instants spread across the year and
+/// either side of the epoch, against every token group. This is the sweep that
+/// would catch a catalogue read one field out; the programs above are the ones
+/// that say what each behaviour is.
+#[test]
+fn every_shipped_locale_matches_tclsh() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh on PATH");
+        return;
+    };
+    // `he` is left out: its first use raises the parser's error and its later
+    // ones do not, so a sweep that reaches it in one tclrs process cannot line
+    // up with tclsh's one process per program. The program above covers it.
+    let program = "\
+set locales [list af_za af ar_in ar_jo ar_lb ar_sy ar be bg bn_in bn ca cs da de_at de_be de el \
+en_au en_be en_bw en_ca en_gb en_hk en_ie en_in en_nz en_ph en_sg en_za en_zw eo es_ar es_bo \
+es_cl es_co es_cr es_do es_ec es_gt es_hn es_mx es_ni es_pa es_pe es_pr es_py es_sv es_uy es_ve \
+es et eu_es eu fa_in fa_ir fa fi fo_fo fo fr_be fr_ca fr_ch fr ga_ie ga gl_es gl gv_gb gv hi_in \
+hi hr hu id_id id is it_ch it ja kl_gl kl ko_kr ko kok_in kok kw_gb kw lt lv mk mr_in mr ms_my \
+ms mt nb nl_be nl nn pl pt_br pt ro ru_ua ru sh sk sl sq sr sv sw ta_in ta te_in te th tr uk vi \
+zh_cn zh_hk zh_sg zh_tw zh]
+foreach loc $locales {
+  foreach t {0 1234567890 987654321 -100000000 946684800 1600000000} {
+    foreach f {{%a %A %b %B %p %P %x %X %c %r} {%EE %EY %Ey %EC %EJ %Ej %Es} \\
+               {%Od %Oe %Om %Oy %OH %Ok %OI %Ol %OM %OS %Ou %Ow} {%Ex %EX %Ec %D %T %R %+}} {
+      if {[catch {clock format $t -format $f -gmt 1 -locale $loc} r]} { set r \"ERR: $r\" }
+      puts \"$loc|$t|$f => $r\"
+    }
+  }
+}";
+    compare(&tclsh, &[program]);
 }
 
 #[test]
