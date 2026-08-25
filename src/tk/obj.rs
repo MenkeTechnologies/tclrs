@@ -602,7 +602,9 @@ pub unsafe fn to_value(obj: *mut TclObj) -> Value {
     }
     if objtype::is_list(ty) {
         let elems = objtype::list_of(obj).elems.clone();
-        return Value::Array(elems.into_iter().map(|e| to_value(e)).collect());
+        return Value::Array(std::sync::Arc::new(
+            elems.into_iter().map(|e| to_value(e)).collect(),
+        ));
     }
     if objtype::is_dict(ty) {
         let pairs = objtype::dict_of(obj).pairs.clone();

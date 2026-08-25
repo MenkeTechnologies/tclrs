@@ -621,10 +621,10 @@ fn values_round_trip_through_the_shadow_object() {
             Value::Bool(true),
             Value::Bool(false),
             Value::Str(std::sync::Arc::new("hello world".to_string())),
-            Value::Array(vec![
+            Value::Array(std::sync::Arc::new(vec![
                 Value::Int(1),
                 Value::Str(std::sync::Arc::new("two".into())),
-            ]),
+            ])),
         ];
         for want in cases {
             let o = obj::from_value(&want);
@@ -652,10 +652,10 @@ fn the_bridge_gives_every_value_a_string_rep_tk_can_read() {
             obj::free_obj(o);
         }
         // A list's string rep is built on demand, and is a canonical Tcl list.
-        let o = obj::from_value(&Value::Array(vec![
+        let o = obj::from_value(&Value::Array(std::sync::Arc::new(vec![
             Value::Str(std::sync::Arc::new("a b".to_string())),
             Value::Int(2),
-        ]));
+        ])));
         assert_eq!(obj::text_of(o), "{a b} 2");
         obj::free_obj(o);
     }
