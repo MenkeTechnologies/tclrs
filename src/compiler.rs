@@ -1802,27 +1802,45 @@ impl Compiler {
 
     /// The literal text of a word, when the compiler needs it at compile time
     /// (a command name, a variable name, a braced body).
+    ///
+    /// Deferrable, because a word this frontend needs while compiling is one a
+    /// Tcl interpreter does not look at until the command runs: it dispatches on
+    /// a subcommand, parses a body and resolves a variable name at that moment
+    /// and not before. So `if {0} {string $sub x}` must cost the script nothing,
+    /// exactly as `if {0} {incr}` does — the refusal becomes code inside the
+    /// branch rather than a verdict on the script. Nothing about it is weakened:
+    /// [`Compiler::defer`] keeps the message, the line and the argument
+    /// evaluation, and a command in a branch that *is* taken still refuses.
     pub(crate) fn literal_of<'w>(
-        &self,
+        &mut self,
         word: &'w Word,
         what: &str,
     ) -> Result<&'w str, CompileError> {
-        word.as_literal()
-            .ok_or_else(|| self.err(format!("{what} must be a literal in this phase")))
+        match word.as_literal() {
+            Some(text) => Ok(text),
+            None => Err(self.deferrable_err(format!("{what} must be a literal in this phase"))),
+        }
     }
 
     /// What a variable-name word names. `a(i)` is an array element even though
     /// the parser hands it over as ordinary text — the parentheses are only
     /// syntax inside a `$` substitution, so the interpretation happens here.
-    pub(crate) fn target_of(&self, word: &Word) -> Result<Target, CompileError> {
-        assoc::target_of(word)
-            .ok_or_else(|| self.err("variable name must be a literal in this phase".to_string()))
+    ///
+    /// Deferrable for the reason [`Compiler::literal_of`] is. The commands whose
+    /// *own* lowering can resolve a computed name — `set`, `incr`, `append`,
+    /// `lappend`, `unset`, `info exists` — never reach here for one; see
+    /// [`crate::cmd_scope::dynamic_link`].
+    pub(crate) fn target_of(&mut self, word: &Word) -> Result<Target, CompileError> {
+        match assoc::target_of(word) {
+            Some(target) => Ok(target),
+            None => Err(self.deferrable_err("variable name must be a literal in this phase")),
+        }
     }
 
     /// The plain name of a scalar variable, for the commands that take only
     /// one. An array element is refused here rather than silently treated as a
     /// variable whose name happens to contain parentheses.
-    pub(crate) fn var_name_of(&self, word: &Word) -> Result<String, CompileError> {
+    pub(crate) fn var_name_of(&mut self, word: &Word) -> Result<String, CompileError> {
         match self.target_of(word)? {
             Target::Scalar(name) => Ok(name),
             Target::Elem { .. } => self.error("this command does not take an array element yet"),
@@ -2430,6 +2448,13 @@ impl Compiler {
         let [cond, body] = args else {
             return self.error("wrong # args: should be \"while test command\"");
         };
+        // The condition is compiled *inside* the loop's emitted shape — the test
+        // sits at the bottom — so a computed one would be refused after ops
+        // exist, and `Compiler::command` can only turn a refusal into code while
+        // the command has emitted nothing. Asking here costs a literal condition
+        // one string comparison and lets `if {0} {while $c $b}` cost the script
+        // nothing, as it costs tclsh nothing.
+        self.literal_of(cond, "condition")?;
         let script = self.body_of(body)?;
         self.rotated_loop(|c| c.emit_body(&script), |_| Ok(()), |c| c.expr_word(cond))?;
         // A loop's own value is empty.
