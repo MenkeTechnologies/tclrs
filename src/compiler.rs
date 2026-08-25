@@ -1954,7 +1954,15 @@ impl Compiler {
         if cmd.words.iter().any(|w| w.expand) {
             return self.call_expanded(&cmd.words);
         }
-        let name = self.literal_of(first, "command name")?.to_string();
+        // A *computed* name is decided when the command runs for the same
+        // reason a `{*}` word is, so it takes the same path: there is no name
+        // to dispatch on here and no argument count that could be checked
+        // against a signature nothing has named yet. `[subst lappend] lst`,
+        // `[pick] a b c` and `$cmd length hello` all reach their command this
+        // way in tclsh, and `{*}$cmd` already reached it here.
+        let Some(name) = first.as_literal().map(str::to_string) else {
+            return self.call_expanded(&cmd.words);
+        };
         let args = &cmd.words[1..];
 
         // A failure that the reference interpreter only reports when the

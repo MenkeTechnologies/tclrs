@@ -107,6 +107,41 @@ const PROGRAMS: &[&str] = &[
     "proc relay {args} {return [target {*}$args]}\nproc target {args} {return \"T<$args>\"}\neval {puts [relay 1 2]}",
     // A name taken away by `rename` stops answering, in every chunk.
     "proc f {} {return one}\nrename f g\nputs [g]\nputs [catch {f} m]|$m\neval {puts [catch {f} m]|$m}\neval {puts [g]}",
+    // A *computed* command name goes the same way a `{*}` word does: it is
+    // decided when the command runs, so there is no name to dispatch on while
+    // compiling and no argument count to check against a signature nothing has
+    // named yet. `{*}$cmd` already took this path; a bare `$cmd` was refused.
+    "set c lappend\nset lst {1 2}\n$c lst 3\nputs $lst",
+    "set lst \"# 1 2 3\"\n[subst lappend] lst\nputs $lst",
+    "proc pick {} {return list}\nputs [[pick] a b c]",
+    "set c string\nputs [$c length hello]",
+    "set p str\nset q ing\nputs [${p}${q} length abcd]",
+    "set lst {}\n[subst la][subst ppend] lst x\nputs $lst",
+    // The name is resolved against the same tables a literal one is: a
+    // procedure, a builtin, and a builtin that defines a procedure.
+    "proc two {a b} {return $a-$b}\nset c two\nputs [$c 1 2]",
+    "set c set\n$c zz 9\nputs $zz",
+    "set c proc\n$c dyn {} {return made}\nputs [dyn]",
+    "set c catch\nputs [$c {error boom} m]|$m",
+    // And it is refused the way a literal one is when it names nothing, takes
+    // the wrong count, or is not a command name at all.
+    "set c nosuchcmd\nputs [catch {$c a b} m]|$m",
+    "set c string\nputs [catch {$c} m]|$m",
+    "proc two2 {a b} {return $a-$b}\nset c two2\nputs [catch {$c 1} m]|$m",
+    "set c {}\nputs [catch {$c a} m]|$m",
+    "set c \"string length\"\nputs [catch {$c abc} m]|$m",
+    "set c 42\nputs [catch {$c} m]|$m",
+    // The words are substituted in the order they were written, so a command
+    // substitution in the *name* runs before the dispatch it feeds.
+    "proc p1 {} {puts side; return list}\nputs [[p1] a b]",
+    // A computed name inside a loop, a procedure and a recursion, which is
+    // where a per-call resolution would show if it were wrong.
+    "set c incr\nset n 0\nfor {set i 0} {$i < 4} {incr i} {$c n}\nputs $n",
+    "proc ip {} {set c string\nreturn [$c length hello]}\nputs [ip]",
+    "proc r {n} {if {$n <= 0} {return 0}\nset c r\nreturn [expr {1 + [$c [expr {$n-1}]]}]}\nputs [r 5]",
+    // Across a chunk boundary, which is where the name table differs.
+    "proc target2 {args} {return \"T<$args>\"}\neval {set c target2\nputs [$c a b]}",
+    "eval {proc made2 {x} {return m$x}}\nset c made2\nputs [$c 1]",
 ];
 
 fn tclsh() -> Option<PathBuf> {
