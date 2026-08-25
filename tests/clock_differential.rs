@@ -165,6 +165,63 @@ const LOCALE_PROGRAMS: &[&str] = &[
     "foreach {f s} {{%a %d %b %Y} {Fri 13 Feb 2009} {%u %d %b %Y} {5 13 Feb 2009} {%w %d %b %Y} {5 13 Feb 2009} {%A %d %b %Y} {Friday 13 Feb 2009} {%a %Y-%j} {Fri 2009-044}} {puts [clock scan $s -format $f -gmt 1]}",
     "foreach {f s} {{%a %d %b %Y} {Sat 13 Feb 2009} {%u %d %b %Y} {6 13 Feb 2009} {%w %d %b %Y} {6 13 Feb 2009} {%u %d %b %Y} {0 13 Feb 2009} {%u %d %b %Y} {7 13 Feb 2009} {%w %d %b %Y} {0 13 Feb 2009} {%A %d %b %Y} {Saturday 13 Feb 2009} {%a %Y-%j} {Sat 2009-044} {%u %d %b %Y} {9 13 Feb 2009}} {puts [catch {clock scan $s -format $f -gmt 1} m]\nputs $m}",
     "foreach {f s} {{%a %d %b %Y} {Fr 13 Feb 2009} {%a %d %b %Y} {Freitag 13 Feb 2009}} {puts [clock scan $s -format $f -gmt 1 -locale de]}",
+    // `%J`, `%EJ` and `%Ej`: a Julian day whole names a local day, and one
+    // written with a fraction is the instant itself, which no zone touches.
+    "foreach s {0 2440588 2451545 -1 1721426} {puts [clock scan $s -format %J -gmt 1]}",
+    "foreach s {2440588 2451545} {puts [clock scan $s -format %J -timezone :America/New_York]}",
+    "foreach s {2440588 2440588.0 2440588.25 2440588.5 2440587.75 2451545.123456} {puts [clock scan $s -format %EJ -gmt 1]}",
+    "foreach s {2440588 2440587.5 2440588.0 2440588.25} {puts [clock scan $s -format %Ej -gmt 1]}",
+    "foreach s {2440588 2440588.25} {puts [clock scan $s -format %EJ -timezone :America/New_York]}\nputs [clock scan 2440588 -format %Ej -timezone :America/New_York]",
+    // `%Es` is a local instant where `%s` is an absolute one.
+    "foreach s {0 1234567890 -1000000} {puts [list [clock scan $s -format %Es -gmt 1] [clock scan $s -format %s -gmt 1]]}",
+    "puts [list [clock scan 1234567890 -format %Es -timezone :America/New_York] [clock scan 1234567890 -format %s -timezone :America/New_York]]",
+    // Round-tripping the two Julian-day tokens through their own formatter.
+    "foreach t {0 1 43200 86399 1234567890 -757382400} {puts [clock scan [clock format $t -format %EJ -gmt 1] -format %EJ -gmt 1]}",
+    "foreach t {0 43200 1234567890} {puts [clock scan [clock format $t -format %Ej -gmt 1] -format %Ej -gmt 1]}",
+    // `%Q` round-trips through the stardate, and refuses a number too short to
+    // carry both a year and its thousandths.
+    "foreach t {-757382400 1482857280 1234567890 0} {set d [clock format $t -format %Q -gmt 1]\nputs [list $d [clock scan $d -format %Q -gmt 1]]}",
+    "foreach s {{Stardate 999.9} {Stardate 70986} {stardate} {Star 70986.7}} {puts [catch {clock scan $s -format %Q -gmt 1} m]\nputs $m}",
+    "foreach s {{stardate 70986.7} {STARDATE 70986.7} {Stardate    70986.7} {Stardate 070986.75} {Stardate +70986.7}} {puts [clock scan $s -format %Q -gmt 1]}",
+    "puts [clock scan {Stardate 00000.0} -format %Q -timezone :America/New_York]",
+    // `%O…` reads a locale numeral, which in the root catalogue is always two
+    // digits — so a bare `5` is refused where `05` is read.
+    "foreach s {05 12 31} {puts [clock scan \"1970 Jan $s\" -format {%Y %b %Od} -gmt 1]}",
+    "foreach s {00 32 99} {puts [catch {clock scan \"1970 Jan $s\" -format {%Y %b %Od} -gmt 1} m]\nputs $m}",
+    "puts [clock scan {1970 05 05} -format {%Y %Om %Od} -gmt 1]",
+    "puts [clock scan {70 01 05} -format {%Oy %Om %Od} -gmt 1]",
+    "puts [clock scan {1970 01 05 12 30 45} -format {%Y %Om %Od %OH %OM %OS} -gmt 1]",
+    "foreach s {5 1 x} {puts [catch {clock scan \"1970 Jan $s\" -format {%Y %b %Od} -gmt 1} m]\nputs $m}",
+    "foreach s {03 3} {puts [catch {clock scan $s -format %Ou -gmt 1} m]}",
+    "foreach s {05 03} {puts [catch {clock scan \"1970 01 02 $s\" -format {%Y %Om %Od %Ou} -gmt 1} m]\nputs $m}",
+    // `%Ey` matches a numeral and captures nothing.
+    "puts [list [clock scan 70 -format %Ey -gmt 1] [clock scan {} -format {} -gmt 1]]",
+    // `%EE`: the catalogue words and the four fixed spellings, in the
+    // abbreviations each of them still resolves at.
+    "foreach s {C.E. c.e. a.d. A.D. c. a.} {puts [clock scan \"$s 1970\" -format {%EE %Y} -gmt 1]}",
+    "foreach s {C.E. a.d.} {puts [clock scan \"$s 1970\" -format {%EE %Y} -gmt 1 -locale de]}",
+    // Every date field the format leaves out comes from the base day, and the
+    // time starts at midnight rather than following it.
+    "foreach f {%Y {%Y %m} {%Y %d} {%m %d} %m %d %y {%C %y} %C {%Y %j} %j {%Y %b} %b} {puts [clock format [clock scan [clock format 0 -format $f -gmt 1] -format $f -gmt 1] -format {%Y-%m-%d %H:%M:%S} -gmt 1]}",
+    "puts [clock format [clock scan 12 -format %H -gmt 1] -format %H:%M:%S -gmt 1]",
+    // Each scanned field is held to its own range, named in its own refusal,
+    // in the order tclsh checks them.
+    "foreach d {01 28 29 30 31} {puts [clock scan \"1970 01 $d\" -format {%Y %m %d} -gmt 1]}",
+    "foreach d {00 32 99} {puts [catch {clock scan \"1970 01 $d\" -format {%Y %m %d} -gmt 1} m]\nputs $m}",
+    "foreach d {28 29 30} {puts [catch {clock scan \"1970 02 $d\" -format {%Y %m %d} -gmt 1} m]\nputs $m}",
+    "foreach d {28 29 30} {puts [catch {clock scan \"1972 02 $d\" -format {%Y %m %d} -gmt 1} m]\nputs $m}",
+    "foreach m {00 13 99} {puts [catch {clock scan \"1970 $m 01\" -format {%Y %m %d} -gmt 1} m2]\nputs $m2}",
+    "foreach h {00 23 24 25 99} {puts [catch {clock scan \"1970 01 01 $h\" -format {%Y %m %d %H} -gmt 1} m]\nputs $m}",
+    "foreach x {00 59 60 99} {puts [catch {clock scan \"1970 01 01 00 $x\" -format {%Y %m %d %H %M} -gmt 1} m]\nputs $m}",
+    "foreach x {00 59 60 99} {puts [catch {clock scan \"1970 01 01 00 00 $x\" -format {%Y %m %d %H %M %S} -gmt 1} m]\nputs $m}",
+    "foreach j {000 001 365 366 367 999} {puts [catch {clock scan \"1970 $j\" -format {%Y %j} -gmt 1} m]\nputs $m}",
+    "foreach j {365 366 367} {puts [catch {clock scan \"1972 $j\" -format {%Y %j} -gmt 1} m]\nputs $m}",
+    "foreach h {00 01 12 13 24} {puts [catch {clock scan \"1970 01 01 $h am\" -format {%Y %m %d %I %P} -gmt 1} m]\nputs $m}",
+    "foreach h {00 12 13} {puts [catch {clock scan \"1970 01 01 $h pm\" -format {%Y %m %d %I %P} -gmt 1} m]\nputs $m}",
+    // The earlier field is the one reported: a bad month is named even when
+    // the day is bad too.
+    "foreach p {{1970 13 32} {1970 01 32}} {puts [catch {clock scan $p -format {%Y %m %d} -gmt 1} m]\nputs $m}",
+    "puts [catch {clock scan {1970 01 32 25} -format {%Y %m %d %H} -gmt 1} m]\nputs $m",
     // The same catalogue read twice answers the same, which is what the
     // memoised merge has to preserve.
     "foreach i {1 2 3} {puts [clock format 1234567890 -gmt 1 -locale de_AT -format {%B %x %A}]}",

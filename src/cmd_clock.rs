@@ -12,7 +12,8 @@
 //!   copies in [`crate::clock_msgs`] through [`crate::clock_locale`]. A name
 //!   with no catalogue anywhere in its fallback chain is the root locale, as
 //!   it is there.
-//! * `scan` — the `-format` form only. tclsh's free-form parser is a
+//! * `scan` — the `-format` form only, with the whole of `ScnSTokenMap` and
+//!   the `%E` and `%O` maps beside it. tclsh's free-form parser is a
 //!   several-thousand-line grammar over relative words, month names, ISO
 //!   forms and time zone abbreviations; it is refused by name rather than
 //!   approximated.
@@ -907,6 +908,14 @@ struct Scanned {
     /// The weekday the input named, 1 for Monday through 7 for Sunday. tclsh
     /// checks it against the date rather than ignoring it.
     weekday: Option<u32>,
+    /// A Julian Day Number the input carried whole — `%J`, and `%EJ` written
+    /// without a fraction. It names a *local* day, so it still crosses the
+    /// zone on the way out.
+    julian_day: Option<i64>,
+    /// `%Es`: seconds since the epoch read as local time.
+    local_seconds: Option<i64>,
+    /// `%EE`: whether the input said the year is before the common era.
+    bce: Option<bool>,
 }
 
 fn no_match() -> String {
@@ -1036,10 +1045,24 @@ fn scan_time(input: &str, format: &str, zone: &Zone, cat: &Catalog) -> Result<i6
             continue;
         }
         p += 1;
+        // `%E` and `%O` select a scan map of their own, exactly as they select
+        // a format map — `ScnETokenMap` and `ScnOTokenMap`.
+        let modifier = pattern.get(p).copied().filter(|c| matches!(c, 'E' | 'O'));
+        if modifier.is_some() {
+            p += 1;
+        }
         let Some(token) = pattern.get(p).copied() else {
             return Err(no_match());
         };
         p += 1;
+        if let Some(m) = modifier {
+            if scan_modified(m, token, &text, &mut at, &mut got, cat)? {
+                continue;
+            }
+            return Err(format!(
+                "clock scan: the format token \"%{m}{token}\" is not supported yet"
+            ));
+        }
         if NUMERIC_TOKENS.contains(token) {
             while at < text.len() && text[at] == ' ' {
                 at += 1;
@@ -1090,14 +1113,7 @@ fn scan_time(input: &str, format: &str, zone: &Zone, cat: &Catalog) -> Result<i6
                     .ok_or_else(no_match)?;
                 got.pm = Some(index == 1);
             }
-            's' => {
-                let negative = text.get(at) == Some(&'-');
-                if negative || text.get(at) == Some(&'+') {
-                    at += 1;
-                }
-                let value = digits(&mut at, 19)?;
-                got.epoch = Some(if negative { -value } else { value });
-            }
+            's' => got.epoch = Some(signed(&text, &mut at)?),
             'u' | 'w' => {
                 let day = digits(&mut at, 1)?;
                 if day > 7 {
@@ -1117,6 +1133,9 @@ fn scan_time(input: &str, format: &str, zone: &Zone, cat: &Catalog) -> Result<i6
                 digits(&mut at, 2)?;
             }
             'z' | 'Z' => got.offset = Some(scan_zone(&text, &mut at)?),
+            // A whole Julian Day Number, which names a local day.
+            'J' => got.julian_day = Some(signed(&text, &mut at)?),
+            'Q' => scan_stardate(&text, &mut at, &mut got)?,
             other => {
                 return Err(format!(
                     "clock scan: the format token \"%{other}\" is not supported yet"
@@ -1131,6 +1150,218 @@ fn scan_time(input: &str, format: &str, zone: &Zone, cat: &Catalog) -> Result<i6
         return Err(no_match());
     }
     assemble(got, zone)
+}
+
+/// A signed run of digits — `%s`, `%J` and the integer part of a Julian day.
+/// The sign is read first because `Clock_str2wideInt` is handed one.
+fn signed(text: &[char], at: &mut usize) -> Result<i64, String> {
+    let negative = text.get(*at) == Some(&'-');
+    if negative || text.get(*at) == Some(&'+') {
+        *at += 1;
+    }
+    let value = take_digits(text, at, 19).ok_or_else(no_match)?;
+    Ok(if negative { -value } else { value })
+}
+
+/// A token under an `%E` or `%O` modifier — `ScnETokenMap` and
+/// `ScnOTokenMap`. `false` means the token is in neither map, which the caller
+/// turns into its refusal.
+///
+/// Every `%O` entry reads a locale numeral rather than digits, which is why
+/// `clock scan 5 -format %Od` fails where `clock scan 05 -format %Od` answers:
+/// the root catalogue's numerals are `00` through `99` and nothing matches a
+/// bare `5` (measured against tclsh).
+fn scan_modified(
+    modifier: char,
+    token: char,
+    text: &[char],
+    at: &mut usize,
+    got: &mut Scanned,
+    cat: &Catalog,
+) -> Result<bool, String> {
+    if modifier == 'O' {
+        // `ScnOTokenMapIndex` is `dmyHMSu`, with `ekIlw` aliased onto `dHHHu`.
+        let numeral = |at: &mut usize| {
+            take_prefix(text, at, &[&cat.numerals])
+                .map(|n| n as i64)
+                .ok_or_else(no_match)
+        };
+        match token {
+            'd' | 'e' => got.day = Some(numeral(at)? as u32),
+            'm' => got.month = Some(numeral(at)? as u32),
+            'y' => got.year_in_century = Some(numeral(at)?),
+            'H' | 'k' => got.hour = Some(numeral(at)? as u32),
+            'I' | 'l' => {
+                got.hour = Some(numeral(at)? as u32);
+                got.hour_is_12 = true;
+            }
+            'M' => got.minute = Some(numeral(at)? as u32),
+            'S' => got.second = Some(numeral(at)? as u32),
+            // `ClockScnToken_DayOfWeek_Proc` with a locale list: the numeral's
+            // index is the weekday, and 0 means Sunday as everywhere else.
+            'u' | 'w' => {
+                let day = numeral(at)?;
+                if day > 7 {
+                    return Err("day of week is greater than 7".to_string());
+                }
+                got.weekday = Some(if day == 0 { 7 } else { day as u32 });
+            }
+            _ => return Ok(false),
+        }
+        return Ok(true);
+    }
+    // `ScnETokenMapIndex` is `EJjys`.
+    match token {
+        'E' => got.bce = Some(!scan_era(text, at, cat).ok_or_else(no_match)?),
+        // The calendar day number and the astronomical one, which starts at
+        // noon. Whole, they name a local day; with a fraction they are the
+        // instant itself and no zone applies.
+        'J' | 'j' => {
+            let offset = if token == 'j' { SECONDS_PER_DAY / 2 } else { 0 };
+            let day = signed(text, at)?;
+            let Some(fraction) = scan_day_fraction(text, at) else {
+                if token == 'J' {
+                    got.julian_day = Some(day);
+                    return Ok(true);
+                }
+                got.epoch = Some((day - 2440588) * SECONDS_PER_DAY + offset);
+                return Ok(true);
+            };
+            let mut seconds = offset + fraction;
+            let mut day = day;
+            if seconds >= SECONDS_PER_DAY {
+                seconds -= SECONDS_PER_DAY;
+                day += 1;
+            }
+            got.epoch = Some((day - 2440588) * SECONDS_PER_DAY + seconds);
+        }
+        // Parse-only: `ScnETokenMap`'s `%Ey` entry captures nothing, so a
+        // matched numeral moves the input on and changes no field.
+        'y' => {
+            take_prefix(text, at, &[&cat.numerals]).ok_or_else(no_match)?;
+        }
+        's' => got.local_seconds = Some(signed(text, at)?),
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+/// The `.ddd` of a Julian day, as a count of seconds into the day. `None` when
+/// no fraction follows, which is a whole Julian day number.
+fn scan_day_fraction(text: &[char], at: &mut usize) -> Option<i64> {
+    if text.get(*at) != Some(&'.') {
+        return None;
+    }
+    let start = *at + 1;
+    let mut end = start;
+    let mut divisor: i64 = 1;
+    while text.get(end).is_some_and(|c| c.is_ascii_digit()) {
+        divisor = divisor.saturating_mul(10);
+        end += 1;
+    }
+    let mut value: i64 = 0;
+    for c in &text[start..end] {
+        value = value * 10 + c.to_digit(10).expect("a digit") as i64;
+    }
+    *at = end;
+    Some(SECONDS_PER_DAY * value / divisor)
+}
+
+/// `%EE` — `ClockScnToken_LocaleERA_Proc`, which searches the catalogue's two
+/// era words together with four fixed spellings: `b.c.e.`, `c.e.`, `b.c.` and
+/// `a.d.`. `true` is the common era.
+///
+/// The answer is the era rather than the entry, because several entries mean
+/// the same one: `b.c.` is a prefix of `b.c.e.` and both are before the common
+/// era, so the input is not ambiguous even though the entry is.
+fn scan_era(text: &[char], at: &mut usize, cat: &Catalog) -> Option<bool> {
+    let table = [
+        (cat.bce.as_str(), false),
+        (cat.ce.as_str(), true),
+        ("b.c.e.", false),
+        ("c.e.", true),
+        ("b.c.", false),
+        ("a.d.", true),
+    ];
+    let mut len = 0;
+    for (word, _) in table {
+        let reached = word
+            .chars()
+            .enumerate()
+            .take_while(|(i, w)| text.get(*at + i).is_some_and(|c| lower(*c) == lower(*w)))
+            .count();
+        len = len.max(reached);
+    }
+    if len == 0 {
+        return None;
+    }
+    let mut era = None;
+    for (word, common) in table {
+        let matches = word.chars().count() >= len
+            && word
+                .chars()
+                .take(len)
+                .enumerate()
+                .all(|(i, w)| text.get(*at + i).is_some_and(|c| lower(*c) == lower(w)));
+        if matches {
+            if era.is_some_and(|found| found != common) {
+                return None;
+            }
+            era = Some(common);
+        }
+    }
+    *at += len;
+    era
+}
+
+/// `%Q` — `ClockScnToken_StarDate_Proc`. `Stardate NNNNN.d`: at least four
+/// digits, of which the last three are the thousandths of the year elapsed and
+/// the rest the year since 1946, then a fraction of the day.
+fn scan_stardate(text: &[char], at: &mut usize, got: &mut Scanned) -> Result<(), String> {
+    let prefix: Vec<char> = "stardate ".chars().collect();
+    if text.len() < *at + prefix.len()
+        || !text[*at..*at + prefix.len()]
+            .iter()
+            .zip(&prefix)
+            .all(|(c, p)| lower(*c) == *p)
+    {
+        return Err(no_match());
+    }
+    let mut cursor = *at + prefix.len();
+    while text.get(cursor).is_some_and(|c| c.is_whitespace()) {
+        cursor += 1;
+    }
+    if text.get(cursor) == Some(&'+') {
+        cursor += 1;
+    }
+    let start = cursor;
+    while text.get(cursor).is_some_and(|c| c.is_ascii_digit()) {
+        cursor += 1;
+    }
+    // The last three digits are the fraction of the year, so there has to be
+    // at least one digit of year in front of them.
+    if cursor - start < 4 {
+        return Err(no_match());
+    }
+    let number = |slice: &[char]| -> i64 {
+        slice
+            .iter()
+            .fold(0, |n, c| n * 10 + c.to_digit(10).expect("a digit") as i64)
+    };
+    let year = number(&text[start..cursor - 3]) + 1946;
+    let elapsed = number(&text[cursor - 3..cursor]);
+    if text.get(cursor) != Some(&'.') {
+        return Err(no_match());
+    }
+    *at = cursor;
+    let fraction = scan_day_fraction(text, at).ok_or_else(no_match)?;
+    // The thousandths are of the whole year, rounded to a day.
+    let length = if is_leap(year) { 366 } else { 365 };
+    let scaled = elapsed * length;
+    let day_of_year = scaled / 1000 + 1 + i64::from(scaled % 1000 >= 500);
+    let day = days_from_civil(year, 1, 1) + day_of_year - 1;
+    got.local_seconds = Some(day * SECONDS_PER_DAY + fraction);
+    Ok(())
 }
 
 /// A zone in the input: a numeric offset, or one of the names that plainly
@@ -1160,23 +1391,76 @@ fn scan_zone(text: &[char], at: &mut usize) -> Result<i32, String> {
 
 /// Turn scanned fields into an instant.
 fn assemble(got: Scanned, zone: &Zone) -> Result<i64, String> {
+    // `%s` and a Julian day written with a fraction are the instant itself:
+    // `CLF_POSIXSEC`, which no zone and no calendar touches.
     if let Some(epoch) = got.epoch {
         return Ok(epoch);
+    }
+    // A whole Julian day and `%Es` name a *local* moment, so they cross the
+    // zone but skip the civil date entirely — which is why
+    // `clock scan 0 -format %J -gmt 1` answers -210866803200 rather than being
+    // refused for standing before the Gregorian changeover: no calendar was
+    // consulted to reach it.
+    let direct = got
+        .local_seconds
+        .or_else(|| got.julian_day.map(|day| (day - 2440588) * SECONDS_PER_DAY));
+    if let Some(local) = direct {
+        return Ok(match got.offset {
+            Some(offset) => local - offset as i64,
+            None => local - zone.for_local(local).offset as i64,
+        });
     }
     // Fields the format did not carry come from the current day in the target
     // zone, which is the base tclsh uses when `-base` is absent.
     let now = current_seconds();
     let base = civil_of(now + zone.at(now).offset as i64);
-    let dated = got.year.is_some() || got.year_in_century.is_some() || got.century.is_some();
     let year = match (got.year, got.century, got.year_in_century) {
         (Some(year), _, _) => year,
         (None, Some(century), Some(year)) => century * 100 + year,
         // tclsh's two-digit year rule: 00–68 are 2000s, 69–99 are 1900s.
         (None, None, Some(year)) => year + if year < 69 { 2000 } else { 1900 },
-        (None, Some(century), None) => century * 100,
-        (None, None, None) => base.year,
+        // A century with no year within it changes nothing: `dateCentury` is
+        // only ever read beside `date.year`, so `clock scan 19 -format %C`
+        // answers on the base date (measured).
+        (None, Some(_), None) | (None, None, None) => base.year,
+    };
+    // `%EE` said the year is counted backwards from the common era, and the
+    // two numberings differ by one: there is no year zero, so 1 BCE is the
+    // astronomical year 0.
+    let year = if got.bce == Some(true) {
+        1 - year
+    } else {
+        year
     };
     let mut hour = got.hour.unwrap_or(0);
+    // Each field is held to its own range and named in its own refusal, in the
+    // order tclsh checks them — measured: `clock scan {1970 13 32} -format
+    // {%Y %m %d}` reports the month and `{1970 01 32 25}` the day, so a later
+    // field is never reached while an earlier one is out of range. A rolled-over
+    // value is not an answer either interpreter gives.
+    let bad = |what: &str| Err(format!("unable to convert input string: invalid {what}"));
+    if let Some(month) = got.month {
+        if !(1..=12).contains(&month) {
+            return bad("month");
+        }
+    }
+    if let Some(day) = got.day {
+        let month = got.month.unwrap_or(base.month);
+        if day < 1 || day > month_length(year, month) {
+            return bad("day");
+        }
+    }
+    // `%H` reaches 24, which is the midnight ending the day; `%I` stops at 12.
+    let hour_limit = if got.hour_is_12 { 12 } else { 24 };
+    if hour > hour_limit {
+        return bad("time (hour)");
+    }
+    if got.minute.is_some_and(|m| m > 59) {
+        return bad("time (minutes)");
+    }
+    if got.second.is_some_and(|s| s > 59) {
+        return bad("time");
+    }
     if got.hour_is_12 {
         hour %= 12;
         if got.pm == Some(true) {
@@ -1186,17 +1470,23 @@ fn assemble(got: Scanned, zone: &Zone) -> Result<i64, String> {
         hour += 12;
     }
     let days = match got.day_of_year {
-        Some(day) => days_from_civil(year, 1, 1) + day - 1,
-        None => {
-            let month = got.month.unwrap_or(if dated { 1 } else { base.month });
-            if !(1..=12).contains(&month) {
-                return Err(no_match());
+        Some(day) => {
+            let length = if is_leap(year) { 366 } else { 365 };
+            if day < 1 || day > length {
+                return bad("day of year");
             }
-            let day = got.day.unwrap_or(if dated || got.month.is_some() {
-                1
-            } else {
-                base.day
-            });
+            days_from_civil(year, 1, 1) + day - 1
+        }
+        None => {
+            // Every date field the format did not carry comes from the base
+            // day, whether or not it carried another one. Measured against
+            // tclsh on 2026-08-25: `clock scan 1970 -format %Y -gmt 1` is
+            // 1970-08-25, `clock scan {1970 03} -format {%Y %m}` is
+            // 1970-03-25, and `clock scan {1970 07} -format {%Y %d}` is
+            // 1970-08-07. The time is not filled in the same way — a format
+            // with no `%H` starts the day at midnight.
+            let month = got.month.unwrap_or(base.month);
+            let day = got.day.unwrap_or(base.day);
             days_from_civil(year, month, day)
         }
     };
@@ -1205,7 +1495,8 @@ fn assemble(got: Scanned, zone: &Zone) -> Result<i64, String> {
     // the weekday as *choosing* the day, which needs the base date this
     // frontend does not carry yet.
     if let Some(named) = got.weekday {
-        let dated_day = dated && (got.day.is_some() || got.day_of_year.is_some());
+        let year_given = got.year.is_some() || got.year_in_century.is_some();
+        let dated_day = year_given && (got.day.is_some() || got.day_of_year.is_some());
         if dated_day && civil_of(days * 86400).iso_weekday() != named {
             return Err("unable to convert input string: invalid day of week".to_string());
         }
