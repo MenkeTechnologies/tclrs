@@ -2,7 +2,7 @@
 
 Reference interpreter: **tclsh 9.0.4**. Suite: `tcl9.0.4/tests` — the `tests/` directory of the matching Tcl source release, fetched and checksum-verified by `conformance/fetch-suite.sh`.
 
-**30760 of 49094 attempted cases pass — 62.7%.** Over every case the suite contains, including the ones that cannot be run here, that is 30760 of 69424 — 44.3%.
+**36828 of 49094 attempted cases pass — 75.0%.** Over every case the suite contains, including the ones that cannot be run here, that is 36828 of 69424 — 53.0%.
 
 ## How the number is produced
 
@@ -33,10 +33,10 @@ Three things about the extraction are worth stating plainly. First, suite files 
 | Extracted from the suite | 69424 | 100% |
 | Skipped — cannot be run | 20330 | 29.3% |
 | Attempted | 49094 | 70.7% |
-| ⤷ passed | 30760 | 62.7% of attempted |
-| ⤷ failed | 18334 | 37.3% of attempted |
+| ⤷ passed | 36828 | 75.0% of attempted |
+| ⤷ failed | 12266 | 25.0% of attempted |
 
-Of the 18334 failures, 15542 are a feature tclrs documents as not built yet rather than a wrong answer. Counting those as skips instead would give 30760 of 33552 — 91.7% — and that looser number is stated here only so the choice of rule is visible. The headline above uses the strict rule.
+Of the 12266 failures, 9158 are a feature tclrs documents as not built yet rather than a wrong answer. Counting those as skips instead would give 36828 of 39936 — 92.2% — and that looser number is stated here only so the choice of rule is visible. The headline above uses the strict rule.
 
 ## Why cases were skipped
 
@@ -99,11 +99,11 @@ A case is attributed to the first command tclrs refused, so a body using several
 
 | Cause | Cases | Share of failures | For example |
 | --- | ---: | ---: | --- |
-| tclrs raised an error, tclsh did not | 10406 | 56.8% | `append.test` append-7.1, `append.test` append-10.1, `apply.test` apply-2.2 |
-| both raised an error, messages differ | 6600 | 36.0% | `append.test` append-3.1, `append.test` append-6.1, `append.test` append-10.2 |
-| results differ | 1143 | 6.2% | `append.test` append-3.4, `append.test` append-3.5, `append.test` append-3.6 |
-| tclsh raised an error, tclrs did not | 154 | 0.8% | `appendComp.test` appendComp-10.4, `binary.test` binary-73.29, `binary.test` binary-75.25 |
-| tclrs was killed or crashed | 31 | 0.2% | `clock-ivm.test` clock-6.0.vm:0, `clock-ivm.test` clock-6.9.vm:0, `clock-ivm.test` clock-6.10.vm:0 |
+| both raised an error, messages differ | 6602 | 53.8% | `append.test` append-3.1, `append.test` append-6.1, `append.test` append-10.2 |
+| tclrs raised an error, tclsh did not | 4022 | 32.8% | `append.test` append-7.1, `append.test` append-10.1, `apply.test` apply-2.2 |
+| results differ | 1457 | 11.9% | `append.test` append-3.4, `append.test` append-3.5, `append.test` append-3.6 |
+| tclsh raised an error, tclrs did not | 152 | 1.2% | `appendComp.test` appendComp-10.4, `binary.test` binary-73.29, `binary.test` binary-75.25 |
+| tclrs was killed or crashed | 33 | 0.3% | `clock-ivm.test` clock-6.0.vm:0, `clock-ivm.test` clock-6.9.vm:0, `clock-ivm.test` clock-6.10.vm:0 |
 
 Every failing case is written out in full — its program, the tclsh outcome and the tclrs outcome — to `conformance/work/failures.txt` by the same run that produced this table.
 
@@ -113,16 +113,15 @@ Error text with the quoted part elided and tclrs's trailing `(line N)` removed, 
 
 | Message | Cases |
 | --- | ---: |
-| clock: the locale "…" is not supported yet; only the root locale is built in | 13374 |
+| clock scan: the format token "…" is not supported yet | 5911 |
+| clock scan: -base is not supported yet | 1289 |
 | command name must be a literal in this phase | 1163 |
 | identical text apart from tclrs's trailing (line N) | 359 |
 | can't read "…": no such variable | 293 |
 | encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+D800, which a string in this frontend cannot hold | 181 |
 | clock scan: the free-form parser is not supported yet; use -format | 160 |
-| clock scan: -base is not supported yet | 159 |
 | expression must be a literal in this phase | 132 |
 | encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+DC00, which a string in this frontend cannot hold | 116 |
-| clock scan: the format token "…" is not supported yet | 59 |
 | unable to convert input string: ambiguous day | 48 |
 | key "…" not known in dictionary | 39 |
 | time zone "…" not found: no zone file names it, and a POSIX time zone rule is not supported yet | 36 |
@@ -140,6 +139,7 @@ Error text with the quoted part elided and tclrs's trailing `(line N)` removed, 
 | file attributes is not supported yet: it needs an interface this frontend has not built | 24 |
 | the namespace "…" of a lambda is not supported yet: this frontend has only "…" | 22 |
 | "…" with a level number is not supported: no record of the command that entered a level is kept | 20 |
+| killed after 15s without progress | 20 |
 | file link is not supported yet: it needs an interface this frontend has not built | 19 |
 | info frame is not supported yet: it reports on the stack of *commands*, and only the stack of call frames is kept | 19 |
 | wrong # args: should be "…" | 19 |
@@ -169,9 +169,9 @@ Implemented: `after`, `append`, `apply`, `array`, `binary`, `break`, `catch`, `c
 | `brodnik.test` | 422 | 422 | 0 | 0 | 0 | — |
 | `chan.test` | 42 | 40 | 2 | 2 | 0 | 100.0% |
 | `chanio.test` | 779 | 439 | 340 | 334 | 6 | 98.2% |
-| `clock-ivm.test` | 8744 | 64 | 8680 | 1451 | 7229 | 16.7% |
+| `clock-ivm.test` | 8744 | 64 | 8680 | 4485 | 4195 | 51.7% |
 | `clock-no-tzdata.test` | 0 | 0 | 0 | 0 | 0 | — |
-| `clock.test` | 8744 | 76 | 8668 | 1451 | 7217 | 16.7% |
+| `clock.test` | 8744 | 76 | 8668 | 4485 | 4183 | 51.7% |
 | `cmdAH.test` | 17001 | 206 | 16795 | 16245 | 550 | 96.7% |
 | `cmdIL.test` | 168 | 8 | 160 | 131 | 29 | 81.9% |
 | `cmdInfo.test` | 12 | 12 | 0 | 0 | 0 | — |
@@ -343,7 +343,7 @@ The recorder only sees `test` calls made in the interpreter it runs in. These fi
 
 3 files contributed no cases at all: `clock-no-tzdata.test`, `package.test`, `safe-stock86.test`. A file lands here when it is empty, when everything in it sits behind a constraint this configuration does not meet, or when it declares its tests inside a child interpreter.
 
-A stage that goes 15s without producing an outcome is killed and the case it was on is recorded as an abort, so that one pathological body cannot stall the run. Aborts on the tclrs side count as failures rather than skips, and this run had 31 of them; aborts on the reference side are the `tclsh produced no reference outcome` skips above. That timeout is the only bound in the pipeline, and nothing is dropped without landing in one of those two counts.
+A stage that goes 15s without producing an outcome is killed and the case it was on is recorded as an abort, so that one pathological body cannot stall the run. Aborts on the tclrs side count as failures rather than skips, and this run had 33 of them; aborts on the reference side are the `tclsh produced no reference outcome` skips above. That timeout is the only bound in the pipeline, and nothing is dropped without landing in one of those two counts.
 
 Some suite cases depend on the clock, the file system, the environment or the network, so a rerun can move the totals by a few cases. Nothing else in the pipeline is nondeterministic: the case set, the ordering and the comparison are fixed.
 
