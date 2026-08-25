@@ -21,6 +21,8 @@ pub mod aot;
 pub mod aot_runtime;
 pub mod assoc;
 pub mod cache;
+pub mod clock_locale;
+pub mod clock_msgs;
 /// `after`, `update` and `vwait` — the event loop a Tk script lives inside.
 pub mod cmd_after;
 pub mod cmd_channel;
