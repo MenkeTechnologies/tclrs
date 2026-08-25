@@ -138,6 +138,33 @@ const PROGRAMS: &[&str] = &[
     // A `catch` inside the loop absorbs the code first, so the loop's own
     // region is untouched and every iteration still runs.
     "foreach i {1 2 3} {catch {eval {continue}} m; puts \"caught $i\"}\nputs after",
+    // `for`'s *step* is not part of the loop as far as `continue` is
+    // concerned: `TclCompileForCmd` gives it an exception range with
+    // `supportsContinue = 0`, so the code goes outwards to an enclosing loop or
+    // leaves as `invoked "continue" outside of a loop`. Sending it back to the
+    // step is an infinite loop, which is what these ran into.
+    "set n 0\nputs [catch {for {set i 0} {$i < 5} {incr i; continue} {incr n}} m]\nputs $m\nputs \"$i $n\"",
+    "set n 0\nputs [catch {for {set i 0} {$i < 5} {incr i; eval continue} {incr n}} m]\nputs $m",
+    "proc c2 {} {return -code continue}\nset n 0\nputs [catch {for {set i 0} {$i < 5} {incr i; c2} {incr n}} m opts]\nputs [list $m [dict get $opts -code]]",
+    // With an enclosing loop the code is *that* loop's, so the outer body ends
+    // where the inner step raised it.
+    "set out {}\nfor {set k 0} {$k < 3} {incr k} {set n 0\nfor {set i 0} {$i < 5} {incr i; continue} {incr n}\nlappend out \"$k $i $n\"}\nputs [list $out $k]",
+    "set out {}\nforeach k {a b} {set n 0\nfor {set i 0} {$i < 5} {incr i; eval continue} {incr n}\nlappend out $k}\nputs [list $out]",
+    "set out {}\nwhile {[llength $out] < 2} {lappend out x\nfor {set i 0} {$i < 5} {incr i; continue} {}}\nputs $out",
+    // `break` in the step is still the loop's own, as `for(n)` says, whether it
+    // is written there or raised into it.
+    "set n 0\nfor {set i 0} {$i < 5} {incr i; break} {incr n}\nputs \"$i $n\"",
+    "set n 0\nfor {set i 0} {$i < 5} {incr i; eval break} {incr n}\nputs \"$i $n\"",
+    "proc b2 {} {return -code break}\nset n 0\nfor {set i 0} {$i < 5} {incr i; b2} {incr n}\nputs \"$i $n\"",
+    // A `continue` in the *body* of the same loop still reaches its step.
+    "set n 0\nfor {set i 0} {$i < 5} {incr i} {continue; incr n}\nputs \"$i $n\"",
+    "set n 0\nfor {set i 0} {$i < 5} {incr i} {eval continue; incr n}\nputs \"$i $n\"",
+    "proc c3 {} {return -code continue}\nset n 0\nfor {set i 0} {$i < 5} {incr i} {c3; incr n}\nputs \"$i $n\"",
+    // A `for` with an empty step has no step to shut `continue` off inside.
+    "set n 0\nfor {set i 0} {$i < 3} {} {incr i; incr n}\nputs \"$i $n\"",
+    // The suite case this was found by: `eval continue` in the step of a `for`
+    // nested inside another `for`.
+    "puts [apply {{} {\n for {set k 0} {$k < 3} {incr k} {\n set j 0\n list a [ for {set i 0} {$i < 5} {incr i;list a [eval continue]} {\n incr j\n }]\n incr i\n }\n list $i $j $k\n }}]",
 ];
 
 fn tclsh() -> Option<PathBuf> {

@@ -1387,9 +1387,27 @@ enum FrameKind {
     Catch(usize),
     /// A loop, which absorbs only `break` and `continue` — arriving from a
     /// nested script, from a procedure that returned one, or from anywhere
-    /// else the direct jump the compiler emits could not reach. The payloads
-    /// are the op indices a `break` and a `continue` resume at.
-    Loop { brk: usize, cont: usize },
+    /// else the direct jump the compiler emits could not reach. `brk` and
+    /// `cont` are the op indices those two resume at.
+    ///
+    /// `step_start`..`step_end` is the half-open op range of the loop's
+    /// *step*, over which the
+    /// region stops absorbing `continue`: `for`'s `next` script gets an
+    /// exception range of its own in tclsh with `supportsContinue = 0`
+    /// (`generic/tclCompCmds.c:2617`), so a `continue` raised there belongs to
+    /// an enclosing loop and not to this one. Sending it to `cont` would land
+    /// it back on the step that raised it — `for {set i 0} {$i < 5} {incr i;
+    /// continue} {}` ran for ever before this was recorded, where tclsh
+    /// reports `invoked "continue" outside of a loop`.
+    ///
+    /// A loop with no step — `while`, `foreach` — leaves the range empty, and
+    /// then nothing can be inside it.
+    Loop {
+        brk: usize,
+        cont: usize,
+        step_start: usize,
+        step_end: usize,
+    },
 }
 
 /// Install everything a Tcl chunk needs on a VM — the output sink, the numeric
@@ -1542,10 +1560,32 @@ impl Hooks {
                 return;
             }
             if id == ext::LOOP_ENTER {
-                let cont = to_tcl_string(&vm.pop()).parse().unwrap_or(0);
-                let brk = to_tcl_string(&vm.pop()).parse().unwrap_or(0);
+                // Pushed in the order the compiler emits them, so popped in
+                // reverse: the two trampolines, then the mark whose target is
+                // where the loop's step ends. The step *begins* where the
+                // continue trampoline sends control, so both bounds are read
+                // out of the jump targets the compiler patched into them.
+                // `Op::LoadInt` put these here, so they are read as the
+                // integers they are rather than formatted and parsed back.
+                let index = |v: Value| match v {
+                    Value::Int(i) => i as usize,
+                    other => to_tcl_string(&other).parse().unwrap_or(0),
+                };
+                let mark = index(vm.pop());
+                let cont = index(vm.pop());
+                let brk = index(vm.pop());
+                let target = |at: usize| match vm.chunk.ops.get(at) {
+                    Some(fusevm::Op::Jump(to)) => *to,
+                    _ => 0,
+                };
+                let (step_start, step_end) = (target(cont), target(mark));
                 open.lock().expect("catch lock").push(CatchFrame {
-                    kind: FrameKind::Loop { brk, cont },
+                    kind: FrameKind::Loop {
+                        brk,
+                        cont,
+                        step_start,
+                        step_end,
+                    },
                     stack: vm.stack.len(),
                     frames: vm.frames.len(),
                 });
@@ -2777,6 +2817,17 @@ impl Machine {
         let mut depth = self.vm(self.current).frames.len();
         loop {
             if let Some(frame) = self.contexts[self.current].catches.last().copied() {
+                // Which op of *this region's* call frame is running, which is
+                // what says whether a `continue` came out of a loop's step —
+                // see [`FrameKind::Loop`]. A raise from a deeper procedure
+                // stands, for this region, at the call that entered it, so
+                // `proc p {} {return -code continue}` called from a step
+                // leaves the loop exactly as a `continue` written there does.
+                let vm = self.vm(self.current);
+                let raised_at = match vm.frames.get(frame.frames) {
+                    Some(inner) => inner.return_ip.saturating_sub(1),
+                    None => vm.ip,
+                };
                 for _ in 0..depth.saturating_sub(frame.frames) {
                     e = e.descend();
                 }
@@ -2787,7 +2838,15 @@ impl Machine {
                     // A loop takes a `break` or a `continue` and lets every
                     // other code — an error, a `return` — carry on outwards.
                     FrameKind::Loop { brk, .. } if code == TCL_BREAK => Some(brk),
-                    FrameKind::Loop { cont, .. } if code == TCL_CONTINUE => Some(cont),
+                    FrameKind::Loop {
+                        cont,
+                        step_start,
+                        step_end,
+                        ..
+                    } if code == TCL_CONTINUE => {
+                        // Not from the step, which this loop does not absorb.
+                        (!(step_start..step_end).contains(&raised_at)).then_some(cont)
+                    }
                     FrameKind::Loop { .. } => None,
                 };
                 let Some(resume) = resume else {

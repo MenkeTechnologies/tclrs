@@ -1017,6 +1017,13 @@ pub(crate) struct LoopCtx {
     pub(crate) catch_depth: usize,
     pub(crate) breaks: Vec<usize>,
     pub(crate) continues: Vec<usize>,
+    /// Whether the loop's *step* is what is being compiled. A `continue` there
+    /// is not this loop's — `TclCompileForCmd` gives the `next` script an
+    /// exception range of its own with `supportsContinue = 0`
+    /// (`generic/tclCompCmds.c:2617`), so the code travels outwards to an
+    /// enclosing loop or leaves as `invoked "continue" outside of a loop`.
+    /// `break` there is still this loop's.
+    pub(crate) in_step: bool,
 }
 
 /// The local variables of one procedure body.
@@ -2550,7 +2557,12 @@ impl Compiler {
         // reports it, a loop region absorbs it, and nothing at all leaves it to
         // be reported as `invoked "break" outside of a loop`.
         let ctx = self.loops.last();
-        if ctx.is_none_or(|c| c.catch_depth != self.catch_depth) {
+        // A `continue` in a loop's step is not that loop's, so it leaves as a
+        // raised code the way one written outside any loop does — and the
+        // region the loop opened declines it too, or the raise would land back
+        // on the step it came from and run for ever.
+        let shut_off = !is_break && ctx.is_some_and(|c| c.in_step);
+        if shut_off || ctx.is_none_or(|c| c.catch_depth != self.catch_depth) {
             self.push_empty();
             self.emit(Op::LoadInt(i64::from(code)), 1);
             self.emit(Op::LoadInt(0), 1);
@@ -2632,14 +2644,24 @@ impl Compiler {
         // returned `-code break` — has only an op index to be sent to, and
         // these are the two indices that mean "leave" and "next iteration".
         // They are ordinary jumps, patched with the real targets below.
-        let over_tramps = self.emit(Op::Jump(usize::MAX), 0);
+        let over_marks = self.emit(Op::Jump(usize::MAX), 0);
         let brk_tramp = self.emit(Op::Jump(usize::MAX), 0);
         let cont_tramp = self.emit(Op::Jump(usize::MAX), 0);
+        // A third mark, beside the two trampolines and jumped over with them,
+        // which nothing ever executes. Its target is where the loop's step
+        // ends, and the region needs to know that to tell a `continue` raised
+        // in the step from one raised in the body. It is a jump because a jump
+        // is the only op a `ChunkBuilder` can write a position into after the
+        // fact, and where the step ends is not known until the body has been
+        // compiled. Where the step *begins* needs no mark of its own: the
+        // continue trampoline already points at it.
+        let step_end_mark = self.emit(Op::Jump(usize::MAX), 0);
         let region = self.b.current_pos();
-        self.b.patch_jump(over_tramps, region);
+        self.b.patch_jump(over_marks, region);
         self.emit(Op::LoadInt(brk_tramp as i64), 1);
         self.emit(Op::LoadInt(cont_tramp as i64), 1);
-        self.emit(Op::Extended(ext::LOOP_ENTER, 0), -2);
+        self.emit(Op::LoadInt(step_end_mark as i64), 1);
+        self.emit(Op::Extended(ext::LOOP_ENTER, 0), -3);
 
         let enter = self.emit(Op::Jump(usize::MAX), 0);
         let top = self.b.current_pos();
@@ -2649,11 +2671,14 @@ impl Compiler {
             catch_depth: self.catch_depth,
             breaks: Vec::new(),
             continues: Vec::new(),
+            in_step: false,
         });
-        // The step is compiled with the loop still open: `for(n)` gives a
-        // `break` there the same meaning it has in the body.
+        // The step is compiled with the loop still open, but with `continue`
+        // shut off inside it — see [`LoopCtx::in_step`]. `break` keeps the
+        // meaning it has in the body, as `for(n)` gives it.
         let emitted = body(self).and_then(|()| {
             let at = self.b.current_pos();
+            self.loops.last_mut().expect("loop context").in_step = true;
             step(self).map(|()| at)
         });
         let ctx = self.loops.pop().expect("loop context");
@@ -2661,6 +2686,7 @@ impl Compiler {
 
         let cond_at = self.b.current_pos();
         self.b.patch_jump(enter, cond_at);
+        self.b.patch_jump(step_end_mark, cond_at);
         for j in ctx.continues {
             self.b.patch_jump(j, step_at);
         }
