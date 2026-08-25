@@ -1772,11 +1772,19 @@ impl Hooks {
 /// at a script's top level cannot, and then arming the tier is pure cost: the
 /// dispatch loop checks the recorder at every op and consults the block tier once
 /// per run.
+/// Read once. This is consulted on every entry into a chunk — which is once
+/// per call of a procedure whose body was compiled elsewhere — and `getenv`
+/// walks the whole environment under a lock every time it is asked. Measured
+/// on 2,000,000 cross-chunk calls: `__findenv_locked` was 124 of 3796 samples,
+/// 3.3% of the run, reached only from here.
 fn jit_enabled() -> bool {
-    !matches!(
-        std::env::var("TCLRS_JIT").as_deref(),
-        Ok("off") | Ok("0") | Ok("no")
-    )
+    static ARMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ARMED.get_or_init(|| {
+        !matches!(
+            std::env::var("TCLRS_JIT").as_deref(),
+            Ok("off") | Ok("0") | Ok("no")
+        )
+    })
 }
 
 /// The five extension ops that need something the chunk does not carry: the
