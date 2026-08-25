@@ -31,12 +31,11 @@
 //!   [`EARLIEST`], and note the date is not the locale's.
 //! * A POSIX `TZ` *rule* string (`EST5EDT,M3.2.0,M11.1.0`) with no matching
 //!   zone file, and a time zone named by abbreviation in `clock scan`.
-//! * `clock scan` with `-base`, and without `-format`.
+//! * `clock scan` without `-format`.
 //!
 //! Not refused but not tclsh's answer either: a `clock scan` whose format
 //! names a weekday and no day of the month reads the weekday as choosing a day
-//! within the base week there, and is ignored here — the base date this
-//! frontend would need is the same one `-base` is refused for.
+//! within the base week there, and is ignored here.
 
 use std::sync::Arc;
 
@@ -1019,7 +1018,13 @@ fn take_name<S: AsRef<str>>(text: &[char], at: &mut usize, table: &[S]) -> Optio
 /// `%l` do, and tclsh's scanner skips space ahead of every numeric field.
 const NUMERIC_TOKENS: &str = "deEmNyYCHkIlMSjsUWVGgu w";
 
-fn scan_time(input: &str, format: &str, zone: &Zone, cat: &Catalog) -> Result<i64, String> {
+fn scan_time(
+    input: &str,
+    format: &str,
+    zone: &Zone,
+    cat: &Catalog,
+    base_at: i64,
+) -> Result<i64, String> {
     let text: Vec<char> = input.chars().collect();
     let pattern: Vec<char> = localize(format, cat).chars().collect();
     let mut got = Scanned::default();
@@ -1149,7 +1154,7 @@ fn scan_time(input: &str, format: &str, zone: &Zone, cat: &Catalog) -> Result<i6
     if at != text.len() {
         return Err(no_match());
     }
-    assemble(got, zone)
+    assemble(got, zone, base_at)
 }
 
 /// A signed run of digits — `%s`, `%J` and the integer part of a Julian day.
@@ -1390,7 +1395,7 @@ fn scan_zone(text: &[char], at: &mut usize) -> Result<i32, String> {
 }
 
 /// Turn scanned fields into an instant.
-fn assemble(got: Scanned, zone: &Zone) -> Result<i64, String> {
+fn assemble(got: Scanned, zone: &Zone, base_at: i64) -> Result<i64, String> {
     // `%s` and a Julian day written with a fraction are the instant itself:
     // `CLF_POSIXSEC`, which no zone and no calendar touches.
     if let Some(epoch) = got.epoch {
@@ -1412,8 +1417,7 @@ fn assemble(got: Scanned, zone: &Zone) -> Result<i64, String> {
     }
     // Fields the format did not carry come from the current day in the target
     // zone, which is the base tclsh uses when `-base` is absent.
-    let now = current_seconds();
-    let base = civil_of(now + zone.at(now).offset as i64);
+    let base = civil_of(base_at + zone.at(base_at).offset as i64);
     let year = match (got.year, got.century, got.year_in_century) {
         (Some(year), _, _) => year,
         (None, Some(century), Some(year)) => century * 100 + year,
@@ -1766,20 +1770,21 @@ fn run_scan(words: &[Value]) -> Result<Value, String> {
         SCAN_USAGE,
     )?;
     let zone = opts.zone()?;
-    if opts.base.is_some() {
-        return Err("clock scan: -base is not supported yet".to_string());
-    }
     let Some(format) = opts.format.as_deref() else {
         return Err(
             "clock scan: the free-form parser is not supported yet; use -format".to_string(),
         );
     };
     let cat = opts.catalog()?;
+    // `-base` is the instant the fields the format did not carry are taken
+    // from, which is the current one when the script names none.
+    let base_at = opts.base.unwrap_or_else(current_seconds);
     Ok(Value::Int(scan_time(
         &to_tcl_string(input),
         format,
         &zone,
         &cat,
+        base_at,
     )?))
 }
 

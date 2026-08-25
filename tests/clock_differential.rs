@@ -222,6 +222,21 @@ const LOCALE_PROGRAMS: &[&str] = &[
     // the day is bad too.
     "foreach p {{1970 13 32} {1970 01 32}} {puts [catch {clock scan $p -format {%Y %m %d} -gmt 1} m]\nputs $m}",
     "puts [catch {clock scan {1970 01 32 25} -format {%Y %m %d %H} -gmt 1} m]\nputs $m",
+    // `-base` is the instant the fields the format did not carry come from,
+    // in place of the current one.
+    "foreach b {0 1234567890 -1009843200 946684800} {puts [clock scan {} -format {} -gmt 1 -base $b]}",
+    "foreach f {%Y %m %d %H {%Y %m} {%m %d} %j %y} {puts [clock scan [clock format 1234567890 -format $f -gmt 1] -format $f -gmt 1 -base 0]}",
+    "foreach b {0 1234567890} {puts [clock scan 1999 -format %Y -gmt 1 -base $b]}",
+    "puts [clock scan {} -format {} -base 0 -timezone :America/New_York]",
+    "puts [clock scan {Jan 02} -format {%b %d} -base -1009843200 -gmt 1]",
+    "puts [clock scan 05 -format %d -base 1234567890 -gmt 1]",
+    // `%s` and a whole Julian day are the instant itself, so the base cannot
+    // reach them.
+    "puts [list [clock scan 1234567890 -format %s -gmt 1 -base 0] [clock scan 2440588 -format %J -gmt 1 -base 999]]",
+    // `-base now` is the reading the default already is, and a base that is not
+    // a number is refused in the words `clock format`'s value is.
+    "puts [expr {[clock scan {} -format {} -gmt 1 -base now] == [clock scan {} -format {} -gmt 1]}]",
+    "puts [catch {clock scan {} -format {} -gmt 1 -base abc} m]\nputs $m",
     // The same catalogue read twice answers the same, which is what the
     // memoised merge has to preserve.
     "foreach i {1 2 3} {puts [clock format 1234567890 -gmt 1 -locale de_AT -format {%B %x %A}]}",
