@@ -806,10 +806,18 @@ fn write_back(
                 }
             }
             value => {
-                let changed = state.globals.get(name) != Some(value);
-                state.globals.insert(name.to_string(), value.clone());
-                if changed && watched.writes {
-                    fired.push((name.to_string(), TraceOp::Write));
+                // The comparison decides whether a write trace fires, so it is
+                // paid either way — and once it says the table already holds
+                // this value, storing it again is a name allocated, a value
+                // cloned and a hash insert for no change at all. Most of a
+                // chunk's projection is unchanged on most exits from it: a
+                // procedure body reads the globals it names far more often
+                // than it writes them.
+                if state.globals.get(name) != Some(value) {
+                    state.globals.insert(name.to_string(), value.clone());
+                    if watched.writes {
+                        fired.push((name.to_string(), TraceOp::Write));
+                    }
                 }
             }
         }
