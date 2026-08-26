@@ -129,16 +129,37 @@ struct Run {
 }
 
 fn tclsh() -> Option<PathBuf> {
-    for name in ["tclsh", "tclsh9.0", "tclsh8.6"] {
-        if let Ok(out) = Command::new("sh")
+    for name in ["tclsh9.0", "tclsh", "tclsh8.6"] {
+        let Ok(out) = Command::new("sh")
             .arg("-c")
             .arg(format!("command -v {name}"))
             .output()
-        {
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
+        else {
+            continue;
+        };
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if path.is_empty() {
+            continue;
+        }
+        // Only the exact release this port is written against is an oracle.
+        // tclrs targets 9.0.4 (`src/cmd_info.rs`'s `TCL_PATCHLEVEL`), and a
+        // reference from any other release reports ITS version's differences
+        // as tclrs failures: 8.6 words errors differently ("couldn't compile
+        // regular expression" for "cannot compile") and has a different
+        // ensemble membership, while 9.0.3 predates the lseq fixes (a zero
+        // step yields the empty list where the manual says it yields `count`
+        // elements, and a bareword argument is still an expr). The ubuntu CI
+        // image ships 8.6, so CI skips these and they run against a matching
+        // tclsh locally.
+        let Ok(v) = Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf 'puts [info patchlevel]\\n' | {path}"))
+            .output()
+        else {
+            continue;
+        };
+        if String::from_utf8_lossy(&v.stdout).trim() == "9.0.4" {
+            return Some(PathBuf::from(path));
         }
     }
     None
@@ -195,7 +216,7 @@ fn first_line(s: &str) -> &str {
 #[test]
 fn scripts_run_from_a_file_match_tclsh() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
 
@@ -224,7 +245,7 @@ fn scripts_run_from_a_file_match_tclsh() {
 #[test]
 fn failing_scripts_report_and_exit_like_tclsh() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
 
@@ -278,7 +299,7 @@ fn failing_scripts_report_and_exit_like_tclsh() {
 #[test]
 fn stdin_sessions_match_tclsh() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     let tclrs_bin = PathBuf::from(TCLRS);
@@ -307,7 +328,7 @@ fn stdin_sessions_match_tclsh() {
 #[test]
 fn unreadable_scripts_are_reported_like_tclsh() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     let tclrs_bin = PathBuf::from(TCLRS);
@@ -336,7 +357,7 @@ fn unreadable_scripts_are_reported_like_tclsh() {
 #[test]
 fn exit_status_follows_the_script() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     for (program, expected) in [("puts ok", Some(0)), ("nosuchcmd", Some(1))] {
@@ -353,7 +374,7 @@ fn exit_status_follows_the_script() {
 #[test]
 fn deep_eval_nesting_is_refused_like_tclsh() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
 

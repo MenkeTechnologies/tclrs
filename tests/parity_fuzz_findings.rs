@@ -26,16 +26,37 @@ use std::process::Command;
 const TCLRS: &str = env!("CARGO_BIN_EXE_tclrs");
 
 fn tclsh() -> Option<PathBuf> {
-    for name in ["tclsh", "tclsh9.0", "tclsh8.6"] {
-        if let Ok(out) = Command::new("sh")
+    for name in ["tclsh9.0", "tclsh", "tclsh8.6"] {
+        let Ok(out) = Command::new("sh")
             .arg("-c")
             .arg(format!("command -v {name}"))
             .output()
-        {
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
+        else {
+            continue;
+        };
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if path.is_empty() {
+            continue;
+        }
+        // Only the exact release this port is written against is an oracle.
+        // tclrs targets 9.0.4 (`src/cmd_info.rs`'s `TCL_PATCHLEVEL`), and a
+        // reference from any other release reports ITS version's differences
+        // as tclrs failures: 8.6 words errors differently ("couldn't compile
+        // regular expression" for "cannot compile") and has a different
+        // ensemble membership, while 9.0.3 predates the lseq fixes (a zero
+        // step yields the empty list where the manual says it yields `count`
+        // elements, and a bareword argument is still an expr). The ubuntu CI
+        // image ships 8.6, so CI skips these and they run against a matching
+        // tclsh locally.
+        let Ok(v) = Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf 'puts [info patchlevel]\\n' | {path}"))
+            .output()
+        else {
+            continue;
+        };
+        if String::from_utf8_lossy(&v.stdout).trim() == "9.0.4" {
+            return Some(PathBuf::from(path));
         }
     }
     None
@@ -192,7 +213,7 @@ fn agrees(tclsh: &PathBuf, program: &str, expected: Observed) {
 #[test]
 fn an_unset_variable_read_is_an_error() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -224,7 +245,7 @@ fn an_unset_variable_read_is_an_error() {
 #[test]
 fn incr_creates_a_variable_that_does_not_exist() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(&tclsh, "incr fresh\nputs $fresh", out("1\n"));
@@ -253,7 +274,7 @@ fn incr_creates_a_variable_that_does_not_exist() {
 #[test]
 fn arity_is_reported_where_the_call_is_reached() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -284,7 +305,7 @@ fn arity_is_reported_where_the_call_is_reached() {
 #[test]
 fn deviation_unterminated_brace_reports_the_last_line() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     let program = "set x {\nputs a\nputs b\n";
@@ -328,7 +349,7 @@ fn deviation_unterminated_brace_reports_the_last_line() {
 #[test]
 fn conditions_are_tcl_booleans_not_the_vms_truthiness() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     // The reproducers, in each of the contexts that branch on a value.
@@ -455,7 +476,7 @@ fn conditions_are_tcl_booleans_not_the_vms_truthiness() {
 #[test]
 fn bug_non_numeric_strings_are_coerced_outside_a_boolean_position() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -498,7 +519,7 @@ fn bug_non_numeric_strings_are_coerced_outside_a_boolean_position() {
 #[test]
 fn literals_keep_the_spelling_the_script_wrote() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(&tclsh, "puts 3.0", out("3.0\n"));
@@ -545,7 +566,7 @@ fn literals_keep_the_spelling_the_script_wrote() {
 #[test]
 fn format_drops_the_sign_of_integer_negative_zero() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(&tclsh, "puts [format %.2f -0]", out("0.00\n"));
@@ -574,7 +595,7 @@ fn format_drops_the_sign_of_integer_negative_zero() {
 #[test]
 fn incr_reports_its_own_diagnostic_for_a_literal_increment() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -634,7 +655,7 @@ fn incr_reports_its_own_diagnostic_for_a_literal_increment() {
 #[test]
 fn incr_reports_its_own_wording_for_a_non_integer_variable() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     for same in [
@@ -669,7 +690,7 @@ fn incr_reports_its_own_wording_for_a_non_integer_variable() {
 #[test]
 fn bug_format_reports_a_list_as_a_quoted_string() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -688,7 +709,7 @@ fn bug_format_reports_a_list_as_a_quoted_string() {
 #[test]
 fn bug_expr_operand_errors_use_the_older_wording() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -714,7 +735,7 @@ fn bug_expr_operand_errors_use_the_older_wording() {
 #[test]
 fn integer_exponentiation_stays_integral_for_a_negative_exponent() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(&tclsh, "puts [expr {2 ** -1}]", out("0\n"));
@@ -762,7 +783,7 @@ fn integer_exponentiation_stays_integral_for_a_negative_exponent() {
 #[test]
 fn integers_beyond_i64_promote_to_arbitrary_precision() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     for same in [
@@ -824,7 +845,7 @@ fn integers_beyond_i64_promote_to_arbitrary_precision() {
 #[test]
 fn an_unusable_character_in_an_expression_is_named_as_a_character() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -864,7 +885,7 @@ fn an_unusable_character_in_an_expression_is_named_as_a_character() {
 #[test]
 fn unreachable_code_costs_nothing() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     // An argument count, a command name and an ensemble subcommand are all
@@ -944,7 +965,7 @@ fn unreachable_code_costs_nothing() {
 #[test]
 fn compile_time_errors_are_located_at_the_scripts_own_command() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     let location = |program: &str| -> String {
@@ -1010,7 +1031,7 @@ fn compile_time_errors_are_located_at_the_scripts_own_command() {
 #[test]
 fn a_non_ascii_index_reports_bad_index_rather_than_aborting() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -1061,7 +1082,7 @@ fn a_non_ascii_index_reports_bad_index_rather_than_aborting() {
 #[test]
 fn deep_nesting_is_refused_rather_than_exhausting_the_stack() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     // `code()` is `None` for a process killed by a signal, which is how both a
@@ -1152,7 +1173,7 @@ fn deep_nesting_is_refused_rather_than_exhausting_the_stack() {
 #[test]
 fn format_precision_past_the_formatters_ceiling_matches_tclsh() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     // The lengths, because the answers run to tens of thousands of digits: the
@@ -1224,7 +1245,7 @@ fn format_precision_past_the_formatters_ceiling_matches_tclsh() {
 #[test]
 fn format_size_is_refused_rather_than_aborting() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     for program in [
@@ -1308,7 +1329,7 @@ fn format_size_is_refused_rather_than_aborting() {
 #[test]
 fn expr_nesting_is_refused_rather_than_exhausting_the_stack() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     let run = |binary: &PathBuf, program: &str, label: &str| -> (Option<i32>, String) {
@@ -1412,7 +1433,7 @@ fn expr_nesting_is_refused_rather_than_exhausting_the_stack() {
 #[test]
 fn a_split_character_in_the_junk_diagnostic_does_not_panic() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     // Nineteen bytes of filler puts the twenty-byte cap between the two bytes
@@ -1468,7 +1489,7 @@ fn a_split_character_in_the_junk_diagnostic_does_not_panic() {
 #[test]
 fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     // `dict info` is the standing example: tclsh reports its hash-table
@@ -1529,7 +1550,7 @@ fn bug_a_runtime_refusal_is_caught_where_tclsh_answers() {
 #[test]
 fn bug_expr_accepts_a_quoted_nan_as_an_arithmetic_operand() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -1551,7 +1572,7 @@ fn bug_expr_accepts_a_quoted_nan_as_an_arithmetic_operand() {
 #[test]
 fn expr_left_shift_past_the_word_width_promotes() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -1589,7 +1610,7 @@ fn expr_left_shift_past_the_word_width_promotes() {
 #[test]
 fn bug_expr_literal_grammar_lacks_nan_and_inf() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(&tclsh, "puts [expr {inf > 1}]", out("1\n"));
@@ -1621,7 +1642,7 @@ fn bug_expr_literal_grammar_lacks_nan_and_inf() {
 #[test]
 fn bug_expr_negative_shift_count_answers_zero() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -1650,7 +1671,7 @@ fn bug_expr_negative_shift_count_answers_zero() {
 #[test]
 fn expr_string_operators_compare_operands_as_written() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(&tclsh, "puts [expr {1.0 eq 1}]", out("0\n"));
@@ -1687,7 +1708,7 @@ fn expr_string_operators_compare_operands_as_written() {
 #[test]
 fn expr_literal_grammar_takes_the_integer_grammar() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     for program in [
@@ -1715,7 +1736,7 @@ fn expr_literal_grammar_takes_the_integer_grammar() {
 #[test]
 fn bug_expr_zero_over_float_zero_is_nan_not_a_domain_error() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -1740,7 +1761,7 @@ fn bug_expr_zero_over_float_zero_is_nan_not_a_domain_error() {
 #[test]
 fn format_minus_against_zero_follows_tcls_three_rules() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     // Floating: the `0` is dropped, spaces on the right.
@@ -1775,7 +1796,7 @@ fn format_minus_against_zero_follows_tcls_three_rules() {
 #[test]
 fn fixed_expr_names_the_side_of_a_non_numeric_operand() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -1823,7 +1844,7 @@ fn fixed_expr_names_the_side_of_a_non_numeric_operand() {
 #[test]
 fn fixed_expr_names_a_list_operand_as_a_list() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -1862,7 +1883,7 @@ fn fixed_expr_names_a_list_operand_as_a_list() {
 #[test]
 fn fixed_bitwise_operators_refuse_non_integers() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -1908,7 +1929,7 @@ fn fixed_bitwise_operators_refuse_non_integers() {
 #[test]
 fn fixed_shift_distance_is_checked_and_saturates() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -1944,7 +1965,7 @@ fn fixed_shift_distance_is_checked_and_saturates() {
 #[test]
 fn fixed_modulo_names_the_double_operand_and_checks_the_left_one_first() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -1977,7 +1998,7 @@ fn fixed_modulo_names_the_double_operand_and_checks_the_left_one_first() {
 #[test]
 fn fixed_oversized_exponent_is_reported_as_one() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -2000,7 +2021,7 @@ fn fixed_oversized_exponent_is_reported_as_one() {
 #[test]
 fn fixed_format_names_a_list_argument_as_a_list() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -2048,7 +2069,7 @@ fn fixed_format_names_a_list_argument_as_a_list() {
 #[test]
 fn fixed_lsearch_accepts_the_sort_order_options() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(&tclsh, "puts [lsearch -increasing {a b c} *b]", out("1\n"));
@@ -2079,7 +2100,7 @@ fn fixed_lsearch_accepts_the_sort_order_options() {
 #[test]
 fn fixed_incr_on_an_absent_variable_counts_from_zero() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(&tclsh, "incr g 5\nputs $g", out("5\n"));
@@ -2107,7 +2128,7 @@ fn fixed_incr_on_an_absent_variable_counts_from_zero() {
 #[test]
 fn fixed_expr_answers_with_the_canonical_number() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(&tclsh, "set x 007\nputs [expr {$x}]", out("7\n"));
@@ -2129,7 +2150,7 @@ fn fixed_expr_answers_with_the_canonical_number() {
 #[test]
 fn fixed_nan_is_reported_rather_than_answered() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(
@@ -2176,7 +2197,7 @@ fn fixed_nan_is_reported_rather_than_answered() {
 #[test]
 fn bug_a_nan_condition_has_two_diagnostics() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     diverges(
@@ -2209,7 +2230,7 @@ fn bug_a_nan_condition_has_two_diagnostics() {
 #[test]
 fn fixed_expr_compile_time_diagnostics_match_the_reference() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     for (program, message) in [
@@ -2249,7 +2270,7 @@ fn fixed_expr_compile_time_diagnostics_match_the_reference() {
 #[test]
 fn fixed_expr_takes_a_hash_comment() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     agrees(&tclsh, "puts [expr {1 #c}]", out("1\n"));
@@ -2272,7 +2293,7 @@ fn fixed_expr_takes_a_hash_comment() {
 #[test]
 fn in_and_ni_test_membership_on_tcls_string_form() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     for program in [
@@ -2305,7 +2326,7 @@ fn in_and_ni_test_membership_on_tcls_string_form() {
 #[test]
 fn a_refused_operand_is_quoted_by_its_spelling() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     for program in [
@@ -2352,7 +2373,7 @@ fn a_refused_operand_is_quoted_by_its_spelling() {
 #[test]
 fn fixed_string_replace_on_an_empty_subject_does_not_abort() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     // The crash itself, both with and without a replacement.
@@ -2413,7 +2434,7 @@ fn fixed_string_replace_on_an_empty_subject_does_not_abort() {
 #[test]
 fn fixed_if_takes_the_interpreters_grammar_and_wording() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     // The keyword-less else, in each position it can stand.

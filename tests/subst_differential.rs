@@ -119,16 +119,37 @@ const PROGRAMS: &[&str] = &[
 ];
 
 fn tclsh() -> Option<PathBuf> {
-    for name in ["tclsh", "tclsh9.0", "tclsh8.6"] {
-        if let Ok(out) = Command::new("sh")
+    for name in ["tclsh9.0", "tclsh", "tclsh8.6"] {
+        let Ok(out) = Command::new("sh")
             .arg("-c")
             .arg(format!("command -v {name}"))
             .output()
-        {
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
+        else {
+            continue;
+        };
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if path.is_empty() {
+            continue;
+        }
+        // Only the exact release this port is written against is an oracle.
+        // tclrs targets 9.0.4 (`src/cmd_info.rs`'s `TCL_PATCHLEVEL`), and a
+        // reference from any other release reports ITS version's differences
+        // as tclrs failures: 8.6 words errors differently ("couldn't compile
+        // regular expression" for "cannot compile") and has a different
+        // ensemble membership, while 9.0.3 predates the lseq fixes (a zero
+        // step yields the empty list where the manual says it yields `count`
+        // elements, and a bareword argument is still an expr). The ubuntu CI
+        // image ships 8.6, so CI skips these and they run against a matching
+        // tclsh locally.
+        let Ok(v) = Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf 'puts [info patchlevel]\\n' | {path}"))
+            .output()
+        else {
+            continue;
+        };
+        if String::from_utf8_lossy(&v.stdout).trim() == "9.0.4" {
+            return Some(PathBuf::from(path));
         }
     }
     None
@@ -154,7 +175,7 @@ fn reference(tclsh: &PathBuf, program: &str) -> Result<String, String> {
 #[test]
 fn subst_throw_and_lsort_command_match_tclsh() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("no tclsh on PATH; skipping the differential");
+        eprintln!("no tclsh 9.0.4 on PATH; skipping the differential");
         return;
     };
     let mut failures = Vec::new();

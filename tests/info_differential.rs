@@ -128,7 +128,11 @@ const PROGRAMS: &[&str] = &[
     "set zzalpha 1\nputs [info vars ::zzalpha]",
     // ── versions ──
     "puts [info tclversion]",
-    "puts [info patchlevel]",
+    // `info patchlevel` is deliberately NOT compared: it is the release each
+    // interpreter IS, not behaviour they can agree on. tclrs answers with the
+    // Tcl it is written against (9.0.4), and a reference from any other 9.0.x
+    // answers with its own — a difference that says nothing about the port.
+    // `tests/version_pin.rs` pins what tclrs reports.
     // ── abbreviation, which tclsh resolves for any unique prefix ──
     "set a 1\nputs [info ex a]",
     "puts [info comp {puts hi}]",
@@ -188,16 +192,37 @@ const ERRORS: &[&str] = &[
 ];
 
 fn tclsh() -> Option<PathBuf> {
-    for name in ["tclsh", "tclsh9.0", "tclsh8.6"] {
-        if let Ok(out) = Command::new("sh")
+    for name in ["tclsh9.0", "tclsh", "tclsh8.6"] {
+        let Ok(out) = Command::new("sh")
             .arg("-c")
             .arg(format!("command -v {name}"))
             .output()
-        {
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
+        else {
+            continue;
+        };
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if path.is_empty() {
+            continue;
+        }
+        // Only the exact release this port is written against is an oracle.
+        // tclrs targets 9.0.4 (`src/cmd_info.rs`'s `TCL_PATCHLEVEL`), and a
+        // reference from any other release reports ITS version's differences
+        // as tclrs failures: 8.6 words errors differently ("couldn't compile
+        // regular expression" for "cannot compile") and has a different
+        // ensemble membership, while 9.0.3 predates the lseq fixes (a zero
+        // step yields the empty list where the manual says it yields `count`
+        // elements, and a bareword argument is still an expr). The ubuntu CI
+        // image ships 8.6, so CI skips these and they run against a matching
+        // tclsh locally.
+        let Ok(v) = Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf 'puts [info patchlevel]\\n' | {path}"))
+            .output()
+        else {
+            continue;
+        };
+        if String::from_utf8_lossy(&v.stdout).trim() == "9.0.4" {
+            return Some(PathBuf::from(path));
         }
     }
     None
@@ -261,7 +286,7 @@ fn compare(tclsh: &PathBuf, programs: &[&str]) {
 #[test]
 fn info_matches_tclsh() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     compare(&tclsh, PROGRAMS);
@@ -270,7 +295,7 @@ fn info_matches_tclsh() {
 #[test]
 fn info_errors_match_tclsh() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     compare(&tclsh, ERRORS);
@@ -286,7 +311,7 @@ fn info_errors_match_tclsh() {
 #[test]
 fn every_subcommand_is_answered_or_refused_by_name() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
     let listing = match reference(&tclsh, "info \u{7f}nosuch") {
@@ -364,7 +389,7 @@ fn every_subcommand_is_answered_or_refused_by_name() {
 #[test]
 fn a_refusal_for_something_tclsh_has_is_catchable_and_skippable() {
     let Some(tclsh) = tclsh() else {
-        eprintln!("skipping: no tclsh on PATH");
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
 

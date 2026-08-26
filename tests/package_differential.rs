@@ -149,15 +149,28 @@ const CASES: &[&str] = &[
 
 fn tclsh() -> Option<PathBuf> {
     for name in ["tclsh9.0", "tclsh"] {
-        if let Ok(out) = Command::new("sh")
+        let Ok(out) = Command::new("sh")
             .arg("-c")
             .arg(format!("command -v {name}"))
             .output()
-        {
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
+        else {
+            continue;
+        };
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if path.is_empty() {
+            continue;
+        }
+        // Only a 9.0 reference is an oracle for this port — see the same gate
+        // in the sibling differential harnesses.
+        let Ok(v) = Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf 'puts [info patchlevel]\\n' | {path}"))
+            .output()
+        else {
+            continue;
+        };
+        if String::from_utf8_lossy(&v.stdout).trim() == "9.0.4" {
+            return Some(PathBuf::from(path));
         }
     }
     None
