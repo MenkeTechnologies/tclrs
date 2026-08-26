@@ -783,14 +783,8 @@ fn unsupported_string_features_are_refused() {
         // it hands the double to the platform C library, whose answer differs
         // between the libraries this crate builds against. What is pinned here
         // is the refusal naming that, not a promise to port it — see BUGS.md.
-        (
-            "puts [format %a 1.5]",
-            "hands it to the platform C library",
-        ),
-        (
-            "puts [format %A 1.5]",
-            "hands it to the platform C library",
-        ),
+        ("puts [format %a 1.5]", "hands it to the platform C library"),
+        ("puts [format %A 1.5]", "hands it to the platform C library"),
         ("puts [string nosuch a]", "unknown or ambiguous subcommand"),
         ("puts [string wor abc 1]", "unknown or ambiguous subcommand"),
         ("puts [string is nosuch a]", "bad class"),

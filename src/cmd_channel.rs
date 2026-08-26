@@ -48,7 +48,7 @@
 //! its console `outputProc` builds a `tk::ConsoleOutput` command and evaluates
 //! it (`tk9.0.4/generic/tkConsole.c:520-536`), and that script can write to a
 //! channel again. Every path that calls a driver for *writing*, *closing* or
-//! *watching* therefore goes through [`with_device_detached`], which lends the
+//! *watching* therefore goes through `with_device_detached`, which lends the
 //! device out and puts it back rather than holding the table's borrow across
 //! the call.
 //!

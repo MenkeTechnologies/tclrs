@@ -42,7 +42,7 @@
 //! that is not known until the command runs, and every resolution above depends
 //! on knowing it. `namespace path`, `namespace unknown` and `namespace upvar`
 //! change resolution at run time and are refused for the same reason. See
-//! [`refuse_dynamic`].
+//! `refuse_dynamic`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -63,7 +63,7 @@ pub mod ext {
     pub const NS: u16 = NS_BASE;
     /// `[name]` → the same name, having refused it when the command it names
     /// has been renamed away. Emitted only at a call site whose name the same
-    /// chunk also passes to `rename`; see [`Compiler::ns_guard`].
+    /// chunk also passes to `rename`; see `Compiler::ns_guard`.
     pub const RENAME_GUARD: u16 = NS_BASE + 1;
 }
 
@@ -228,7 +228,7 @@ pub struct NsCtx {
     /// `(namespace, local name)` → the fully-qualified namespace variable the
     /// name stands for.
     ///
-    /// Saved and restored around every body by [`Compiler::ns_proc`], so a
+    /// Saved and restored around every body by `Compiler::ns_proc`, so a
     /// declaration is scoped to the procedure that made it — one procedure of a
     /// namespace may say `variable v` and another `global v` without either
     /// reaching the other's variable. The namespace is still part of the key,
@@ -280,7 +280,7 @@ impl NsCtx {
 
 /// The variable map key a name refers to from where the compiler now stands.
 ///
-/// The one hook namespaces need in the variable path: [`Compiler::var_place`]
+/// The one hook namespaces need in the variable path: `Compiler::var_place`
 /// calls it for every name that is not a procedure-local slot. At the root
 /// namespace with no `variable` declaration in scope it answers the name
 /// unchanged, which is why a script that uses no namespace lowers to exactly the

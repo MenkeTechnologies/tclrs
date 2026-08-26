@@ -13,7 +13,7 @@
 //!   variable, and a `[cmd]` inside it runs there. Running either against the
 //!   interpreter's globals instead would quietly read and write the wrong
 //!   variables inside a procedure, so the whole substitution happens inside the
-//!   projection [`crate::runtime::in_frame`] opens — the same one `uplevel` and
+//!   projection `crate::runtime::in_frame` opens — the same one `uplevel` and
 //!   an `eval` in a body run inside.
 //!
 //! The token semantics are `TclSubstCompile`'s (`generic/tclCompCmdsSZ.c:

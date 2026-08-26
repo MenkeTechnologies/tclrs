@@ -50,8 +50,8 @@ pub fn commands() -> Vec<&'static str> {
 ///
 /// [`commands`] answers the same question by building the whole sorted
 /// vocabulary, which is what a completion menu wants and what a dispatch decision
-/// must not do: [`crate::procs::expand_call_op`] asks this per call, for a name
-/// only the running script knows. Both read [`TABLES`], so neither can be the
+/// must not do: `crate::procs::expand_call_op` asks this per call, for a name
+/// only the running script knows. Both read `TABLES`, so neither can be the
 /// only one that knows about a command.
 pub fn is_command(name: &str) -> bool {
     TABLES.iter().any(|t| t.contains(&name))

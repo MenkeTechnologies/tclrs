@@ -17,7 +17,7 @@
 //!
 //! What a procedure's signature answers — `info args`, `info body`, `info
 //! default` — comes from the table the compiler already builds to check arity,
-//! published by [`crate::runtime::note_procs`] so a computed name works as well
+//! published by `crate::runtime::note_procs` so a computed name works as well
 //! as a literal. The body text rides on the same table: `info body $n` is a
 //! computed name too.
 //!
@@ -26,12 +26,12 @@
 //! the body, known only while compiling — a local is a slot, and a slot's name
 //! is not in the built chunk's variable table. Which of them are *set* is a
 //! property of the running frame. So the compiler bakes the candidates and their
-//! places into the chunk and [`ext::NAMES`] keeps the ones that are set, which is
+//! places into the chunk and `ext::NAMES` keeps the ones that are set, which is
 //! what tclsh answers (measured: `proc p {} {set l 1; info locals}` is `l`, and
 //! `proc p {} {info locals}` is empty).
 //!
 //! `info frame`, TclOO's queries, `constant`/`consts`, `loaded`, `cmdcount`,
-//! `cmdtype` and `errorstack` are refused by name — see [`why_refused`] and
+//! `cmdtype` and `errorstack` are refused by name — see `why_refused` and
 //! BUGS.md.
 
 use std::sync::Arc;
@@ -62,7 +62,7 @@ pub mod ext {
     /// it stores in the variable; 0 otherwise, storing the empty string.
     pub const DEFAULT: u16 = BASE + 4;
     /// One string about the interpreter; `arg` selects which — see
-    /// [`super::describe`].
+    /// `super::describe`.
     pub const ABOUT: u16 = BASE + 5;
     pub const SET_SCRIPT: u16 = BASE + 6;
     /// `info level` → the number of procedure activations on the stack.
@@ -159,7 +159,13 @@ impl Compiler {
             return self.error("wrong # args: should be \"info subcommand ?arg ...?\"");
         };
         let Some(sub) = head.as_literal() else {
-            return self.error("the subcommand of \"info\" must be a literal in this phase");
+            // Deferrable: tclsh dispatches an ensemble on its subcommand when
+            // the command runs, so `if {0} {info $x}` costs a script nothing
+            // there. See [`Compiler::literal_of`], which the other ensembles
+            // reach the same refusal through.
+            return Err(
+                self.deferrable_err("the subcommand of \"info\" must be a literal in this phase")
+            );
         };
         let sub = resolve(sub).map_err(|msg| self.err(msg))?;
 

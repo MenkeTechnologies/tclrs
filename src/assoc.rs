@@ -11,7 +11,7 @@
 //! An array therefore lives wherever its *variable* lives — a `Value::Hash` in
 //! fusevm's global table for a script's own variable, and in the call frame's
 //! slot for a procedure's local — reached only through the ops below. Every one
-//! of them takes the variable's [`Place`] rather than a name index, which is
+//! of them takes the variable's `Place` rather than a name index, which is
 //! what lets one op serve both; dicts never touch a variable except when `dict
 //! set` writes one back.
 //!
@@ -1284,6 +1284,16 @@ impl Compiler {
         let Some(Target::Scalar(dict_name)) = target_of(name) else {
             return self.error("dict update on an array element is not supported yet");
         };
+        // Every variable name is resolved before a single op is emitted, so that
+        // a computed one is a refusal this command has not yet written code for
+        // — which is what lets [`Compiler::command`] turn it into code inside the
+        // branch instead of a verdict on the script. Resolving them in the loop
+        // below emitted first and refused second, and `if {0} {dict update d a
+        // $vn {}}` took the whole script down where tclsh prints nothing.
+        let var_names = pairs
+            .chunks(2)
+            .map(|pair| self.var_name_of(&pair[1]))
+            .collect::<Result<Vec<_>, _>>()?;
         let script = self.body_of(body)?;
         self.push_str(&dict_name);
         // By place, not by value: the write-back has to reach the same variable
@@ -1291,16 +1301,12 @@ impl Compiler {
         // global.
         let place = self.var_place_operand(&dict_name);
         self.emit(Op::LoadInt(place), 1);
-        for pair in pairs.chunks(2) {
-            let [key, var] = pair else {
-                unreachable!("the pair count was checked by the caller");
-            };
-            self.word(key)?;
-            let var_name = self.var_name_of(var)?;
+        for (pair, var_name) in pairs.chunks(2).zip(&var_names) {
+            self.word(&pair[0])?;
             // The name rides too: the binding refuses an array in tclsh's own
             // wording, `can't set "x": variable is array` (measured).
-            self.push_str(&var_name);
-            let var_place = self.var_place_operand(&var_name);
+            self.push_str(var_name);
+            let var_place = self.var_place_operand(var_name);
             self.emit(Op::LoadInt(var_place), 1);
         }
         let count = pairs.len() / 2;
@@ -1335,12 +1341,7 @@ impl Compiler {
     /// record with a field the body does not read is ordinary code — and
     /// carrying its value in the command's record instead was right only for a
     /// body that leaves it alone.
-    fn dict_with(
-        &mut self,
-        name: &Word,
-        path: &[Word],
-        body: &Word,
-    ) -> Result<(), CompileError> {
+    fn dict_with(&mut self, name: &Word, path: &[Word], body: &Word) -> Result<(), CompileError> {
         let Some(Target::Scalar(dict_name)) = target_of(name) else {
             return self.error("dict with on an array element is not supported yet");
         };
@@ -1557,7 +1558,9 @@ fn dict_each_op(vm: &mut VM, arg: u8) -> Result<(), String> {
     let Some(Value::Array(state)) = vm.stack.last_mut() else {
         return Err(CORRUPT.to_string());
     };
-    let [Value::Array(pairs), Value::Int(cursor), Value::Str(acc)] = Arc::make_mut(state).as_mut_slice() else {
+    let [Value::Array(pairs), Value::Int(cursor), Value::Str(acc)] =
+        Arc::make_mut(state).as_mut_slice()
+    else {
         return Err(CORRUPT.to_string());
     };
     let at = *cursor as usize;
@@ -1644,7 +1647,9 @@ impl DictUpdate {
             return None;
         };
         let bindings = rest
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 let place = tcl_int(&pair[1]).ok()?;
                 Some((to_tcl_string(&pair[0]), Place::decode(place)))
@@ -1760,7 +1765,12 @@ fn dict_update_end(vm: &mut VM, above: u8) -> Result<(), String> {
     let written = Value::Str(Arc::new(dict.to_list()));
     match crate::runtime::var_cell(vm, record.place) {
         Some(cell) => *cell = written,
-        None => return Err(format!("can't set \"{}\": no frame to set it in", record.name)),
+        None => {
+            return Err(format!(
+                "can't set \"{}\": no frame to set it in",
+                record.name
+            ))
+        }
     }
     Ok(())
 }
@@ -1917,7 +1927,7 @@ pub(crate) fn dict_with_bind(interp: &Shared, vm: &mut VM) -> Result<(), TclErro
             // Assigning a scalar over a variable that holds an array is refused
             // in tclsh's own wording, and the refusal happens *during* the
             // binding, so the keys before it stay assigned (measured).
-            Some(cell) if matches!(cell, Value::Hash(_)) => {
+            Some(Value::Hash(_)) => {
                 return Err(TclError::plain(format!(
                     "can't set \"{key}\": variable is array"
                 )))

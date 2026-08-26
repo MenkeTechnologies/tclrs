@@ -402,7 +402,9 @@ fn every_field_type_round_trips_through_tclsh() {
         "tclsh rejected the generated program: {}",
         error.unwrap_or_default()
     );
-    let got = tclrs::eval(&program).expect("the generated program runs").output;
+    let got = tclrs::eval(&program)
+        .expect("the generated program runs")
+        .output;
     if got != expected {
         let mismatch = expected
             .lines()

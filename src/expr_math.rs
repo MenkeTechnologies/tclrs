@@ -21,7 +21,7 @@
 //!   then returns the error without writing one.
 //!
 //! Each call lowers to one extension op whose id is the function's index in
-//! [`FUNCTIONS`] and whose inline operand is the actual argument count. Arity
+//! `FUNCTIONS` and whose inline operand is the actual argument count. Arity
 //! is therefore checked when the call *runs*, which is where tclsh checks it:
 //! `if {0} {expr {abs(1,2)}}` is silent there, and refusing while compiling
 //! would make it an error.

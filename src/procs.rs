@@ -90,7 +90,7 @@ pub struct Signature {
     ///
     /// Kept on the signature rather than in a table of its own because the two
     /// are collected in the same walk and published through the same
-    /// [`crate::runtime::note_procs`]: one record per procedure, so a name
+    /// `crate::runtime::note_procs`: one record per procedure, so a name
     /// cannot have a signature and no body by accident.
     pub body: Option<String>,
 }

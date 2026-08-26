@@ -51,6 +51,11 @@ impl Compiler {
         let [start, test, next, body] = args else {
             return self.error("wrong # args: should be \"for start test next body\"");
         };
+        // The test is compiled at the *bottom* of the rotated shape, so a
+        // computed one would be refused after ops exist and could no longer
+        // become code in the branch. Asked here, before anything is emitted,
+        // for the reason `Compiler::cmd_while` states.
+        self.literal_of(test, "condition")?;
         let start = self.body_of(start)?;
         let body = self.body_of(body)?;
         let next = self.body_of(next)?;
@@ -382,11 +387,7 @@ impl Compiler {
     /// the ordinary path (the body's value), three in the handler (the code, the
     /// options and the message the driver pushed). It consumes the record and
     /// nothing else, so the command leaves one value where the record was.
-    pub(crate) fn finally_region<F>(
-        &mut self,
-        cleanup: u16,
-        body: F,
-    ) -> Result<(), CompileError>
+    pub(crate) fn finally_region<F>(&mut self, cleanup: u16, body: F) -> Result<(), CompileError>
     where
         F: FnOnce(&mut Self) -> Result<(), CompileError>,
     {
@@ -436,12 +437,10 @@ impl Compiler {
     /// refusal reported the arity message instead.
     pub(crate) fn cmd_error(&mut self, args: &[Word]) -> Result<(), CompileError> {
         let [message, extra @ ..] = args else {
-            return self
-                .error("wrong # args: should be \"error message ?errorInfo? ?errorCode?\"");
+            return self.error("wrong # args: should be \"error message ?errorInfo? ?errorCode?\"");
         };
         if extra.len() > 2 {
-            return self
-                .error("wrong # args: should be \"error message ?errorInfo? ?errorCode?\"");
+            return self.error("wrong # args: should be \"error message ?errorInfo? ?errorCode?\"");
         }
         self.word(message)?;
         for w in extra {

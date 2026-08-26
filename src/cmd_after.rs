@@ -8,7 +8,7 @@
 //! wake up (`generic/tclTimer.c:776-975`). Only the first half can live in C:
 //! the script is Tcl text and nothing but this frontend can run it.
 //!
-//! So the record lives here, in [`Afters`] on the interpreter, for every build.
+//! So the record lives here, in `Afters` on the interpreter, for every build.
 //! What differs is what else can be pending:
 //!
 //! * A **default build** has no notifier — `src/tk/` is behind the `tk` feature
@@ -19,17 +19,17 @@
 //!   reason Tcl's do. Nothing is stubbed out and nothing silently does less: the
 //!   set of event sources is smaller, and the loop over it is the same loop.
 //! * A **`--features tk` build** also has the ported notifier
-//!   ([`crate::tk::notifier`]), which is where Tk's own window events, file
+//!   (`crate::tk::notifier`), which is where Tk's own window events, file
 //!   handlers and C-level idle handlers (`Tk_EventuallyRedraw` and the rest)
-//!   arrive. [`service_one`] pumps it alongside the queue below.
+//!   arrive. `service_one` pumps it alongside the queue below.
 //!
 //! # Ordering
 //!
 //! `Tcl_DoOneEvent` services the event queue before the idle handlers and
 //! returns as soon as it has serviced one thing (`generic/tclNotify.c:917-1061`,
-//! reproduced in [`crate::tk::notifier`] and pinned by `tests/tk_notifier.rs`).
+//! reproduced in `crate::tk::notifier` and pinned by `tests/tk_notifier.rs`).
 //! Measured against tclsh 9.0.4, an `after 0` script therefore runs before an
-//! `after idle` script queued before it. [`service_one`] keeps that order: due
+//! `after idle` script queued before it. `service_one` keeps that order: due
 //! timers first, then the notifier, then the oldest idle handler.
 //!
 //! # What blocking costs
@@ -54,7 +54,7 @@
 //! `AfterProc` evaluates with `TCL_EVAL_GLOBAL` (`generic/tclTimer.c:1157`), so
 //! an `after` script runs at the global level whatever was running when it was
 //! registered. That is exactly what a nested chunk reaches here, so the script
-//! is run through [`crate::runtime::run_source`] — the same door the `eval`
+//! is run through `crate::runtime::run_source` — the same door the `eval`
 //! command goes through, and with the same write-back of the running chunk's
 //! variables either side of it.
 

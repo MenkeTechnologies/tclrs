@@ -51,7 +51,7 @@ pub mod ext {
     /// were written.
     pub const SCAN: u16 = BASE + 1;
     /// `[option …, data, count]` → the encoded text. The inline operand is the
-    /// codec's index in [`CODECS`].
+    /// codec's index in `CODECS`.
     pub const ENCODE: u16 = BASE + 2;
     /// The inverse, with the same stack shape.
     pub const DECODE: u16 = BASE + 3;
@@ -135,12 +135,7 @@ fn compile_scan(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
 }
 
 /// `binary encode format ?-option value ...? data` and its inverse.
-fn compile_codec(
-    c: &mut Compiler,
-    args: &[Word],
-    id: u16,
-    verb: &str,
-) -> Result<(), CompileError> {
+fn compile_codec(c: &mut Compiler, args: &[Word], id: u16, verb: &str) -> Result<(), CompileError> {
     let Some(first) = args.first() else {
         return c.error(format!(
             "wrong # args: should be \"binary {verb} subcommand ?arg ...?\""
@@ -155,7 +150,10 @@ fn compile_codec(
     };
     let rest = &args[1..];
     if rest.is_empty() {
-        return c.error(format!("wrong # args: should be \"{}\"", usage(verb, codec)));
+        return c.error(format!(
+            "wrong # args: should be \"{}\"",
+            usage(verb, codec)
+        ));
     }
     for w in rest {
         c.word(w)?;
@@ -284,15 +282,22 @@ fn big_endian(cmd: char) -> bool {
 /// The bytes a string stands for, refusing a character that is not one.
 ///
 /// A port of `Tcl_GetBytesFromObj`'s loop (`generic/tclBinary.c:512`),
-/// including its message — whose "byte offset" is the count of bytes it had
-/// *written*, so on a string of multi-byte characters it is a character index.
+/// including its message. The index it names counts CHARACTERS, which is what
+/// the count of bytes written so far comes to on this path. Measured against
+/// tclsh 9.0.3, which is where the older "expected code point values below
+/// 0xff but value at byte offset N was 0xM" wording was replaced:
+///
+/// ```text
+/// % binary scan \u0100 a* v
+/// expected byte sequence but character 0 was 'Ā' (U+000100)
+/// ```
 pub(crate) fn as_bytes(text: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(text.len());
     for ch in text.chars() {
         let cp = u32::from(ch);
         if cp > 255 {
             return Err(format!(
-                "expected code point values below 0xff but value at byte offset {} was 0x{cp:x}",
+                "expected byte sequence but character {} was '{ch}' (U+{cp:06X})",
                 out.len()
             ));
         }
@@ -367,7 +372,11 @@ fn format(fmt: &str, args: &[String]) -> Result<Vec<u8>, String> {
                             None => false,
                         };
                         if one {
-                            value |= if step.cmd == 'b' { 1 << bit } else { 0x80 >> bit };
+                            value |= if step.cmd == 'b' {
+                                1 << bit
+                            } else {
+                                0x80 >> bit
+                            };
                         }
                     }
                     out[at + byte] = value;
@@ -442,7 +451,8 @@ fn plan_format(f: &[char], args: &[String]) -> Result<(Vec<Planned>, usize), Str
             // Reported for a bad type character too, but only after the type
             // itself has been recognised — `binary format Zc 1` is the bad
             // field, `binary format cZ 1` is as well.
-            if item_size(spec.cmd).is_none() && !matches!(spec.cmd, 'a' | 'A' | 'b' | 'B' | 'h' | 'H')
+            if item_size(spec.cmd).is_none()
+                && !matches!(spec.cmd, 'a' | 'A' | 'b' | 'B' | 'h' | 'H')
             {
                 return Err(bad_field(&spec));
             }
@@ -460,7 +470,9 @@ fn plan_format(f: &[char], args: &[String]) -> Result<(Vec<Planned>, usize), Str
                 Count::Num(n) => n,
             },
             'x' => match spec.count {
-                Count::All => return Err("cannot use \"*\" in format string with \"x\"".to_string()),
+                Count::All => {
+                    return Err("cannot use \"*\" in format string with \"x\"".to_string())
+                }
                 Count::One => 1,
                 Count::Num(n) => n,
             },
@@ -471,9 +483,7 @@ fn plan_format(f: &[char], args: &[String]) -> Result<(Vec<Planned>, usize), Str
                 Count::Num(n) => n,
             },
             '@' => match spec.count {
-                Count::One => {
-                    return Err("missing count for \"@\" field specifier".to_string())
-                }
+                Count::One => return Err("missing count for \"@\" field specifier".to_string()),
                 Count::All => length,
                 Count::Num(n) => n,
             },
@@ -482,9 +492,7 @@ fn plan_format(f: &[char], args: &[String]) -> Result<(Vec<Planned>, usize), Str
                 Count::All => list::length(&args[arg])?,
                 Count::Num(n) => {
                     if list::length(&args[arg])? < n {
-                        return Err(
-                            "number of elements in list does not match count".to_string()
-                        );
+                        return Err("number of elements in list does not match count".to_string());
                     }
                     n
                 }
@@ -550,8 +558,8 @@ fn write_number(slot: &mut [u8], cmd: char, text: &str) -> Result<(), String> {
         'f' | 'r' | 'R' => (double(text)? as f32).to_le_bytes().to_vec(),
         'd' | 'q' | 'Q' => double(text)?.to_le_bytes().to_vec(),
         _ => {
-            let value = crate::cmd_string::parse_big(text.trim_matches(is_space))
-                .ok_or_else(|| {
+            let value =
+                crate::cmd_string::parse_big(text.trim_matches(is_space)).ok_or_else(|| {
                     format!(
                         "expected integer but got {}",
                         crate::runtime::named(text, 50)
@@ -1127,7 +1135,7 @@ fn options(words: &[String], encoding: bool, codec: usize) -> Result<(Options, &
     let shape = if takes_pairs {
         // `-option value` pairs and then the data, so an even count is a pair
         // left half-written.
-        words.len() % 2 == 0
+        words.len().is_multiple_of(2)
     } else if encoding {
         // `binary encode hex` has no option slot at all.
         words.len() != 1
@@ -1147,10 +1155,7 @@ fn options(words: &[String], encoding: bool, codec: usize) -> Result<(Options, &
     while i < opts.len() {
         if !encoding {
             if opts[i] != "-strict" {
-                return Err(format!(
-                    "bad option \"{}\": must be -strict",
-                    opts[i]
-                ));
+                return Err(format!("bad option \"{}\": must be -strict", opts[i]));
             }
             out.strict = true;
             i += 1;

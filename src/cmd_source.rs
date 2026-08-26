@@ -13,13 +13,13 @@
 //! sentence written here: `couldn't read file "x": no such file or directory` is
 //! `Tcl_PosixError`'s message (`generic/tclIOUtil.c`'s `Tcl_FSEvalFileEx`, which
 //! reports `couldn't read file \"%s\": %s` with `Tcl_PosixError`'s text), and
-//! [`posix_reason`] maps the error kinds that reach it to the same lowercase
+//! `posix_reason` maps the error kinds that reach it to the same lowercase
 //! `strerror` phrases.
 //!
 //! # `tcl_findLibrary`
 //!
 //! `tcl_findLibrary` is not a C command: it is a Tcl procedure in Tcl's own
-//! library, `library/auto.tcl` lines 55–218 of the 9.0.4 release. [`find_library`]
+//! library, `library/auto.tcl` lines 55–218 of the 9.0.4 release. `find_library`
 //! is a port of that procedure, and the ordering of the directories it builds is
 //! the ordering of the original's `lappend dirs` calls.
 //!

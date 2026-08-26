@@ -13,7 +13,7 @@
 //!    procedure without any new machinery, because `Op::Call` records `return_ip`
 //!    and the op before it is in the *caller's* body — so a table keyed by the
 //!    op-index range each body occupies answers for every frame at once. See
-//!    [`BodySlots`] for the exact walk, and why the range rather than the entry
+//!    `BodySlots` for the exact walk, and why the range rather than the entry
 //!    point is what it is keyed by.
 //! 2. **A run-time variable table addressable by name at any level**, which is
 //!    what the reference interpreter has. It costs procedure locals their slots
@@ -24,7 +24,7 @@
 //! **The first is what is implemented**, because the second is not a trade this
 //! frontend can make: every procedure in the tree would lose trace eligibility,
 //! and `bench/counted_loop_proc.tcl` reaching native code is the whole reason
-//! locals are slots. The table is compile-time metadata — [`SlotNames`], keyed
+//! locals are slots. The table is compile-time metadata — `SlotNames`, keyed
 //! by chunk identity exactly as `crate::runtime`'s tolerant-read set is — so a
 //! chunk that never says `upvar` carries it, never reads it, and runs the same
 //! ops it ran before.
@@ -33,14 +33,14 @@
 //!
 //! `upvar #0 other local` where both names and the level are literal is still
 //! bound *while the script is read*: `Scope::aliases` records it and
-//! [`Compiler::var_place`] answers with the global's own place, so the body pays
+//! `Compiler::var_place` answers with the global's own place, so the body pays
 //! nothing. That covers the whole of what this module used to allow.
 //!
 //! Everything else — a computed level, a computed name, an array element as the
 //! target — becomes a **link**: the local gets a frame slot, the slot holds a
-//! [`Link`] descriptor rather than a value, and [`Compiler::var_place`] answers
-//! [`Place::Link`] so that every read, write, `unset`, `incr`, `lappend` and
-//! `info exists` follows the descriptor. A [`Link`] names one of three homes:
+//! `Link` descriptor rather than a value, and `Compiler::var_place` answers
+//! `Place::Link` so that every read, write, `unset`, `incr`, `lappend` and
+//! `info exists` follows the descriptor. A `Link` names one of three homes:
 //!
 //! * a global at its index in the running chunk's projection;
 //! * a global whose *name the chunk's table does not carry*, because the script
@@ -87,7 +87,7 @@
 //! body never spells all name a variable of that activation which no op in the
 //! already-built body can address. tclsh keeps such a name in the frame's own
 //! variable table; here it gets a **run-time slot** past the last one the
-//! compiler allocated — [`runtime_slot_alloc`] — so it is a local like any
+//! compiler allocated — `runtime_slot_alloc` — so it is a local like any
 //! other: a later script in the same frame reads what an earlier one wrote,
 //! `info locals` lists it, and it dies with the frame rather than becoming a
 //! global that outlives the call.
@@ -725,8 +725,14 @@ fn resolve_target(
     // descriptor's slot would make the new link point at the descriptor; tclsh
     // links to what the chain ends at, so `upvar 1 y q` in a body whose caller
     // did `upvar 1 $v y` reaches the caller's caller's variable.
-    let link = link_of_home(vm, &Link { home, elem: elem.clone() })
-        .unwrap_or(Link { home, elem });
+    let link = link_of_home(
+        vm,
+        &Link {
+            home,
+            elem: elem.clone(),
+        },
+    )
+    .unwrap_or(Link { home, elem });
     if link.elem.is_some() {
         materialize_array(vm, &link, other)?;
     }
@@ -968,7 +974,7 @@ pub(crate) fn dynamic_link(
     let level = crate::runtime::current_level(vm);
     let is_global = level == 0
         || base.contains("::")
-        || crate::list::split(declared).is_ok_and(|names| names.iter().any(|n| *n == base));
+        || crate::list::split(declared).is_ok_and(|names| names.contains(&base));
     if is_global {
         let home = Home::Global(global_home(interp, vm, &base)?);
         return Ok(Link { home, elem });
@@ -1172,7 +1178,7 @@ pub(crate) fn dyn_exists_op(vm: &mut VM, interp: &Shared) -> Result<(), TclError
     let level = crate::runtime::current_level(vm);
     let is_global = level == 0
         || base.contains("::")
-        || crate::list::split(&declared).is_ok_and(|names| names.iter().any(|n| *n == base));
+        || crate::list::split(&declared).is_ok_and(|names| names.contains(&base));
 
     let home = if is_global {
         let key = crate::cmd_namespace::store_key(&base).to_string();
@@ -1204,9 +1210,7 @@ pub(crate) fn dyn_exists_op(vm: &mut VM, interp: &Shared) -> Result<(), TclError
         match frame_home_opt(vm, level, &base)? {
             Some(home) => Some(home),
             None => crate::runtime::frame_of_level(vm, level)
-                .and_then(|frame| {
-                    runtime_slot(vm, frame, &base).map(|slot| (frame, slot))
-                })
+                .and_then(|frame| runtime_slot(vm, frame, &base).map(|slot| (frame, slot)))
                 .and_then(|(frame, slot)| {
                     Some(Home::Slot {
                         frame: u16::try_from(frame).ok()?,

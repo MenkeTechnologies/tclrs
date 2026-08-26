@@ -25,10 +25,10 @@ pub mod clock_locale;
 pub mod clock_msgs;
 /// `after`, `update` and `vwait` — the event loop a Tk script lives inside.
 pub mod cmd_after;
-pub mod cmd_channel;
-pub mod cmd_clock;
 /// `encoding` — transcoding, and the tables it is done with.
 pub mod cmd_binary;
+pub mod cmd_channel;
+pub mod cmd_clock;
 pub mod cmd_encoding;
 pub mod cmd_file;
 /// `info` — what the interpreter knows about itself.

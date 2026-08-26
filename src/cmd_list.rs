@@ -392,6 +392,11 @@ pub(crate) fn run(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
 
 // ── the split cache ──────────────────────────────────────────────────────
 
+/// One remembered split: the list string it came from, and the elements it
+/// parsed to. Both sides are `Arc`, so a hit hands back the same allocation the
+/// last split produced instead of re-parsing and re-allocating.
+type SplitEntry = (Arc<String>, Arc<Vec<String>>);
+
 thread_local! {
     /// The elements of the last few lists a read-only list command split.
     ///
@@ -420,9 +425,7 @@ thread_local! {
     /// Four entries rather than one, so that a loop reading two lists — the
     /// shape `foreach` over one and `lindex` into another produces — hits on
     /// both instead of evicting each in turn.
-    static SPLIT: RefCell<Vec<(Arc<String>, Arc<Vec<String>>)>> = const {
-        RefCell::new(Vec::new())
-    };
+    static SPLIT: RefCell<Vec<SplitEntry>> = const { RefCell::new(Vec::new()) };
 }
 
 /// How many splits are remembered at once.

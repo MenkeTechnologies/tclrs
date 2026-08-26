@@ -28,7 +28,7 @@
 //!
 //! * Any instant before the Gregorian changeover of 1752-09-14, which tclsh
 //!   reckons in the Julian calendar and this module has no calendar for. See
-//!   [`EARLIEST`], and note the date is not the locale's.
+//!   `EARLIEST`, and note the date is not the locale's.
 //! * A POSIX `TZ` *rule* string (`EST5EDT,M3.2.0,M11.1.0`) with no matching
 //!   zone file, and a time zone named by abbreviation in `clock scan`.
 //! * `clock scan` without `-format`.

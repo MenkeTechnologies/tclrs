@@ -24,14 +24,14 @@
 //!   unspecified; a deterministic one cannot be wrong and is testable.
 //! * After the `package unknown` script has run and the package is still
 //!   missing, one more source is consulted: the toolkit loaders in
-//!   [`load_native`]. That is where `package require Tk` reaches
-//!   [`crate::tk::session`], which `dlopen`s libtk and calls `Tk_Init`. Tcl
+//!   `load_native`. That is where `package require Tk` reaches
+//!   `crate::tk::session`, which `dlopen`s libtk and calls `Tk_Init`. Tcl
 //!   reaches the same place through `pkgIndex.tcl` and `load`; this frontend
 //!   has neither, and the hook is the smallest thing that does not pretend to.
 //!
 //! # One registry, two doors
 //!
-//! [`Tcl_PkgProvideEx`](crate::tk::pkg::pkg_provide_ex) — the stub slot Tk
+//! `Tcl_PkgProvideEx` — the stub slot Tk
 //! itself calls — and the `package provide` a script runs are the same
 //! operation on the same table, and it is the table below. Tcl keeps one per
 //! interpreter (`iPtr->packageTable`, `generic/tclPkg.c:113-116`); this crate

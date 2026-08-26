@@ -93,7 +93,7 @@ pub struct TclError {
     /// A failure raised by a running chunk carries no line, as the reference
     /// interpreter's does not either.
     pub line: Option<usize>,
-    /// The return code: [`TCL_ERROR`] for an error, and one of the others for
+    /// The return code: `TCL_ERROR` for an error, and one of the others for
     /// a `break`, a `continue` or a `return`.
     pub code: i32,
     /// The number of call levels still to unwind before `code` takes effect.
@@ -1118,7 +1118,7 @@ pub enum TraceOp {
 /// Where a variable trace registered outside this module is answered.
 ///
 /// tclrs has no `trace` command of its own, so the only implementation is
-/// [`crate::tk::linkvar`], which holds the traces `Tcl_TraceVar2` created and
+/// `crate::tk::linkvar`, which holds the traces `Tcl_TraceVar2` created and
 /// calls the C procedures behind them. Keeping the interface here rather than
 /// reaching into `crate::tk` is what lets the whole mechanism compile away in a
 /// build without the feature: nothing ever installs a sink, so

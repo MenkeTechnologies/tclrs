@@ -197,7 +197,13 @@ fn tcl_list(items: &[&str]) -> String {
 
 /// The generated loop nest: every combination of the lists, printed as the
 /// specifier, the value and what `format` made of them.
-fn sweep(values: &[&str], flags: &[&str], widths: &[&str], sizes: &[&str], convs: &[&str]) -> String {
+fn sweep(
+    values: &[&str],
+    flags: &[&str],
+    widths: &[&str],
+    sizes: &[&str],
+    convs: &[&str],
+) -> String {
     format!(
         "{CATCHER}\
          foreach value {} {{\n\
@@ -262,8 +268,21 @@ fn character_conversions_match_tclsh() {
     };
     let mut program = String::from(CATCHER);
     for value in [
-        "0", "1", "65", "127", "128", "255", "256", "8364", "65533", "65536", "128169", "1114111",
-        "1114112", "-1", "2147483648",
+        "0",
+        "1",
+        "65",
+        "127",
+        "128",
+        "255",
+        "256",
+        "8364",
+        "65533",
+        "65536",
+        "128169",
+        "1114111",
+        "1114112",
+        "-1",
+        "2147483648",
     ] {
         for width in ["", "3", "-3"] {
             program.push_str(&format!(

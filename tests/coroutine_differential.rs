@@ -259,11 +259,12 @@ fn unsupported_coroutine_constructs_are_refused() {
             "\"coroutine\" is only supported at the top level",
         ),
         (
-            "proc g {} {yield}\nproc make {} {coroutine c g}",
-            "\"coroutine\" is only supported at the top level",
-        ),
-        (
-            "proc g {} {yield}\ncatch {coroutine c g}",
+            // The body has to be *reached* for the refusal to fire. Defining
+            // `make` no longer refuses, because tclsh does not run a procedure
+            // body until it is called and neither does this — see
+            // `a_coroutine_in_a_body_that_never_runs_costs_nothing` below. The
+            // refusal itself is unchanged, so the call is what this asserts.
+            "proc g {} {yield}\nproc make {} {coroutine c g}\nmake",
             "\"coroutine\" is only supported at the top level",
         ),
         // The body is entered through the chunk's sub table, so it has to be a
@@ -365,6 +366,27 @@ fn unsupported_coroutine_constructs_are_refused() {
             "{src:?}: expected an error mentioning {expected:?}, got {err:?}"
         );
     }
+}
+
+/// The refusal inside `catch` is an ordinary catchable error, not an abort.
+///
+/// It used to fail the whole script, so `catch {coroutine c g}` never returned
+/// and the refusal could only be observed from outside. A body is compiled when
+/// it runs now, so the message reaches the script — `catch` returns 1 and holds
+/// it. (tclsh creates the coroutine here and `catch` returns 0; the refusal
+/// itself is the documented limitation this file pins, not the exit path.)
+#[test]
+fn the_coroutine_refusal_is_catchable() {
+    let out = tclrs::eval("proc g {} {yield}\nputs [catch {coroutine c g} m]\nputs $m")
+        .expect("catch holds the refusal instead of aborting the script");
+    let mut lines = out.output.lines();
+    assert_eq!(lines.next(), Some("1"), "catch reports an error: {out:?}");
+    assert!(
+        lines
+            .next()
+            .is_some_and(|m| m.contains("\"coroutine\" is only supported at the top level")),
+        "and holds the refusal message: {out:?}"
+    );
 }
 
 /// A `yieldto` whose target is a word can only be checked when it runs, and

@@ -291,7 +291,7 @@ enum Ctx {
     All,
 }
 
-/// Which of the three substitutions a [`Ctx::All`] scan performs.
+/// Which of the three substitutions a `Ctx::All` scan performs.
 ///
 /// The three `subst` options each clear one, and a cleared one makes its
 /// introducer a single character of literal text rather than the start of a

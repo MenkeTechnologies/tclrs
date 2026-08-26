@@ -97,9 +97,9 @@ pub mod ext {
     pub const THROW: u16 = 38;
     /// `[code, options, message]` — raise again exactly what a `catch` region's
     /// handler was resumed with. The three values are the ones
-    /// [`crate::runtime::Interp::raise`] pushes, in that order, and the code and
+    /// `crate::runtime::Interp::raise` pushes, in that order, and the code and
     /// the level are read back out of `options` rather than off the stack: the
-    /// integer pushed there is [`crate::runtime::TclError::visible_code`], which
+    /// integer pushed there is `crate::runtime::TclError::visible_code`, which
     /// is `TCL_RETURN` while a `return`'s levels are unspent, and re-raising
     /// *that* would spend one level too few.
     ///
@@ -168,7 +168,7 @@ pub mod ext {
     // the id and not the name.
     /// `upvar ?level? otherVar localVar …`: `[(slot, local) …, level, other …]`
     /// with the number of stack values in the inline operand → `""`, having
-    /// stored a [`crate::cmd_scope::Link`] descriptor in each local's frame slot.
+    /// stored a `crate::cmd_scope::Link` descriptor in each local's frame slot.
     /// The level rides as the empty string when the command gave none, which is
     /// the `hasLevel` flag `Tcl_UpvarObjCmd` carries; a slot of `-1` means there
     /// is no frame to hold a descriptor and the pair is an alias in the
@@ -240,14 +240,14 @@ pub mod ext {
     /// `[value, declared, name]` → nothing, having stored the value in the
     /// variable that name spells, creating it if it did not exist. A store, so
     /// it leaves the stack as it found it — the caller `Dup`s when the command
-    /// yields what it assigned, exactly as [`Compiler::emit_set_var`]'s callers
+    /// yields what it assigned, exactly as `Compiler::emit_set_var`'s callers
     /// do.
     ///
     /// The name rides on *top*, above the value, which is the opposite of
     /// [`DYN_GET`]'s order and is what lets `append` and `incr` evaluate a
     /// computed name exactly once: the read leaves `[name, value]`, and from
     /// there this order is three stack ops away. See
-    /// [`Compiler::dyn_write_back`].
+    /// `Compiler::dyn_write_back`.
     pub const DYN_SET: u16 = EVENT_BASE + 15;
     /// `[declared, name]` → nothing, having unset the variable that name spells.
     /// `arg` is 1 when an absent variable is an error, which is `unset` without
@@ -294,7 +294,7 @@ pub mod ext {
     ///   run, so a call site cannot be lowered to `Op::Call`;
     /// * a command Tk registered. Tk registers `button`, `pack`, `wm` and the
     ///   rest during `Tk_Init`, long after a script that says `button .b` was
-    ///   compiled; see [`crate::tk::dispatch`].
+    ///   compiled; see `crate::tk::dispatch`.
     ///
     /// The two are one lookup, in that order: a procedure the script defined
     /// shadows a foreign command of the same name, which is the order tclsh
@@ -319,7 +319,7 @@ pub mod ext {
     /// 9.0.4 (measured). Both are things this compiler decides for every other
     /// command while it reads the script, so neither the built-in lowerings nor
     /// `Op::Call` can be reached: the whole dispatch happens in
-    /// [`crate::procs::expand_call_op`], which is [`DYN_CALL`]'s resolution with
+    /// `crate::procs::expand_call_op`, which is [`DYN_CALL`]'s resolution with
     /// the builtins added under it.
     ///
     /// The reference implementation makes the same division. `CompileExpanded`
@@ -561,7 +561,7 @@ pub mod ext {
     /// matches nothing, which is what the reference implementation answers.
     pub const DICT_FILTER: u16 = ASSOC_BASE + 28;
     /// The walk `dict for`, `dict map` and `dict filter … script` share, with
-    /// the step in the inline operand — see [`crate::assoc::Step`].
+    /// the step in the inline operand — see `crate::assoc::Step`.
     ///
     /// The walk's state rides the VM stack, pushed before the loop and read
     /// through the top of it, exactly as `lmap`'s does and for the same reason:
@@ -580,7 +580,7 @@ pub mod ext {
     /// `n` at 1 in tclsh 9.0.4, measured, whatever the body does to it.
     pub const DICT_UPDATE_BIND: u16 = ASSOC_BASE + 30;
     /// `dict update`'s write-back, run as the cleanup of a
-    /// [`Compiler::finally_region`](crate::compiler::Compiler): the record is
+    /// `Compiler::finally_region`: the record is
     /// consumed from under the `arg` values the ending left on top of it, and
     /// each key takes the value its variable now holds — or leaves the
     /// dictionary, when the variable does not (`:3573-3591`, where a failed read
@@ -599,7 +599,7 @@ pub mod ext {
     /// the ones the body deleted from the dictionary.
     pub const DICT_WITH_BIND: u16 = ASSOC_BASE + 32;
     /// `dict with`'s write-back, run as the cleanup of a
-    /// [`Compiler::finally_region`](crate::compiler::Compiler) exactly as
+    /// `Compiler::finally_region` exactly as
     /// [`DICT_UPDATE_END`] is — `FinalizeDictWith` (`generic/tclDictObj.c:3696`)
     /// is the same NRE callback shape as `FinalizeDictUpdate`, with a key *path*
     /// added and both of its silent paths kept: a dictionary variable that no
@@ -922,7 +922,7 @@ pub fn compile(script: &Script) -> Result<fusevm::Chunk, CompileError> {
 
 /// Lower a script that will run inside a frame projection — a nested script an
 /// `eval`, `uplevel`, `subst` or `apply` runs against a procedure activation's
-/// variables. See [`Compiler::projected`] for the single difference.
+/// variables. See `Compiler::projected` for the single difference.
 pub fn compile_projected(script: &Script) -> Result<fusevm::Chunk, CompileError> {
     lower(script, false, true)
 }
@@ -1539,7 +1539,11 @@ impl Compiler {
     /// x` runs `pick` once in tclsh, as every command's words are substituted
     /// once. So the name is evaluated, kept on the stack under the value, and
     /// consumed by [`Compiler::dyn_write_back`], rather than compiled twice.
-    pub(crate) fn dyn_read_modify(&mut self, name: &Word, absent: Absent) -> Result<(), CompileError> {
+    pub(crate) fn dyn_read_modify(
+        &mut self,
+        name: &Word,
+        absent: Absent,
+    ) -> Result<(), CompileError> {
         self.word(name)?; //             [name]
         self.emit(Op::Dup, 1); //        [name, name]
         self.push_declared(); //         [name, name, declared]

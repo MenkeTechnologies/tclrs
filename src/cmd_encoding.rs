@@ -18,9 +18,9 @@
 //!   encodings — `big5`, `cp932`, `cp936`, `cp949`, `cp950`, `euc-cn`,
 //!   `euc-jp`, `euc-kr`, `gb2312`, `gb12345`, `jis0208`, `jis0212`,
 //!   `ksc5601`, `shiftjis`, `cns11643`, `macJapan`. They are not approximated:
-//!   [`load_table`] is a port of `LoadTableEncoding`
+//!   `load_table` is a port of `LoadTableEncoding`
 //!   (`generic/tclEncoding.c:1954`) reading the same files, and
-//!   [`table_to_utf`]/[`table_from_utf`] are ports of `TableToUtfProc` and
+//!   `table_to_utf`/`table_from_utf` are ports of `TableToUtfProc` and
 //!   `TableFromUtfProc`, so a double-byte encoding decodes through the same
 //!   prefix-byte machinery the reference interpreter uses.
 //! * `utf-8`, `cesu-8`, `utf-16`/`utf-16le`/`utf-16be`/`unicode`,
@@ -507,16 +507,21 @@ struct FailedAt {
 /// The bytes a string stands for, refusing a character that is not one.
 ///
 /// A port of `Tcl_GetBytesFromObj`'s loop (`generic/tclBinary.c:512`),
-/// including its message — whose "byte offset" is the count of bytes it had
-/// *written*, so on a string of multi-byte characters it is a character index.
-/// Measured: `encoding convertfrom ascii ééŁ` says offset 2.
+/// including its message. The index it names counts CHARACTERS, which is what
+/// the count of bytes written so far comes to on this path. Measured against
+/// tclsh 9.0.3:
+///
+/// ```text
+/// % encoding convertfrom ascii ééŁ
+/// expected byte sequence but character 2 was 'Ł' (U+000141)
+/// ```
 fn as_bytes(text: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(text.len());
     for ch in text.chars() {
         let cp = u32::from(ch);
         if cp > 255 {
             return Err(format!(
-                "expected code point values below 0xff but value at byte offset {} was 0x{cp:x}",
+                "expected byte sequence but character {} was '{ch}' (U+{cp:06X})",
                 out.len()
             ));
         }

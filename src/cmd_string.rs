@@ -1756,7 +1756,7 @@ const BEYOND_UNICODE_16: [(u32, u32); 48] = [
     (0x323b0, 0x33479),
 ];
 
-/// How many code points [`beyond_our_tables`] answers for, summed from the
+/// How many code points `beyond_our_tables` answers for, summed from the
 /// ranges rather than written down beside them.
 ///
 /// Public because the reference page states the figure, and a page that states
