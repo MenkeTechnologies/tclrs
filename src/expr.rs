@@ -157,12 +157,51 @@ pub fn parse(src: &str) -> Result<Expr, ParseError> {
 /// This is the whole message a script sees, because `catch` yields these three
 /// lines; the stack trace tclsh adds beyond them is not part of the result.
 fn in_expression(src: &str, mut err: ParseError) -> ParseError {
-    let marked = if err.msg.ends_with("at _@_") {
-        let at = char_boundary(src, err.offset.min(src.len()));
-        format!("{}_@_{}", &src[..at], &src[at..])
-    } else {
-        src.to_string()
+    let at = char_boundary(src, err.offset.min(src.len()));
+    // The word a bareword diagnostic names is quoted in its own message, and it
+    // is the middle piece of the window below. Every other diagnostic marks a
+    // position and has no middle piece.
+    let named = err
+        .msg
+        .strip_prefix("invalid bareword \"")
+        .and_then(|rest| rest.strip_suffix('"'))
+        .map(str::to_string);
+    // `invalid character "c"` names one character, and that character is this
+    // window's middle piece exactly as a bareword is: without it the budget
+    // looked one byte larger for this diagnostic than for the others, because
+    // the character was being counted as the head of the tail.
+    let offender = err
+        .msg
+        .strip_prefix("invalid character \"")
+        .and_then(|rest| rest.strip_suffix('"'))
+        .and_then(|c| c.chars().next())
+        .filter(|c| src[at..].starts_with(*c))
+        .map(|c| (at, at + c.len_utf8()));
+    let token = named
+        .as_deref()
+        .and_then(|w| word_span(src, at, w))
+        .or(offender)
+        .unwrap_or((at, at));
+    // A named word long enough to be cut is cut EVERYWHERE it appears, not only
+    // inside the quoted expression: tclsh's first line is
+    // `invalid bareword "xxxxxxxxxxxxxxxxxxxxxx..."` for a 25-character word,
+    // and its three `should be` spellings carry the same cut text.
+    if let Some(word) = &named {
+        let shown = clip_tail(word);
+        if shown != *word {
+            err.msg = format!("invalid bareword {shown:?}");
+        }
+    }
+    let mark = match err.msg.ends_with("at _@_") {
+        true => "_@_",
+        false => "",
     };
+    let marked = format!(
+        "{}{mark}{}{}",
+        clip_head(&src[..token.0]),
+        clip_tail(&src[token.0..token.1]),
+        clip_tail(&src[token.1..]),
+    );
 
     // `invalid bareword "w"` — the only diagnostic with a hint, and the word is
     // already quoted in it, so it is read back out rather than threaded through.
@@ -209,6 +248,53 @@ fn in_expression(src: &str, mut err: ParseError) -> ParseError {
         None => format!("{}\nin expression \"{marked}\"", err.msg),
     };
     err
+}
+
+/// tclsh's window on the expression it quotes, in BYTES: a piece 25 bytes or
+/// longer is cut to 22, with `...` standing for what was dropped. Measured at
+/// both edges against tclsh 9.0.4 — a 24-byte head is quoted whole and a
+/// 25-byte one becomes `...` plus its last 22 — and confirmed to be bytes and
+/// not characters by the message tclsh writes for `[string length {naïve café}]
+/// in 日a`, whose kept head is 20 characters but 22 bytes.
+const WINDOW: usize = 25;
+/// What survives a cut piece: the window less the `...` that replaces the rest.
+const KEPT: usize = WINDOW - 3;
+
+/// What precedes the error, cut from the LEFT — the end is the part that
+/// matters. tclsh cuts at a byte and will split a character doing it; a `String`
+/// cannot hold the half-character that makes, so a cut landing inside one moves
+/// back to that character's start — which is what tclsh does too, verified on
+/// `zzz + 日本語 + 日本語 + 日本語`, whose kept tail is 21 bytes because the 22nd
+/// is the middle of `語`.
+fn clip_head(s: &str) -> String {
+    if s.len() < WINDOW {
+        return s.to_string();
+    }
+    format!("...{}", &s[char_boundary(s, s.len() - KEPT)..])
+}
+
+/// What follows the error, and a named word too long to quote whole: both are
+/// cut from the RIGHT, on the same window and with the same boundary rule.
+fn clip_tail(s: &str) -> String {
+    if s.len() < WINDOW {
+        return s.to_string();
+    }
+    format!("{}...", &s[..char_boundary(s, KEPT)])
+}
+
+/// Where in `src` the word a diagnostic named begins and ends.
+///
+/// The position the parser reports is wherever it stopped, which is past the
+/// word's END and sometimes past a separator too — `1 + … + zzz9 + …` names
+/// `zzz9` and stops four characters later. So the span is the last occurrence of
+/// the word that begins at or before that position, which for the word the
+/// parser was actually reading is the word itself.
+fn word_span(src: &str, at: usize, word: &str) -> Option<(usize, usize)> {
+    let last = src.len().checked_sub(word.len())?;
+    (0..=at.min(last))
+        .rev()
+        .find(|&s| src.is_char_boundary(s) && src[s..].starts_with(word))
+        .map(|s| (s, s + word.len()))
 }
 
 /// The largest character boundary at or below `at`, so inserting the marker

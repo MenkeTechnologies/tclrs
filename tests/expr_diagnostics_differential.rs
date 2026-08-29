@@ -125,6 +125,46 @@ const REFUSED: &[&str] = &[
     "0d",
     "0x_10",
     "0x1_",
+    // The WINDOW tclsh quotes the expression through. Anything 25 bytes or
+    // longer is cut to 22 with `...` for the rest, and the cut is applied to
+    // three pieces independently: what precedes the error (cut from the left),
+    // the word or character the error names (cut from the right, and cut in the
+    // message and hint too), and what follows it (cut from the right). Quoting
+    // the expression whole was wrong for every diagnostic on an expression this
+    // long, not only the one the fuzzer happened to reduce to.
+    "1 + 1 + 1 + 1 + 1 + 1 + 1 + zzz9 + 1 + 1 + 1 + 1 + 1 + 1 + 1",
+    "1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + * 1 + 1 + 1 + 1 + 1 + 1 + 1",
+    "(1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1",
+    "zzz + $bbbbbbbbbbbbbbbbbbbb",
+    "zzz + $bbbbbbbbbbbbbbbbbbbbb",
+    "$aaaaaaaaaaaaaaaaaaaaaaaa + zzz",
+    "$aaaaaaaaaaaaaaaaaaaaaaaaa + zzz",
+    // A named word longer than the window is cut wherever it appears.
+    "1 in xxxxxxxxxxxxxxxxxxxxxxxx",
+    "1 in xxxxxxxxxxxxxxxxxxxxxxxxx",
+    "1 in xxxxxxxxxxxxxxxxxxxxxxxxx\u{65e5}",
+    "1 in xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    // The cut is in BYTES, so where it lands inside a character it moves back to
+    // that character's start. These are the widths that make it land there:
+    // 2 bytes for the accented Latin, 3 for the CJK, 4 for the emoji.
+    "[string length {na\u{ef}ve caf\u{e9}}] in \u{65e5}a",
+    "na\u{ef}ve + caf\u{e9} + na\u{ef}ve + caf\u{e9} + zzz",
+    "zzz + na\u{ef}ve + caf\u{e9} + na\u{ef}ve + caf\u{e9}",
+    "\u{65e5}\u{672c}\u{8a9e} + \u{65e5}\u{672c}\u{8a9e} + \u{65e5}\u{672c}\u{8a9e} + zzz",
+    "zzz + \u{65e5}\u{672c}\u{8a9e} + \u{65e5}\u{672c}\u{8a9e} + \u{65e5}\u{672c}\u{8a9e}",
+    "zzz + \u{65e5}\u{672c}\u{8a9e}\u{65e5}\u{672c}\u{8a9e}\u{65e5}\u{672c}\u{8a9e}\u{65e5}\u{672c}\u{8a9e}",
+    "\u{65e5}\u{672c}\u{8a9e}\u{65e5}\u{672c}\u{8a9e}\u{65e5}\u{672c}\u{8a9e}\u{65e5}\u{672c}\u{8a9e} + zzz",
+    "\u{e9} + \u{e9} + \u{e9} + \u{e9} + \u{e9} + \u{e9} + \u{e9} + \u{e9} + \u{e9} + zzz",
+    "zzz + \u{e9} + \u{e9} + \u{e9} + \u{e9} + \u{e9} + \u{e9} + \u{e9} + \u{e9} + \u{e9}",
+    "\u{1F600} + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1",
+    "1 + 1 + 1 + 1 + 1 + 1 + 1 + \u{1F600}",
+    // `invalid character` names one character, and that character is the middle
+    // piece just as a word is — counting it as the head of the tail made this
+    // diagnostic's budget look one byte wider than every other one's.
+    "@",
+    "1 + @",
+    "@ $bbbbbbbbbbbbbbbbbbbbbb",
+    "@ $bbbbbbbbbbbbbbbbbbbbbbb",
 ];
 
 /// Boolean words are *operands* in `expr(n)`, so these are answers rather than

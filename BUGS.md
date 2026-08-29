@@ -1494,6 +1494,26 @@ tclsh, with the seed and case number of the divergence it was reduced from.
 Each of these was a divergence in the run above and is now parity, pinned in
 `tests/parity_fuzz_findings.rs` against a live tclsh:
 
+- **The expression a diagnostic quotes is cut to tclsh's window.** tclsh does not
+  quote the whole expression back: anything 25 bytes or longer is cut to 22 with
+  `...` standing for the rest, and the cut is applied to three pieces
+  independently — what precedes the error (cut from the LEFT, since its end is
+  the part that matters), the word or character the error names, and what
+  follows it (both cut from the RIGHT). tclrs quoted the expression entire, so
+  EVERY diagnostic on an expression this long differed, not only the one the
+  fuzzer reduced to. A named word past the window is cut wherever it appears:
+  tclsh's first line for a 25-character word is
+  `invalid bareword "xxxxxxxxxxxxxxxxxxxxxx..."` and its three `should be`
+  spellings carry the same cut text. `invalid character "c"` names ONE
+  character, and that character is the middle piece just as a word is — counting
+  it as the head of the tail made that diagnostic's budget look a byte wider than
+  every other one's. The cut is in BYTES, not characters, which the message tclsh
+  writes for `[string length {naïve café}] in 日a` settles: its kept head is 20
+  characters and 22 bytes. Where the cut lands inside a character it moves back
+  to that character's start. Verified over 62 expressions covering every
+  diagnostic family and ASCII, accented Latin, CJK and emoji text. Found at seed
+  70123. Regression: the window cases are in
+  `tests/expr_diagnostics_differential.rs`'s `REFUSED` table.
 - **A refused bareword is named from the whole word RUN, and a bad radix prefix
   says so.** Two divergences in the same three-line diagnostic. `expr {1a}` is
   `invalid bareword "1a"` in tclsh 9.0.4 and was `invalid bareword "a"` here:
