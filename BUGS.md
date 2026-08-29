@@ -1494,6 +1494,21 @@ tclsh, with the seed and case number of the divergence it was reduced from.
 Each of these was a divergence in the run above and is now parity, pinned in
 `tests/parity_fuzz_findings.rs` against a live tclsh:
 
+- **`format %c` refuses an argument that is not a C `int`.** `%c` hands its
+  argument to a C `int`, and `Tcl_GetIntFromObj` accepts a 32-bit word written
+  either way, so the window is `i32::MIN ..= u32::MAX` rather than one type's
+  range: `-2147483648` and `4294967295` are values, `-2147483649` and
+  `4294967296` are `integer value too large to represent`. The conversion took
+  `want_int(value)? as u32` instead, which truncates — every out-of-range
+  argument printed a character where tclsh fails the command. Inside the window
+  nothing changed: the low 32 bits are the code point and one that is not a
+  character is U+FFFD, verified byte for byte at `-1`, `-2147483648`,
+  `2147483648`, `4294967295` and `1114112`. Found at seed 70123 as
+  `format {%+ 5.2c%+40.8o} 4611686018427387903 -1` and
+  `format {%+ 0.17c} -4611686018427387904`; closing it took that run from 7
+  divergences to 5. Regression: the boundary is in
+  `tests/format_differential.rs::character_conversions_match_tclsh`, which
+  compares the refusal itself and not just a length.
 - **A command substitution inside an EXPRESSION no longer moves the reported
   line.** `if {[llength $x]} {nosuchcommand}` on line 2 reported
   `(file … line 1)` where tclsh reports line 2. `expr.rs` re-parses the

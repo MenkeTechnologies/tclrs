@@ -304,10 +304,38 @@ fn character_conversions_match_tclsh() {
         "1114112",
         "-1",
         "2147483648",
+        // The edges of what `%c` accepts, both sides of each.
+        "-2147483648",
+        "-2147483649",
+        "4294967295",
+        "4294967296",
     ] {
         for width in ["", "3", "-3"] {
             program.push_str(&format!(
                 "puts \"%{width}c {value} [string length [f {{%{width}c}} {{{value}}}]]\"\n"
+            ));
+        }
+    }
+    // Out of range, where what is compared is the REFUSAL and not a length.
+    // `%c` hands its argument to a C `int` and `Tcl_GetIntFromObj` takes a
+    // 32-bit word written either way, so the window is `i32::MIN ..= u32::MAX`
+    // rather than one type's range — `-2147483648` and `4294967295` are values,
+    // `-2147483649` and `4294967296` are `integer value too large to
+    // represent`. Truncating the argument to `u32` instead printed a character
+    // for every one of these; the fuzzer found it at seed 70123 as
+    // `format {%+ 5.2c} 4611686018427387903`.
+    for value in [
+        "-2147483649",
+        "4294967296",
+        "4611686018427387903",
+        "-4611686018427387904",
+        "9223372036854775807",
+        "-9223372036854775808",
+        "18446744073709551616",
+    ] {
+        for spec in ["%c", "%+ 5.2c", "%-8c"] {
+            program.push_str(&format!(
+                "puts \"{spec} {value} [f {{{spec}}} {{{value}}}]\"\n"
             ));
         }
     }

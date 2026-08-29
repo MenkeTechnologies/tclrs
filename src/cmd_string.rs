@@ -1032,6 +1032,28 @@ fn want_int(text: &str) -> Result<i64, String> {
     })
 }
 
+/// The character `%c` produces for `n`, or the refusal tclsh gives instead.
+///
+/// `%c` hands its argument to a C `int`, and `Tcl_GetIntFromObj` accepts a
+/// 32-bit word written either way — so the window is `i32::MIN ..= u32::MAX`
+/// rather than one type's range. Measured against tclsh 9.0.4: `-2147483648`
+/// and `4294967295` are accepted, `-2147483649` and `4294967296` each give
+/// `integer value too large to represent`. Truncating instead is what the fuzzer
+/// found (seed 70123): `format {%+ 5.2c} 4611686018427387903` printed a
+/// character where tclsh fails the command.
+///
+/// Inside the window the low 32 bits are the code point, and one that is not a
+/// character becomes U+FFFD — which is what tclsh writes too, verified byte for
+/// byte for `-1`, `-2147483648`, `2147483648`, `4294967295` and `1114112`.
+fn code_point(n: i64) -> Result<String, String> {
+    if n < i32::MIN as i64 || n > u32::MAX as i64 {
+        return Err("integer value too large to represent".to_string());
+    }
+    Ok(char::from_u32(n as u32)
+        .unwrap_or(char::REPLACEMENT_CHARACTER)
+        .to_string())
+}
+
 // ── comparison and search ────────────────────────────────────────────────
 
 /// `TclStringCmp`: compare by code point, optionally case-folded, optionally
@@ -2043,11 +2065,7 @@ fn format_string(fmt: &str, args: &[String]) -> Result<String, String> {
                 Some(p) => value.chars().take(p as usize).collect(),
                 None => value.clone(),
             }),
-            'c' => Signed::plain(
-                char::from_u32(want_int(value)? as u32)
-                    .unwrap_or(char::REPLACEMENT_CHARACTER)
-                    .to_string(),
-            ),
+            'c' => Signed::plain(code_point(want_int(value)?)?),
             'd' | 'i' | 'u' | 'o' | 'x' | 'X' | 'b' => {
                 integer(conv, flags, precision, size, value)?
             }
