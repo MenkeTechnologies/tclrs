@@ -394,7 +394,10 @@ fn a_syntax_error_does_not_unwrite_the_commands_before_it() {
         let path = dir.join(format!("tclrs-incremental-{}-{i}.tcl", std::process::id()));
         std::fs::write(&path, program).expect("write program");
         let want = Command::new(&tclsh).arg(&path).output().expect("run tclsh");
-        let got = Command::new(tclrs_bin).arg(&path).output().expect("run tclrs");
+        let got = Command::new(tclrs_bin)
+            .arg(&path)
+            .output()
+            .expect("run tclrs");
         let _ = std::fs::remove_file(&path);
 
         if want.stdout != got.stdout || want.status.code() != got.status.code() {
@@ -433,8 +436,12 @@ fn a_syntax_error_is_located_at_the_command_that_failed() {
     let want = String::from_utf8_lossy(&want.stderr).into_owned();
     let got = String::from_utf8_lossy(&got.stderr).into_owned();
     let line_of = |s: &str| {
-        s.lines()
-            .find_map(|l| l.trim().strip_prefix("(file ")?.rsplit_once("line ").map(|(_, n)| n.trim_end_matches(')').to_string()))
+        s.lines().find_map(|l| {
+            l.trim()
+                .strip_prefix("(file ")?
+                .rsplit_once("line ")
+                .map(|(_, n)| n.trim_end_matches(')').to_string())
+        })
     };
     assert_eq!(
         line_of(&got),
@@ -515,6 +522,87 @@ fn a_failure_inside_a_procedure_is_not_given_the_bodys_line() {
             (false, Some(line)) => failures.push(format!(
                 "in a procedure:\n{program}  tclsh:\n{want}  tclrs located: {line}"
             )),
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// A command substitution INSIDE AN EXPRESSION must not move the line a failure
+/// is reported at.
+///
+/// `if`, `while` and `expr` take an expression, and `expr.rs` re-parses that
+/// text: `parser::command_at` and `parser::quoted_at` each start a fresh parser
+/// at `line: 1`, so a `[…]` inside the expression carries lines numbered from
+/// the expression rather than from the script. That is the same relative
+/// numbering a re-parsed body carries, and `Compiler::body_depth` is what keeps
+/// it out of `Compiler::command_line` — but only bodies were bumping it, so
+/// `if {[llength $x]} {p12 1}` on line 2 reported `(file … line 1)` where tclsh
+/// reports line 2. The fuzzer found it seven times at seed 70123, minimising to
+/// three distinct cases that were all this.
+///
+/// A word-level substitution (`puts [p12 1]`) is not affected either way — it
+/// comes from the script's own parse and already carries the absolute line —
+/// so it is checked here too, to pin that the fix changed nothing for it.
+#[test]
+fn a_substitution_in_an_expression_keeps_the_scripts_line() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
+        return;
+    };
+    let tclrs_bin = env!("CARGO_BIN_EXE_tclrs");
+    let dir = std::env::temp_dir();
+
+    let located = |text: &str| -> Option<String> {
+        text.lines()
+            .find(|l| l.trim_start().starts_with("(file "))
+            .map(|l| {
+                let l = l.trim();
+                // The path differs between the two runs only in nothing — both
+                // are given the same file — but keep just the line to make a
+                // mismatch read as the number it is.
+                l.rsplit_once("line ")
+                    .map(|(_, n)| n.trim_end_matches(')').to_string())
+                    .unwrap_or_else(|| l.to_string())
+            })
+    };
+    let run = |bin: &std::ffi::OsStr, path: &std::path::Path| -> String {
+        let out = Command::new(bin).arg(path).output().expect("run");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+
+    // Each fails on a line after the first, so a reset to 1 is visible.
+    let programs: &[&str] = &[
+        // The reduced form of all three minimised fuzz findings.
+        "set x 1\nif {[llength $x]} {nosuchcommand}\n",
+        "set x 1\nset y 2\nif {[llength $x]} {nosuchcommand}\n",
+        // The condition's substitution nested one deeper.
+        "set x 1\nif {[expr {[llength $x]}]} {nosuchcommand}\n",
+        // `while` and `expr` take the same expression path.
+        "set x 1\nset w 0\nwhile {[llength $x] && $w < 2} {incr w; nosuchcommand}\n",
+        "set x 1\nputs [expr {[llength $x]}]\nnosuchcommand\n",
+        // A quoted operand is re-parsed by `quoted_at`, the same way.
+        "set x 1\nif {\"[llength $x]\" eq \"1\"} {nosuchcommand}\n",
+        // An expression error raised from inside the body, not a call.
+        "set s2 {a b c}\nif {[llength $s2]} {if {\"b\" in \u{f8}x} {}}\n",
+        // Word-level substitution: unchanged by the fix, pinned here.
+        "set x 1\nputs [nosuchcommand]\n",
+        "set x 1\nset y 2\nputs [nosuchcommand]\n",
+    ];
+
+    let mut failures = Vec::new();
+    for (i, program) in programs.iter().enumerate() {
+        let path = dir.join(format!("tclrs-exprloc-{}-{i}.tcl", std::process::id()));
+        std::fs::write(&path, program).expect("write program");
+        let want = run(tclsh.as_os_str(), &path);
+        let got = run(std::ffi::OsStr::new(tclrs_bin), &path);
+        let _ = std::fs::remove_file(&path);
+
+        if located(&got) != located(&want) {
+            failures.push(format!(
+                "{program}  tclsh line: {:?}\n  tclrs line: {:?}\n  tclsh stderr:\n{want}",
+                located(&want),
+                located(&got),
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));

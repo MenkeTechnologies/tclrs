@@ -1494,6 +1494,20 @@ tclsh, with the seed and case number of the divergence it was reduced from.
 Each of these was a divergence in the run above and is now parity, pinned in
 `tests/parity_fuzz_findings.rs` against a live tclsh:
 
+- **A command substitution inside an EXPRESSION no longer moves the reported
+  line.** `if {[llength $x]} {nosuchcommand}` on line 2 reported
+  `(file … line 1)` where tclsh reports line 2. `expr.rs` re-parses the
+  expression's text, and `parser::command_at` / `parser::quoted_at` each start a
+  fresh parser at `line: 1` — so the commands inside `[…]` there are numbered
+  from the expression, not from the script. That is exactly the relative
+  numbering a re-parsed body carries, and `Compiler::body_depth` is what keeps it
+  out of `Compiler::command_line`; only bodies were bumping it. Lowering an
+  `Expr::Subst` now bumps it too. A word-level substitution (`puts [foo]`) comes
+  from the script's own parse, already carries the absolute line, and is
+  unchanged — pinned alongside. Found seven times at seed 70123 (n=900),
+  minimising to three distinct cases that were all this one; closing it took that
+  run from 14 divergences to 7 and emptied the `location` class. Regression:
+  `tests/execution_differential.rs::a_substitution_in_an_expression_keeps_the_scripts_line`.
 - **A NaN compares as IEEE says it does.** `expr {nan > 1}` and `expr {nan >= 1}`
   answered 1 where tclsh answers 0: the numeric hook ordered its operands with
   `partial_cmp` and called the `None` a NaN produces `Ordering::Greater`. Every

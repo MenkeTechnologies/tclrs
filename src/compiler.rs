@@ -3131,7 +3131,22 @@ impl Compiler {
                     parts: parts.clone(),
                     ..Word::default()
                 };
-                self.word(&word)
+                // An expression's parts were re-parsed out of the expression's
+                // own text (`parser::command_at` and `parser::quoted_at` both
+                // start a fresh parser at `line: 1`), so the commands inside
+                // `[…]` here are numbered from the expression, not from the
+                // script. That is the same relative numbering a body carries,
+                // and `body_depth` is what stops it reaching
+                // `Compiler::command_line` — but only bodies were bumping it,
+                // so `if {[llength $x]} {p12 1}` on line 2 reported
+                // `(file … line 1)` where tclsh reports line 2. The word-level
+                // substitution in `puts [p12 1]` is unaffected either way: it
+                // comes from the script's own parse and already carries the
+                // absolute line the enclosing command set.
+                self.body_depth += 1;
+                let out = self.word(&word);
+                self.body_depth -= 1;
+                out
             }
             // `!` wants a number or a boolean word, so a numeric operand is
             // `Op::LogNot` — whose truthiness agrees with Tcl's on every number
