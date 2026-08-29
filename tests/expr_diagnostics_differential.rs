@@ -65,6 +65,66 @@ const REFUSED: &[&str] = &[
     "sin((1",
     "sin(1))",
     "1 + (",
+    // The RUN the named word is read from. tclsh names the whole run of word
+    // characters the leftover sits in, not just the leftover: `1a` is
+    // `invalid bareword "1a"` where naming from the parse position said `a`.
+    // The run stops at anything that is not a word character, and a run a `.`
+    // introduces is the tail of a decimal number, where tclsh names the
+    // leftover alone — which is the one place the run and the word disagree.
+    "1a",
+    "3q",
+    "007z",
+    "12abc",
+    "1e",
+    "1e+",
+    "1e1e",
+    "1e10x",
+    "1_5a",
+    "1+2a",
+    "2**3a",
+    "1.5a",
+    ".5a",
+    "0.a",
+    "1.a",
+    "2.a",
+    "12.5x",
+    "1.5e3a",
+    "1.5e3z",
+    "1e3.5a",
+    "1.5_",
+    "1y",
+    "1true",
+    "0true",
+    "2no",
+    // The radix guess appended after the `should be` line. It is about the digit
+    // that FOLLOWS the prefix, so it appears only when that character is absent
+    // or is not a digit of the radix — `0b`, `0b2`, `0bz` and `0b_101` get one,
+    // `0b1z` and `0b1_1z` do not. Only `0b` and `0o`, and only in lower case.
+    "0b_101",
+    "0b2",
+    "0b",
+    "0bz",
+    "0b1z",
+    "0b1_1z",
+    "0B_101",
+    "0B2",
+    "0o_17",
+    "0o8",
+    "0o9",
+    "0o",
+    "0o1z",
+    "0o7z",
+    "0O8",
+    "0x_1f",
+    "0x1z",
+    "0x1fz",
+    "0xzz",
+    "0X",
+    "0d_9",
+    "0dz",
+    "0d",
+    "0x_10",
+    "0x1_",
 ];
 
 /// Boolean words are *operands* in `expr(n)`, so these are answers rather than

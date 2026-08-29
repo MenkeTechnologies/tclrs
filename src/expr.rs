@@ -166,11 +166,43 @@ fn in_expression(src: &str, mut err: ParseError) -> ParseError {
 
     // `invalid bareword "w"` — the only diagnostic with a hint, and the word is
     // already quoted in it, so it is read back out rather than threaded through.
+    //
+    // A word that opens with a radix prefix whose FIRST digit is already wrong
+    // gets a guess at what the script meant appended to the hint. Measured
+    // against tclsh 9.0.4 over 36 spellings, three rules:
+    //
+    // * Only `0b` and `0o`. `0x` and `0d` never get one — `0x_1f` and `0d_9`
+    //   end at the `...`.
+    // * The prefix is matched case-SENSITIVELY: `0b2` is
+    //   `(invalid binary number?)` and `0B2` is the same diagnostic with nothing
+    //   after the `...`.
+    // * The guess is about the digit that FOLLOWS the prefix, so it appears only
+    //   when that character is absent or is not a digit of the radix: `0b`,
+    //   `0b2`, `0bz` and `0b_101` get it, while `0b1z` and `0b1_1z` do not —
+    //   those start out as binary and go wrong later.
+    let radix_guess = |w: &str| {
+        let bad_first =
+            |body: &str, radix: u32| body.chars().next().is_none_or(|c| !c.is_digit(radix));
+        match () {
+            _ if w.strip_prefix("0b").is_some_and(|b| bad_first(b, 2)) => {
+                " (invalid binary number?)"
+            }
+            _ if w.strip_prefix("0o").is_some_and(|b| bad_first(b, 8)) => {
+                " (invalid octal number?)"
+            }
+            _ => "",
+        }
+    };
     let hint = err
         .msg
         .strip_prefix("invalid bareword \"")
         .and_then(|rest| rest.strip_suffix('"'))
-        .map(|w| format!("should be \"${w}\" or \"{{{w}}}\" or \"{w}(...)\" or ..."));
+        .map(|w| {
+            format!(
+                "should be \"${w}\" or \"{{{w}}}\" or \"{w}(...)\" or ...{}",
+                radix_guess(w)
+            )
+        });
 
     err.msg = match hint {
         Some(hint) => format!("{}\nin expression \"{marked}\";\n{hint}", err.msg),
@@ -384,11 +416,31 @@ impl<'a> ExprParser<'a> {
             // with letters never reaches here — `eq` and `in` matched already.
             c if c.is_ascii_alphabetic() => {
                 let b = self.bytes();
+                let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+                // The word tclsh names is the whole RUN of word characters the
+                // leftover sits in, not just the part left over: `expr {1a}` is
+                // `invalid bareword "1a"` and `expr {007z}` names `007z`, where
+                // starting at the current position named `a` and `z`. The run
+                // stops at anything that is not a word character, which keeps
+                // `expr {1+2a}` at `2a` and `expr {1 x}` at `x`.
+                //
+                // A run a `.` introduces is the tail of a decimal number, and
+                // there tclsh names the leftover ALONE: `expr {1.5a}` is `a`,
+                // not `5a`, and so are `.5a`, `1.5e3a`, `12.5x` and `2.a`. That
+                // is the one place the run and the word disagree — measured
+                // across 53 spellings, every other one is the run.
+                let mut lo = self.pos;
+                while lo > 0 && is_word(b[lo - 1]) {
+                    lo -= 1;
+                }
+                if lo > 0 && b[lo - 1] == b'.' {
+                    lo = self.pos;
+                }
                 let mut end = self.pos;
-                while end < b.len() && (b[end].is_ascii_alphanumeric() || b[end] == b'_') {
+                while end < b.len() && is_word(b[end]) {
                     end += 1;
                 }
-                let word = &self.src[self.pos..end];
+                let word = &self.src[lo..end];
                 // A boolean word is an operand, so two of them running together
                 // is the missing operator between them: `expr {1 y}` is
                 // `missing operator at _@_` where `expr {1 x}` names `x`.

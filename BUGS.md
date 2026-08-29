@@ -1494,6 +1494,25 @@ tclsh, with the seed and case number of the divergence it was reduced from.
 Each of these was a divergence in the run above and is now parity, pinned in
 `tests/parity_fuzz_findings.rs` against a live tclsh:
 
+- **A refused bareword is named from the whole word RUN, and a bad radix prefix
+  says so.** Two divergences in the same three-line diagnostic. `expr {1a}` is
+  `invalid bareword "1a"` in tclsh 9.0.4 and was `invalid bareword "a"` here:
+  `after_expression` named the text from the parse position, where tclsh names
+  the whole run of word characters the leftover sits in — `007z`, `12abc`,
+  `1e10x` and `1_5a` all name themselves entire. The run stops at anything that
+  is not a word character, which is what keeps `1+2a` at `2a` and `1 x` at `x`,
+  and a run a `.` introduces is the tail of a decimal number where tclsh names
+  the leftover ALONE (`1.5a` is `a`, not `5a`). That last case is the only place
+  the run and the word disagree, measured across 67 spellings.
+  Separately, a word opening with a lower-case `0b` or `0o` whose FIRST character
+  after the prefix is absent or not a digit of that radix gets
+  ` (invalid binary number?)` / ` (invalid octal number?)` appended after the
+  `should be` line — so `0b`, `0b2`, `0bz` and `0b_101` carry it while `0b1z`
+  and `0b1_1z` do not, `0x` and `0d` never do, and `0B2` does not because the
+  prefix is matched case-sensitively. Found at seed 70123 as
+  `(65535) ni 0b_101`. Regression: both families are in
+  `tests/expr_diagnostics_differential.rs`'s `REFUSED` table, which compares the
+  whole multi-line message.
 - **A `*` width or precision is counted before it is converted.**
   `format %*d 1e300` is `not enough arguments for all format specifiers` in
   tclsh 9.0.4 — the `*` takes the one argument there is and the `d` has none
