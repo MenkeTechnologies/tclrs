@@ -442,3 +442,80 @@ fn a_syntax_error_is_located_at_the_command_that_failed() {
         "tclsh stderr:\n{want}\ntclrs stderr:\n{got}"
     );
 }
+
+/// A failure inside a PROCEDURE body carries no `(file … line N)` line, because
+/// the line it would carry is not the one tclsh names.
+///
+/// tclsh's `(file …)` always names the top-level command that was running,
+/// which for a failure inside a procedure is the CALL. The line a call op
+/// carries inside a body is the body's own: a three-line procedure called from
+/// line 10 reported `line 3` here, where tclsh reports `(procedure "p" line 3)`
+/// for that position and `(file … line 10)` for the file. Printing the body's
+/// line under a `(file …)` label is a wrong answer; printing none is the
+/// documented one, and is what every other run-time failure inside a procedure
+/// already did (`error`, a division by zero, an unset variable).
+///
+/// What this must NOT do is stop locating a top-level failure, so both halves
+/// are checked: tclsh's own location line is compared verbatim where tclrs
+/// prints one, and tclrs must print one for every top-level case here.
+#[test]
+fn a_failure_inside_a_procedure_is_not_given_the_bodys_line() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
+        return;
+    };
+    let tclrs_bin = env!("CARGO_BIN_EXE_tclrs");
+    let dir = std::env::temp_dir();
+
+    let located = |text: &str| -> Option<String> {
+        text.lines()
+            .find(|l| l.trim_start().starts_with("(file "))
+            .map(|l| l.trim().to_string())
+    };
+    let run = |bin: &std::ffi::OsStr, path: &std::path::Path| -> String {
+        let out = Command::new(bin).arg(path).output().expect("run");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+
+    // Inside a procedure, reached through each construct that can call one.
+    let unlocated: &[&str] = &[
+        "proc p {} { nosuch }\np\n",
+        "proc p {} { nosuch }\nforeach x 1 { p }\n",
+        "proc p {} { nosuch }\nswitch -exact b { default { p } }\n",
+        "proc p {} { nosuch }\nif {1} { p }\n",
+        "puts one\nproc p {} {\n    puts x\n    nosuch\n}\np\n",
+    ];
+    // At the top level, where the compiler DOES know the file line.
+    let located_cases: &[&str] = &[
+        "nosuchcommand\n",
+        "string\n",
+        "puts one\nputs \"unterminated\n",
+        "puts one\nset x [expr {1 +}]\n",
+        "puts hi\nputs {\n",
+    ];
+
+    let mut failures = Vec::new();
+    for (i, program) in unlocated.iter().chain(located_cases).enumerate() {
+        let top = i >= unlocated.len();
+        let path = dir.join(format!("tclrs-procloc-{}-{i}.tcl", std::process::id()));
+        std::fs::write(&path, program).expect("write program");
+        let want = run(tclsh.as_os_str(), &path);
+        let got = run(std::ffi::OsStr::new(tclrs_bin), &path);
+        let _ = std::fs::remove_file(&path);
+
+        match (top, located(&got)) {
+            // A top-level failure must still be located, and located the way
+            // tclsh locates it.
+            (true, Some(line)) if want.contains(&line) => {}
+            (true, other) => failures.push(format!(
+                "top level:\n{program}  tclsh:\n{want}  tclrs located: {other:?}"
+            )),
+            // Inside a procedure, tclrs prints no location at all.
+            (false, None) => {}
+            (false, Some(line)) => failures.push(format!(
+                "in a procedure:\n{program}  tclsh:\n{want}  tclrs located: {line}"
+            )),
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}

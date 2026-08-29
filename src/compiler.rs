@@ -1342,7 +1342,8 @@ impl Compiler {
         // Located, not plain: the line is the one the refusal carried when this
         // was decided while compiling, so a deferred failure still reports
         // `(file "…" line N)` — and tclsh locates its runtime errors too.
-        self.emit(Op::ExtendedWide(ext_wide::ERROR_AT, self.command_line), -1);
+        let site = self.error_site();
+        self.emit(Op::ExtendedWide(ext_wide::ERROR_AT, site), -1);
         // Control has left; the value keeps the depth arithmetic honest, the
         // way `error` and `return` do.
         self.push_empty();
@@ -2748,9 +2749,36 @@ impl Compiler {
     /// body has none to evaluate first.
     pub(crate) fn raise_at_run_time(&mut self, msg: &str) -> Result<(), CompileError> {
         self.push_str(msg);
-        self.emit(Op::ExtendedWide(ext_wide::ERROR_AT, self.command_line), -1);
+        let site = self.error_site();
+        self.emit(Op::ExtendedWide(ext_wide::ERROR_AT, site), -1);
         self.push_empty();
         Ok(())
+    }
+
+    /// The line a failure lowered here should report as `(file "…" line N)`, or
+    /// `0` for "no file location" — which the runtime turns back into no line.
+    ///
+    /// tclsh's `(file …)` names the TOP-LEVEL command that was running, and for
+    /// a failure inside a procedure body that is the CALL, which is not a thing
+    /// this compiler can know: the same body is reached from every call site
+    /// there is. What it does know is the body's own line, and printing that
+    /// under a `(file …)` label is worse than printing nothing — measured, a
+    /// three-line procedure called from line 10 reported `line 3`, where tclsh
+    /// reports `(procedure "p" line 3)` for that position and `(file … line 10)`
+    /// for the file.
+    ///
+    /// So a failure inside a procedure body is left unlocated, which is what
+    /// every OTHER run-time failure inside one already does here — `error`,
+    /// a division by zero and an unset variable all reach the top with no line.
+    /// A body that is not a procedure's (an `if` branch, a loop body, a command
+    /// substitution) keeps its location: `command_line` is frozen across those,
+    /// so it is still the top-level command's line and still correct.
+    fn error_site(&self) -> usize {
+        if self.scope.is_some() {
+            0
+        } else {
+            self.command_line
+        }
     }
 
     pub(crate) fn body_script(&mut self, word: &Word) -> Result<Script, CompileError> {

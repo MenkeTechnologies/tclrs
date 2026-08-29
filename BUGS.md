@@ -1605,7 +1605,13 @@ Each of these was a divergence in the run above and is now parity, pinned in
 - **A character `expr` cannot use** is `invalid character "Ü"`, not the lead byte
   of its UTF-8 encoding.
 - **A failure inside a body** is located at the script's own command, which is the
-  line tclsh's `(file "…" line N)` names.
+  line tclsh's `(file "…" line N)` names. A **procedure** body is the one that is
+  not located at all: tclsh's `(file …)` there is the CALL site, which the same
+  body reaches from every call there is, so the compiler cannot know it and the
+  body's own line is not it — a three-line procedure called from line 10
+  reported `line 3` where tclsh reports `(procedure "p" line 3)` for that
+  position and `(file … line 10)` for the file. It now reports no location,
+  which is what every other run-time failure inside a procedure already did.
 - **Input nesting is bounded** by `parser::MAX_NESTING_DEPTH` (64_000, measured),
   so the deepest input reports a Tcl error instead of aborting the process. The
   limit sits above every depth tclsh survives — it segfaults on 30_000 nested `[`
@@ -1615,14 +1621,14 @@ Each of these was a divergence in the run above and is now parity, pinned in
   library on a stack smaller than `runtime::RECOMMENDED_STACK` still has to give
   the parser the stack this crate documents; the limit is calibrated for that one.
 
-The five divergences the fuzzer's report allowlists rather than counting are the
+The four divergences the fuzzer's report allowlists rather than counting are the
 documented ones, and each is pinned in `tests/parity_fuzz_findings.rs` too, so an
 entry cannot outlive the behavior it excuses: an unset *procedure-local* reading
 as `""` — a frame slot has no name to report, and the global case is fixed —
-an unterminated brace located where the input ran out, `array names` / `array
-get` sorted where tclsh hashes (order is unspecified in `array(n)`), arity
-refused before anything runs, and a message carrying ` (line N)` through the
-library. `scripts/fuzz/classify.pl` holds them with their reasons, and every run
+`array names` / `array get` sorted where tclsh hashes (order is unspecified in
+`array(n)`), arity refused before anything runs, and a message carrying
+` (line N)` through the library. A fifth, an unterminated brace located where
+the input ran out, was retired when the behaviour was fixed. `scripts/fuzz/classify.pl` holds them with their reasons, and every run
 prints a hit count per entry.
 
 ## What the differential fuzzer cannot reach

@@ -1838,7 +1838,11 @@ impl Hooks {
                 let msg = to_tcl_string(&vm.pop());
                 *wide_err.lock().expect("error lock") = Some(TclError {
                     msg,
-                    line: Some(payload),
+                    // `0` is `Compiler::error_site`'s "no file location" — a
+                    // failure inside a procedure body, whose file line is the
+                    // call site and not anything the compiler saw. Script lines
+                    // are 1-based, so the two cannot be confused.
+                    line: (payload > 0).then_some(payload),
                     code: TCL_ERROR,
                     level: 0,
                 });

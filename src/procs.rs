@@ -339,6 +339,23 @@ fn defined_proc(interp: &Shared, name: &str) -> Option<RuntimeProc> {
     state.commands.get(table_key(name)).cloned()
 }
 
+/// The line a failure raised by a call op should report as `(file "…" line N)`,
+/// or `None` for "no file location".
+///
+/// tclsh's `(file …)` names the TOP-LEVEL command that was running. Inside a
+/// procedure that is the CALL, and the line a call op carries there is the
+/// body's own — a three-line procedure called from line 10 reported `line 3`,
+/// where tclsh reports `(procedure "p" line 3)` for that position and
+/// `(file … line 10)` for the file. Printing the body's line under a `(file …)`
+/// label is worse than printing none, and printing none is what every other
+/// run-time failure inside a procedure already does here.
+///
+/// Frame 0 is the chunk's own top level (see `crate::cmd_scope`), so anything
+/// above it is a procedure body.
+fn located(vm: &VM, line: usize) -> Option<usize> {
+    (vm.frames.len() <= 1).then_some(line)
+}
+
 /// The half of [`invoke`] after the lookup, so that a caller which has already
 /// looked the name up — [`expand_call_op`], which needs to know whether it missed
 /// before it decides what else the name could be — does not look it up twice.
@@ -350,9 +367,10 @@ fn dispatch(
     line: usize,
     defined: Option<RuntimeProc>,
 ) -> Result<(), TclError> {
-    let here = |msg: String| TclError {
+    let at = located(vm, line);
+    let here = move |msg: String| TclError {
         msg,
-        line: Some(line),
+        line: at,
         code: crate::runtime::TCL_ERROR,
         level: 0,
     };
@@ -556,9 +574,10 @@ pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(
         Some(Value::Int(n)) => *n as usize,
         _ => 0,
     };
-    let here = |msg: String| TclError {
+    let at = located(vm, line);
+    let here = move |msg: String| TclError {
         msg,
-        line: Some(line),
+        line: at,
         code: crate::runtime::TCL_ERROR,
         level: 0,
     };
