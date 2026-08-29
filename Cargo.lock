@@ -493,9 +493,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "fusevm"
-version = "0.25.0"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23f5f4e548b877296d0b8fe32f655812233f898e2a8a6aad02dc5e9cd98f676b"
+checksum = "765a6e513525559e24870c5bf83dcf452c823636a03dfe65ef72fc323699ad7e"
 dependencies = [
  "base64",
  "bincode",
@@ -1150,7 +1150,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tclrs"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "cc",
  "fusevm",
