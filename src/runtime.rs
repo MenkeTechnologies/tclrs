@@ -600,7 +600,10 @@ fn run_prefix(shared: &Shared, src: &str, err: TclError) -> Result<Value, TclErr
     let Some((end, line, _)) = crate::parser::valid_prefix(src) else {
         return Err(err);
     };
-    let err = TclError { line: Some(line), ..err };
+    let err = TclError {
+        line: Some(line),
+        ..err
+    };
     if end == 0 {
         return Err(err);
     }

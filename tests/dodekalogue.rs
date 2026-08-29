@@ -263,10 +263,7 @@ fn parse_errors_match_the_interpreter_wording() {
         err("puts ${\neval {puts a}\n"),
         "missing close-brace for variable name"
     );
-    assert_eq!(
-        err("set v ${a{b}"),
-        "missing close-brace for variable name"
-    );
+    assert_eq!(err("set v ${a{b}"), "missing close-brace for variable name");
     // The error carries the line it was found on.
     assert_eq!(parse("set a 1\nset b {x").unwrap_err().line, 2);
 }

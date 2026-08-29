@@ -217,7 +217,11 @@ pub(crate) fn valid_prefix(src: &str) -> Option<(usize, usize, ParseError)> {
         // A `]` with no opening `[` stops the scan here exactly as it stops
         // `parse`, and it belongs to this command rather than to the prefix.
         if p.pos < p.src.len() && p.peek() == Some(b']') {
-            return Some((end, start_line, p.error("extra characters after close-bracket")));
+            return Some((
+                end,
+                start_line,
+                p.error("extra characters after close-bracket"),
+            ));
         }
         end = p.pos;
     }
