@@ -116,7 +116,30 @@ fn rule8_variable_forms() {
     assert_eq!(
         words("puts ${a b}")[1].parts,
         vec![Part::Var("a b".into())],
-        "braced names may contain anything but a close brace"
+        "a braced name is taken verbatim"
+    );
+    // The name ends at the close brace that BALANCES the ones inside it, not at
+    // the first one — `Tcl_ParseVarName` keeps a `braceCount`
+    // (generic/tclParse.c:1383-1416). Reading it as "up to the first `}`" made
+    // `${a{b}c}` the variable `a{b`, and left the rest of the script to be
+    // re-parsed as though the name had ended there.
+    assert_eq!(
+        words("puts ${a{b}c}")[1].parts,
+        vec![Part::Var("a{b}c".into())],
+        "a nested group's close brace does not end the name"
+    );
+    assert_eq!(
+        words("puts ${a{b}c{d}e}")[1].parts,
+        vec![Part::Var("a{b}c{d}e".into())],
+        "each group balances independently"
+    );
+    // A backslash consumes the byte after it, so an escaped brace neither ends
+    // the name nor nests — and BOTH bytes stay in the name, which is what makes
+    // `${a\}b}` a different variable from the one `set "a\}b"` creates.
+    assert_eq!(
+        words("puts ${a\\}b}")[1].parts,
+        vec![Part::Var("a\\}b".into())],
+        "an escaped brace is part of the name"
     );
     assert_eq!(
         words("puts $::ns::v")[1].parts,
@@ -232,6 +255,18 @@ fn parse_errors_match_the_interpreter_wording() {
     assert_eq!(err("set v \"a\"b"), "extra characters after close-quote");
     assert_eq!(err("set v $a(x(y))"), "invalid character in array index");
     assert_eq!(err("set v ${abc"), "missing close-brace for variable name");
+    // Running out of text while a group is still open is the same failure, and
+    // is what `puts ${` followed by a line holding a balanced `{…}` reports —
+    // stopping at that group's `}` instead swallowed the rest of the script
+    // into the variable's name.
+    assert_eq!(
+        err("puts ${\neval {puts a}\n"),
+        "missing close-brace for variable name"
+    );
+    assert_eq!(
+        err("set v ${a{b}"),
+        "missing close-brace for variable name"
+    );
     // The error carries the line it was found on.
     assert_eq!(parse("set a 1\nset b {x").unwrap_err().line, 2);
 }

@@ -1604,6 +1604,13 @@ Each of these was a divergence in the run above and is now parity, pinned in
 - **`incr x abc`** reports `expected integer but got "abc"`.
 - **A character `expr` cannot use** is `invalid character "Ü"`, not the lead byte
   of its UTF-8 encoding.
+- **`${name}` ends at the close brace that BALANCES the ones inside it**, not at
+  the first one: `${a{b}c}` is the variable `a{b}c`, a backslash consumes the
+  byte after it (so `${a\}b}` names `a\}b`, both bytes kept), and running out
+  of text is `missing close-brace for variable name`. Read as "up to the first
+  `}`", `puts ${` followed by a line holding a balanced `{…}` swallowed the rest
+  of the script into the name and reported `can't read "…"` instead. A port of
+  `Tcl_ParseVarName`'s `braceCount` scan (`generic/tclParse.c:1383-1416`).
 - **A refused operand is named as the script spelled it**, not as the number it
   parses to: `expr {~inf}` is `cannot use floating-point value "inf" as operand
   of "~"` and `expr {~1.50}` names `"1.50"`. The binary operators already

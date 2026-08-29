@@ -913,18 +913,46 @@ impl<'a> Parser<'a> {
         String::from_utf8_lossy(&self.src[from..i]).into_owned()
     }
 
-    /// `${name}`: any characters but a close brace, with no substitution. The
-    /// array form `${name(index)}` applies when the text before `(` holds no
+    /// `${name}`: the name is taken verbatim, with no substitution, and it ends
+    /// at the close brace that BALANCES the ones inside it.
+    ///
+    /// A port of `Tcl_ParseVarName`'s scan (`generic/tclParse.c:1383-1416`),
+    /// whose three rules the naive "up to the first `}`" reading gets wrong:
+    ///
+    /// * a `{` inside opens a group and the `}` that closes it does not end the
+    ///   name, so `${a{b}c}` is the variable `a{b}c` and not `a{b`;
+    /// * a backslash consumes the byte after it, so `${a\}b}` names `a\}b` —
+    ///   the escaped brace neither ends the name nor changes the depth, and both
+    ///   bytes stay IN the name, which is why it is a different variable from
+    ///   the one `set "a\}b"` creates;
+    /// * running out of text is `missing close-brace for variable name`. This is
+    ///   what `puts ${` followed by a line with a balanced `{…}` in it reports,
+    ///   where stopping at the first `}` instead swallowed the rest of the
+    ///   script into the name.
+    ///
+    /// The array form `${name(index)}` applies when the text before `(` holds no
     /// `(` of its own and the text ends with `)`.
     fn parse_braced_var(&mut self) -> Result<Part, ParseError> {
         let open = self.pos;
         self.pos += 2; // `${`
         let start = self.pos;
+        let mut depth = 0usize;
         while let Some(b) = self.peek() {
-            if b == b'}' {
-                let raw = String::from_utf8_lossy(&self.src[start..self.pos]).into_owned();
-                self.bump();
-                return Ok(braced_var_part(raw));
+            match b {
+                b'}' if depth == 0 => {
+                    let raw = String::from_utf8_lossy(&self.src[start..self.pos]).into_owned();
+                    self.bump();
+                    return Ok(braced_var_part(raw));
+                }
+                b'}' => depth -= 1,
+                b'{' => depth += 1,
+                // "if 2 or more left, consume 2, else consume just the \ and
+                // let it run into the end" — the escaped byte is skipped
+                // whatever it is, so it can neither close the name nor nest.
+                b'\\' if self.at(1).is_some() => {
+                    self.bump();
+                }
+                _ => {}
             }
             self.bump();
         }
