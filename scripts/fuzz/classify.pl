@@ -199,18 +199,6 @@ if (   $ref_status == $sub_status
     }
 }
 
-# A2 — an unterminated brace is reported at the line where the input ran out,
-# not where the brace opened, so tclrs's location line is not one tclsh
-# printed. The message itself matches; only the location differs.
-if (   $same_out
-    && $same_status
-    && $same_msg
-    && !$loc_ok
-    && $smsg =~ /^(?:missing close-brace|missing close-bracket|missing "|extra characters after close-brace)/)
-{
-    verdict("ALLOWED", "A2-brace-line-number", "$smsg / " . join(" ", @locs));
-}
-
 # A3 — `array names` and `array get` are sorted in tclrs and hash-ordered in
 # tclsh. array(n) leaves the order unspecified, so both are conformant. The
 # generator wraps both in `lsort` for exactly this reason, so this entry should

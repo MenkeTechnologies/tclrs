@@ -300,35 +300,62 @@ fn arity_is_reported_where_the_call_is_reached() {
     );
 }
 
-/// A2: an unterminated brace is reported where the input ran out rather than
-/// where the brace opened. The message agrees; the line does not.
+/// A2, closed: an unterminated construct is located where the FAILING COMMAND
+/// starts, which is where tclsh locates it — not where the input ran out.
+///
+/// This was the A2 deviation: `set x {` on line 1 of a three-line script was
+/// `line 4` here and `line 1` in tclsh, because the whole-script parse reported
+/// the position it gave up at. `runtime::run_prefix` now reports the failing
+/// command's own first line, so the allowlist entry is gone from
+/// `scripts/fuzz/classify.pl` and this is a plain equality assertion over every
+/// message the entry used to cover.
 #[test]
-fn deviation_unterminated_brace_reports_the_last_line() {
+fn an_unterminated_construct_is_located_where_the_command_starts() {
     let Some(tclsh) = tclsh() else {
         eprintln!("skipping: no tclsh 9.0.4 on PATH");
         return;
     };
-    let program = "set x {\nputs a\nputs b\n";
-    let path = case_path(program, "brace");
-    std::fs::write(&path, program).expect("write case");
+    // Every message A2 allowlisted, each with output before it so the location
+    // is not the only thing being compared.
+    let programs: &[&str] = &[
+        "set x {\nputs a\nputs b\n",
+        "puts one\nset y [set\nputs b\n",
+        "puts one\nputs \"abc\nputs b\n",
+        "puts one\nset z {a}}\nputs b\n",
+        "puts one\nputs two\nset w {\n",
+    ];
 
-    let reference = Command::new(&tclsh).arg(&path).output().expect("run tclsh");
-    let actual = Command::new(TCLRS).arg(&path).output().expect("run tclrs");
-    let rerr = String::from_utf8_lossy(&reference.stderr).into_owned();
-    let serr = String::from_utf8_lossy(&actual.stderr).into_owned();
+    // The location line as tclsh spells it, with the path (which differs per
+    // engine only in that both are handed the same file) left in.
+    let located = |s: &str| {
+        s.lines()
+            .find(|l| l.trim_start().starts_with("(file "))
+            .map(|l| l.trim().to_string())
+    };
 
-    assert_eq!(rerr.lines().next(), Some("missing close-brace"));
-    assert_eq!(serr.lines().next(), Some("missing close-brace"));
-    // tclsh locates the brace that opened, on line 1. tclrs locates where the
-    // input ran out — one past the three lines of the script.
-    assert!(
-        rerr.contains("line 1"),
-        "tclsh no longer reports the opening line: {rerr:?}"
-    );
-    assert!(
-        serr.contains("line 4"),
-        "tclrs no longer reports the end of the input: {serr:?}"
-    );
+    let mut failures = Vec::new();
+    for program in programs {
+        let path = case_path(program, "brace");
+        std::fs::write(&path, program).expect("write case");
+        let reference = Command::new(&tclsh).arg(&path).output().expect("run tclsh");
+        let actual = Command::new(TCLRS).arg(&path).output().expect("run tclrs");
+        let rerr = String::from_utf8_lossy(&reference.stderr).into_owned();
+        let serr = String::from_utf8_lossy(&actual.stderr).into_owned();
+
+        if rerr.lines().next() != serr.lines().next()
+            || located(&rerr) != located(&serr)
+            || reference.stdout != actual.stdout
+        {
+            failures.push(format!(
+                "program:\n{program}  tclsh: {:?} / {:?}\n  tclrs: {:?} / {:?}",
+                String::from_utf8_lossy(&reference.stdout),
+                rerr,
+                String::from_utf8_lossy(&actual.stdout),
+                serr,
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
 // ── bugs ────────────────────────────────────────────────────────────────────

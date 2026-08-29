@@ -353,13 +353,11 @@ say "allowlist (every entry, with its hit count)"
 # down — and the rows are summed against the bucket, so an entry that exists in
 # the classifier but not in this table cannot hide inside the total.
 ALLOW_KEYS="A1c-unset-variable-caught \
-A2-brace-line-number A3-array-order A4-compile-time-arity A5-trailing-line-number"
+A3-array-order A4-compile-time-arity A5-trailing-line-number"
 allow_reason() {
   case "$1" in
     A1c-unset-variable-caught)
                         echo 'a procedure-local unset read: a frame slot has no name to report — BUGS.md' ;;
-    A2-brace-line-number)
-                        echo 'unterminated brace located where the input ended — README [0x06]' ;;
     A3-array-order)     echo 'array names/get sorted vs hashed — array(n) leaves the order unspecified' ;;
     A4-compile-time-arity)
                         echo 'arity refused before anything ran — README [0x05], BUGS.md' ;;
