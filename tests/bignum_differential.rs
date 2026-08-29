@@ -309,3 +309,82 @@ fn what_tclsh_refuses_at_width_is_refused_here() {
         failures.join("\n\n")
     );
 }
+
+/// `**` with a base of 0, 1 or -1 answers at ANY exponent, and only a base of
+/// magnitude 2 or more can be refused for the exponent's width.
+///
+/// `expr {0 ** 4611686018427387903}` is 0 in tclsh and was `exponent too large`
+/// here: both `**` arms measured the exponent before looking at the base, so
+/// every exponent past `u32` was refused whatever it was raising. The three
+/// bases that cannot overflow are exactly the three the negative-exponent arm
+/// already answered directly, and `(-1) ** n` is the parity of `n` — read off
+/// the low bit, since a bignum exponent has no `abs()` that fits.
+///
+/// Both widths of exponent are covered: one that fits an `i64` and one that does
+/// not, since they reach different code (`Num::Int` against `big_arith`), and
+/// the bignum path is reached with a SMALL base whenever the exponent is wide.
+/// The refusals are pinned beside them so widening the rule cannot swallow them.
+#[test]
+fn a_base_that_cannot_overflow_answers_at_any_exponent() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
+        return;
+    };
+
+    let programs: &[&str] = &[
+        // i64 exponent, the three bases that always answer.
+        "puts [expr {0 ** 4611686018427387903}]",
+        "puts [expr {1 ** 9223372036854775807}]",
+        "puts [expr {(-1) ** 4611686018427387903}]",
+        "puts [expr {(-1) ** 4611686018427387902}]",
+        // Bignum exponent, same three bases, both signs.
+        "puts [expr {0 ** 99999999999999999999999}]",
+        "puts [expr {1 ** 99999999999999999999999}]",
+        "puts [expr {(-1) ** 99999999999999999999999}]",
+        "puts [expr {(-1) ** 99999999999999999999998}]",
+        "puts [expr {1 ** -99999999999999999999999}]",
+        "puts [expr {(-1) ** -99999999999999999999999}]",
+        "puts [expr {(-1) ** -99999999999999999999998}]",
+        // A base of magnitude >= 2 truncates to zero at a negative exponent
+        // rather than being refused, at either width.
+        "puts [expr {2 ** -99999999999999999999999}]",
+        "puts [expr {99999999999999999999999 ** -1}]",
+        "puts [expr {(-99999999999999999999999) ** -1}]",
+        // The zero exponent, where each base is 1.
+        "puts [expr {0 ** 0}]",
+        "puts [expr {1 ** 0}]",
+        "puts [expr {(-1) ** 0}]",
+        // Still refused, and still with tclsh's wording: only |base| >= 2 can
+        // outgrow the exponent, and zero to a negative power has no value.
+        "puts [expr {2 ** 4611686018427387903}]",
+        "puts [expr {(-2) ** 4611686018427387903}]",
+        "puts [expr {2 ** 99999999999999999999999}]",
+        "puts [expr {0 ** -1}]",
+        "puts [expr {0 ** -99999999999999999999999}]",
+        // Ordinary exponentiation is untouched, on both sides of the promotion.
+        "puts [expr {2 ** 10}]",
+        "puts [expr {(-2) ** 3}]",
+        "puts [expr {2 ** 63}]",
+        "puts [expr {3 ** 40}]",
+        "puts [expr {(-2) ** 101}]",
+        "puts [expr {99999999999999999999999 ** 2}]",
+    ];
+
+    let mut failures = Vec::new();
+    for program in programs {
+        let expected = reference(&tclsh, program);
+        let actual = subject(program);
+        if expected != actual {
+            failures.push(format!(
+                "program:\n{program}\n  tclsh: {expected:?}\n  tclrs: {actual:?}"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} differ:\n\n{}",
+        failures.len(),
+        programs.len(),
+        failures.join("\n\n")
+    );
+}

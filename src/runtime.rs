@@ -4275,14 +4275,32 @@ fn big_arith(id: u16, p: BigInt, q: BigInt) -> Result<Value, String> {
             })
         }
         _ => {
+            // A base of 0, 1 or -1 answers at any exponent, of either sign and
+            // any width — it is reached here whenever the EXPONENT is a bignum,
+            // even though the base itself is small. `0 ** 99999999999999999999999`
+            // is 0 in tclsh 9.0.4 and `1 ** -99999999999999999999999` is 1,
+            // where measuring the exponent first refused both. `(-1) ** n` is
+            // its parity, which for a bignum is the low bit of its magnitude.
+            if p.is_zero() {
+                return match q.is_negative() {
+                    true => Err("exponentiation of zero by negative power".to_string()),
+                    false => Ok(Value::Int(i64::from(q.is_zero()))),
+                };
+            }
+            if p == BigInt::from(1) {
+                return Ok(Value::Int(1));
+            }
+            if p == BigInt::from(-1) {
+                return Ok(Value::Int(match q.bit(0) {
+                    true => -1,
+                    false => 1,
+                }));
+            }
             if q.is_negative() {
                 // An integral base raised to a negative power truncates toward
                 // zero, and only ±1 survives it — the same rule the `i64` arm
-                // applies, and a bignum base is never ±1.
-                return match () {
-                    _ if p.is_zero() => Err("exponentiation of zero by negative power".to_string()),
-                    _ => Ok(Value::Int(0)),
-                };
+                // applies, and ±1 and 0 are already answered above.
+                return Ok(Value::Int(0));
             }
             let exp = u32::try_from(&q).map_err(|_| "exponent too large".to_string())?;
             // The width of the answer is the base's width times the exponent,
@@ -4331,9 +4349,23 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
                 r
             }))
         }
+        // A base of 0, 1 or -1 cannot outgrow anything, so it answers before the
+        // exponent is looked at: `expr {0 ** 4611686018427387903}` is 0 in tclsh
+        // 9.0.4, and `1 ** 9223372036854775807` is 1, where measuring the
+        // exponent first refused all three. It is the same rule the negative-
+        // exponent arm below already applies, for the same reason.
+        (ext::POW, Num::Int(i), Num::Int(j)) if j >= 0 && (-1..=1).contains(&i) => {
+            Ok(Value::Int(match i {
+                0 => i64::from(j == 0),
+                1 => 1,
+                _ if j % 2 == 0 => 1,
+                _ => -1,
+            }))
+        }
         // An exponent past what `checked_pow` even takes is its own diagnostic
         // in tclsh 9.0.4 — `expr {2 ** 9999999999}` is "exponent too large",
-        // not the overflow the product would report.
+        // not the overflow the product would report. Only |base| >= 2 can reach
+        // here now, which is the only base that diagnostic is true of.
         (ext::POW, Num::Int(i), Num::Int(j)) if j >= 0 => {
             let exp = u32::try_from(j).map_err(|_| "exponent too large".to_string())?;
             match i.checked_pow(exp) {

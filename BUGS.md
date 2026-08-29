@@ -1494,6 +1494,23 @@ tclsh, with the seed and case number of the divergence it was reduced from.
 Each of these was a divergence in the run above and is now parity, pinned in
 `tests/parity_fuzz_findings.rs` against a live tclsh:
 
+- **`**` with a base of 0, 1 or -1 answers at any exponent.**
+  `expr {0 ** 4611686018427387903}` is 0 in tclsh 9.0.4 and was
+  `exponent too large` here, as were `1 ** 9223372036854775807` and
+  `(-1) ** 4611686018427387903`. Both `**` arms measured the exponent before
+  looking at the base — `u32::try_from(j)` in the `i64` arm and
+  `u32::try_from(&q)` in `big_arith` — so every exponent past `u32` was refused
+  whatever it was raising. Those three bases cannot overflow at any exponent of
+  either sign, which is the rule the negative-exponent arm already applied; both
+  arms now apply it first, and `(-1) ** n` reads its parity off the low bit
+  because a bignum exponent has no `abs()` that fits. `exponent too large` is
+  unchanged for |base| >= 2, which is the only base it was ever true of. The
+  bignum path matters here even though the base is small: a wide EXPONENT sends
+  a small base through it. Found at seed 70123 as
+  `if {0 ** 4611686018427387903} {…}`, which tclsh takes the else branch of.
+  Regression:
+  `tests/bignum_differential.rs::a_base_that_cannot_overflow_answers_at_any_exponent`,
+  28 programs of which 11 fail without the change.
 - **`format %c` refuses an argument that is not a C `int`.** `%c` hands its
   argument to a C `int`, and `Tcl_GetIntFromObj` accepts a 32-bit word written
   either way, so the window is `i32::MIN ..= u32::MAX` rather than one type's
