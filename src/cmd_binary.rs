@@ -282,22 +282,27 @@ fn big_endian(cmd: char) -> bool {
 /// The bytes a string stands for, refusing a character that is not one.
 ///
 /// A port of `Tcl_GetBytesFromObj`'s loop (`generic/tclBinary.c:512`),
-/// including its message. The index it names counts CHARACTERS, which is what
-/// the count of bytes written so far comes to on this path. Measured against
-/// tclsh 9.0.3, which is where the older "expected code point values below
-/// 0xff but value at byte offset N was 0xM" wording was replaced:
+/// including its message. The index it names is `dst - byteArrayPtr->bytes` —
+/// the count of bytes written so far, which is the character index on this
+/// path — and the code point is `0x%x`: lowercase, unpadded.
+///
+/// 9.0.4 REPLACED the wording 9.0.0 and 9.0.3 used ("expected byte sequence but
+/// character %s was ..."), and this port targets 9.0.4:
 ///
 /// ```text
 /// % binary scan \u0100 a* v
-/// expected byte sequence but character 0 was 'Ā' (U+000100)
+/// expected code point values below 0xff but value at byte offset 0 was 0x100
 /// ```
+///
+/// `encoding convertfrom` reaches the same C function and so reports the same
+/// message; `crate::cmd_encoding` calls this rather than repeating the loop.
 pub(crate) fn as_bytes(text: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(text.len());
     for ch in text.chars() {
         let cp = u32::from(ch);
         if cp > 255 {
             return Err(format!(
-                "expected byte sequence but character {} was '{ch}' (U+{cp:06X})",
+                "expected code point values below 0xff but value at byte offset {} was {cp:#x}",
                 out.len()
             ));
         }

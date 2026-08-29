@@ -506,28 +506,17 @@ struct FailedAt {
 
 /// The bytes a string stands for, refusing a character that is not one.
 ///
-/// A port of `Tcl_GetBytesFromObj`'s loop (`generic/tclBinary.c:512`),
-/// including its message. The index it names counts CHARACTERS, which is what
-/// the count of bytes written so far comes to on this path. Measured against
-/// tclsh 9.0.3:
+/// `encoding convertfrom` and `binary scan` both reach `Tcl_GetBytesFromObj`,
+/// so they refuse the same characters with the same message; this used to be a
+/// second copy of that loop, which is how the two came to disagree with each
+/// other about the wording. One loop, in `crate::cmd_binary`:
 ///
 /// ```text
 /// % encoding convertfrom ascii ééŁ
-/// expected byte sequence but character 2 was 'Ł' (U+000141)
+/// expected code point values below 0xff but value at byte offset 2 was 0x141
 /// ```
 fn as_bytes(text: &str) -> Result<Vec<u8>, String> {
-    let mut out = Vec::with_capacity(text.len());
-    for ch in text.chars() {
-        let cp = u32::from(ch);
-        if cp > 255 {
-            return Err(format!(
-                "expected byte sequence but character {} was '{ch}' (U+{cp:06X})",
-                out.len()
-            ));
-        }
-        out.push(cp as u8);
-    }
-    Ok(out)
+    crate::cmd_binary::as_bytes(text)
 }
 
 // ── the encodings ────────────────────────────────────────────────────────
