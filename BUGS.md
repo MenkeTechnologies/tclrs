@@ -1604,6 +1604,12 @@ Each of these was a divergence in the run above and is now parity, pinned in
 - **`incr x abc`** reports `expected integer but got "abc"`.
 - **A character `expr` cannot use** is `invalid character "Ü"`, not the lead byte
   of its UTF-8 encoding.
+- **A refused operand is named as the script spelled it**, not as the number it
+  parses to: `expr {~inf}` is `cannot use floating-point value "inf" as operand
+  of "~"` and `expr {~1.50}` names `"1.50"`. The binary operators already
+  carried the spelling; unary `~` read the parsed double back and answered
+  `"Inf"` and `"1.5"`. A *computed* operand has no spelling to carry and stays
+  canonical, which is why `expr {~-inf}` is `"-Inf"` — the sign makes it one.
 - **A failure inside a body** is located at the script's own command, which is the
   line tclsh's `(file "…" line N)` names. A **procedure** body is the one that is
   not located at all: tclsh's `(file …)` there is the CALL site, which the same

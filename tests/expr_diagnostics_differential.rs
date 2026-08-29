@@ -228,3 +228,55 @@ fn the_marker_never_splits_a_character() {
         );
     }
 }
+
+/// The operands whose refusal names the text the SCRIPT wrote rather than the
+/// number it parses to.
+///
+/// tclsh reports `cannot use floating-point value "inf" as operand of "~"` for
+/// `expr {~inf}` and `"1.50"` for `expr {~1.50}` — the literal, verbatim, in
+/// whatever case and with whatever trailing zeros it was written. The unary
+/// arm read the parsed double back instead and answered `"Inf"` and `"1.5"`,
+/// while the binary arm (`expr {infinity | 1}`) already carried the spelling.
+///
+/// A COMPUTED operand has no spelling to carry and is named canonically, which
+/// is why `~-inf` is `"-Inf"` in both engines — the `-` makes it a computation.
+/// Both halves are in the list, so a fix that simply stopped canonicalising
+/// everywhere would fail here.
+const OPERAND_SPELLINGS: &[&str] = &[
+    "~inf",
+    "~Inf",
+    "~INF",
+    "~InF",
+    "~infinity",
+    "~Infinity",
+    "~nan",
+    "~NaN",
+    "~1.5",
+    "~1.50",
+    "~1e3",
+    "~0.10",
+    // Computed, so the canonical spelling is the right answer.
+    "~-inf",
+    "~(1/0.0)",
+    "~(0.0/0.0)",
+    // The binary arm, which already agreed — kept so a change there is caught.
+    "infinity | 1",
+    "1 | infinity",
+    "inf % 2",
+    "1.50 << 1",
+];
+
+#[test]
+fn a_refused_operand_is_named_as_the_script_spelled_it() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
+        return;
+    };
+    let program = batch(OPERAND_SPELLINGS);
+    let expected = reference(&tclsh, 3, &program);
+    let outcome = tclrs::eval(&program).expect("tclrs runs the program");
+    assert_eq!(
+        outcome.output, expected,
+        "a refused operand carries the literal's own spelling"
+    );
+}

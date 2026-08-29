@@ -3151,8 +3151,14 @@ impl Compiler {
             // `~` wants an integer, and fusevm's `Op::BitNot` takes anything —
             // `expr {~1.5}` answered -2 where tclsh refuses the operand. Native
             // only when the operand is provably an integer.
+            //
+            // The operand carries its SPELLING for the same reason the sign
+            // arm below does: the refusal names the text the script wrote, not
+            // the number it parses to. `expr {~inf}` is `… value "inf" …` and
+            // `expr {~1.50}` is `… value "1.50" …` in tclsh, where reading the
+            // parsed double back gave `"Inf"` and `"1.5"`.
             Expr::Unary(UnOp::BitNot, operand) if !Self::fits_machine_int(operand) => {
-                self.expr(operand)?;
+                self.numeric_operand(operand)?;
                 self.emit(Op::Extended(ext::BIT_NOT, 1), 0);
                 Ok(())
             }
