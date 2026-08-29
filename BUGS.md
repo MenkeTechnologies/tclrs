@@ -1494,6 +1494,19 @@ tclsh, with the seed and case number of the divergence it was reduced from.
 Each of these was a divergence in the run above and is now parity, pinned in
 `tests/parity_fuzz_findings.rs` against a live tclsh:
 
+- **A `*` width or precision is counted before it is converted.**
+  `format %*d 1e300` is `not enough arguments for all format specifiers` in
+  tclsh 9.0.4 — the `*` takes the one argument there is and the `d` has none
+  left — and was `expected integer but got "1e300"` here. tclsh reserves every
+  slot a specifier consumes and only then reads them; this converted each `*` as
+  it parsed it, so the value's own complaint was reported about an argument the
+  command was never going to reach. The `*` text is now held until the
+  conversion's own argument has been found, then read left to right, which is
+  the order tclsh names two bad ones in: `format %*.*d abc def 7` says `abc`.
+  Nothing changes when the slots are all present. Found at seed 70123 as
+  `format %*d 1e300`. Regression:
+  `tests/format_differential.rs::a_star_argument_is_counted_before_it_is_converted`,
+  25 specifier/argument pairs across too few, exactly enough and one to spare.
 - **`**` with a base of 0, 1 or -1 answers at any exponent.**
   `expr {0 ** 4611686018427387903}` is 0 in tclsh 9.0.4 and was
   `exponent too large` here, as were `1 ** 9223372036854775807` and

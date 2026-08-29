@@ -1974,9 +1974,20 @@ fn format_string(fmt: &str, args: &[String]) -> Result<String, String> {
             i += 1;
         }
 
+        // A `*` takes its value from an argument, and tclsh checks that EVERY
+        // slot the specifier consumes is present before converting any of them:
+        // `format %*d 1e300` is `not enough arguments for all format
+        // specifiers`, not `expected integer but got "1e300"`, because the `d`
+        // has no argument left once the `*` has taken the only one. Converting
+        // as we went reported the value's own complaint about an argument the
+        // command was never going to reach. So the text is held here and parsed
+        // below, once the conversion's own argument has been found — and then
+        // left to right, which is the order tclsh reports two bad ones in
+        // (`format %*.*d abc def 7` names "abc").
         let mut width: i64 = 0;
+        let mut width_text: Option<&String> = None;
         if f.get(i) == Some(&'*') {
-            width = want_int(take(argument)?)?;
+            width_text = Some(take(argument)?);
             argument += 1;
             i += 1;
         } else {
@@ -1990,18 +2001,15 @@ fn format_string(fmt: &str, args: &[String]) -> Result<String, String> {
                 i = stop;
             }
         }
-        if width < 0 {
-            flags.minus = true;
-            width = -width;
-        }
-
         let mut precision: Option<i64> = None;
+        let mut precision_text: Option<&String> = None;
         if f.get(i) == Some(&'.') {
             i += 1;
             let value = if f.get(i) == Some(&'*') {
+                precision_text = Some(take(argument)?);
                 argument += 1;
                 i += 1;
-                want_int(take(argument - 1)?)?
+                0
             } else {
                 let stop = digit_run(&f, i);
                 // A spelling too long for an `i64` saturates rather than
@@ -2060,6 +2068,19 @@ fn format_string(fmt: &str, args: &[String]) -> Result<String, String> {
 
         let value = take(argument)?;
         next_arg = argument + 1;
+
+        // Every slot is present, so the `*` values can be read. Width first:
+        // that is the order tclsh names them in.
+        if let Some(text) = width_text {
+            width = want_int(text)?;
+        }
+        if width < 0 {
+            flags.minus = true;
+            width = -width;
+        }
+        if let Some(text) = precision_text {
+            precision = Some(want_int(text)?.max(0));
+        }
         let converted = match conv {
             's' => Signed::plain(match precision {
                 Some(p) => value.chars().take(p as usize).collect(),

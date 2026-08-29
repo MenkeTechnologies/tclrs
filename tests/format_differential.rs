@@ -348,3 +348,64 @@ fn character_conversions_match_tclsh() {
     }
     compare(&tclsh, &program, "character");
 }
+
+/// A `*` width or precision is checked for PRESENCE before it is converted.
+///
+/// tclsh reserves every argument slot a specifier consumes and only then reads
+/// them, so `format %*d 1e300` is `not enough arguments for all format
+/// specifiers` — the `*` took the one argument there was and the `d` has none —
+/// rather than `expected integer but got "1e300"`. Converting each `*` as it
+/// was parsed reported the value's own complaint about an argument the command
+/// was never going to reach. When the slots ARE all present the values are read
+/// left to right, so `format %*.*d abc def 7` names `abc` and not `def`.
+///
+/// The refusals matter more than the successes here, so the specifier and its
+/// arguments are printed with whatever `f` caught.
+#[test]
+fn a_star_argument_is_counted_before_it_is_converted() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
+        return;
+    };
+    let mut program = String::from(
+        "proc g {args} {\n\
+             if {[catch {format {*}$args} out]} { return ERR:$out }\n\
+             return <$out>\n\
+         }\n",
+    );
+    // (specifier, arguments) — too few, exactly enough, and one to spare.
+    let cases: &[(&str, &str)] = &[
+        ("%*d", ""),
+        ("%*d", "1e300"),
+        ("%*d", "abc"),
+        ("%*d", "5"),
+        ("%*d", "abc 7"),
+        ("%*d", "1e300 7"),
+        ("%*d", "5 7"),
+        ("%*d", "-5 7"),
+        ("%.*d", "abc"),
+        ("%.*d", "abc 7"),
+        ("%.*d", "3 7"),
+        ("%*.*d", "5"),
+        ("%*.*d", "5 3"),
+        ("%*.*d", "abc def 7"),
+        ("%*.*d", "5 def 7"),
+        ("%*.*d", "abc 3 7"),
+        ("%*.*d", "5 3 7"),
+        ("%*c", "1e300"),
+        ("%*c", "5 65"),
+        ("%*s", "abc"),
+        ("%*s", "6 ab"),
+        ("%-*d", "5 7"),
+        ("%*.*s", "8 3 abcdef"),
+        // A `*` beside a literal width or precision, which takes no argument.
+        ("%5.*d", "2 7"),
+        ("%*.2d", "5 7"),
+    ];
+    for (spec, args) in cases {
+        program.push_str(&format!(
+            "puts \"{spec} | {args} | [g {{{spec}}} {args}]\"\n"
+        ));
+    }
+    compare(&tclsh, &program, "star arguments");
+}
