@@ -934,6 +934,45 @@ fn unreachable_code_costs_nothing() {
         "if {0} {puts [expr {1 +}]}\nputs reached",
         out("reached\n"),
     );
+    // An expression that cannot be parsed IN A CONDITION nobody evaluates. This
+    // is the half `Compiler::command`'s absorb cannot reach: by the time an
+    // `elseif`'s test is read, `if` has emitted its first condition and branch,
+    // so there is no mark left to roll back to. `expr_word` emits the refusal as
+    // the condition instead, which puts it where tclsh puts it — nowhere, when
+    // the branch above is taken.
+    agrees(
+        &tclsh,
+        "if {1} {puts taken} elseif {$x in \u{e9}\u{e9}} {puts no}\nputs reached",
+        out("taken\nreached\n"),
+    );
+    agrees(
+        &tclsh,
+        "if {1} {puts taken} elseif {1 +} {puts no}\nputs reached",
+        out("taken\nreached\n"),
+    );
+    // A loop that never runs its test, and a `switch` arm nobody selects: the
+    // same rule, reached through the other commands that take a condition.
+    agrees(
+        &tclsh,
+        "foreach x {} {while {5 in end-1} {puts no}}\nputs reached",
+        out("reached\n"),
+    );
+    agrees(
+        &tclsh,
+        "proc p {} {if {1 +} {puts no}}\nputs reached",
+        out("reached\n"),
+    );
+    // ... and the same expression, REACHED, still raises — with the wording and
+    // the `in expression` context it always had, and with everything before it
+    // already written.
+    agrees(
+        &tclsh,
+        "puts start\nif {0} {puts a} elseif {1 +} {puts b}\nputs unreached",
+        Observed {
+            stdout: "start\n".to_string(),
+            error: "missing operand at _@_\nin expression \"1 +_@_\"".to_string(),
+        },
+    );
     // A `switch` arm that is never selected: its body is a braced word, and
     // nothing in it is parsed until the arm is picked.
     agrees(

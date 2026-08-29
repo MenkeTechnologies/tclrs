@@ -2801,10 +2801,28 @@ impl Compiler {
 
     /// A word used as a condition: its text is an expression, and its value has
     /// to be a Tcl boolean.
+    ///
+    /// An expression that will not parse is emitted AS its failure rather than
+    /// failing the compile, for the same reason a body is
+    /// ([`Compiler::body_of`]): tclsh reports it when the expression is
+    /// EVALUATED, and a condition sits where control may never arrive. An
+    /// `elseif` after a branch that is taken, a `while` test in a loop that is
+    /// never entered, and a `switch` arm nobody selects all cost a script
+    /// nothing there — and here, now, they cost it nothing either.
+    ///
+    /// `Compiler::command`'s absorb cannot reach these: `if` has already emitted
+    /// its first condition and branch by the time an `elseif`'s is read, so the
+    /// mark it needs is long gone.
     pub(crate) fn expr_word(&mut self, word: &Word) -> Result<(), CompileError> {
         let text = self.literal_of(word, "condition")?.to_string();
-        let parsed = expr::parse(&text).map_err(|e| self.deferrable_err(e.msg))?;
-        self.condition(&parsed)
+        match expr::parse(&text) {
+            Ok(parsed) => self.condition(&parsed),
+            Err(e) => {
+                // The raise carries the wording, the `in expression …` context
+                // and the line exactly as the refusal carried them.
+                self.raise_at_run_time(&e.msg)
+            }
+        }
     }
 
     /// Emit an expression whose value a branch will consume, as Tcl's rule for a

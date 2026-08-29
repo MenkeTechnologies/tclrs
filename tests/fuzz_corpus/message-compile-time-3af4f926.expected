@@ -1,6 +1,6 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00267   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 17 -> 3 lines in 2 round(s), 24/400 candidates checked
-# verdict: DIVERGENCE	message-compile-time	msg tclsh=can't unset "s2": no such variable tclrs=missing operand at _@_
+# verdict: PASS	failed alike	
 # tclsh: 9.0.4
 # tclrs: tclrs 0.4.1
 # tclsh-status: 1
@@ -8,7 +8,7 @@
 # tclsh-stderr: can't unset "s2": no such variable\n
 # tclrs-status: 1
 # tclrs-stdout: 
-# tclrs-stderr: missing operand at _@_\nin expression "2 ni _@_? - -2"\n    (file "target/fuzz/work/record/driven.tcl" line 23)\n
+# tclrs-stderr: can't unset "s2": no such variable\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

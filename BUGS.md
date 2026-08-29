@@ -1229,9 +1229,25 @@ fixes this.
   rather than a dead script, and the `if` in a `switch` arm nobody selects
   costs nothing — which is the shape the fuzzer's seed-1 case 00196 had.
 
+  A CONDITION was the half none of that reached. `Compiler::command` can only
+  turn a refusal into code while the command has emitted nothing, and by the
+  time an `elseif`'s test is read `if` has already emitted its first condition
+  and branch — so `if {1} {puts taken} elseif {$x in éé} {puts no}` took the
+  whole script down where tclsh prints `taken` and never looks at the second
+  test. `Compiler::expr_word` now emits an unparseable condition AS its failure,
+  the way `body_of` emits an unparseable body, which puts the raise exactly
+  where the expression would have been evaluated: nowhere, when the branch above
+  is taken; and with the same wording, `in expression` context and line when it
+  is. The same word is every command's condition, so `while`, `for`, `switch`
+  and `expr` itself all get it from one place.
+
   Measured on the 400-program run (seed 1, depth 3): **150 parity / 162
   divergence before the command half, 230 / 77 after it, and 269 / 31 once
-  bodies were deferred too**. The `wrong # args` group went from 83 cases to
+  bodies were deferred too**. On the 1 500-case seed-20260828 run, deferring the
+  condition took the total from **51 divergences to 24** and closed both
+  compile-time classes outright: `message-compile-time` 25 -> 0 and
+  `stdout-compile-time` 2 -> 0, with seven more of the 180 committed findings in
+  `tests/fuzz_corpus/` becoming passes. The `wrong # args` group went from 83 cases to
   none, the ensemble-subcommand group from 19 to none, and the parse-error
   groups — `invalid bareword`, `invalid character`, `missing operand`, the
   unterminated quotes and brackets — from 66 to none. Runtime
