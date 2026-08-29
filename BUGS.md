@@ -1171,11 +1171,11 @@ fixes this.
   unterminated quote and an unbalanced bracket *inside* a balanced body, and
   refuses an unbalanced brace anywhere.
 
-  What remains of that class is not a diagnostic difference but *when a script
-  starts running*. tclsh evaluates a file command by command, so everything
-  before an unparseable command has already run and printed by the time the
-  parse error is reported; this crate compiles the whole script first, so it
-  reports the same error having printed nothing:
+  What remained of that class was not a diagnostic difference but *when a script
+  starts running* — and it is now closed. tclsh evaluates a file command by
+  command, so everything before an unparseable command has already run and
+  printed by the time the parse error is reported; this crate compiled the whole
+  script first and so reported the same error having printed nothing:
 
   ```tcl
   puts first
@@ -1183,16 +1183,33 @@ fixes this.
   if {1} {          ;# the brace never closes
   ```
 
-  tclsh prints `first` and `second` and then reports `missing close-brace`;
-  tclrs reports only the error. Both exit 1, and the message agrees — `info
-  complete` says the script is incomplete in both engines — so this is the
-  compile-once property, not a parse defect. Reaching tclsh's behaviour means
-  compiling and running one top-level command at a time, which is what the
-  stdin-not-a-terminal mode already does; for a file it would give up
-  whole-script compilation, and with it the static dispatch a procedure call
-  resolves through. Deliberately not taken. It is the residue behind the
-  remaining `missing close-brace`, `extra characters after close-brace` and
-  "printed nothing where tclsh printed" divergences the fuzzer reports.
+  tclsh prints `first` and `second` and then reports `missing close-brace`.
+  tclrs used to report only the error, and to name the line the scan ran out of
+  text on rather than the line the failing command starts on.
+
+  Reaching tclsh's behaviour was once written here as needing to compile and run
+  one top-level command at a time, giving up whole-script compilation and with
+  it the static dispatch a procedure call resolves through. It does not: the
+  whole-script compile still runs first and is untouched on every script that
+  parses, and only its FAILURE path recovers anything. `parser::valid_prefix`
+  re-scans the source command by command, returns the byte offset just past the
+  last one that parsed, and `runtime::run_prefix` compiles and runs exactly that
+  prefix — one chunk, static dispatch intact — before reporting the error at the
+  failing command's own first line. A script that parses pays nothing, since
+  nothing on that path is reached.
+
+  Because the prefix RUNS, it is also what decides which error is reported: a
+  command that fails at run time before the malformed text is reached is the
+  failure tclsh names, and now the failure tclrs names, instead of the syntax
+  error further down. `puts hi; string; puts {` is `wrong # args: should be
+  "string subcommand ?arg ...?"` in both.
+
+  The same path serves a nested `eval`, which `Tcl_EvalEx` treats identically:
+  `eval "puts b\nputs \{"` writes `b` and then raises. Measured against
+  tclsh 9.0.4 in `tests/execution_differential.rs`; on the seed-20260828,
+  1500-case fuzz run this took the divergence count from 87 to 51, with
+  `stdout-compile-time` going 15 -> 2 and `message-compile-time` 49 -> 25, and
+  turned 14 of the 180 committed findings in `tests/fuzz_corpus/` into passes.
 
   The command half of it — an unknown command, a wrong argument count, an
   unknown ensemble subcommand — is gone: those are raised where the command

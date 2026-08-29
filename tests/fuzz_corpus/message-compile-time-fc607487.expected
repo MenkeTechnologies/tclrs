@@ -2,7 +2,7 @@
 # seed: 1   case: 00335   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 23 -> 4 lines in 4 round(s), 85/400 candidates checked
 # verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.3.0
+# tclrs: tclrs 0.4.1
 # tclsh-status: 1
 # tclsh-stdout: 255 {} q\\"r {}\n
 # tclsh-stderr: key "a" not known in dictionary\n

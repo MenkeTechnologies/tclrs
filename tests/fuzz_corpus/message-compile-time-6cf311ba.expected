@@ -2,7 +2,7 @@
 # seed: 1   case: 00080   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 22 -> 2 lines in 4 round(s), 37/400 candidates checked
 # verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.3.0
+# tclrs: tclrs 0.4.1
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: missing operand at _@_\n

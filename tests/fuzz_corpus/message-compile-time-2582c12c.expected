@@ -2,7 +2,7 @@
 # seed: 1   case: 00341   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 13 -> 3 lines in 3 round(s), 48/400 candidates checked
 # verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.3.0
+# tclrs: tclrs 0.4.1
 # tclsh-status: 1
 # tclsh-stdout: 5\n
 # tclsh-stderr: hello world\n

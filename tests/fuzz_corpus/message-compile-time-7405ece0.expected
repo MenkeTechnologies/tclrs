@@ -1,8 +1,8 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00196   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 15 -> 3 lines in 2 round(s), 44/400 candidates checked
 # verdict: PASS	ran	
-# tclsh: 9.0.3
-# tclrs: tclrs 0.4.0
+# tclsh: 9.0.4
+# tclrs: tclrs 0.4.1
 # tclsh-status: 0
 # tclsh-stdout: \x1e
 # tclsh-stderr: 

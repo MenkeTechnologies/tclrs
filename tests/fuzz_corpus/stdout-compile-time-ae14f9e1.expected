@@ -1,14 +1,14 @@
 # tclrs parity fuzz finding
 # seed: 1   case: 00388   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 17 -> 4 lines in 2 round(s), 26/400 candidates checked
-# verdict: DIVERGENCE	stdout-compile-time	line tclsh= tclrs=<no more output>
+# verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.3.0
+# tclrs: tclrs 0.4.1
 # tclsh-status: 1
 # tclsh-stdout: \na#b\n
 # tclsh-stderr: missing close-brace\n
 # tclrs-status: 1
-# tclrs-stdout: 
-# tclrs-stderr: missing close-brace\n    (file "target/fuzz/work/record/driven.tcl" line 26)\n
+# tclrs-stdout: \na#b\n
+# tclrs-stderr: missing close-brace\n    (file "target/fuzz/work/record/driven.tcl" line 24)\n
 #
 # The case itself is the sibling .tcl file. It is run spliced into
 # scripts/fuzz/drive.tcl, which is what the captured output above is of.

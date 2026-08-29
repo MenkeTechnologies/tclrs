@@ -575,9 +575,47 @@ pub(crate) fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> 
     // a chunk by value and copies it either way, and keeping the handle is what
     // lets a `proc` this run defines record the chunk it belongs to without a
     // second copy of the program. See [`State::running`].
-    let result = compiled.and_then(|chunk| Machine::run(shared, chunk));
+    let result = match compiled {
+        Ok(chunk) => Machine::run(shared, chunk),
+        // The whole script would not parse. The reference interpreter never
+        // saw the bad command: it parses one command, runs it, and parses the
+        // next, so everything before the failure has already run and produced
+        // its output — and if one of those commands failed, THAT is the error
+        // reported, not the syntax error further down. See `run_prefix`.
+        Err(e) => run_prefix(shared, src, e),
+    };
     shared.lock().expect("interpreter lock").depth -= 1;
     result
+}
+
+/// Run the commands a script's failed parse left intact, then report the
+/// failure — `Tcl_EvalEx`'s command-at-a-time model, reached only when the
+/// whole-script parse said no.
+///
+/// `puts hi` followed by `puts {` writes `hi` and then reports
+/// `missing close-brace` at the line the failing command STARTS on. A lowering
+/// failure (the parse succeeded, the compile did not) has no prefix and is
+/// returned unchanged.
+fn run_prefix(shared: &Shared, src: &str, err: TclError) -> Result<Value, TclError> {
+    let Some((end, line, _)) = crate::parser::valid_prefix(src) else {
+        return Err(err);
+    };
+    let err = TclError { line: Some(line), ..err };
+    if end == 0 {
+        return Err(err);
+    }
+    let compiled = {
+        let mut state = shared.lock().expect("interpreter lock");
+        let projected = state.projected();
+        state.cache.compile_in(&src[..end], projected)
+    };
+    // The prefix parsed, so it can only fail while running — and a command
+    // that failed did so BEFORE the text the syntax error is in was reached,
+    // which is the error the reference interpreter reports.
+    match compiled.and_then(|chunk| Machine::run(shared, chunk)) {
+        Ok(_) => Err(err),
+        Err(e) => Err(e),
+    }
 }
 
 /// Enter a procedure body compiled into `chunk`, which is not the chunk the

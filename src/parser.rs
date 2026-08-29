@@ -171,6 +171,58 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
     Ok(script)
 }
 
+/// The prefix of `src` that parses as whole commands, for a script the whole-
+/// script parse rejected.
+///
+/// `Tcl_EvalEx` parses ONE command, evaluates it, and only then parses the
+/// next, so a syntax error partway through a script never stops the commands
+/// before it from running — `puts hi` followed by `puts {` writes `hi` and
+/// *then* reports `missing close-brace`, and the location it names is the line
+/// the failing command STARTS on, not the line the scan ran out of text on.
+/// Parsing the whole script up front, which is what lets one script lower to
+/// one chunk, would swallow both.
+///
+/// Returns `(end, line, err)` — `end` is the byte offset just past the last
+/// command that parsed (0 when the very first one fails), `line` is the failing
+/// command's own first line, and `err` is what it raised. `None` when `src`
+/// parses: this is the recovery path and nothing else calls it.
+pub(crate) fn valid_prefix(src: &str) -> Option<(usize, usize, ParseError)> {
+    let mut p = Parser {
+        src: src.as_bytes(),
+        pos: 0,
+        line: 1,
+        depth: 0,
+        subst: SubstFlags::default(),
+        collect: false,
+        scripts: Vec::new(),
+        mark: 0,
+    };
+    let mut end = 0;
+    loop {
+        p.skip_between_commands();
+        if p.pos >= p.src.len() {
+            return None;
+        }
+        // Where this command begins — what `end` becomes once it parses, and
+        // the line the error names when it does not.
+        let start_line = p.line;
+        loop {
+            if let Err(e) = p.parse_word(false) {
+                return Some((end, start_line, e));
+            }
+            if !p.skip_word_gap() || p.at_command_end(false) {
+                break;
+            }
+        }
+        // A `]` with no opening `[` stops the scan here exactly as it stops
+        // `parse`, and it belongs to this command rather than to the prefix.
+        if p.pos < p.src.len() && p.peek() == Some(b']') {
+            return Some((end, start_line, p.error("extra characters after close-bracket")));
+        }
+        end = p.pos;
+    }
+}
+
 /// Parse one `$...` substitution at `at`, which must index a `$`. Returns the
 /// part and the offset just past it, or `None` when the dollar introduces no
 /// name and is therefore literal text.

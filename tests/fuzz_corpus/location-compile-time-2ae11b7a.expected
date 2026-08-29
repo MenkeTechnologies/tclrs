@@ -2,7 +2,7 @@
 # seed: 1   case: 00212   depth: 3   generator: scripts/fuzz/gen.tcl
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=invalid command name "x" tclrs=invalid bareword "x"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.3.0
+# tclrs: tclrs 0.4.1
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: invalid command name "x"\n

@@ -2,7 +2,7 @@
 # seed: 1   case: 00050   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 22 -> 5 lines in 3 round(s), 53/400 candidates checked
 # verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.3.0
+# tclrs: tclrs 0.4.1
 # tclsh-status: 1
 # tclsh-stdout: \n1000 1.5\n
 # tclsh-stderr: invalid command name "x"\n

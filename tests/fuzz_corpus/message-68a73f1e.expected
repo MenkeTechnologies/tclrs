@@ -2,7 +2,7 @@
 # seed: 1   case: 00158   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 18 -> 3 lines in 2 round(s), 34/400 candidates checked
 # verdict: PASS	failed alike	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.3.0
+# tclrs: tclrs 0.4.1
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: cannot use non-numeric string "b" as left operand of "/"\n

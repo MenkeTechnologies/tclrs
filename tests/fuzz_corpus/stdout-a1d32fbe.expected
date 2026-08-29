@@ -2,7 +2,7 @@
 # seed: 1   case: 00171   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 22 -> 2 lines in 2 round(s), 29/400 candidates checked
 # verdict: PASS	ran	
 # tclsh: 9.0.4
-# tclrs: tclrs 0.3.0
+# tclrs: tclrs 0.4.1
 # tclsh-status: 0
 # tclsh-stdout: 0\nm:\n\x1e
 # tclsh-stderr: 

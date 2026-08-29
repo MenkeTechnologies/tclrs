@@ -2,7 +2,7 @@
 # seed: 1   case: 00028   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 19 -> 3 lines in 4 round(s), 58/400 candidates checked
 # verdict: DIVERGENCE	message-compile-time	msg tclsh=expected integer but got "xyz" tclrs=invalid character "Ü"
 # tclsh: 9.0.4
-# tclrs: tclrs 0.3.0
+# tclrs: tclrs 0.4.1
 # tclsh-status: 1
 # tclsh-stdout: 
 # tclsh-stderr: expected integer but got "xyz"\n

@@ -350,3 +350,95 @@ fn min_int_over_negative_one_does_not_trap() {
         "the quotient is one past `i64::MAX`, which is a bignum and not an error"
     );
 }
+
+/// A script is evaluated one command at a time, so a syntax error partway
+/// through does not unwrite the commands before it.
+///
+/// `Tcl_EvalEx` parses ONE command, runs it, and only then parses the next.
+/// tclrs lowers a whole script to one chunk, which is what makes it fast — and
+/// what used to make `puts hi` followed by `puts {` print nothing at all before
+/// reporting `missing close-brace`, where tclsh prints `hi` first. The same
+/// ordering decides WHICH error is reported: a command that fails at run time
+/// before the malformed text is reached is the failure tclsh names, not the
+/// syntax error further down.
+///
+/// Both engines run the same file and both halves are compared — stdout and
+/// exit status — so neither expectation is written from memory. tclrs does not
+/// print the reference's `while executing "..."` command stack (see
+/// `run_source` in `src/main.rs`), so only stdout and the status are compared.
+#[test]
+fn a_syntax_error_does_not_unwrite_the_commands_before_it() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
+        return;
+    };
+    let tclrs_bin = env!("CARGO_BIN_EXE_tclrs");
+
+    // (name, program) — each ends in a command the parser cannot complete.
+    let cases: &[(&str, &str)] = &[
+        // Output written before the bad command survives.
+        ("unterminated brace", "puts hi\nputs {\n"),
+        ("unterminated quote", "puts one\nputs two\nputs \"\n"),
+        ("unterminated bracket", "puts a\nputs [set\n"),
+        // A run-time failure BEFORE the syntax error is the error reported:
+        // tclsh never reaches the malformed command.
+        ("run-time error wins", "puts hi\nstring\nputs {\n"),
+        ("unset variable wins", "puts hi\nputs $nope\nputs {\n"),
+        // Nothing ran before it, so the syntax error is all there is.
+        ("bad first command", "puts {\n"),
+    ];
+
+    let dir = std::env::temp_dir();
+    let mut failures = Vec::new();
+    for (i, (name, program)) in cases.iter().enumerate() {
+        let path = dir.join(format!("tclrs-incremental-{}-{i}.tcl", std::process::id()));
+        std::fs::write(&path, program).expect("write program");
+        let want = Command::new(&tclsh).arg(&path).output().expect("run tclsh");
+        let got = Command::new(tclrs_bin).arg(&path).output().expect("run tclrs");
+        let _ = std::fs::remove_file(&path);
+
+        if want.stdout != got.stdout || want.status.code() != got.status.code() {
+            failures.push(format!(
+                "{name}:\n{program}  tclsh: status {:?} stdout {:?}\n  tclrs: status {:?} stdout {:?}",
+                want.status.code(),
+                String::from_utf8_lossy(&want.stdout),
+                got.status.code(),
+                String::from_utf8_lossy(&got.stdout),
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// The location a syntax error names is the line the FAILING COMMAND starts on,
+/// not the line the scan ran out of text on. `puts hi` on line 1 and `puts {`
+/// on line 2 of a three-line file is `line 2` in tclsh; tclrs reported `line 3`,
+/// the end of the text the open brace swallowed.
+#[test]
+fn a_syntax_error_is_located_at_the_command_that_failed() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
+        return;
+    };
+    let path = std::env::temp_dir().join(format!("tclrs-locate-{}.tcl", std::process::id()));
+    std::fs::write(&path, "puts hi\nputs {\n").expect("write program");
+
+    let want = Command::new(&tclsh).arg(&path).output().expect("run tclsh");
+    let got = Command::new(env!("CARGO_BIN_EXE_tclrs"))
+        .arg(&path)
+        .output()
+        .expect("run tclrs");
+    let _ = std::fs::remove_file(&path);
+
+    let want = String::from_utf8_lossy(&want.stderr).into_owned();
+    let got = String::from_utf8_lossy(&got.stderr).into_owned();
+    let line_of = |s: &str| {
+        s.lines()
+            .find_map(|l| l.trim().strip_prefix("(file ")?.rsplit_once("line ").map(|(_, n)| n.trim_end_matches(')').to_string()))
+    };
+    assert_eq!(
+        line_of(&got),
+        line_of(&want),
+        "tclsh stderr:\n{want}\ntclrs stderr:\n{got}"
+    );
+}

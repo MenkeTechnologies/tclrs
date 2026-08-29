@@ -2,7 +2,7 @@
 # seed: 1   case: 00235   depth: 3   generator: scripts/fuzz/gen.tcl   shrink: 20 -> 3 lines in 3 round(s), 54/400 candidates checked
 # verdict: DIVERGENCE	stdout-compile-time	line tclsh=3 tclrs=<no more output>
 # tclsh: 9.0.4
-# tclrs: tclrs 0.3.0
+# tclrs: tclrs 0.4.1
 # tclsh-status: 1
 # tclsh-stdout: 3\n
 # tclsh-stderr: invalid bareword "end"\n
