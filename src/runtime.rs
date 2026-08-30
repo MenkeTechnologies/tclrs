@@ -103,6 +103,14 @@ pub struct TclError {
     /// its own control structures out of. Zero for an error and for `break` /
     /// `continue`, which act where they are written.
     pub level: i32,
+    /// `-errorcode`: the machine-readable classification a handler branches on,
+    /// as a Tcl list. `None` where this frontend does not know the reference
+    /// interpreter's value — every builtin-raised error, whose `ARITH` / `POSIX`
+    /// / `TCL` codes it does not model — so the option is ABSENT from the
+    /// dictionary there rather than present and wrong. The commands that state
+    /// one carry it: `error`'s third word, `throw`'s type, and `return
+    /// -errorcode`; a plain `error` carries tclsh's `NONE`.
+    pub errorcode: Option<String>,
 }
 
 impl TclError {
@@ -112,6 +120,7 @@ impl TclError {
             line: None,
             code: TCL_ERROR,
             level: 0,
+            errorcode: None,
         }
     }
 
@@ -123,6 +132,7 @@ impl TclError {
             line: None,
             code,
             level,
+            errorcode: None,
         }
     }
 
@@ -147,9 +157,19 @@ impl TclError {
     }
 
     /// Tcl's `-errorcode`-style option dictionary for `catch`'s options
-    /// variable. Only the two options this frontend models are present.
+    /// variable. `-code` and `-level` are always present and exact;
+    /// `-errorcode` joins them when the error carries one.
+    ///
+    /// The value goes through the list quoter, because an error code is itself a
+    /// LIST (`POSIX ENOENT {no such file or directory}`) and the dictionary is
+    /// parsed as one — writing it raw would turn `A B` into two keys.
     pub(crate) fn options(&self) -> String {
-        format!("-code {} -level {}", self.code, self.level)
+        let mut out = format!("-code {} -level {}", self.code, self.level);
+        if let Some(ec) = &self.errorcode {
+            out.push_str(" -errorcode ");
+            out.push_str(&crate::list::quote(ec, false));
+        }
+        out
     }
 
     /// The inverse of [`TclError::options`]: rebuild the error a `catch`
@@ -165,12 +185,18 @@ impl TclError {
             line: None,
             code: TCL_ERROR,
             level: 0,
+            errorcode: None,
         };
-        let mut words = options.split_whitespace();
-        while let (Some(key), Some(value)) = (words.next(), words.next()) {
-            match key {
+        // Split as a LIST rather than on whitespace: `-errorcode {A B}` is one
+        // value of two words, and a whitespace split would read `{A` as the
+        // value and `B}` as the next key.
+        let words = crate::list::split(options).unwrap_or_default();
+        let mut it = words.into_iter();
+        while let (Some(key), Some(value)) = (it.next(), it.next()) {
+            match key.as_str() {
                 "-code" => error.code = value.parse().unwrap_or(TCL_ERROR),
                 "-level" => error.level = value.parse().unwrap_or(0),
+                "-errorcode" => error.errorcode = Some(value),
                 _ => {}
             }
         }
@@ -668,6 +694,34 @@ pub(crate) fn call_in_chunk(
         }
         other => other,
     }
+}
+
+thread_local! {
+    /// The `-errorcode` the extension op now raising stated, if it stated one.
+    ///
+    /// An extension op reports failure as a bare `String`, and that signature is
+    /// shared by every module that implements one — `cmd_channel`, `cmd_info`,
+    /// `cmd_binary` and the rest — so widening it to carry an option would touch
+    /// all of them to serve two ops. `error` and `throw` leave the code here
+    /// instead, and the one place that turns an op's `String` into a `TclError`
+    /// takes it back out. Set immediately before returning `Err` and cleared by
+    /// the taker, so it cannot outlive the error it belongs to.
+    static PENDING_ERRORCODE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Attach whatever `-errorcode` the op just raised stated. See
+/// [`PENDING_ERRORCODE`].
+fn with_pending_errorcode(mut e: TclError) -> TclError {
+    if let Some(ec) = PENDING_ERRORCODE.with(|p| p.borrow_mut().take()) {
+        e.errorcode = Some(ec);
+    }
+    e
+}
+
+/// Record the `-errorcode` for the error this op is about to raise.
+fn set_pending_errorcode(code: String) {
+    PENDING_ERRORCODE.with(|p| *p.borrow_mut() = Some(code));
 }
 
 thread_local! {
@@ -1799,7 +1853,14 @@ impl Hooks {
                 ext::RAISE => {
                     let level = to_tcl_string(&vm.pop()).parse().unwrap_or(0);
                     let code = to_tcl_string(&vm.pop()).parse().unwrap_or(TCL_ERROR);
-                    Err(TclError::coded(code, level, to_tcl_string(&vm.pop())))
+                    let msg = to_tcl_string(&vm.pop());
+                    let mut e = TclError::coded(code, level, msg);
+                    // The inline operand is set only by `return -errorcode`,
+                    // which pushed the code under the message.
+                    if arg == 1 {
+                        e.errorcode = Some(to_tcl_string(&vm.pop()));
+                    }
+                    Err(e)
                 }
                 // Its own arm for the same reason [`ext::RAISE`] is: it is the
                 // *other* op that produces a `TclError` carrying a code, and it
@@ -1811,7 +1872,7 @@ impl Hooks {
                     vm.pop(); // the visible code, superseded by `options`
                     Err(TclError::from_options(&options, msg))
                 }
-                _ => extension(vm, id, arg).map_err(TclError::plain),
+                _ => extension(vm, id, arg).map_err(|m| with_pending_errorcode(TclError::plain(m))),
             };
             if let Err(e) = outcome {
                 *err_cell.lock().expect("error lock") = Some(e);
@@ -1848,6 +1909,7 @@ impl Hooks {
                     line: (payload > 0).then_some(payload),
                     code: TCL_ERROR,
                     level: 0,
+                    errorcode: None,
                 });
                 vm.push(Value::Undef);
                 vm.request_halt();
@@ -1921,7 +1983,7 @@ fn interpreter_op(interp: &Shared, vm: &mut VM, id: u16, arg: u8) -> Result<(), 
         // the rest the way the caller's other arm would is what keeps a sixth
         // id added there and forgotten here a wrong *answer* rather than a call
         // to whichever of these happened to be last.
-        _ => extension(vm, id, arg).map_err(TclError::plain),
+        _ => extension(vm, id, arg).map_err(|m| with_pending_errorcode(TclError::plain(m))),
     }
 }
 
@@ -4073,13 +4135,24 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         // `error` and `return -code error` raise the message as the error, so
         // the enclosing `catch` — or the caller of `eval` — receives it.
         ext::ERROR => {
-            // `error`'s `errorInfo` and `errorCode` words, off the stack in the
-            // order they were pushed; see [`ext::ERROR`] for why they are
-            // evaluated and then dropped.
+            // `error message ?errorInfo? ?errorCode?`. The words arrive in the
+            // order they were pushed, so popping yields them last-first: the
+            // errorCode when all three are present, then the errorInfo.
+            let mut words = Vec::with_capacity(arg as usize);
             for _ in 0..arg {
-                vm.pop();
+                words.push(to_tcl_string(&vm.pop()));
             }
-            Err(to_tcl_string(&vm.pop()))
+            let message = to_tcl_string(&vm.pop());
+            // The third word is the code. The second (`errorInfo`) is still
+            // evaluated and dropped — it sets `-errorinfo`, which this frontend
+            // does not carry (BUGS.md).
+            set_pending_errorcode(match words.first() {
+                Some(code) if arg >= 2 => code.clone(),
+                // `error msg` and `error msg info` both leave the code at the
+                // reference interpreter's default.
+                _ => "NONE".to_string(),
+            });
+            Err(message)
         }
         // `throw type message`. The type has to be a list of at least one
         // element — `Tcl_ThrowObjCmd` asks `TclListObjLength` and then its own
@@ -4090,7 +4163,11 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             match list::split(&kind) {
                 Err(e) => Err(e),
                 Ok(items) if items.is_empty() => Err("type must be non-empty list".to_string()),
-                Ok(_) => Err(message),
+                Ok(_) => {
+                    // The type word is exactly what `-errorcode` becomes.
+                    set_pending_errorcode(kind);
+                    Err(message)
+                }
             }
         }
         // The ranges are tested from the highest base down, so that a lower

@@ -132,9 +132,8 @@ approximated, and nothing is silently mis-run.
     still runs the complete commands inside it, which is `TclSubstParse`'s own
     recovery. 74 programs against tclsh in `tests/subst_differential.rs`.
 - **`throw`.** `throw type message`, with the type checked to be a list of at
-  least one element when the command runs (`Tcl_ThrowObjCmd`). The
-  `-errorcode` the type becomes is part of the options dictionary, whose error
-  entries are the gap recorded below for `return -errorcode`.
+  least one element when the command runs (`Tcl_ThrowObjCmd`), and the type word
+  carried into the options dictionary as `-errorcode`.
 - **Lists.** List parsing and canonical quoting ported from `TclFindElement` and
   `TclScanElement` / `TclConvertElement` (`src/list.rs`), plus `list`,
   `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`,
@@ -472,6 +471,19 @@ approximated, and nothing is silently mis-run.
 
 ## Not implemented
 
+- **The `trace` command.** `trace add|remove|info variable|command|execution`
+  is `invalid command name "trace"` — the whole command, not a subcommand of it.
+  A variable trace has to fire on every read, write and unset of a traced name,
+  which means the variable path checks a trace table on operations that are
+  currently a hash lookup and nothing else; the frontend has no such table and
+  no hook to consult one from. `tests/*_differential.rs` reference it nowhere,
+  so nothing regressed when it was left out — it was never there.
+- **TclOO.** `oo::class`, `oo::object`, `oo::define` and the rest are
+  `invalid command name`, so `oo::class create C {...}` cannot run and neither
+  can anything built on it. This is an object system, not a command: method
+  resolution, `next`, mixins, filters and per-object namespaces, all of which
+  need a dispatch path beside the one procedures use.
+
 - **`string is graph`, `print` and `punct`, beyond nothing.** All three rest on
   Unicode general categories Tcl builds its own tables for: `punct` spans the
   seven punctuation categories *and* the four symbol ones, and `graph` and
@@ -550,20 +562,33 @@ approximated, and nothing is silently mis-run.
   reference interpreter's `yield can only be called in a coroutine`, and an
   `eval` inside a coroutine that does not yield is unaffected
   (`tests/frame_differential.rs`).
-- **Return options beyond `-code` and `-level`.** The return-code system itself
-  is implemented — see the entry in "Implemented" — but `return -errorcode`,
-  `-errorinfo` and `-options` are refused, and `catch`'s options variable
-  carries only the two options this frontend models. tclsh's dictionary for an
-  *error* also has `-errorstack`, `-errorcode`, `-errorinfo` and `-errorline`,
-  so `catch {error boom} m o` gives a shorter dictionary here; the `-code` and
-  `-level` in it are exact, and `tests/proc_differential.rs` compares the whole
-  dictionary for every outcome whose tclsh form has nothing else in it. The
-  three commands that *set* one of the missing options — `throw`'s type word,
-  and `error`'s `errorInfo` and `errorCode` arguments — take the word, evaluate
-  it and drop it rather than refusing the command, because the message and the
-  code they carry are right either way and the option they set is missing
-  visibly: asking the dictionary for it fails. `::errorInfo` and `::errorCode`
-  are not set either, and reading one is `no such variable`.
+- **Return options beyond `-code`, `-level` and `-errorcode`.** The return-code
+  system itself is implemented — see the entry in "Implemented" — and
+  `-errorcode` now travels with the error: `error`'s third word, `throw`'s type
+  word and `return -errorcode` all set it, a plain `error` carries tclsh's
+  `NONE`, and it round-trips through the options dictionary as a list, so
+  `{A {B C}}` comes back with its element structure intact. `return -errorinfo`
+  and `return -options` are still refused.
+
+  What remains is the rest of tclsh's *error* dictionary — `-errorstack`,
+  `-errorinfo` and `-errorline` — so `catch {error boom} m o` still gives a
+  shorter dictionary here; the options in it are exact, and
+  `tests/proc_differential.rs` compares the whole dictionary for every outcome
+  whose tclsh form has nothing else in it, plus `-errorcode` on its own for the
+  outcomes that do. `-errorinfo` and `-errorstack` are the two that carry an
+  execution trace (`while executing` and the frame list), which this frontend
+  does not accumulate; `error`'s second word is still evaluated and dropped for
+  that reason.
+
+  `-errorcode` is ABSENT rather than `NONE` on an error this frontend raises
+  itself. tclsh classifies those — `ARITH DIVZERO {divide by zero}`,
+  `POSIX ENOENT {no such file or directory}`, the `TCL` subcodes — and tclrs
+  does not model them, so emitting `NONE` there would be a wrong value where an
+  absent key is a visible gap. Every code it does emit is the reference's.
+  `::errorInfo` and `::errorCode` are not set either, and reading one is
+  `no such variable`; the globals are the legacy face of the same information,
+  and setting `::errorCode` only where a code is known would make
+  `info exists ::errorCode` disagree with tclsh more often than it agrees.
 - **Procedures across an `eval`.** An evaluated script shares the interpreter's
   variables but not its procedures: it is a chunk of its own, and a call site
   resolves its command against that chunk. So `eval {proc twice {x} {…}}`

@@ -83,6 +83,7 @@ impl ChunkCache {
             line: Some(e.line),
             code: crate::runtime::TCL_ERROR,
             level: 0,
+            errorcode: None,
         })?;
         let lowered = if projected {
             crate::compiler::compile_projected(&script)
@@ -94,6 +95,7 @@ impl ChunkCache {
             line: Some(e.line),
             code: crate::runtime::TCL_ERROR,
             level: 0,
+            errorcode: None,
         })?);
         // At capacity the whole cache is dropped rather than one entry chosen.
         // An `eval` loop reuses a handful of sources and never reaches the

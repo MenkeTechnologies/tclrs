@@ -260,6 +260,40 @@ const PROGRAMS: &[&str] = &[
     "proc r {} {set v [catch {return -code break} c o]\nreturn $v/$c/$o}\nputs [r]",
     // A `-level` past one keeps travelling.
     "proc a {} {b}\nproc b {} {return -level 2 -code break}\nset n 0\nwhile {1} {incr n\na}\nputs $n",
+    // ── -errorcode: the classification a handler branches on ──
+    // A plain `error` carries the reference interpreter's default.
+    "catch {error boom} r o\nputs [dict get $o -errorcode]",
+    "catch {error boom info} r o\nputs [dict get $o -errorcode]",
+    // The third word states it, and it is a LIST — so it survives the trip
+    // through the option dictionary with its element structure intact.
+    "catch {error boom {} {A B}} r o\nputs [dict get $o -errorcode]",
+    "catch {error boom {} {A B}} r o\nputs [llength [dict get $o -errorcode]]",
+    "catch {error boom {} {A {B C}}} r o\nputs [llength [dict get $o -errorcode]]",
+    "catch {error boom {} {}} r o\nputs <[dict get $o -errorcode]>",
+    // The message is unaffected by carrying one.
+    "catch {error boom {} {A B}} r o\nputs $r",
+    // `throw`'s type word IS the code.
+    "catch {throw {X Y} m} r o\nputs $r/[dict get $o -errorcode]",
+    "catch {throw {POSIX ENOENT {no such file}} m} r o\nputs [llength [dict get $o -errorcode]]",
+    // It crosses a procedure boundary with the error.
+    "proc p {} {error inner {} {P Q}}\ncatch {p} r o\nputs $r/[dict get $o -errorcode]",
+    "proc p {} {throw {T U} inner}\ncatch {p} r o\nputs [dict get $o -errorcode]",
+    // `return -errorcode`, literal and computed.
+    "proc p {} {return -code error -errorcode {A B} boom}\ncatch {p} r o\nputs $r/[dict get $o -errorcode]",
+    "proc p {} {set c {X Y}\nreturn -code error -errorcode $c boom}\ncatch {p} r o\nputs [dict get $o -errorcode]",
+    "catch {return -code error -errorcode Z zz} r o\nputs $r/[dict get $o -errorcode]",
+    // An `-errorcode` on a non-error return is carried but changes nothing the
+    // caller sees, because the return is still an ordinary one.
+    "proc p {} {return -errorcode {A B} ok}\nputs [p]",
+    // Re-raising through `error` restarts the code at the default rather than
+    // inheriting the one the inner error had.
+    "catch {catch {error x {} {A B}} r o\nerror $r} r2 o2\nputs [dict get $o2 -errorcode]",
+    // The non-error dictionaries stay exactly as they were: no `-errorcode`
+    // appears on a `return`, a `break` or a `continue`.
+    "catch {return 7} r o\nputs $o",
+    "catch {break} r o\nputs $o",
+    "catch {continue} r o\nputs $o",
+    "proc p {} {return 5}\ncatch {p} r o\nputs $r/$o",
 ];
 
 fn tclsh() -> Option<PathBuf> {

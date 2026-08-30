@@ -373,6 +373,7 @@ fn dispatch(
         line: at,
         code: crate::runtime::TCL_ERROR,
         level: 0,
+        errorcode: None,
     };
     match defined {
         // A procedure the script defined shadows a foreign command of the same
@@ -580,6 +581,7 @@ pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(
         line: at,
         code: crate::runtime::TCL_ERROR,
         level: 0,
+        errorcode: None,
     };
     let words = splice(&values[1..]).map_err(here)?;
     let Some((first, args)) = words.split_first() else {
@@ -900,6 +902,9 @@ impl Compiler {
         let mut rest = args;
         let mut code = crate::runtime::TCL_OK;
         let mut level = 1;
+        // `-errorcode`, kept as the WORD so a computed one
+        // (`return -errorcode $c`) is evaluated where it is written.
+        let mut errorcode: Option<&Word> = None;
         while let [first, value, tail @ ..] = rest {
             match first.as_literal() {
                 Some("-code") => {
@@ -933,6 +938,7 @@ impl Compiler {
                         }
                     };
                 }
+                Some("-errorcode") => errorcode = Some(value),
                 Some(other) if other.starts_with('-') => {
                     return self.error(format!("return option \"{other}\" is not supported"))
                 }
@@ -955,7 +961,10 @@ impl Compiler {
         // it and the frame it is returning from. Inside a `catch` even a bare
         // `return` is code 2 to that `catch`, which is what lets a script tell
         // "the body returned" from "the body finished".
-        let plain = level == 1 && code == crate::runtime::TCL_OK && self.catch_depth == 0;
+        let plain = level == 1
+            && code == crate::runtime::TCL_OK
+            && self.catch_depth == 0
+            && errorcode.is_none();
         if plain && self.scope.is_some() {
             match result {
                 Some(w) => self.word(w)?,
@@ -979,13 +988,23 @@ impl Compiler {
             self.push_empty();
             return Ok(());
         }
+        // Pushed under the message so the handler, which pops level/code/message
+        // in that order, finds it last. The inline operand says it is there —
+        // `RAISE` is emitted from two places and only this one can state a code.
+        if let Some(w) = errorcode {
+            self.word(w)?;
+        }
         match result {
             Some(w) => self.word(w)?,
             None => self.push_empty(),
         }
         self.emit(Op::LoadInt(i64::from(code)), 1);
         self.emit(Op::LoadInt(i64::from(level)), 1);
-        self.emit(Op::Extended(ext::RAISE, 0), -3);
+        if errorcode.is_some() {
+            self.emit(Op::Extended(ext::RAISE, 1), -4);
+        } else {
+            self.emit(Op::Extended(ext::RAISE, 0), -3);
+        }
         // Control has left; the value keeps the depth arithmetic honest.
         self.push_empty();
         Ok(())
