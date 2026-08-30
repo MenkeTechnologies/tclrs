@@ -69,6 +69,15 @@ name = "tk-host"
 path = "src/bin/tk_host.rs"
 required-features = ["tk"]
 
+[package.metadata.docs.rs]
+# `tk` is off by default, so a default docs build publishes tclrs with no Tk
+# module at all — the same shape as documenting a JIT VM with the JIT feature
+# off. Enabling it here is safe: the feature's only build-time requirement is a
+# C compiler for `src/tk/trampoline.c` (`build.rs` emits no rustc-link-lib and
+# no link-search), because `src/tk/load.rs` dlopens libtk at run time rather
+# than linking it.
+features = ["tk"]
+
 [features]
 # The Tk hosting instrument (`src/tk/`). Off by default: a machine with no Tk
 # installed builds and tests exactly as before, and nothing outside `src/tk/`

@@ -206,7 +206,7 @@
 //! Three of the refusals that stood here have gone. `{*}` argument expansion,
 //! which `tk.tcl` uses in eleven places, is implemented: a command containing
 //! one is lowered whole and its words are spliced when it runs
-//! ([`crate::compiler::ext::EXPAND_CALL`], [`crate::procs::expand_call_op`]), and
+//! ([`crate::compiler::ext::EXPAND_CALL`], `expand_call_op`), and
 //! a procedure the file defines is callable from every other chunk of the
 //! interpreter, which a binding script needs. `upvar` with no level and `upvar`
 //! of a computed array element — `upvar ::tk::FocusGrab($index) data` in

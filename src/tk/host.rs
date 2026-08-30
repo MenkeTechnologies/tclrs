@@ -85,7 +85,7 @@ static TABLES: AtomicPtr<Tables> = AtomicPtr::new(ptr::null_mut());
 /// Some of it is per interpreter (the result, the commands, the variables) and
 /// some is per process (the registered `Tcl_ObjType`s, the thread data). The
 /// per-process parts are only ever read off the primary host, which is what
-/// [`CURRENT`] points at, so a second interpreter created through
+/// `CURRENT` points at, so a second interpreter created through
 /// `Tcl_CreateInterp` shares them rather than starting a second copy.
 pub struct Host {
     /// Blocks handed out by `Tcl_GetThreadData`, keyed by the address of the
@@ -99,7 +99,7 @@ pub struct Host {
     pub commands: Vec<Box<HostCommand>>,
     /// The variable store: `(name, index, value)`, where `index` is the array
     /// element name or empty for a scalar. Flat, with no namespaces, no arrays
-    /// beyond the two-part name, and no traces — see [`set_var2`].
+    /// beyond the two-part name, and no traces — see `set_var2`.
     pub vars: Vec<(String, String, *mut TclObj)>,
     /// Interpreter association data: name, delete proc, client data
     /// (`generic/tclBasic.c`'s `assocData`).
@@ -123,7 +123,7 @@ pub struct Host {
     /// Exceptions reported through `Tcl_BackgroundException`, in the order they
     /// were reported: the completion code, the result, and the `errorInfo` as
     /// it stood. A binding script that fails arrives here rather than at the
-    /// caller, because there is no caller — see [`background_exception`].
+    /// caller, because there is no caller — see `background_exception`.
     pub background_errors: Vec<(c_int, String, String)>,
     /// `DELETED` of `Interp.flags`, which is the whole of what
     /// `Tcl_InterpDeleted` reports (`generic/tclBasic.c:1872-1877`).
@@ -154,7 +154,7 @@ pub struct HostCommand {
     pub proc2: bool,
     /// The subcommand dictionary, for a command created as an ensemble.
     pub ensemble_map: *mut TclObj,
-    /// `CMD_DYING` (`generic/tclInt.h`), set by [`delete_command_from_token`]
+    /// `CMD_DYING` (`generic/tclInt.h`), set by `delete_command_from_token`
     /// before it runs the delete proc.
     ///
     /// Tcl's own comment is the whole reason it exists: the hash entry cannot be
@@ -206,7 +206,7 @@ unsafe fn install(t: &mut TclStubs, name: &str, f: *const ()) -> usize {
 /// Whether the run is allowed to install slots that are known to be wrong.
 ///
 /// One slot cannot be written correctly in stable Rust at all — see
-/// [`append_strings_to_obj`] — so a correct run stops there. Setting
+/// `append_strings_to_obj` — so a correct run stops there. Setting
 /// `TCLRS_TK_DEGRADED` installs a deliberately wrong body for it instead, which
 /// buys a longer call log at the cost of the log describing a Tk that was fed
 /// bad data. Off by default, and every degraded slot announces itself.
@@ -242,8 +242,8 @@ pub fn build() -> *mut HostInterp {
 
 /// The hosting table: [`build`] plus the evaluator and the trampoline.
 ///
-/// Only one of the two may be built per process — they share [`TABLES`] and
-/// [`CURRENT`] — which is why each caller is a separate binary or a separate
+/// Only one of the two may be built per process — they share `TABLES` and
+/// `CURRENT` — which is why each caller is a separate binary or a separate
 /// test process.
 pub fn build_hosting() -> *mut HostInterp {
     build_at(Level::Hosting)

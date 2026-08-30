@@ -63,7 +63,10 @@ pub mod regexp;
 pub mod runtime;
 pub mod rust_ffi;
 pub mod tiers;
-/// Hosting the real Tk toolkit. Behind the `tk` feature; see `src/tk/mod.rs`.
+// Behind the `tk` feature. The module documents itself in `src/tk/mod.rs`;
+// an outer doc comment here would be merged with those inner docs and make
+// rustdoc resolve every `[`sibling`]` link in them against the crate root
+// instead of against `tk`, which is 28 unresolved-link warnings.
 #[cfg(feature = "tk")]
 pub mod tk;
 

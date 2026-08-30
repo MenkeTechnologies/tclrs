@@ -67,7 +67,7 @@ const OBJTYPE_V0: usize = 0;
 /// `internalRep.twoPtrValue.ptr1`.
 ///
 /// Each element is a counted reference: the list holds one, and drops it in
-/// [`free_list_rep`]. The `Vec` may reallocate, which is why the elements are
+/// `free_list_rep`. The `Vec` may reallocate, which is why the elements are
 /// `*mut TclObj` and not owned values — the objects themselves never move
 /// (`obj`'s rule 1), only the array of pointers to them does.
 pub struct HostList {

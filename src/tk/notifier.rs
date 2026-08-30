@@ -1812,7 +1812,7 @@ unsafe fn install(t: &mut TclStubs, name: &str, f: *const ()) -> usize {
 /// Patch every notifier slot into `t`, returning their indices.
 ///
 /// # Safety
-/// See [`install`].
+/// See `install`.
 pub unsafe fn install_impls(t: &mut TclStubs) -> Vec<usize> {
     vec![
         install(t, "tcl_CreateFileHandler", create_file_handler as *const ()),
@@ -1886,7 +1886,7 @@ pub fn main_loop_proc() -> *mut c_void {
 /// Patch the one platform slot Tk asks for into the `TclPlatStubs` table.
 ///
 /// # Safety
-/// See [`install`].
+/// See `install`.
 pub unsafe fn install_plat(t: &mut TclPlatStubs) -> usize {
     let i = TCL_PLAT_NAMES
         .iter()

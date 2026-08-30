@@ -81,7 +81,7 @@ pub fn may_exist() -> bool {
 /// not any more: a lookup also finds a procedure another chunk defined, so
 /// `crate::compiler` lowers every name no module claims that way in both feature
 /// sets, and whether a Tk interpreter exists is decided when the call runs
-/// ([`invoke`] answers `invalid command name` when none does). What is left here
+/// (`invoke` answers `invalid command name` when none does). What is left here
 /// is the question this module can answer — would Tk's table be consulted for
 /// this name — which `tests/tk_cold_lowering.rs` asks of a process that has never
 /// built a host.

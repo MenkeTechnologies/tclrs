@@ -49,7 +49,7 @@ pub struct Libtk {
 }
 
 impl Libtk {
-    /// Open the Tk dylib named by `TCLRS_LIBTK`, or the first of [`CANDIDATES`]
+    /// Open the Tk dylib named by `TCLRS_LIBTK`, or the first of `CANDIDATES`
     /// that exists.
     pub fn open() -> Result<Libtk, String> {
         let path = match std::env::var("TCLRS_LIBTK") {

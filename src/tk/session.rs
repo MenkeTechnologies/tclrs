@@ -27,7 +27,7 @@
 //!
 //! # Why the session's interpreter is the script's own
 //!
-//! [`crate::tk::interp::shared_for`] would otherwise make the host a fresh
+//! `shared_for` would otherwise make the host a fresh
 //! interpreter of its own, and every callback Tk evaluated — `-command`,
 //! `bind`, `after` — would run against variables and procedures the script
 //! could not see. [`open`] hands it the interpreter the script is running in
