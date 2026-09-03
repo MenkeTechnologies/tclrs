@@ -962,7 +962,7 @@ not cover.
 and the persistent native-code cache:
 
 ```toml
-fusevm = { version = "0.17.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
+fusevm = { version = "0.26.0", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
 ```
 
 | Feature | What it adds |
