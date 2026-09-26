@@ -816,7 +816,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | An `expr` math function a *script* defines under `tcl::mathfunc::` | `invalid command name "tcl::mathfunc::triple"` |
 | `clock scan` without `-format`, and `clock`'s `-locale` outside the root catalogue | `clock scan: the free-form parser is not supported yet; use -format` |
 | A `clock` instant before the Gregorian changeover, where the calendar depends on the locale | `clock: dates before the Gregorian changeover of 1752-09-14 are not supported yet` |
-| `file attributes`, `link`, `stat`, `lstat`, `channels`, `system`, `tempfile`, `tempdir`, `volumes` | `file stat is not supported yet: it needs an interface this frontend has not built` |
+| `file attributes`, `link`, `channels`, `system`, `tempfile`, `tempdir`, `volumes` | `file link is not supported yet: it needs an interface this frontend has not built` |
 | An ensemble *subcommand* that is not literal (`string $sub x`, `info $sub v`, `array $sub a`) | `subcommand must be a literal in this phase` |
 | A *body* word that is not literal (`while $cond $body`), a `foreach` / `lmap` / `lassign` variable list, `dict update`'s variable names, and the array name of `array exists` / `names` / `size` / `get` / `set` / `unset` | the word is refused where a literal is required |
 | An array variable in a `foreach` variable list | `array variables are not supported yet` |

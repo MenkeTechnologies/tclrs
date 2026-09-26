@@ -973,10 +973,14 @@ approximated, and nothing is silently mis-run.
   and `-timezone +0530` both work — the first through the same `TZif` reader
   tclsh's `LoadZoneinfoFile` implements in Tcl — but `EST5EDT,M3.2.0,M11.1.0`
   spelled out as a rule is refused when no file of that name exists.
-- **`file attributes`, `link`, `stat`, `lstat`, `channels`, `system`,
-  `tempfile`, `tempdir` and `volumes`.** Each is recognised, so an abbreviation
+- **`file attributes`, `link`, `channels`, `system`, `tempfile`, `tempdir`
+  and `volumes`.** Each is recognised, so an abbreviation
   resolves as tclsh resolves it, and then refused by name. `glob -types` in its
   two-element attribute form is refused the same way.
+  `file stat` and `file lstat` are built: the dictionary form Tcl 9 answers
+  with no `varName`, and the array form, in `StoreStatData`'s field order
+  (`rdev` only in the array form, only for a device). A `varName` that names
+  an array *element* is refused by name.
 - **Non-literal subcommand, body and variable-list words.** A word that is
   itself the result of substitution is refused where the lowering needs it while
   compiling. What remains is three groups:

@@ -16,8 +16,8 @@
 //! also begins with `.` — which is why `glob .*` answers `. ..` and `.hidden`
 //! while `glob *` answers neither.
 //!
-//! Refused rather than approximated: `file attributes`, `link`, `stat`,
-//! `lstat`, `channels`, `system`, `tempfile`, `tempdir` and `volumes`, and
+//! Refused rather than approximated: `file attributes`, `link`, `channels`,
+//! `system`, `tempfile`, `tempdir` and `volumes`, and
 //! `glob`'s `-types` in its two-element attribute form. Each says so by name.
 
 use std::path::Path;
@@ -100,8 +100,6 @@ const REFUSED: &[&str] = &[
     "attributes",
     "channels",
     "link",
-    "lstat",
-    "stat",
     "system",
     "tempdir",
     "tempfile",
@@ -152,6 +150,9 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
                     "file {sub} is not supported yet: it needs an interface this frontend has not built"
                 ));
             }
+            if matches!(sub, "stat" | "lstat") && args.len() == 3 {
+                return compile_stat_into(c, sub, &args[1], &args[2]);
+            }
             c.push_str(sub);
             for w in &args[1..] {
                 c.word(w)?;
@@ -164,6 +165,36 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
         }
     }
 }
+
+/// `file stat name varName` / `file lstat name varName`: the fields written
+/// into the array `varName`, one element each, as `StoreStatData`
+/// (`generic/tclCmdAH.c:2373`) does with `Tcl_ObjSetVar2`. The handler answers
+/// the fields as a list of pairs — with `rdev` for a device, which only this
+/// form carries — and `array set`'s op stores them, naming the first element
+/// when the variable is a scalar exactly as the element write does in tclsh.
+fn compile_stat_into(
+    c: &mut Compiler,
+    sub: &str,
+    path: &Word,
+    var: &Word,
+) -> Result<(), CompileError> {
+    let crate::assoc::Target::Scalar(name) = c.target_of(var)? else {
+        return c.error(format!("file {sub} into an array element is not supported yet"));
+    };
+    let slot = c.array_place(&name);
+    c.push_str(&name);
+    c.push_str(sub);
+    c.word(path)?;
+    c.push_str(STAT_INTO_ARRAY);
+    c.emit(Op::Extended(ext::FILE, 3), -2);
+    c.emit(Op::LoadInt(slot), 1);
+    c.emit(Op::Extended(crate::compiler::ext::ARR_SET, 0), -2);
+    Ok(())
+}
+
+/// The third operand [`compile_stat_into`] hands `file stat`: a word no script
+/// can pass there, since the compiler builds that call itself.
+const STAT_INTO_ARRAY: &str = "\u{0}array";
 
 fn words_op(c: &mut Compiler, id: u16, args: &[Word]) -> Result<(), CompileError> {
     let Ok(argc) = u8::try_from(args.len()) else {
@@ -641,6 +672,14 @@ fn run_file(words: &[String]) -> Result<Value, String> {
             let path = one(words, sub)?;
             Ok(text(kind_of(&path)?.to_string()))
         }
+        "stat" | "lstat" => {
+            let into_array = words.get(2).is_some_and(|w| w == STAT_INTO_ARRAY);
+            if words.len() != 2 && !into_array {
+                return Err(format!("wrong # args: should be \"file {sub} name ?varName?\""));
+            }
+            let s = stat_buf(&words[1], sub == "lstat")?;
+            Ok(text(crate::list::join(&stat_fields(&s, into_array))))
+        }
         "readlink" => {
             let path = one(words, sub)?;
             let target = std::fs::read_link(&path)
@@ -686,6 +725,66 @@ fn stat_of(path: &str) -> Result<libc::stat, String> {
         }
         Ok(buffer)
     }
+}
+
+/// `GetStatBuf` (`generic/tclCmdAH.c:2319`): `stat(2)` or `lstat(2)`, with
+/// its message for a path it cannot read.
+fn stat_buf(path: &str, link: bool) -> Result<std::fs::Metadata, String> {
+    let meta = if link {
+        std::fs::symlink_metadata(path)
+    } else {
+        std::fs::metadata(path)
+    };
+    meta.map_err(|e| could_not_read(path, &e))
+}
+
+/// `StoreStatData` (`generic/tclCmdAH.c:2373`): the fields in its order, as
+/// key/value pairs. `rdev` is written only by the array form, and only for a
+/// character or block device; the dictionary form never carries it.
+///
+/// `MetadataExt` widens every field the same way on macOS and Linux, and the C
+/// stores `dev`, `ino` and `rdev` through a signed `long` / `Tcl_WideInt`, so
+/// those three are reinterpreted as `i64` — a macOS device number with its top
+/// bit set is negative in tclsh too (`/dev/null`'s is).
+fn stat_fields(m: &std::fs::Metadata, into_array: bool) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt;
+    // The mode is narrowed to an `unsigned short` before it is stored or
+    // classified, as the C does. The format bits are POSIX's.
+    let mode = m.mode() as u16;
+    let type_name = match mode & 0o170_000 {
+        0o100_000 => "file",
+        0o040_000 => "directory",
+        0o020_000 => "characterSpecial",
+        0o060_000 => "blockSpecial",
+        0o010_000 => "fifo",
+        0o120_000 => "link",
+        0o140_000 => "socket",
+        _ => "unknown",
+    };
+    let mut fields: Vec<(&str, String)> = vec![
+        ("dev", (m.dev() as i64).to_string()),
+        ("ino", (m.ino() as i64).to_string()),
+        ("nlink", m.nlink().to_string()),
+        ("uid", m.uid().to_string()),
+        ("gid", m.gid().to_string()),
+        ("size", m.size().to_string()),
+        ("blocks", m.blocks().to_string()),
+        ("blksize", m.blksize().to_string()),
+    ];
+    if into_array && matches!(type_name, "characterSpecial" | "blockSpecial") {
+        fields.push(("rdev", (m.rdev() as i64).to_string()));
+    }
+    fields.extend([
+        ("atime", m.atime().to_string()),
+        ("mtime", m.mtime().to_string()),
+        ("ctime", m.ctime().to_string()),
+        ("mode", mode.to_string()),
+        ("type", type_name.to_string()),
+    ]);
+    fields
+        .into_iter()
+        .flat_map(|(k, v)| [k.to_string(), v])
+        .collect()
 }
 
 /// `file type`'s answers, which are the seven `Tcl_FSLstat` distinguishes.

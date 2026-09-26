@@ -131,6 +131,15 @@ const TREE_PROGRAMS: &[&str] = &[
     "cd @\nfile mkdir d/sub\nputs [catch {file copy sub d} m]\nputs $m\nputs [catch {file copy -force sub d} m]\nputs $m\nfile delete -force d",
     "cd @\nfile mkdir e\nfile copy sub e\nputs [lsort [glob e/sub/*]]\nputs [catch {file copy sub e} m]\nputs $m\nfile delete -force e",
     "cd @\nfile copy sub dest\nputs [lsort [glob dest/*]]\nfile copy sub dest\nputs [lsort [glob dest/*]]\nputs [catch {file copy a.txt dest} m]\nputs $m\nfile copy -force a.txt dest\nputs ok\nfile delete -force dest",
+    // `file stat` / `lstat` (`StoreStatData`, `generic/tclCmdAH.c:2373`): the
+    // dictionary form, the array form, and their refusals. Only fields that
+    // cannot differ between the two runs are printed.
+    "cd @\nset d [file stat eight.txt]\nputs \"[dict keys $d] [dict get $d size] [dict get $d type] [dict get $d nlink]\"",
+    "cd @\nputs \"[dict get [file lstat link.txt] type] [dict get [file stat link.txt] type] [dict get [file stat sub] type]\"",
+    "cd @\nputs [file stat eight.txt a]\nputs \"[lsort [array names a]] $a(size) $a(type)\"\nproc p {f} {file lstat $f st; return \"$st(type) $st(size)\"}\nputs [p link.txt]",
+    "file stat /dev/null a\nputs \"[lsort [array names a]] $a(type)\"\nputs [lsort [dict keys [file stat /dev/null]]]",
+    "cd @\nset s 1\nputs [list [catch {file stat a.txt s} m] $m]\nproc q {} {set s 1; list [catch {file stat a.txt s} m] $m}\nputs [q]",
+    "cd @\nputs [list [catch {file stat nope} m] $m]\nputs [list [catch {file lstat nope v} m] $m [info exists v]]\nputs [list [catch {file stat} m] $m]\nputs [list [catch {file stat a b c} m] $m]",
 ];
 
 fn tclsh() -> Option<PathBuf> {

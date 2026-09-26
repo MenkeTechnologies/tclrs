@@ -706,8 +706,8 @@ const FILE_CORPUS: &[Entry] = &[
     },
     Entry {
         name: "lstat",
-        synopsis: "file lstat name varName",
-        summary: "Refused: it writes an array this frontend does not build for it.",
+        synopsis: "file lstat name ?varName?",
+        summary: "The `lstat` fields of a path, not following a final link: a dictionary, or written into the array `varName`.",
     },
     Entry {
         name: "mkdir",
@@ -777,8 +777,8 @@ const FILE_CORPUS: &[Entry] = &[
     },
     Entry {
         name: "stat",
-        synopsis: "file stat name varName",
-        summary: "Refused: it writes an array this frontend does not build for it.",
+        synopsis: "file stat name ?varName?",
+        summary: "The `stat` fields of a path: a dictionary, or written into the array `varName`.",
     },
     Entry {
         name: "system",
