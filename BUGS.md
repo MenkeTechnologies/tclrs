@@ -387,6 +387,12 @@ approximated, and nothing is silently mis-run.
   takes every name `encoding names` lists, through the tables in
   `src/cmd_encoding.rs`, holding an incomplete multi-byte sequence until the
   rest of it arrives; `-buffering` takes `full`, `line` and `none`.
+  `open`'s access word is `TclGetOpenMode` (`generic/tclIOUtil.c:1445`)
+  ported whole: the `r`/`w`/`a` strings with their `+` and `b` modifiers, and
+  the POSIX list form (`{WRONLY CREAT TRUNC}`, `APPEND`, `BINARY`, `EXCL`,
+  `NOCTTY`, `NONBLOCK`) with tclsh's wording for each malformed one, handed to
+  open(2) as written; its `permissions` word takes a legacy octal `0NNN` and
+  otherwise any Tcl integer, as `Tcl_OpenObjCmd` does.
   The C side is `src/tk/channel.rs`: thirty-seven `TclStubs` slots including
   `Tcl_CreateChannel`, which takes a `Tcl_ChannelType` — Tk's own table of
   driver procs — and calls into it thereafter.
@@ -537,9 +543,6 @@ approximated, and nothing is silently mis-run.
   (`generic/tcl.h:1369-1370`), and no device here has one — tclsh's own file
   driver has not either. `close $chan read` on a channel that only has a read
   side is a plain close, as it is in tclsh.
-- **The POSIX list form of an access mode.** `open $f {WRONLY CREAT TRUNC}`
-  (`generic/tclIOUtil.c:1540-1600`) is refused by name; the `r`/`r+`/`w`/`w+`/
-  `a`/`a+` strings are implemented.
 - **`foreach` and `dict for` reach no tier in any spelling**, procedure locals
   included. Their loop state is carried by frontend extension ops
   (`FOREACH_INIT` / `MORE` / `TAKE` / `ADVANCE`, `DICT_PAIRS`) and

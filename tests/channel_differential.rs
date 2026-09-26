@@ -84,6 +84,17 @@ const PROGRAMS: &[&str] = &[
     "set f [open %F w]\nputs -nonewline $f ABCDEF\nclose $f\nforeach m {r r+ w+ a a+} {\n  set g [open %F $m]\n  puts \"$m [tell $g]\"\n  close $g\n}",
     "set f [open %F w]\nputs $f one\nclose $f\nset f [open %F a]\nputs $f two\nclose $f\nset g [open %F]\nputs <[read $g]>\nclose $g",
     "set f [open %F w]\nputs $f one\nclose $f\nset f [open %F w]\nputs $f two\nclose $f\nset g [open %F]\nputs <[read $g]>\nclose $g",
+    // The POSIX list form (`TclGetOpenMode`, `generic/tclIOUtil.c:1528-1653`)
+    // and the `b` modifier of the fopen-like strings, which is `-translation
+    // binary` once the channel exists (`:2242`).
+    "set f [open %F {WRONLY CREAT TRUNC}]\nputs $f hello\nclose $f\nset f [open %F {WRONLY APPEND}]\nputs [tell $f]\nputs $f more\nclose $f\nset g [open %F RDONLY]\nputs <[read $g]>\nclose $g",
+    "set f [open %F w]\nputs -nonewline $f ABCDEF\nclose $f\nset g [open %F {RDWR APPEND}]\nputs [tell $g]\nseek $g 1\nputs [read $g 2]\nclose $g",
+    "foreach m {wb rb ab r+b rb+ w+b {RDONLY BINARY} {RDWR BINARY NOCTTY}} {\n  set g [open %F $m]\n  puts \"$m [fconfigure $g -translation] [fconfigure $g -encoding]\"\n  close $g\n}",
+    "close [open %F w]\nset g [open %F {RDONLY NONBLOCK}]\nputs [fconfigure $g -blocking]\nclose $g",
+    "foreach m {CREAT {} {RDONLY WRONLY} {WRONLY TRUNC TRUNC} {RDONLY FOO} {RDONLY \"} R rr r++ rbb x {APPEND APPEND} {RDWR BINARY BINARY}} {\n  puts [list $m [catch {open %F $m} e] $e]\n}",
+    "file delete %F\nclose [open %F {WRONLY CREAT EXCL}]\nputs [catch {open %F {WRONLY CREAT EXCL}} e]\nputs [string range $e [string last : $e] end]",
+    // `permissions`: a legacy octal `0NNN` first, then any Tcl integer.
+    "foreach p {0600 { 0640} 0o600 384 0x180 0999 -1 xyz 0600x 99999999999 {}} {\n  file delete %F\n  puts [list $p [catch {close [open %F w $p]} e] $e]\n}",
     // r+ writes in place without truncating.
     "set f [open %F w]\nputs -nonewline $f ABCDEF\nclose $f\nset f [open %F r+]\nseek $f 2\nputs -nonewline $f xy\nclose $f\nset g [open %F]\nputs <[read $g]>\nclose $g",
     // ── translation ──────────────────────────────────────────────────────

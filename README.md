@@ -839,7 +839,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | A `return` inside a script `eval`, `uplevel` or `apply` runs, where the script is a chunk of its own and that chunk is no procedure | `"return" outside of a procedure is not supported` |
 | A lambda naming a namespace other than `::`, written out or computed | `the namespace "::ns" of a lambda is not supported yet: this frontend has only "::"` |
 | `vwait` on more than one variable, and its `-timeout` / `-readable` / `-writable` / `-all` options | `"vwait" takes at most one variable name in this phase` |
-| `open \|command` — the pipeline form — and the POSIX list form of an access mode (`{WRONLY CREAT}`) | `opening a command pipeline is not implemented in this frontend; …` |
+| `open \|command` — the pipeline form | `opening a command pipeline is not implemented in this frontend; …` |
 | A channel encoding `encoding names` does not list; `fconfigure -blocking 0`; `fconfigure -eofchar` and `-profile` when set; half-closing a read-write channel | `unknown encoding "iso2022-jp"` |
 | The escape-sequence encodings `iso2022`, `iso2022-jp` and `iso2022-kr`. These are state machines with a file format of their own, not tables, and they are absent from `encoding names` so a script can see that before it converts | `encoding: the escape-sequence encoding "iso2022-jp" is not supported yet; …` |
 | A decode whose result would be an unpaired surrogate, which only `-profile tcl8` produces. tclsh's strings can hold one and this frontend's cannot, so the code point is named rather than substituted | `encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+D800, which a string in this frontend cannot hold` |

@@ -1387,7 +1387,7 @@ pub fn instance_data(id: usize) -> Option<usize> {
 
 /// `Tcl_OpenFileChannel` (`generic/tclIOUtil.c:345`): the channel's name.
 pub fn open_file(path: &str, access: &str) -> Result<String, String> {
-    open(path, Some(access))
+    open(path, Some(access), None)
 }
 
 // ── the channel-handler slots ────────────────────────────────────────────
@@ -1545,6 +1545,7 @@ pub(crate) fn run(vm: &mut VM, id: u16, arg: u8, sink: &Output) -> Result<(), St
         ext::OPEN => Value::Str(Arc::new(open(
             &text(0),
             operands.get(1).map(|_| text(1)).as_deref(),
+            operands.get(2).map(|_| text(2)).as_deref(),
         )?)),
         ext::CLOSE => {
             close_command(&text(0), operands.get(1).map(|_| text(1)).as_deref())?;
@@ -1634,13 +1635,142 @@ fn resolve_writable(name: &str) -> Result<usize, String> {
     Ok(id)
 }
 
-/// `open fileName ?access?`, less the pipe form.
+/// An access word decoded, as `TclGetOpenMode` (`generic/tclIOUtil.c:1445`)
+/// leaves it: the `O_*` flags, plus the two `modeFlags` bits that tell the
+/// caller to seek to the end (`1`) and to switch to binary
+/// (`CHANNEL_RAW_MODE`).
+#[derive(Default)]
+struct OpenMode {
+    read: bool,
+    write: bool,
+    create: bool,
+    trunc: bool,
+    append: bool,
+    excl: bool,
+    noctty: bool,
+    nonblock: bool,
+    seek_to_end: bool,
+    binary: bool,
+}
+
+/// `TclGetOpenMode`: the `fopen`-like strings (`r`, `w+`, `ab`, `r+b`), told
+/// apart by a lower-case first letter, and otherwise a list of POSIX flag names
+/// (`{WRONLY CREAT TRUNC}`), each with tclsh's own wording for what is wrong.
+fn get_open_mode(access: &str) -> Result<OpenMode, String> {
+    let mut m = OpenMode {
+        read: true,
+        ..OpenMode::default()
+    };
+    let bytes = access.as_bytes();
+    if bytes.first().is_some_and(u8::is_ascii_lowercase) {
+        let illegal = || format!("illegal access mode \"{access}\"");
+        match bytes[0] {
+            b'r' => {}
+            b'w' => (m.read, m.write, m.create, m.trunc) = (false, true, true, true),
+            // `O_APPEND` for the OS's own seek-to-end on every write
+            // ("Bug 680143").
+            b'a' => {
+                (m.read, m.write, m.create, m.append) = (false, true, true, true);
+                m.seek_to_end = true;
+            }
+            _ => return Err(illegal()),
+        }
+        // At most two modifier characters, neither repeating the one before it.
+        let mut i = 1;
+        while i < 3 && i < bytes.len() {
+            if bytes[i] == bytes[i - 1] {
+                return Err(illegal());
+            }
+            match bytes[i] {
+                // `O_APPEND` is removed so that `seek` works ("Bug 1773127").
+                b'+' => (m.read, m.write, m.append) = (true, true, false),
+                b'b' => m.binary = true,
+                _ => return Err(illegal()),
+            }
+            i += 1;
+        }
+        if i != bytes.len() {
+            return Err(illegal());
+        }
+        return Ok(m);
+    }
+    let mut got_rw = false;
+    for flag in crate::list::split(access)? {
+        let repeated = |already: bool| {
+            if already {
+                Err(format!("access mode \"{flag}\" repeated"))
+            } else {
+                Ok(true)
+            }
+        };
+        match flag.as_str() {
+            "RDONLY" | "WRONLY" | "RDWR" => {
+                if got_rw {
+                    return Err(format!(
+                        "invalid access mode \"{flag}\": modes RDONLY, RDWR, and WRONLY \
+                         cannot be combined"
+                    ));
+                }
+                (m.read, m.write) = match flag.as_str() {
+                    "RDONLY" => (true, false),
+                    "WRONLY" => (false, true),
+                    _ => (true, true),
+                };
+                got_rw = true;
+            }
+            "APPEND" => {
+                m.append = repeated(m.append)?;
+                m.seek_to_end = true;
+            }
+            "CREAT" => m.create = repeated(m.create)?,
+            "EXCL" => m.excl = repeated(m.excl)?,
+            "NOCTTY" => m.noctty = repeated(m.noctty)?,
+            "NONBLOCK" => m.nonblock = repeated(m.nonblock)?,
+            "TRUNC" => m.trunc = repeated(m.trunc)?,
+            "BINARY" => m.binary = repeated(m.binary)?,
+            _ => {
+                return Err(format!(
+                    "invalid access mode \"{flag}\": must be APPEND, BINARY, CREAT, EXCL, \
+                     NOCTTY, NONBLOCK, RDONLY, RDWR, TRUNC, or WRONLY"
+                ))
+            }
+        }
+    }
+    if !got_rw {
+        return Err("access mode must include either RDONLY, RDWR, or WRONLY".to_string());
+    }
+    Ok(m)
+}
+
+/// `open`'s `permissions` word (`Tcl_OpenObjCmd`, `generic/tclIOCmd.c:1164-1193`):
+/// a legacy octal `0NNN` first, and otherwise any Tcl integer, which
+/// `TclGetIntFromObj` accepts within `±UINT_MAX` and truncates to an `int`.
+fn open_permissions(word: &str) -> Result<u32, String> {
+    let trimmed = word.trim_start_matches(|c: char| crate::list::is_space(c as u8) && c.is_ascii());
+    let legacy = trimmed.strip_prefix('0').filter(|r| r.starts_with(|c: char| ('0'..='7').contains(&c)));
+    if let Some(v) = legacy.and_then(|r| crate::list::parse_int_exact(&format!("0o{r}"))) {
+        return Ok(v as u32);
+    }
+    match crate::list::parse_int_exact(word) {
+        Some(v) if (-(u32::MAX as i64)..=u32::MAX as i64).contains(&v) => Ok(v as u32),
+        Some(_) => Err("integer value too large to represent".to_string()),
+        None if crate::list::parse_int(word).is_some() => {
+            Err("integer value too large to represent".to_string())
+        }
+        None => Err(format!("expected integer but got \"{word}\"")),
+    }
+}
+
+/// `open fileName ?access? ?permissions?`, less the pipe form.
 ///
 /// The channel's name is `file` followed by the descriptor number, which is
 /// what `TclpOpenFileChannel` builds it from
 /// (`unix/tclUnixChan.c:1845`, `:1859`) — so a script that prints a channel
 /// name prints the same name tclsh does.
-fn open(path: &str, access: Option<&str>) -> Result<String, String> {
+fn open(path: &str, access: Option<&str>, permissions: Option<&str>) -> Result<String, String> {
+    // The permissions are read before the file name is looked at, as
+    // `Tcl_OpenObjCmd` does.
+    let prot = permissions.map(open_permissions).transpose()?.unwrap_or(0o666);
     if path.starts_with('|') {
         return Err(
             "opening a command pipeline is not implemented in this frontend; \
@@ -1648,47 +1778,23 @@ fn open(path: &str, access: Option<&str>) -> Result<String, String> {
                 .to_string(),
         );
     }
-    let access = access.unwrap_or("r");
-    let mut options = std::fs::OpenOptions::new();
-    // The POSIX access strings of `Tcl_OpenFileChannel`'s `modeString`
-    // (`generic/tclIOUtil.c:345`, and `TclGetOpenMode`).
-    match access {
-        "r" => options.read(true),
-        "r+" => options.read(true).write(true),
-        "w" => options.write(true).create(true).truncate(true),
-        "w+" => options.read(true).write(true).create(true).truncate(true),
-        "a" => options.append(true).create(true),
-        // `a+` is `O_RDWR|O_CREAT` with `O_APPEND` *removed*, so that `seek`
-        // works on it (`generic/tclIOUtil.c:1494-1501`, "Bug 1773127"). The
-        // seek-to-end below is what still puts it at the end of the file.
-        "a+" => options.read(true).write(true).create(true),
-        other => {
-            // The list form — `{WRONLY CREAT TRUNC}` — is a second grammar for
-            // the same thing, and is refused by name rather than guessed at.
-            if other.contains(char::is_whitespace)
-                || other.chars().all(|c| c.is_ascii_uppercase() || c == '_')
-            {
-                return Err(format!(
-                    "the POSIX list form of an access mode ({other}) is not \
-                     implemented in this frontend; the r/w/a strings are"
-                ));
-            }
-            return Err(format!("illegal access mode \"{other}\""));
-        }
-    };
-    let mut file = options
-        .open(path)
+    let m = get_open_mode(access.unwrap_or("r"))?;
+    let mut file = open_fd(path, &m, prot)
         .map_err(|e| format!("couldn't open \"{path}\": {}", errno_message(&e)))?;
-    // Both append modes set `modeFlags & 1`, and the caller seeks to the end
-    // once the channel exists (`generic/tclIOUtil.c:2232`). Without it `tell`
-    // on a freshly opened `a` channel answers 0 where tclsh answers the file's
-    // size.
-    if access.starts_with('a') {
-        file.seek(SeekFrom::End(0)).map_err(|e| errno_message(&e))?;
+    // `modeFlags & 1`: the caller seeks to the end once the channel exists
+    // (`generic/tclIOUtil.c:2232`). Without it `tell` on a freshly opened `a`
+    // channel answers 0 where tclsh answers the file's size.
+    if m.seek_to_end {
+        file.seek(SeekFrom::End(0)).map_err(|e| {
+            format!(
+                "could not seek to end of file while opening \"{path}\": {}",
+                errno_message(&e)
+            )
+        })?;
     }
-    let mode = match access {
-        "r" => TCL_READABLE,
-        "w" | "a" => TCL_WRITABLE,
+    let mode = match (m.read, m.write) {
+        (true, false) => TCL_READABLE,
+        (false, true) => TCL_WRITABLE,
         _ => TCL_READABLE | TCL_WRITABLE,
     };
     let name = {
@@ -1697,7 +1803,49 @@ fn open(path: &str, access: Option<&str>) -> Result<String, String> {
     };
     let id = create(&name, Box::new(FileDevice { file }), mode);
     register(id);
+    // `CHANNEL_RAW_MODE` (`generic/tclIOUtil.c:2242`).
+    if m.binary {
+        fconfigure(&name, &["-translation".to_string(), "binary".to_string()])?;
+    }
     Ok(name)
+}
+
+/// open(2) with exactly the flags `TclGetOpenMode` decoded. `OpenOptions` is not
+/// used because it rewrites them: it refuses `O_CREAT` or `O_TRUNC` without
+/// write access and turns `O_APPEND` into a write mode, all of which the
+/// syscall — and so tclsh — accepts as written (`{RDONLY CREAT}`).
+fn open_fd(path: &str, m: &OpenMode, prot: u32) -> std::io::Result<std::fs::File> {
+    use std::os::fd::FromRawFd;
+    let mut flags = match (m.read, m.write) {
+        (true, false) => libc::O_RDONLY,
+        (false, true) => libc::O_WRONLY,
+        _ => libc::O_RDWR,
+    };
+    for (on, flag) in [
+        (m.create, libc::O_CREAT),
+        (m.trunc, libc::O_TRUNC),
+        (m.append, libc::O_APPEND),
+        (m.excl, libc::O_EXCL),
+        (m.noctty, libc::O_NOCTTY),
+        (m.nonblock, libc::O_NONBLOCK),
+    ] {
+        if on {
+            flags |= flag;
+        }
+    }
+    // `TclpOpenFileChannel` marks the descriptor close-on-exec
+    // (`unix/tclUnixChan.c`), as `std::fs::File::open` also does.
+    flags |= libc::O_CLOEXEC;
+    let c_path = std::ffi::CString::new(path)
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::ENOENT))?;
+    // SAFETY: `c_path` is a valid NUL-terminated string for the duration of the
+    // call, and a non-negative return is a descriptor this process now owns.
+    let fd = unsafe { libc::open(c_path.as_ptr(), flags, prot as libc::c_uint) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` was just returned by open(2) and nothing else holds it.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
 /// `close channel ?direction?`.
@@ -1872,7 +2020,7 @@ mod tests {
     fn a_closed_channel_gives_its_name_back() {
         let path = std::env::temp_dir().join(format!("tclrs-chan-name-{}", std::process::id()));
         std::fs::write(&path, b"x").expect("write");
-        let name = open(path.to_str().expect("path"), None).expect("open");
+        let name = open(path.to_str().expect("path"), None, None).expect("open");
         assert!(lookup(&name).is_some());
         close_command(&name, None).expect("close");
         assert!(lookup(&name).is_none());
