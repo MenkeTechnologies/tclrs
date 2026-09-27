@@ -59,6 +59,14 @@ fn lower(src: &str) -> Result<Chunk, String> {
 /// The construct in `chunk` that an ahead-of-time run could not carry, if there
 /// is one.
 fn needs_the_driver(chunk: &Chunk) -> Option<&'static str> {
+    // `try` lowers to a `catch` region too; name the command the script wrote.
+    let wrote_try = chunk
+        .ops
+        .iter()
+        .any(|op| matches!(op, Op::Extended(id, _) if *id == crate::compiler::ext::TRY_MATCH));
+    if wrote_try {
+        return Some("\"try\"");
+    }
     chunk.ops.iter().find_map(|op| match op {
         Op::ExtendedWide(id, _) if *id == ext_wide::CATCH => Some("\"catch\""),
         Op::Extended(id, _) if crate::coro::is_op(*id) => Some("a coroutine"),
@@ -182,4 +190,17 @@ fn staticlib_path() -> Result<PathBuf, String> {
         "aot: libtclrs.a not found beside {}; build the staticlib or set TCLRS_STATICLIB",
         exe.display()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lower;
+
+    #[test]
+    fn a_refusal_names_the_command_the_script_wrote() {
+        let try_err = lower("puts [try {expr 1} on ok r {set r}]").unwrap_err();
+        assert!(try_err.contains("using \"try\""), "{try_err}");
+        let catch_err = lower("puts [catch {expr 1}]").unwrap_err();
+        assert!(catch_err.contains("using \"catch\""), "{catch_err}");
+    }
 }
