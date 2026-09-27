@@ -930,30 +930,55 @@ impl std::error::Error for CompileError {}
 /// nor a nested `proc` compiles in one pass exactly as it did before and pays
 /// nothing.
 pub fn compile(script: &Script) -> Result<fusevm::Chunk, CompileError> {
-    lower(script, false, false)
+    lower(script, false, false, &ArrayNames::new())
+}
+
+/// Lower a script that runs against variables which already exist — the text
+/// an `eval`, a `source` or a rebuilt command hands the interpreter — knowing
+/// which of the names it mentions hold an array at that moment.
+///
+/// A nested script is a chunk of its own, so the first pass sees only the
+/// array commands written in *its* text. `set a 1`, `append a x` or `$a` on an
+/// array the enclosing script made would otherwise lower to a bare variable
+/// access, overwrite the array or read it as a string, where tclsh refuses
+/// with `variable is array`. `known` joins the names the text itself uses as
+/// arrays, so those names take the guarded lowering; the guard reads the
+/// variable when it runs, so a name that is no longer an array by then still
+/// gets the scalar answer.
+pub fn compile_with_arrays(
+    script: &Script,
+    projected: bool,
+    known: &ArrayNames,
+) -> Result<fusevm::Chunk, CompileError> {
+    lower(script, false, projected, known)
 }
 
 /// Lower a script that will run inside a frame projection — a nested script an
 /// `eval`, `uplevel`, `subst` or `apply` runs against a procedure activation's
 /// variables. See `Compiler::projected` for the single difference.
 pub fn compile_projected(script: &Script) -> Result<fusevm::Chunk, CompileError> {
-    lower(script, false, true)
+    lower(script, false, true, &ArrayNames::new())
 }
 
 /// Lower a script with a line marker before every command, for the debug
 /// adapter. The markers are the only difference: a debugger single-steps the
 /// same bytecode a run executes, rather than a second lowering written for it.
 pub fn compile_debug(script: &Script) -> Result<fusevm::Chunk, CompileError> {
-    lower(script, true, false)
+    lower(script, true, false, &ArrayNames::new())
 }
 
-fn lower(script: &Script, debug: bool, projected: bool) -> Result<fusevm::Chunk, CompileError> {
+fn lower(
+    script: &Script,
+    debug: bool,
+    projected: bool,
+    known: &ArrayNames,
+) -> Result<fusevm::Chunk, CompileError> {
     // Both extra passes, and both reasons a second one is needed: a name used
     // as an array, and a `proc` whose definition only happens when the
     // enclosing code runs.
     let first = Compiler::run(script, ArrayNames::new(), HashSet::new(), debug, projected)?;
     let (mut chunk, tolerant, incr_sites, procs, slot_names) =
-        if first.seen_arrays.is_empty() && first.seen_runtime.is_empty() {
+        if first.seen_arrays.is_empty() && first.seen_runtime.is_empty() && known.is_empty() {
             let procs = signature_table(&first);
             let names = first.slot_names.clone();
             (
@@ -964,9 +989,11 @@ fn lower(script: &Script, debug: bool, projected: bool) -> Result<fusevm::Chunk,
                 names,
             )
         } else {
+            let mut arrays = first.seen_arrays;
+            arrays.extend(known.iter().cloned());
             let second = Compiler::run(
                 script,
-                first.seen_arrays,
+                arrays,
                 first.seen_runtime,
                 debug,
                 projected,
@@ -2404,6 +2431,10 @@ impl Compiler {
             self.push_str(&name);
             self.emit(Op::LoadInt(i64::from(slot)), 1);
             self.emit(Op::Extended(ext::LINK_GET, 1), -1);
+        } else if self.is_array(&name) {
+            // A name the script also uses as an array: the guarded read, which
+            // refuses an array as the write `incr` is and reads absence as 0.
+            self.scalar_get_for_update(&name, Absent::Zero);
         } else {
             let read_at = self.b.current_pos();
             self.scalar_get(&name);

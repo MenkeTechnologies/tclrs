@@ -41,9 +41,15 @@ use std::sync::Arc;
 use fusevm::{Op, Value, VM};
 
 use crate::cmd_scope::Link;
-use crate::compiler::{ext, CompileError, Compiler, Place};
+use crate::compiler::{ext, Absent, CompileError, Compiler, Place};
 use crate::parser::{Part, Word};
 use crate::runtime::{tcl_int, to_tcl_string, Shared, TclError};
+
+/// [`ext::SCALAR`]'s operand for the read half of `append` and `lappend`: an
+/// array is refused as a write, an absent variable reads as empty.
+const SCALAR_UPDATE_EMPTY: u8 = 2;
+/// The same for `incr`, where an absent variable reads as 0.
+const SCALAR_UPDATE_ZERO: u8 = 3;
 
 // ─── Tcl list syntax ──────────────────────────────────────────────────────
 
@@ -657,6 +663,22 @@ impl Compiler {
         self.emit(Op::Extended(ext::SCALAR, 0), -1);
     }
 
+    /// Read a scalar that a read-modify-write command is about to write back:
+    /// `incr`, `append` and `lappend` on a name the script also uses as an
+    /// array. An array is refused as the *write* it is, and an absent variable
+    /// reads as `absent` — [`Absent::Zero`] or [`Absent::Empty`] — because
+    /// each of the three creates the variable it names.
+    pub(crate) fn scalar_get_for_update(&mut self, name: &str, absent: Absent) {
+        let place = self.var_place_operand(name);
+        self.push_str(name);
+        self.emit(Op::LoadInt(place), 1);
+        let arg = match absent {
+            Absent::Zero => SCALAR_UPDATE_ZERO,
+            _ => SCALAR_UPDATE_EMPTY,
+        };
+        self.emit(Op::Extended(ext::SCALAR, arg), -1);
+    }
+
     /// Refuse a scalar assignment to a variable that holds an array.
     pub(crate) fn scalar_set_guard(&mut self, name: &str) {
         if !self.is_array(name) {
@@ -742,6 +764,10 @@ impl Compiler {
                 Ok(())
             }
             _ => {
+                // A name the script also uses as an array refuses the
+                // assignment, as `set` does: `foreach a {1} {}` on an array is
+                // `can't set "a": variable is array`.
+                self.scalar_set_guard(text);
                 self.emit_set_var(text);
                 Ok(())
             }
@@ -2257,8 +2283,22 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let name = pop_str(vm);
             let value = peek(vm, place).cloned().unwrap_or(Value::Undef);
             if matches!(value, Value::Hash(_)) {
-                let verb = if arg == 1 { "set" } else { "read" };
+                let verb = if arg == 0 { "read" } else { "set" };
                 return Err(format!("can't {verb} \"{name}\": variable is array"));
+            }
+            // The read half of `incr`, `append` and `lappend`, which tclsh
+            // refuses on an array in the words of the write they are
+            // (`can't set "a": variable is array`, measured against tclsh
+            // 9.0.4) and which creates the variable when it is absent: from 0
+            // for `incr`, from nothing for the other two.
+            if arg == SCALAR_UPDATE_EMPTY || arg == SCALAR_UPDATE_ZERO {
+                let absent = if arg == SCALAR_UPDATE_ZERO {
+                    Value::Int(0)
+                } else {
+                    Value::Str(Arc::new(String::new()))
+                };
+                vm.push(if matches!(value, Value::Undef) { absent } else { value });
+                return Ok(());
             }
             if arg != 1 {
                 // The read half owns the unset diagnostic for these names,

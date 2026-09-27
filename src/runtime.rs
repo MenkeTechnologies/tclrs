@@ -607,7 +607,8 @@ pub(crate) fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> 
         // name apart from a bare one, because there the two are different
         // variables. See [`crate::compiler::Compiler::projected`].
         let projected = state.projected();
-        state.cache.compile_in(src, projected)
+        let arrays = live_arrays(&state.globals, src);
+        state.cache.compile_in(src, projected, &arrays)
     };
     // The depth is given back however this returns, including the compile
     // failure above, which is why it is not a `?` in the block.
@@ -627,6 +628,24 @@ pub(crate) fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> 
     };
     shared.lock().expect("interpreter lock").depth -= 1;
     result
+}
+
+/// The variables in `table` that hold an array and that `src` mentions, sorted
+/// — what [`crate::compiler::compile_with_arrays`] needs to know about the
+/// variables a nested script is about to run against.
+///
+/// "Mentions" is a substring test on the text, so it may name a variable the
+/// script never touches; that costs only a guard on the name. It cannot miss
+/// one the script does touch by a literal name, which is the only kind the
+/// compiler lowers without a guard of its own.
+fn live_arrays(table: &HashMap<String, Value>, src: &str) -> Vec<String> {
+    let mut names: Vec<String> = table
+        .iter()
+        .filter(|(name, value)| matches!(value, Value::Hash(_)) && src.contains(name.as_str()))
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort_unstable();
+    names
 }
 
 /// Run the commands a script's failed parse left intact, then report the
@@ -651,7 +670,8 @@ fn run_prefix(shared: &Shared, src: &str, err: TclError) -> Result<Value, TclErr
     let compiled = {
         let mut state = shared.lock().expect("interpreter lock");
         let projected = state.projected();
-        state.cache.compile_in(&src[..end], projected)
+        let arrays = live_arrays(&state.globals, &src[..end]);
+        state.cache.compile_in(&src[..end], projected, &arrays)
     };
     // The prefix parsed, so it can only fail while running — and a command
     // that failed did so BEFORE the text the syntax error is in was reached,

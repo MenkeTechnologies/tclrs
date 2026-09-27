@@ -505,7 +505,7 @@ impl Compiler {
 
         if self.is_array(&name) {
             self.push_str(&name);
-            self.scalar_get(&name);
+            self.scalar_get_for_update(&name, crate::compiler::Absent::Empty);
             for w in &args[1..] {
                 self.word(w)?;
             }

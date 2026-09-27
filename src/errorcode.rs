@@ -69,6 +69,16 @@ pub(crate) fn classify(msg: &str) -> Option<String> {
     } else if msg.starts_with("expected number but got ") {
         // `TclParseNumber` asked for a "number" (`tclStrToD.c:1540`).
         vec!["TCL", "VALUE", "NUMBER"]
+    } else if quoted(msg, "can't read \"", "\": variable is array").is_some() {
+        // `ISARRAY` under "read" is raised only by `TclPtrGetVarIdx`
+        // (`tclVar.c:1459`), whose error exit sets `TCL READ VARNAME` (`:1472`).
+        vec!["TCL", "READ", "VARNAME"]
+    } else if quoted(msg, "can't set \"", "\": variable is array").is_some() {
+        // `ISARRAY` under "set" is raised only by `TclPtrSetVarIdx`
+        // (`tclVar.c:1977`); its `WRITE ARRAY` is overwritten on the way out by
+        // the `cleanup` label's `TCL WRITE VARNAME` (`:2073`), which is what
+        // tclsh 9.0.4 reports (measured: `set a 1` on an array).
+        vec!["TCL", "WRITE", "VARNAME"]
     } else if quoted(msg, "illegal access mode \"", "\"").is_some() {
         // `TclGetOpenMode` (`tclIOUtil.c:1519`).
         vec!["TCL", "OPENMODE", "INVALID"]

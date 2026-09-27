@@ -6,11 +6,12 @@
 //! is the cache key: identical source is identical bytecode, whatever produced
 //! it.
 //!
-//! The key is the source text and nothing else. Nothing outside the text can
-//! change what it lowers to — the compiler reads no interpreter state, and the
-//! variables a chunk touches are bound to slots by name, not by value — so
-//! there is no context to fold into the key and no way for an entry to go
-//! stale within a process.
+//! The key is the source text, plus the two facts outside it that change what
+//! it lowers to: whether it runs in a frame projection, and which of the names
+//! it mentions held an array when it was handed over
+//! ([`crate::compiler::compile_with_arrays`]). Nothing else about the
+//! interpreter is read — the variables a chunk touches are bound to slots by
+//! name, not by value — so an entry cannot go stale within a process.
 //!
 //! Entries are held as `Arc<Chunk>` and cloned into the VM per run, because
 //! `fusevm::VM::new` takes the chunk by value. That clone copies the op vector,
@@ -35,7 +36,7 @@ pub struct ChunkCache {
     /// see [`crate::compiler::compile_projected`]. Almost every script is
     /// compiled one way only, so the second key costs a `bool` per entry and
     /// nothing else.
-    entries: HashMap<(bool, String), Arc<Chunk>>,
+    entries: HashMap<(bool, Vec<String>, String), Arc<Chunk>>,
     capacity: usize,
     hits: u64,
     misses: u64,
@@ -61,13 +62,22 @@ impl ChunkCache {
     /// A source that fails to compile is not stored: the failure is reported on
     /// every attempt, and a diagnostic is not worth a cache slot.
     pub fn compile(&mut self, src: &str) -> Result<Arc<Chunk>, TclError> {
-        self.compile_in(src, false)
+        self.compile_in(src, false, &[])
     }
 
     /// [`ChunkCache::compile`], for a script that will run inside a frame
     /// projection. Cached apart from the same text compiled outside one.
-    pub fn compile_in(&mut self, src: &str, projected: bool) -> Result<Arc<Chunk>, TclError> {
-        let key = (projected, src.to_string());
+    ///
+    /// `arrays` names the variables the text mentions that hold an array right
+    /// now, sorted; they are lowered with the array guard, and the same text
+    /// with a different set is a different entry.
+    pub fn compile_in(
+        &mut self,
+        src: &str,
+        projected: bool,
+        arrays: &[String],
+    ) -> Result<Arc<Chunk>, TclError> {
+        let key = (projected, arrays.to_vec(), src.to_string());
         if let Some(chunk) = self.entries.get(&key) {
             self.hits += 1;
             return Ok(Arc::clone(chunk));
@@ -85,11 +95,8 @@ impl ChunkCache {
             level: 0,
             errorcode: None,
         })?;
-        let lowered = if projected {
-            crate::compiler::compile_projected(&script)
-        } else {
-            crate::compiler::compile(&script)
-        };
+        let known: crate::assoc::ArrayNames = arrays.iter().cloned().collect();
+        let lowered = crate::compiler::compile_with_arrays(&script, projected, &known);
         let chunk = Arc::new(lowered.map_err(|e| TclError {
             msg: e.msg,
             line: Some(e.line),

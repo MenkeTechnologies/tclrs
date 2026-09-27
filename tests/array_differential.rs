@@ -49,6 +49,14 @@ fn quoting_matrix(template: &str) -> String {
 }
 
 const FIXED: &[&str] = &[
+    // ── a scalar write to an array: refused as the write, with its errorcode ──
+    "set a(x) 1\nputs [catch {incr a} m o]\nputs \"$m [dict get $o -errorcode]\"\nputs [catch {append a z} m o]\nputs \"$m [dict get $o -errorcode]\"\nputs [catch {lappend a z} m o]\nputs \"$m [dict get $o -errorcode]\"",
+    "set a(x) 1\nputs [catch {foreach a {1} {}} m o]\nputs \"$m [dict get $o -errorcode]\"\nputs [catch {lassign {1} a} m o]\nputs \"$m [dict get $o -errorcode]\"",
+    "set a(x) 1\nputs [catch {set a 1} m o]\nputs \"$m [dict get $o -errorcode]\"\nputs [catch {set a} m o]\nputs \"$m [dict get $o -errorcode]\"",
+    // A nested script knows which names already hold an array.
+    "set a(x) 1\nputs [catch {eval {set a 1}} m]\nputs $m\nputs [catch {eval {append a q}} m]\nputs $m\nputs [catch {eval {puts $a}} m]\nputs $m\nputs [array get a]",
+    // The same commands create an absent variable.
+    "set a(x) 1\nincr n\nappend s z\nlappend l z\nputs $n$s$l\nputs [array get a]",
     // ── array elements ──
     "set a(1) x\nputs $a(1)",
     "set a(x) 1\nset a(y) 2\nputs [expr {$a(x)+$a(y)}]",

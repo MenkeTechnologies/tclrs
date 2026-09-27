@@ -137,7 +137,7 @@ fn lappend(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     let count = arg_count(c, values.len() + 1)?;
 
     if c.is_array(&name) {
-        c.emit_get_var(&name);
+        c.scalar_get_for_update(&name, crate::compiler::Absent::Empty);
         for value in values {
             c.word(value)?;
         }
@@ -186,7 +186,10 @@ fn lassign(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     c.emit(Op::Extended(ext::LASSIGN, count), targets.len() as i32);
     for target in &targets {
         match target {
-            Target::Scalar(name) => c.emit_set_var(name),
+            Target::Scalar(name) => {
+                c.scalar_set_guard(name);
+                c.emit_set_var(name);
+            }
             Target::Elem { name, index } => {
                 c.elem_store(name, index)?;
                 c.emit(Op::Pop, -1);

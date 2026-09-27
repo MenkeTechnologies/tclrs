@@ -601,6 +601,7 @@ approximated, and nothing is silently mis-run.
   tclsh's, and `src/errorcode.rs` maps each template Tcl 9.0.4 emits with exactly
   one code — `TCL WRONGARGS`, `ARITH DIVZERO`/`DOMAIN`, `TCL LOOKUP
   COMMAND`/`DICT`/`CHANNEL`/`ENCODING`/`SUBCOMMAND`, `TCL VALUE INDEX`/`NUMBER`,
+  `TCL READ VARNAME` and `TCL WRITE VARNAME` for a variable that is an array,
   `TCL OPENMODE INVALID`, and `POSIX <errno> <reason>`. `-errorcode` is still
   ABSENT where two raise sites share a template under different codes:
 
