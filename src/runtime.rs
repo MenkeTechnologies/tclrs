@@ -4197,6 +4197,53 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             });
             Err(message)
         }
+        // `try`'s dispatch: which handler takes `[code, options, result]`.
+        // `TryPostBody` (`generic/tclCmdMZ.c:4927-4990`): an `on` clause
+        // compares the code; a `trap` clause matches an error whose
+        // `-errorcode` list begins with the pattern's elements.
+        ext::TRY_MATCH => {
+            let spec = to_tcl_string(&vm.pop());
+            let result = vm.pop();
+            let options = vm.pop();
+            let code = vm.pop();
+            let code_n = match &code {
+                Value::Int(n) => *n,
+                other => to_tcl_string(other).parse().unwrap_or(TCL_ERROR as i64),
+            };
+            let errorcode = || -> Vec<String> {
+                let words = list::split(&to_tcl_string(&options)).unwrap_or_default();
+                words
+                    .chunks(2)
+                    .find(|kv| kv[0] == "-errorcode")
+                    .and_then(|kv| kv.get(1))
+                    .and_then(|ec| list::split(ec).ok())
+                    .unwrap_or_default()
+            };
+            let mut index = if code_n == 0 { -1 } else { -2 };
+            for (i, clause) in list::split(&spec)?.iter().enumerate() {
+                let clause = list::split(clause)?;
+                let hit = match clause.as_slice() {
+                    [kind, want] if kind == "on" => want.parse() == Ok(code_n),
+                    [kind, pattern] if kind == "trap" => {
+                        let pattern = list::split(pattern)?;
+                        let have = errorcode();
+                        code_n == TCL_ERROR as i64
+                            && pattern.len() <= have.len()
+                            && pattern.iter().zip(&have).all(|(p, h)| p == h)
+                    }
+                    _ => false,
+                };
+                if hit {
+                    index = i as i64;
+                    break;
+                }
+            }
+            vm.push(code);
+            vm.push(options);
+            vm.push(result);
+            vm.push(Value::Int(index));
+            Ok(())
+        }
         // `throw type message`. The type has to be a list of at least one
         // element — `Tcl_ThrowObjCmd` asks `TclListObjLength` and then its own
         // length test — and the message is then raised as an ordinary error.

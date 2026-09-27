@@ -352,6 +352,11 @@ pub mod ext {
     /// machinery owns. Like them it needs an explicit arm in
     /// [`crate::runtime::install_hooks`], since the range test below 61 routes to
     /// [`crate::cmd_list`].
+    /// `[code, options, result, handlers]` → `[code, options, result, index]`:
+    /// the first of `try`'s handlers (a list of `on <code>` / `trap <pattern>`)
+    /// that takes the outcome, `-1` for an unhandled code 0, `-2` for any other
+    /// unhandled outcome.
+    pub const TRY_MATCH: u16 = 58;
     pub const EXPAND_CALL: u16 = 59;
 
     /// Pop a value and push Tcl's boolean reading of it — 1 or 0 — or refuse it.
@@ -1912,6 +1917,7 @@ impl Compiler {
         "catch",
         "error",
         "throw",
+        "try",
         "subst",
         "array",
         "dict",
@@ -2038,6 +2044,7 @@ impl Compiler {
             "return" => self.cmd_return(args),
             "global" => self.ns_global(args),
             "catch" => self.cmd_catch(args),
+            "try" => self.cmd_try(args),
             "error" => self.cmd_error(args),
             "throw" => self.cmd_throw(args),
             "subst" => crate::cmd_subst::compile(self, args),

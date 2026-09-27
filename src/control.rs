@@ -16,7 +16,7 @@
 
 use fusevm::Op;
 
-use crate::compiler::{ext, ext_wide, CompileError, Compiler};
+use crate::compiler::{ext, ext_wide, Body, CompileError, Compiler};
 use crate::list;
 use crate::parser::Word;
 
@@ -474,6 +474,192 @@ impl Compiler {
         Ok(())
     }
 
+    /// `try body ?handler ...? ?finally script?` (`Tcl_TryObjCmd`,
+    /// `generic/tclCmdMZ.c:4692-4870`).
+    ///
+    /// The body runs in a `catch` region, so both of its endings arrive at one
+    /// dispatch point holding `[code, options, result]` — the ordinary path
+    /// builds that triple itself with code 0. [`ext::TRY_MATCH`] picks the
+    /// first handler whose `on` code or `trap` prefix fits, the handler binds
+    /// its variables and runs as the command's value, and an outcome no
+    /// handler takes is handed on unchanged through [`ext::RERAISE`] (or, for
+    /// code 0, simply becomes the value). A `finally` wraps all of that in a
+    /// second region: its script runs on the ordinary path and in the handler,
+    /// its value is dropped, and an error it raises replaces whatever was
+    /// leaving — the order `TryPostFinal` applies.
+    pub(crate) fn cmd_try(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        const USAGE: &str = "wrong # args: should be \"try body ?handler ...? ?finally script?\"";
+        let Some((body, mut rest)) = args.split_first() else {
+            return Err(self.deferrable_err(USAGE));
+        };
+        let mut handlers: Vec<TryHandler> = Vec::new();
+        let mut finally = None;
+        while let Some(kind) = rest.first() {
+            let kind = self.literal_of(kind, "try handler type")?.to_string();
+            match kind.as_str() {
+                "on" | "trap" => {
+                    if rest.len() < 4 {
+                        return Err(self.deferrable_err(format!(
+                            "wrong # args to {kind} clause: must be \"... {kind} {} variableList script\"",
+                            if kind == "on" { "code" } else { "pattern" }
+                        )));
+                    }
+                    let what = self.literal_of(&rest[1], "try handler")?.to_string();
+                    let test = if kind == "on" {
+                        let code = completion_code(&what).ok_or_else(|| {
+                            self.deferrable_err(format!(
+                                "bad completion code \"{what}\": must be ok, error, return, break, continue, or an integer"
+                            ))
+                        })?;
+                        format!("on {code}")
+                    } else {
+                        list::join(&["trap", what.as_str()])
+                    };
+                    let vars = self.literal_of(&rest[2], "try handler variable list")?;
+                    let vars = list::split(vars).map_err(|e| self.deferrable_err(e))?;
+                    let script = self.literal_of(&rest[3], "try handler script")?.to_string();
+                    handlers.push(TryHandler { test, vars, script });
+                    rest = &rest[4..];
+                }
+                "finally" => {
+                    match rest.len() {
+                        1 => {
+                            return Err(self.deferrable_err(
+                                "wrong # args to finally clause: must be \"... finally script\"",
+                            ))
+                        }
+                        2 => {}
+                        _ => return Err(self.deferrable_err("finally clause must be last")),
+                    }
+                    finally = Some(self.body_of(&rest[1])?);
+                    rest = &[];
+                }
+                other => {
+                    return Err(self.deferrable_err(format!(
+                        "bad handler type \"{other}\": must be finally, on, or trap"
+                    )))
+                }
+            }
+        }
+        if handlers.last().is_some_and(|h| h.script == "-") {
+            return Err(self.deferrable_err("last non-finally clause must not have a body of \"-\""));
+        }
+        let body = self.body_of(body)?;
+        match finally {
+            None => self.try_core(&body, &handlers),
+            Some(cleanup) => {
+                let entry = self.depth;
+                let over = self.emit(Op::Jump(usize::MAX), 0);
+                // Handler: `[code, options, message]` from the driver. Run the
+                // cleanup for its effect, then hand the outcome on.
+                let handler = self.b.current_pos();
+                self.depth = entry + 3;
+                self.emit_body(&cleanup)?;
+                self.emit(Op::Extended(ext::RERAISE, 0), -3);
+
+                let guarded = self.b.current_pos();
+                self.b.patch_jump(over, guarded);
+                self.depth = entry;
+                self.emit(Op::ExtendedWide(ext_wide::CATCH, handler), 0);
+                self.catch_depth += 1;
+                let compiled = self.try_core(&body, &handlers);
+                self.catch_depth -= 1;
+                compiled?;
+                self.emit(Op::Extended(ext::CATCH_END, 0), 0);
+                // Outside the region, so an error the cleanup raises leaves
+                // the command instead of re-entering the handler above.
+                self.emit_body(&cleanup)
+            }
+        }
+    }
+
+    /// The body and its handlers, leaving one value: see [`Compiler::cmd_try`].
+    fn try_core(&mut self, body: &Body, handlers: &[TryHandler]) -> Result<(), CompileError> {
+        let entry = self.depth;
+        let over = self.emit(Op::Jump(usize::MAX), 0);
+        // The driver resumes here with `[code, options, result]` pushed.
+        let caught = self.b.current_pos();
+        self.depth = entry + 3;
+        let to_dispatch = self.emit(Op::Jump(usize::MAX), 0);
+
+        let guarded = self.b.current_pos();
+        self.b.patch_jump(over, guarded);
+        self.depth = entry;
+        self.emit(Op::ExtendedWide(ext_wide::CATCH, caught), 0);
+        self.catch_depth += 1;
+        let compiled = self.emit_body_value(body);
+        self.catch_depth -= 1;
+        compiled?;
+        self.emit(Op::Extended(ext::CATCH_END, 0), 0);
+        // The ordinary ending, as the same triple: `[0, "-code 0 -level 0", v]`.
+        self.emit(Op::LoadInt(0), 1);
+        self.emit(Op::Swap, 0);
+        self.push_str("-code 0 -level 0");
+        self.emit(Op::Swap, 0);
+
+        let dispatch = self.b.current_pos();
+        self.b.patch_jump(to_dispatch, dispatch);
+        self.depth = entry + 3;
+        let spec: Vec<&str> = handlers.iter().map(|h| h.test.as_str()).collect();
+        self.push_str(&list::join(&spec));
+        self.emit(Op::Extended(ext::TRY_MATCH, 0), 0);
+
+        let mut to_end = Vec::new();
+        for (i, h) in handlers.iter().enumerate() {
+            // `[code, options, result, index]`
+            self.emit(Op::Dup, 1);
+            self.emit(Op::LoadInt(i as i64), 1);
+            self.emit(Op::NumEq, -1);
+            let miss = self.emit(Op::JumpIfFalse(usize::MAX), -1);
+            self.emit(Op::Pop, -1);
+            // A body of `-` is the next handler's (`TryPostBody`).
+            let script = handlers[i..]
+                .iter()
+                .map(|h| h.script.as_str())
+                .find(|s| *s != "-")
+                .unwrap_or_default();
+            let mut vars = h.vars.iter().map(String::as_str);
+            let result_var = vars.next();
+            let options_var = vars.next();
+            self.store_or_drop(result_var);
+            self.store_or_drop(options_var);
+            self.emit(Op::Pop, -1);
+            let body = match crate::parser::parse(script) {
+                Ok(script) => Body::Script(script),
+                Err(e) => Body::Deferred(e.msg),
+            };
+            self.emit_body_value(&body)?;
+            to_end.push(self.emit(Op::Jump(usize::MAX), 0));
+            let next = self.b.current_pos();
+            self.b.patch_jump(miss, next);
+            self.depth = entry + 4;
+        }
+        // No handler took it. Code 0 is the command's value; anything else
+        // leaves as it arrived.
+        self.emit(Op::Dup, 1);
+        self.emit(Op::LoadInt(-1), 1);
+        self.emit(Op::NumEq, -1);
+        let reraise = self.emit(Op::JumpIfFalse(usize::MAX), -1);
+        self.emit(Op::Pop, -1);
+        self.emit(Op::Swap, 0);
+        self.emit(Op::Pop, -1);
+        self.emit(Op::Swap, 0);
+        self.emit(Op::Pop, -1);
+        to_end.push(self.emit(Op::Jump(usize::MAX), 0));
+        let here = self.b.current_pos();
+        self.b.patch_jump(reraise, here);
+        self.depth = entry + 4;
+        self.emit(Op::Pop, -1);
+        self.emit(Op::Extended(ext::RERAISE, 0), -3);
+
+        let end = self.b.current_pos();
+        for j in to_end {
+            self.b.patch_jump(j, end);
+        }
+        self.depth = entry + 1;
+        Ok(())
+    }
+
     /// Store the top of the stack in `var`, or discard it when `catch` was
     /// given no variable to write.
     fn store_or_drop(&mut self, var: Option<&str>) {
@@ -483,5 +669,28 @@ impl Compiler {
                 self.emit(Op::Pop, -1);
             }
         }
+    }
+}
+
+/// One `on`/`trap` clause of a `try`, as [`ext::TRY_MATCH`] reads its test:
+/// `on <code>` or `trap <pattern>`.
+struct TryHandler {
+    test: String,
+    /// `?resultVar? ?optionsVar?` — a longer list binds its first two.
+    vars: Vec<String>,
+    /// The handler script, or `-` for "the next handler's".
+    script: String,
+}
+
+/// `TclGetCompletionCodeFromObj` (`generic/tclIndexObj.c:1360-1392`): a code
+/// name or an integer.
+fn completion_code(word: &str) -> Option<i64> {
+    match word {
+        "ok" => Some(0),
+        "error" => Some(1),
+        "return" => Some(2),
+        "break" => Some(3),
+        "continue" => Some(4),
+        _ => list::parse_int(word),
     }
 }

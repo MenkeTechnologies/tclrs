@@ -26,6 +26,7 @@ fn all_ids() -> Vec<(&'static str, u16)> {
         ("ERROR", ext::ERROR),
         ("CATCH_END", ext::CATCH_END),
         ("THROW", ext::THROW),
+        ("TRY_MATCH", ext::TRY_MATCH),
         ("CORO_CREATE", ext::CORO_CREATE),
         ("CORO_RESUME", ext::CORO_RESUME),
         ("CORO_YIELD", ext::CORO_YIELD),

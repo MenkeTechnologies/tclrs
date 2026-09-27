@@ -312,6 +312,17 @@ const PROGRAMS: &[&str] = &[
     "proc over {} {return -options {-code error} -code ok fine}\nputs [over]",
     "proc withcode {} {return -options {-code error} -errorcode {X Y} m}\ncatch {withcode} r o\nputs [dict get $o -errorcode]",
     "proc wrap {script} {catch {uplevel 1 $script} m o\nreturn -options $o $m}\nputs [wrap {expr 3}]\ncatch {wrap {error deep}} r o\nputs [list $r [dict get $o -errorcode]]",
+    // ── try ──
+    "puts [try {expr {1+1}}]\nputs [try {expr {1+1}} on ok {r o} {list ok $r [dict get $o -code]}]\nputs [try {error boom} on error {r o} {list err $r [dict get $o -errorcode]}]",
+    "puts [try {expr {1/0}} trap {ARITH DIVZERO} {r} {list trapped $r} on error {r} {list generic $r}]\nputs [try {nosuch} trap {TCL LOOKUP COMMAND nosuch} {r} {list exact $r}]",
+    "puts [try {throw {A B C} msg} trap {A X} {} {list no} trap {A B} {m} {list yes $m}]\nputs [list [catch {try {throw {A B C} msg} trap {Z} {} {list no}} m o] $m [dict get $o -errorcode]]",
+    "puts [try {error x} on error {} {list noVars}]\nputs [try {error x} on error {r} - on ok {r} {list shared $r}]\nputs [try {list 1} on 0 {r} {list code0 $r}]",
+    "set log {}\nputs [try {lappend log body\nexpr 5} finally {lappend log fin}]\nputs $log\nputs [list [catch {try {error inner} on error {r} {error \"handler $r\"} finally {lappend log fin2}} m] $m $log]\nputs [list [catch {try {error inner} finally {error {from finally}}} m] $m]",
+    "proc p {} {try {return early} finally {puts fin}\nreturn late}\nputs [p]\nproc q {} {try {return early} on return {r o} {list caught $r [dict get $o -code] [dict get $o -level]}}\nputs [q]",
+    "foreach i {1 2 3} {try {if {$i == 2} continue\nif {$i == 3} break\nputs i=$i} finally {puts f$i}}\nputs [try {break} on break {} {list onbreak}]",
+    "proc f {x} {try {expr {10 / $x}} trap {ARITH DIVZERO} {msg} {return \"div: $msg\"} on ok {v} {return \"ok $v\"}}\nputs [f 2]\nputs [f 0]",
+    "puts [list [catch {try} m] $m]\nputs [list [catch {try {x} on error {r}} m] $m]\nputs [list [catch {try {x} on foo {r} {}} m] $m]\nputs [list [catch {try {x} trap {A} {r}} m] $m]",
+    "puts [list [catch {try {x} finally} m] $m]\nputs [list [catch {try {x} finally {a} {b}} m] $m]\nputs [list [catch {try {x} bogus {a}} m] $m]\nputs [list [catch {try {x} on error {r} -} m] $m]",
 ];
 
 fn tclsh() -> Option<PathBuf> {

@@ -108,7 +108,7 @@ pub const CORPUS: &[Entry] = &[
     },
     Entry {
         name: "catch",
-        synopsis: "catch script ?resultVarName?",
+        synopsis: "catch script ?resultVarName? ?optionsVarName?",
         summary: "Run the script and trap an error from it, including one raised inside a procedure it called; yields the completion code.",
     },
     Entry {
@@ -434,7 +434,12 @@ pub const CORPUS: &[Entry] = &[
     Entry {
         name: "throw",
         synopsis: "throw type message",
-        summary: "Raise `message` as an error, the type having been checked to be a list of at least one element. The `-errorcode` the type becomes is part of the return-options dictionary, whose error entries this frontend does not model.",
+        summary: "Raise `message` as an error, the type having been checked to be a list of at least one element. The type becomes the error's `-errorcode`, which `catch` reports and `try`'s `trap` clauses match.",
+    },
+    Entry {
+        name: "try",
+        synopsis: "try body ?handler ...? ?finally script?",
+        summary: "Run the body; the first `on code varList script` or `trap pattern varList script` handler that fits its outcome runs as the command's value, and a `finally` script runs however it ended. An outcome no handler takes leaves unchanged.",
     },
     Entry {
         name: "unset",
