@@ -382,9 +382,11 @@ fn dispatch(
             enter(vm, name, &p, args).map_err(here)
         }
         // The same procedure, reached from a chunk its body is not in.
+        // Only the location is filled in: the error keeps its code, level and
+        // `-errorcode`, which rebuilding it from the message dropped.
         Some(p) => enter_elsewhere(interp, vm, name, &p, args).map_err(|e| match e.line {
             Some(_) => e,
-            None => here(e.msg),
+            None => TclError { line: at, ..e },
         }),
         // A registered Tk command is the only thing a chunk hands control to
         // that can read or write the interpreter's variables behind its back,

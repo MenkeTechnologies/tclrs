@@ -303,6 +303,8 @@ const PROGRAMS: &[&str] = &[
     "catch {return -code error m} r o\nputs [dict get $o -errorcode]",
     // A message the script raises itself is never classified.
     "catch {error {divide by zero}} r o\nputs [dict get $o -errorcode]",
+    // An error from a procedure reached from another chunk keeps its code.
+    "proc r2 {} {return -code error -errorcode {A B} x}\nproc t {} {catch {uplevel 1 {r2}} m o\nputs [dict get $o -errorcode]}\nt",
 ];
 
 fn tclsh() -> Option<PathBuf> {
