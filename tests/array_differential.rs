@@ -49,6 +49,9 @@ fn quoting_matrix(template: &str) -> String {
 }
 
 const FIXED: &[&str] = &[
+    // ── a computed body or variable name: the command runs as a list ──
+    "set d {a 1}\nset b {set a 9}\nputs [dict with d $b]\nputs $d",
+    "set d {a 1}\nset n v\nputs [dict update d a $n {set v 5}]\nputs $d",
     // ── a scalar write to an array: refused as the write, with its errorcode ──
     "set a(x) 1\nputs [catch {incr a} m o]\nputs \"$m [dict get $o -errorcode]\"\nputs [catch {append a z} m o]\nputs \"$m [dict get $o -errorcode]\"\nputs [catch {lappend a z} m o]\nputs \"$m [dict get $o -errorcode]\"",
     "set a(x) 1\nputs [catch {foreach a {1} {}} m o]\nputs \"$m [dict get $o -errorcode]\"\nputs [catch {lassign {1} a} m o]\nputs \"$m [dict get $o -errorcode]\"",
@@ -682,21 +685,13 @@ fn unimplemented_subcommands_are_refused() {
             "set a(1) x\ndict with a(1) {}",
             "array element is not supported yet",
         ),
-        (
-            "set d {a 1}\nset b {set a 9}\ndict with d $b",
-            "script body must be a literal in this phase",
-        ),
         // `dict update` landed; what it answers is compared against tclsh in
-        // `FIXED`. What it still refuses is the two names it cannot resolve
-        // while compiling — an array element as the dictionary, and a computed
-        // variable name, which is the wall `set $name 1` meets.
+        // `FIXED`. What it still refuses is an array element as the dictionary.
+        // A computed body or variable name hands the whole command to run time
+        // and is compared in `FIXED`.
         (
             "set a(1) x\ndict update a(1) k v {}",
             "array element is not supported yet",
-        ),
-        (
-            "set d {a 1}\nset n v\ndict update d a $n {}",
-            "variable name must be a literal in this phase",
         ),
         (
             "set a(1) x\ndict set a(1) k v",

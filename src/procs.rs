@@ -191,15 +191,17 @@ pub fn prescan(procs: &mut HashMap<String, Signature>, script: &Script) {
         if head.as_literal() != Some("proc") {
             continue;
         }
-        let (Some(name), Some(spec)) = (name.as_literal(), spec.as_literal()) else {
+        // A computed word of any of the three makes the whole definition a
+        // command run as the list its words make (`Compiler::eval_rebuilt`), so
+        // it binds its name when it runs and its calls look the name up then.
+        let (Some(name), Some(spec), Some(body)) =
+            (name.as_literal(), spec.as_literal(), body.as_literal())
+        else {
             continue;
         };
         if let Ok(mut sig) = parse_signature(name, spec) {
-            // The body's source text, which `info body` answers with. A computed
-            // body has none, and `info body` on such a procedure says what it
-            // says for a name that is no procedure — see
-            // [`crate::cmd_info::ext::BODY`].
-            sig.body = body.as_literal().map(str::to_string);
+            // The body's source text, which `info body` answers with.
+            sig.body = Some(body.to_string());
             procs.insert(name.to_string(), sig);
         }
     }
@@ -674,6 +676,9 @@ impl Compiler {
             ));
         }
         let spec = self.literal_of(spec_w, "argument list")?.to_string();
+        // Asked for before anything is recorded, so a computed body hands the
+        // whole definition to run time with no name claimed for this chunk.
+        self.literal_bodies([body_w])?;
         let mut sig = match parse_signature(&name, &spec) {
             Ok(sig) => sig,
             Err(msg) => return self.error(msg),

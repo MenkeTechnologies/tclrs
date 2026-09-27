@@ -1279,8 +1279,8 @@ impl Compiler {
     /// `dict for {k v} $d {body}` — a walk over the key/value pairs.
     fn dict_for(&mut self, vars: &Word, dict: &Word, body: &Word) -> Result<(), CompileError> {
         let names = self.dict_each_vars("dict for", vars)?;
-        self.dict_each_init(dict)?;
         let script = self.body_of(body)?;
+        self.dict_each_init(dict)?;
         self.dict_each(&names, |c| c.emit_body(&script))?;
         // `dict for` has no value of its own.
         self.dict_each_step(Step::Discard, 0);
@@ -1403,8 +1403,8 @@ impl Compiler {
     /// keeps its accumulation on a `break`, which is why the two endings differ.
     fn dict_map(&mut self, vars: &Word, dict: &Word, body: &Word) -> Result<(), CompileError> {
         let names = self.dict_each_vars("dict map", vars)?;
-        self.dict_each_init(dict)?;
         let script = self.body_of(body)?;
+        self.dict_each_init(dict)?;
         let key = names.0.clone();
         self.dict_each(&names, |c| {
             c.emit_body_value(&script)?;
@@ -1433,8 +1433,8 @@ impl Compiler {
         body: &Word,
     ) -> Result<(), CompileError> {
         let names = self.dict_each_vars("dict filter", vars)?;
-        self.dict_each_init(dict)?;
         let script = self.body_of(body)?;
+        self.dict_each_init(dict)?;
         self.dict_each(&names, |c| {
             c.emit_body_value(&script)?;
             // The body's value is a Tcl boolean, refused in `expr`'s own

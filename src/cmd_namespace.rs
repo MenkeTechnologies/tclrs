@@ -629,6 +629,17 @@ impl Compiler {
         if body.is_empty() {
             return self.error("wrong # args: should be \"namespace eval name arg ?arg...?\"");
         }
+        // Outside a procedure a computed name or body is a computed word like
+        // any other: the whole command runs as the list its words make, and
+        // there every word is written out (`Compiler::eval_rebuilt`). Inside
+        // one the nested script would run against the frame's projection,
+        // which is not where a namespace's variables live, so it stays refused.
+        if self.scope.is_none() {
+            self.literal_of(name_w, "\"namespace eval\" name")?;
+            for w in body {
+                self.literal_of(w, "\"namespace eval\" body")?;
+            }
+        }
         let Some(name) = name_w.as_literal() else {
             return Err(refuse_dynamic(self, "a computed \"namespace eval\" name"));
         };

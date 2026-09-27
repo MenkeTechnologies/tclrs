@@ -682,9 +682,11 @@ it compiled to before. The queries — `namespace exists`, `children`, `which`,
 fills in as it runs, so they answer for what the script actually created.
 
 Because the resolution happens while compiling, a namespace this compiler cannot
-read is refused rather than guessed at: `namespace eval $n {…}`, a computed body,
-and `namespace path` / `unknown` / `upvar`, which would change a resolution after
-it was made.
+read is refused rather than guessed at: `namespace eval $n {…}` or a computed
+body inside a procedure, and `namespace path` / `unknown` / `upvar`, which would
+change a resolution after it was made. At a script's top level a computed name
+or body is not refused: the command runs as the list its words make, where every
+word is written out.
 
 ### `source` and `tcl_findLibrary`
 
@@ -817,8 +819,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `clock scan` without `-format`, and `clock`'s `-locale` outside the root catalogue | `clock scan: the free-form parser is not supported yet; use -format` |
 | A `clock` instant before the Gregorian changeover, where the calendar depends on the locale | `clock: dates before the Gregorian changeover of 1752-09-14 are not supported yet` |
 | `file attributes`, `link`, `channels`, `system`, `tempfile`, `tempdir`, `volumes` | `file link is not supported yet: it needs an interface this frontend has not built` |
-| An ensemble *subcommand* that is not literal (`string $sub x`, `info $sub v`, `array $sub a`) | `subcommand must be a literal in this phase` |
-| A *body* word that is not literal (`while $cond $body`), a `foreach` / `lmap` / `lassign` variable list, `dict update`'s variable names, and the array name of `array exists` / `names` / `size` / `get` / `set` / `unset` | the word is refused where a literal is required |
+| A computed `coroutine`, `yield` or `yieldto` word, and a computed name after `global` or `variable` — the commands whose effect a script run as a list cannot have on the enclosing frame. Every other built-in whose subcommand, body, condition or variable list is computed runs as the list its substituted words make | `coroutine name must be a literal in this phase` |
 | An array variable in a `foreach` variable list | `array variables are not supported yet` |
 | `array startsearch` and the other search subcommands | `array startsearch is not supported yet` |
 | `dict info`, which reports the hash-table statistics of the *object* rather than of the value — two dictionaries with the same string answer differently when one of them shrank, and a third answer again once a list holds one, so it needs a dict that retains its table *and* a count of what holds it, [see BUGS.md](BUGS.md); `dict set`, `dict incr`, `dict update` or `dict with` into an array element; `dict update`'s variable names when they are not literal | `dict info is not supported yet` |
@@ -829,7 +830,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `return -errorinfo`. `-code`, `-level`, `-errorcode` and `-options` are implemented, and so is `catch`'s options variable — which carries `-code`, `-level` and `-errorcode` and not tclsh's `-errorstack` / `-errorinfo` / `-errorline` | `return option "-errorinfo" is not supported` |
 | `yield` or `yieldto` inside a script run by `eval`, `uplevel` or `apply`. tclsh suspends the coroutine from inside the nested script; here that script runs a machine of its own, below the VM that would have to park, and that VM saves only its own state — so resuming could not return to the middle of the script | `yield inside a script run by "eval", "uplevel" or "apply" is not supported: a coroutine cannot suspend across one` |
 | `coroutine` anywhere but a script's top level or a command substitution in one; a coroutine of a built-in or of anything but one of the script's procedures; `yieldto` at a command that is not a coroutine of the script | `"coroutine" is only supported at the top level of a script, or in a command substitution in one` |
-| A computed `namespace eval` name or body, or a computed `namespace import` pattern | `a computed "namespace eval" name is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out` |
+| A computed `namespace eval` name or body inside a procedure, or a computed `namespace import` pattern | `a computed "namespace eval" name is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out` |
 | `namespace path`, `namespace unknown`, `namespace upvar` | `"namespace path" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out` |
 | Calling a command `namespace ensemble create` made; `variable` naming a qualified name inside a procedure | `bad variable name "a::b": can't create a local variable with a namespace separator` |
 | `source -encoding` for anything but UTF-8 | `"source -encoding" is only supported for utf-8: this frontend reads a script as UTF-8` |

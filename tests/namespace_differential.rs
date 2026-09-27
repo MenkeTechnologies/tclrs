@@ -24,6 +24,9 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const PROGRAMS: &[&str] = &[
+    // ── a computed `namespace eval` name or body, run as a list ──
+    "set n foo\nnamespace eval $n {variable x 1; proc get {} {variable x; return $x}}\nputs [foo::get]\nputs $foo::x",
+    "set b {set x 1}\nnamespace eval foo $b\nputs $foo::x\nset n foo\nnamespace eval $n {puts [namespace current]}",
     // ── the name grammar: qualifiers and tail over every shape ──
     "foreach n {::foo::bar foo::bar bar :: ::foo:: foo::bar:: {} a::b::c ::::x x:::y} {\n  puts \"[list $n] q=[list [namespace qualifiers $n]] t=[list [namespace tail $n]]\"\n}",
     // The same through the runtime path, since a computed argument cannot fold.
@@ -223,8 +226,9 @@ fn namespaces_match_tclsh() {
 #[test]
 fn constructs_that_cannot_be_resolved_while_compiling_are_refused() {
     for (src, expected) in [
-        ("set n foo\nnamespace eval $n {set x 1}", "computed"),
-        ("set b {set x 1}\nnamespace eval foo $b", "computed"),
+        // A computed `namespace eval` name or body at a script's top level
+        // runs the command as a list, and is compared in `PROGRAMS`. Inside a
+        // procedure it is still refused, by the entry at the bottom.
         (
             "namespace eval foo {namespace path ::bar}",
             "\"namespace path\"",

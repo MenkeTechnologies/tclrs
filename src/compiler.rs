@@ -889,6 +889,27 @@ fn parse_if(args: &[Word]) -> Result<IfPlan<'_>, String> {
     }
 }
 
+/// The tail of every refusal [`Compiler::literal_of`] raises for a word this
+/// compiler needed to read while compiling and found computed instead.
+const NOT_LITERAL: &str = "must be a literal in this phase";
+
+/// Whether a built-in command refused for a computed word may be run as the
+/// list its substituted words make instead; see [`Compiler::eval_rebuilt`].
+///
+/// Two kinds are exceptions, because a nested script cannot do for the frame
+/// what they do. `coroutine` positions a VM at a body through this chunk's sub
+/// table, and `yield` suspends *this* VM. `global` and `variable` are
+/// declarations this compiler records against the body it is lowering — a
+/// nested script would link its own projection and leave the procedure's
+/// name unlinked. Their refusals stay.
+fn rebuildable(name: &str) -> bool {
+    crate::names::is_command(name)
+        && !matches!(
+            name,
+            "coroutine" | "yield" | "yieldto" | "global" | "variable"
+        )
+}
+
 fn defers_to_run_time(msg: &str) -> bool {
     msg.starts_with("wrong # args:")
         || msg.starts_with("invalid command name ")
@@ -1208,6 +1229,10 @@ pub(crate) struct Compiler {
     /// The line of the script's own command that is being lowered — the line a
     /// failure is reported at. See [`Compiler::err`].
     pub(crate) command_line: usize,
+    /// Where the command being lowered began emitting. A body word that is
+    /// computed can still be handed back to [`Compiler::eval_rebuilt`] while
+    /// nothing has been emitted past it; see [`Compiler::body_of`].
+    pub(crate) command_mark: usize,
     /// Names known to be used as arrays, from the previous pass.
     pub(crate) arrays: ArrayNames,
     /// Names found to be used as arrays during this pass.
@@ -1311,6 +1336,7 @@ impl Compiler {
             loops: Vec::new(),
             line: 1,
             command_line: 1,
+            command_mark: 0,
             arrays,
             seen_arrays: ArrayNames::new(),
             scope: None,
@@ -1387,6 +1413,63 @@ impl Compiler {
         // Control has left; the value keeps the depth arithmetic honest, the
         // way `error` and `return` do.
         self.push_empty();
+        Ok(())
+    }
+
+    /// Refuse, as a computed word, the first body among `bodies` that is not
+    /// written out — for the commands that emit something of their own before
+    /// they reach a body, and would otherwise be past the point where
+    /// [`Compiler::eval_rebuilt`] can take the command over.
+    pub(crate) fn literal_bodies<'w>(
+        &mut self,
+        bodies: impl IntoIterator<Item = &'w Word>,
+    ) -> Result<(), CompileError> {
+        for body in bodies {
+            self.literal_of(body, "script body")?;
+        }
+        Ok(())
+    }
+
+    /// Whether `e` is a computed-word refusal the enclosing command can still
+    /// turn into [`Compiler::eval_rebuilt`]: nothing of that command has been
+    /// emitted yet. Once something has, the refusal stays a deferred one.
+    fn rebuild_pending(&self, e: &CompileError) -> bool {
+        e.msg.ends_with(NOT_LITERAL) && self.b.current_pos() == self.command_mark
+    }
+
+    /// Run a built-in command whose shape depends on a computed word as the
+    /// list its substituted words make: `eval [list name word …]`.
+    ///
+    /// This compiler lowers a body, a variable list or a subcommand while
+    /// reading the script, so `catch $script`, `foreach x $l $body` and
+    /// `string $sub abc` have nothing to lower until the words are values.
+    /// tclsh substitutes every word first and dispatches afterwards, and a list
+    /// evaluated as a script is exactly one command whose words are its
+    /// elements with no substitution left to do — so the words are lowered
+    /// here, in the order written, and the command they spell is compiled when
+    /// it runs, through the same cache every `eval` uses. Every word of the
+    /// rebuilt command is literal, so it takes the ordinary lowering there.
+    ///
+    /// Inside a procedure the rebuilt command runs against the procedure's
+    /// frame, as `eval` does ([`ext::EVAL_FRAME`]), so the variables a
+    /// `catch` result or a `foreach` loop writes are the body's own. Return
+    /// codes cross it unchanged: a `break` in a rebuilt loop body ends that
+    /// loop, and one in a rebuilt `catch` script is caught.
+    fn eval_rebuilt(&mut self, words: &[Word]) -> Result<(), CompileError> {
+        let count = u8::try_from(words.len())
+            .map_err(|_| self.err("too many words in a command with a computed body".to_string()))?;
+        let declared = self.declared_globals();
+        if let Some(declared) = &declared {
+            self.push_str(declared);
+        }
+        for w in words {
+            self.word(w)?;
+        }
+        self.emit(Op::Extended(ext::LIST, count), 1 - i32::from(count));
+        match declared {
+            Some(_) => self.emit(Op::Extended(ext::EVAL_FRAME, 2), -1),
+            None => self.emit(Op::Extended(ext::EVAL, 1), 0),
+        };
         Ok(())
     }
 
@@ -1870,7 +1953,7 @@ impl Compiler {
     ) -> Result<&'w str, CompileError> {
         match word.as_literal() {
             Some(text) => Ok(text),
-            None => Err(self.deferrable_err(format!("{what} must be a literal in this phase"))),
+            None => Err(self.deferrable_err(format!("{what} {NOT_LITERAL}"))),
         }
     }
 
@@ -2024,12 +2107,23 @@ impl Compiler {
         // stays where it is.
         let mark = self.b.current_pos();
         let depth = self.depth;
+        let outer_mark = std::mem::replace(&mut self.command_mark, mark);
         // Fresh per command: a nested one may have marked and absorbed a
         // failure of its own, and that verdict is not this command's.
         self.deferrable = false;
         let outcome = self.dispatch(&name, args);
+        self.command_mark = outer_mark;
         let marked = std::mem::take(&mut self.deferrable);
         match outcome {
+            Err(e)
+                if marked
+                    && e.msg.ends_with(NOT_LITERAL)
+                    && self.b.current_pos() == mark
+                    && rebuildable(&name) =>
+            {
+                self.depth = depth;
+                self.eval_rebuilt(&cmd.words)
+            }
             Err(e) if (defers_to_run_time(&e.msg) || marked) && self.b.current_pos() == mark => {
                 self.depth = depth;
                 self.defer(&e.msg, args)
@@ -2485,6 +2579,10 @@ impl Compiler {
             Ok(plan) => plan,
             Err(msg) => return self.defer(&msg, args),
         };
+        // A computed body makes the whole command a rebuilt one, decided
+        // before the first condition is emitted.
+        let bodies = plan.branches.iter().map(|(_, b)| *b).chain(plan.otherwise);
+        self.literal_bodies(bodies)?;
 
         let mut end_jumps = Vec::new();
         let branch_depth = self.depth;
@@ -2521,6 +2619,7 @@ impl Compiler {
         // one string comparison and lets `if {0} {while $c $b}` cost the script
         // nothing, as it costs tclsh nothing.
         self.literal_of(cond, "condition")?;
+        self.literal_bodies([body])?;
         let script = self.body_of(body)?;
         self.rotated_loop(|c| c.emit_body(&script), |_| Ok(()), |c| c.expr_word(cond))?;
         // A loop's own value is empty.
@@ -2547,6 +2646,13 @@ impl Compiler {
                 "wrong # args: should be \"foreach varList list ?varList list ...? command\"",
             );
         }
+        // Every word this lowering reads while compiling is asked for before
+        // anything is emitted, so a computed one hands the whole command to
+        // run time rather than failing part-way through it.
+        for pair in pairs.chunks(2) {
+            self.literal_of(&pair[0], "foreach variable list")?;
+        }
+        self.literal_bodies([body])?;
 
         let mut names = Vec::new();
         for pair in pairs.chunks(2) {
@@ -2783,6 +2889,7 @@ impl Compiler {
     pub(crate) fn body(&mut self, word: &Word) -> Result<(), CompileError> {
         match self.body_script(word) {
             Ok(script) => self.nested_value(&script),
+            Err(e) if self.deferrable && self.rebuild_pending(&e) => Err(e),
             Err(e) if std::mem::take(&mut self.deferrable) => self.raise_at_run_time(&e.msg),
             Err(e) => Err(e),
         }
@@ -2844,6 +2951,9 @@ impl Compiler {
     pub(crate) fn body_of(&mut self, word: &Word) -> Result<Body, CompileError> {
         match self.body_script(word) {
             Ok(script) => Ok(Body::Script(script)),
+            // A computed body, with nothing of the command emitted yet: the
+            // whole command can still run as the list its words make.
+            Err(e) if self.deferrable && self.rebuild_pending(&e) => Err(e),
             Err(e) if std::mem::take(&mut self.deferrable) => Ok(Body::Deferred(e.msg)),
             Err(e) => Err(e),
         }

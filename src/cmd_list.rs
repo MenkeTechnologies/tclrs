@@ -303,6 +303,12 @@ fn lmap(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     if pairs.is_empty() || pairs.len() % 2 != 0 {
         return c.error(USAGE);
     }
+    // As `foreach` does: every compile-time word first, so a computed one
+    // hands the command to run time before anything is emitted.
+    for pair in pairs.chunks(2) {
+        c.literal_of(&pair[0], "lmap variable list")?;
+    }
+    c.literal_bodies([body])?;
 
     let mut names = Vec::new();
     for pair in pairs.chunks(2) {

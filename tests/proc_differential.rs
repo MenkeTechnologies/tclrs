@@ -272,6 +272,23 @@ const PROGRAMS: &[&str] = &[
     "proc r {} {set v [catch {return -code break} c o]\nreturn $v/$c/$o}\nputs [r]",
     // A `-level` past one keeps travelling.
     "proc a {} {b}\nproc b {} {return -level 2 -code break}\nset n 0\nwhile {1} {incr n\na}\nputs $n",
+    // ── a computed body, condition, subcommand or variable list: the command
+    // runs as the list its substituted words make ──
+    "proc f {b} {set acc {}\nforeach x {1 2 3 4} $b\nreturn $acc}\nputs [f {if {$x==3} break; lappend acc $x}]\nputs [f {if {$x==2} continue; lappend acc $x}]",
+    "set g 10\nproc h {} {global g\nset b {incr g}\nforeach x {1 2} $b\nreturn $g}\nputs [h]",
+    "proc k {s} {set r [catch $s m]\nreturn \"$r $m\"}\nputs [k {error boom}]\nputs [k {return -code break}]",
+    "proc m {} {set b {return early}\nforeach x {1} $b\nreturn late}\nputs [m]",
+    "proc w {} {set i 0\nset c {$i < 3}\nset b {incr i}\nwhile $c $b\nreturn $i}\nputs [w]",
+    "set body {puts \"$k=$v\"}\ndict for {k v} {a 1 b 2} $body\nset sub toupper\nputs [string $sub abc]",
+    "set a(x) 1\nset s size\nputs [array $s a]\nset n a\nputs [array exists $n]\narray set $n {k v}\nputs $a(k)",
+    "set s exists\nputs [info $s s]\nset sub get\nputs [dict $sub {a 1} a]",
+    "set x 1\nset e {$x+1}\nputs [expr $e]\nset c {$x > 0}\nif $c {puts yes} else {puts no}",
+    "set b {set r 1}\ntry $b on ok v {puts ok$v}\nset b2 {puts s}\nswitch a a $b2",
+    "set vl {a b}\nforeach $vl {1 2 3 4} {puts $a$b}\nproc nn {} {set vl {a b}\nforeach $vl {1 2} {}\nreturn $a$b}\nputs [nn]",
+    "set vl {p q}\nlassign {1 2} $vl\nputs [info exists p]\nputs [lmap $vl {1 2 3 4} {expr {$p*$q}}]",
+    "set l {}\nfor {set i 0} {$i<3} {incr i} [list lappend l x]\nputs $l",
+    "set b {return $x}\nproc p6 {x} $b\nputs [p6 7]\nproc w {} {p6 8}\nputs [w]",
+    "proc outer {} {set b {return in}\nproc inner {} $b\nreturn [inner]}\nputs [outer]\nputs [inner]",
     // ── -errorcode: the classification a handler branches on ──
     // A plain `error` carries the reference interpreter's default.
     "catch {error boom} r o\nputs [dict get $o -errorcode]",

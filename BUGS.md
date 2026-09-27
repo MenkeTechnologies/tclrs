@@ -641,11 +641,13 @@ approximated, and nothing is silently mis-run.
   change how a name resolves *after* the point this frontend resolved it, so
   honouring them would mean re-resolving names at run time. Refused where they
   are written.
-- **A computed `namespace eval` name or body.** `namespace eval $n {…}` and
-  `namespace eval foo $body` are refused: the namespace decides which variable
-  every `$v` in the body reads and which procedure every call reaches, and both
-  are decided while compiling. The same rule refuses a computed `namespace
-  import` pattern.
+- **A computed `namespace eval` name or body inside a procedure.** At a
+  script's top level the command runs as the list its words make, where every
+  word is written out. Inside a procedure that list would run against the
+  frame's projection, which is not where a namespace's variables live, so it is
+  refused. A computed `namespace import` pattern is refused everywhere: the
+  imported name decides which procedure a call reaches, and that is decided
+  while compiling.
 - **Dispatching through an ensemble.** `namespace ensemble create` records that
   the namespace is one, so `namespace ensemble exists` and `configure` answer,
   but calling the ensemble command resolves a subcommand when it runs and this
@@ -713,12 +715,12 @@ approximated, and nothing is silently mis-run.
   later {q r} {}` returns `q r` where tclsh raises `"later" isn't a procedure`.
   The same ordering is what lets a procedure call one defined below it, which
   tclsh also allows; only the introspection disagrees.
-- **`info body` of a procedure whose body the script computed.** `proc p {} $b`
-  records a signature and no text, so `info body p` answers `"p" isn't a
-  procedure` — the same thing it answers for a name that is no procedure at all,
-  because from the table's side the two are the same absence. A `proc` inside a
-  `namespace eval` block is in the same position: its signature is prescanned
-  and its body text is not.
+- **`info body` and `info procs` for a procedure a nested script defined.**
+  `proc p {} $b` runs as a command of its own chunk, like `eval {proc p …}`, and
+  binds `p` when it runs, so calls reach it; but `info body p` answers `"p" isn't
+  a procedure` and `info procs` does not list it, because both read the
+  signatures of the running chunk. A `proc` inside a `namespace eval` block is in
+  a similar position: its signature is prescanned and its body text is not.
 - **An array element as the variable `dict incr` names.** `set a(1) x` followed
   by `dict incr a(1) k` is `array element is not supported yet`.
 - **An `upvar` to a variable the procedure running there never names.** An
@@ -1010,16 +1012,18 @@ approximated, and nothing is silently mis-run.
   with no `varName`, and the array form, in `StoreStatData`'s field order
   (`rdev` only in the array form, only for a device). A `varName` that names
   an array *element* is refused by name.
-- **Non-literal subcommand, body and variable-list words.** A word that is
-  itself the result of substitution is refused where the lowering needs it while
-  compiling. What remains is three groups:
-  - an ensemble *subcommand* — `string $sub x`, `info $sub v`, `array $sub a`,
-    and the same for `clock`, `file`, `encoding`, `namespace` and `dict` — since
-    each subcommand lowers to a different shape and a computed one has none;
-  - a *body* or condition, as in `while $cond $body`;
-  - a variable *list* rather than a single name: `foreach` / `lmap` / `lassign`
-    variable lists, `dict update`'s variable names, and the array name of
-    `array exists` / `names` / `size` / `get` / `set` / `unset`.
+- **Non-literal subcommand, body and variable-list words.** A built-in whose
+  subcommand, body, condition, option or variable list is computed —
+  `string $sub x`, `while $cond $body`, `foreach $vars $l $body`,
+  `catch $script`, `proc p {} $body`, `array exists $n` — runs as the list its
+  substituted words make (`Compiler::eval_rebuilt`): the words are lowered in
+  the order written, and the command they spell is compiled when it runs, where
+  every word is literal. Inside a procedure it runs against the frame, so the
+  variables it writes are the body's own, and return codes cross it unchanged.
+  What is still refused is the commands a nested script cannot do for the frame:
+  a computed `coroutine`, `yield` or `yieldto` word, and a computed name after
+  `global` or `variable`, which this compiler records against the body it is
+  lowering.
 
   A single computed variable *name* is no longer among them. `set $n`,
   `set $n v`, `incr $n ?by?`, `append $n …`, `lappend $n …`, `unset $n` and
