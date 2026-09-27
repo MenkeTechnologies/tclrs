@@ -155,7 +155,7 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
                     "regexp -about is not supported yet: its second element is the reference \
                      engine's own compile-time telemetry, which this engine can only infer",
                 );
-                c.emit(Op::Extended(base_ext::ERROR, 0), -1);
+                c.emit(Op::Extended(base_ext::ERROR, base_ext::ERROR_BUILTIN), -1);
                 c.push_empty();
                 return Ok(());
             }
@@ -177,7 +177,11 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
                         "-all, -about, -indices, -inline, -expanded, -line, -linestop, -lineanchor, -nocase, -start, or --"
                     }
                 ));
-                c.emit(Op::Extended(base_ext::ERROR, 0), -1);
+                // `Tcl_GetIndexFromObj`'s code (`generic/tclIndexObj.c:360`),
+                // raised the way `error message info code` raises one.
+                c.push_empty();
+                c.push_str(&crate::list::join(&["TCL", "LOOKUP", "INDEX", "option", other]));
+                c.emit(Op::Extended(base_ext::ERROR, 2), -3);
                 c.push_empty();
                 return Ok(());
             }

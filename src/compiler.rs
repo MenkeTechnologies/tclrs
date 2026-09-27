@@ -61,15 +61,18 @@ pub mod ext {
     /// `[message, extra …]` with the number of `extra` words in the inline
     /// operand — raise `message` as a Tcl error.
     ///
-    /// The extras are `error`'s `errorInfo` and `errorCode` arguments. They are
-    /// evaluated, because `Tcl_ErrorObjCmd` receives them substituted and a
-    /// command substitution in one has already run by then, and then dropped:
-    /// what they set is `-errorinfo` and `-errorcode`, the two return options
-    /// this frontend does not carry (BUGS.md). Dropping them is visible rather
-    /// than silent — asking the options dictionary for either key fails — where
-    /// refusing the whole command made `catch {error boom info code} m` leave
-    /// the *arity message* in `m` instead of `boom`.
+    /// The extras are `error`'s `errorInfo` and `errorCode` arguments, both
+    /// evaluated because `Tcl_ErrorObjCmd` receives them substituted. The
+    /// `errorCode` becomes `-errorcode` (`NONE` when absent); the `errorInfo` is
+    /// dropped, since this frontend does not carry `-errorinfo` (BUGS.md).
+    ///
+    /// An operand of [`ERROR_BUILTIN`] instead raises a message the COMPILER
+    /// chose for a builtin's own failure (an unknown `regexp` switch, `expr
+    /// {nan}`): no extras, and no `NONE`, so the message's own code applies
+    /// ([`crate::errorcode::classify`]).
     pub const ERROR: u16 = 8;
+    /// The [`ERROR`] operand for a builtin-raised message.
+    pub const ERROR_BUILTIN: u8 = u8::MAX;
     /// Leave the `catch` region entered by `ext_wide::CATCH`, having reached
     /// its end without an error.
     pub const CATCH_END: u16 = 9;
@@ -2327,7 +2330,7 @@ impl Compiler {
         // tclsh — the same rule the deferred failures follow.
         if matches!(&parsed, Expr::Float(v, _) if v.is_nan()) {
             self.push_str("domain error: argument not in valid range");
-            self.emit(Op::Extended(ext::ERROR, 0), -1);
+            self.emit(Op::Extended(ext::ERROR, ext::ERROR_BUILTIN), -1);
             // Control has left; the value keeps the depth arithmetic honest.
             self.push_empty();
             return Ok(());

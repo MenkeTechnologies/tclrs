@@ -158,14 +158,20 @@ impl TclError {
 
     /// Tcl's `-errorcode`-style option dictionary for `catch`'s options
     /// variable. `-code` and `-level` are always present and exact;
-    /// `-errorcode` joins them when the error carries one.
+    /// `-errorcode` joins them when the error carries one, or when it is an
+    /// error a builtin raised whose message determines tclsh's code
+    /// ([`crate::errorcode::classify`]).
     ///
     /// The value goes through the list quoter, because an error code is itself a
     /// LIST (`POSIX ENOENT {no such file or directory}`) and the dictionary is
     /// parsed as one — writing it raw would turn `A B` into two keys.
     pub(crate) fn options(&self) -> String {
         let mut out = format!("-code {} -level {}", self.code, self.level);
-        if let Some(ec) = &self.errorcode {
+        let classified = match (&self.errorcode, self.code) {
+            (None, TCL_ERROR) => crate::errorcode::classify(&self.msg),
+            _ => None,
+        };
+        if let Some(ec) = self.errorcode.as_ref().or(classified.as_ref()) {
             out.push_str(" -errorcode ");
             out.push_str(&crate::list::quote(ec, false));
         }
@@ -1859,6 +1865,10 @@ impl Hooks {
                     // which pushed the code under the message.
                     if arg == 1 {
                         e.errorcode = Some(to_tcl_string(&vm.pop()));
+                    } else if code == TCL_ERROR {
+                        // `return -code error` with no `-errorcode` carries
+                        // `NONE`, as `error` does (`TclMergeReturnOptions`).
+                        e.errorcode = Some("NONE".to_string());
                     }
                     Err(e)
                 }
@@ -4134,6 +4144,8 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
         // `error` and `return -code error` raise the message as the error, so
         // the enclosing `catch` — or the caller of `eval` — receives it.
+        // A builtin's own message, lowered by the compiler: it states no code.
+        ext::ERROR if arg == ext::ERROR_BUILTIN => Err(to_tcl_string(&vm.pop())),
         ext::ERROR => {
             // `error message ?errorInfo? ?errorCode?`. The words arrive in the
             // order they were pushed, so popping yields them last-first: the

@@ -294,6 +294,15 @@ const PROGRAMS: &[&str] = &[
     "catch {break} r o\nputs $o",
     "catch {continue} r o\nputs $o",
     "proc p {} {return 5}\ncatch {p} r o\nputs $r/$o",
+    // ── -errorcode of the errors a builtin raises, recovered from the message
+    // template that carries exactly one code in tclsh 9.0.4 ──
+    "proc c {s} {catch {uplevel 1 $s} r o\nputs [list $r [dict get $o -errorcode]]}\nc {expr {1/0}}\nc {expr {1%0}}\nc {expr {sqrt(-1)}}\nc {expr {\"abc\" + 1}}\nc {expr {1 & 1.5}}",
+    "proc c {s} {catch {uplevel 1 $s} r o\nputs [list $r [dict get $o -errorcode]]}\nc {nosuchcmd}\nc {rename nosuch x}\nc {lappend}\nc {dict get {a 1} b}\nc {lindex {a b} foo}",
+    "proc c {s} {catch {uplevel 1 $s} r o\nputs [list $r [dict get $o -errorcode]]}\nc {open /nonexistent/x}\nc {puts nosuchchan x}\nc {encoding convertto nosuch x}\nc {string foo}\nc {regexp -foo a b}\nc {open /tmp/x q}",
+    // `return -code error` with no `-errorcode` is `NONE`, as `error` is.
+    "catch {return -code error m} r o\nputs [dict get $o -errorcode]",
+    // A message the script raises itself is never classified.
+    "catch {error {divide by zero}} r o\nputs [dict get $o -errorcode]",
 ];
 
 fn tclsh() -> Option<PathBuf> {

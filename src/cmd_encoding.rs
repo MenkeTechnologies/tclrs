@@ -310,7 +310,7 @@ fn bad_option(name: &str) -> String {
 /// switch: the script still compiles and the refusal is catchable.
 fn runtime_error(c: &mut Compiler, message: String) -> Result<(), CompileError> {
     c.push_str(&message);
-    c.emit(Op::Extended(crate::compiler::ext::ERROR, 0), -1);
+    c.emit(Op::Extended(crate::compiler::ext::ERROR, crate::compiler::ext::ERROR_BUILTIN), -1);
     c.push_empty();
     Ok(())
 }
