@@ -676,8 +676,12 @@ approximated, and nothing is silently mis-run.
   supported yet` rather than mis-answered. `info level N` is refused separately:
   the *value* of a level is the command and arguments that entered it, and
   `Op::Call` pushes the actual arguments and nothing that names the command.
-  `info level` with no argument is exact, and so are `body`, `locals`, `vars`
-  inside a body, and `functions` — the last read out of `expr_math`'s own table,
+  `info level` with no argument counts only the procedure activations of the
+  machine it runs on: inside a script `eval` or `uplevel` runs in a procedure it
+  answers 0 where tclsh answers 1, and in a procedure whose body was compiled
+  into another chunk (defined by `eval`, `source` or a computed `proc` body) it
+  answers 1 whatever called it. `body`, `locals`, `vars` inside a body, and
+  `functions` are exact — the last read out of `expr_math`'s own table,
   so the list cannot fall behind what `expr` accepts.
 
   `info loaded` is refused too, `load` not being implemented, so the list would
