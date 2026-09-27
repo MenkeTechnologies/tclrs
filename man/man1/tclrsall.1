@@ -63,6 +63,9 @@ body, and a braced
 .B expr
 expression, is fully known while compiling, so it is lowered to bytecode once
 instead of being re-parsed on every evaluation.
+A body, condition, subcommand or variable list that is computed instead makes
+the command run as the list its substituted words make: it is compiled when it
+runs, against the procedure's frame inside one.
 .SH COMMANDS
 .TP
 .B Variables
