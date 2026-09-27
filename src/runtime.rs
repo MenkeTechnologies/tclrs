@@ -200,7 +200,16 @@ impl TclError {
         let mut it = words.into_iter();
         while let (Some(key), Some(value)) = (it.next(), it.next()) {
             match key.as_str() {
-                "-code" => error.code = value.parse().unwrap_or(TCL_ERROR),
+                "-code" => {
+                    error.code = match value.as_str() {
+                        "ok" => TCL_OK,
+                        "error" => TCL_ERROR,
+                        "return" => TCL_RETURN,
+                        "break" => TCL_BREAK,
+                        "continue" => TCL_CONTINUE,
+                        n => n.parse().unwrap_or(TCL_ERROR),
+                    }
+                }
                 "-level" => error.level = value.parse().unwrap_or(0),
                 "-errorcode" => error.errorcode = Some(value),
                 _ => {}
@@ -1856,6 +1865,28 @@ impl Hooks {
                 // `TclError` carrying something other than an error: the code
                 // and the level are the point of it, and `extension` below can
                 // only answer with a message.
+                ext::RAISE if arg == ext::RAISE_OPTIONS || arg == ext::RAISE_OPTIONS_CODED => {
+                    let msg = to_tcl_string(&vm.pop());
+                    let errorcode = (arg == ext::RAISE_OPTIONS_CODED).then(|| to_tcl_string(&vm.pop()));
+                    let overrides = to_tcl_string(&vm.pop());
+                    let options = to_tcl_string(&vm.pop());
+                    let merged = format!("-code 0 -level 1 {options} {overrides}");
+                    let mut e = TclError::from_options(&merged, msg);
+                    if errorcode.is_some() {
+                        e.errorcode = errorcode;
+                    }
+                    if e.code == TCL_ERROR && e.errorcode.is_none() {
+                        e.errorcode = Some("NONE".to_string());
+                    }
+                    // `-code ok -level 0` is no exception at all: the command
+                    // simply has the result as its value.
+                    if e.code == TCL_OK && e.level == 0 {
+                        vm.push(Value::Str(Arc::new(e.msg)));
+                        Ok(())
+                    } else {
+                        Err(e)
+                    }
+                }
                 ext::RAISE => {
                     let level = to_tcl_string(&vm.pop()).parse().unwrap_or(0);
                     let code = to_tcl_string(&vm.pop()).parse().unwrap_or(TCL_ERROR);

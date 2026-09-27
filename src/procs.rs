@@ -907,6 +907,10 @@ impl Compiler {
         // `-errorcode`, kept as the WORD so a computed one
         // (`return -errorcode $c`) is evaluated where it is written.
         let mut errorcode: Option<&Word> = None;
+        // `-options`, likewise a word: the dictionary a `catch` handed back.
+        let mut options: Option<&Word> = None;
+        // The `-code`/`-level` written beside `-options`, which win over it.
+        let mut overrides: Vec<String> = Vec::new();
         while let [first, value, tail @ ..] = rest {
             match first.as_literal() {
                 Some("-code") => {
@@ -927,6 +931,7 @@ impl Compiler {
                             }
                         },
                     };
+                    overrides.push(format!("-code {code}"));
                 }
                 Some("-level") => {
                     let text = self.literal_of(value, "return level")?.to_string();
@@ -939,8 +944,10 @@ impl Compiler {
                             ))
                         }
                     };
+                    overrides.push(format!("-level {level}"));
                 }
                 Some("-errorcode") => errorcode = Some(value),
+                Some("-options") => options = Some(value),
                 Some(other) if other.starts_with('-') => {
                     return self.error(format!("return option \"{other}\" is not supported"))
                 }
@@ -957,6 +964,9 @@ impl Compiler {
                 )
             }
         };
+        if let Some(dict) = options {
+            return self.return_with_options(dict, &overrides, errorcode, result);
+        }
 
         // The one case that is a plain frame return rather than a raised code:
         // an ordinary `return` from a procedure body, with no `catch` between
@@ -1009,6 +1019,38 @@ impl Compiler {
         }
         // Control has left; the value keeps the depth arithmetic honest.
         self.push_empty();
+        Ok(())
+    }
+
+    /// `return -options dict ?result?`, with any `-code`, `-level` or
+    /// `-errorcode` written beside it. The dictionary is a value — usually the
+    /// one a `catch` filled in — so it is merged when the command runs: the
+    /// defaults (`-code ok -level 1`), then the dictionary, then the options
+    /// written out, the later of any two winning, which is
+    /// `TclMergeReturnOptions` (`generic/tclResult.c:1210-1400`).
+    fn return_with_options(
+        &mut self,
+        dict: &Word,
+        overrides: &[String],
+        errorcode: Option<&Word>,
+        result: Option<&Word>,
+    ) -> Result<(), CompileError> {
+        self.word(dict)?;
+        self.push_str(&overrides.join(" "));
+        if let Some(w) = errorcode {
+            self.word(w)?;
+        }
+        match result {
+            Some(w) => self.word(w)?,
+            None => self.push_empty(),
+        }
+        // The op leaves one value: the result, when the merged options are
+        // `-code ok -level 0` and the command simply completes.
+        let (operand, delta) = match errorcode {
+            Some(_) => (ext::RAISE_OPTIONS_CODED, -3),
+            None => (ext::RAISE_OPTIONS, -2),
+        };
+        self.emit(Op::Extended(ext::RAISE, operand), delta);
         Ok(())
     }
 

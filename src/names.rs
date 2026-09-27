@@ -378,8 +378,8 @@ pub const CORPUS: &[Entry] = &[
     },
     Entry {
         name: "return",
-        synopsis: "return ?-code code? ?result?",
-        summary: "Return from the enclosing procedure with the result. `-code ok` and `-code error` are the codes implemented.",
+        synopsis: "return ?-code code? ?-level level? ?-errorcode list? ?-options dict? ?result?",
+        summary: "Return from the enclosing procedure with the result. `-code` takes any completion code, `-level` counts the calls to unwind, `-errorcode` classifies an error, and `-options` merges a dictionary such as the one `catch` fills in, the options written beside it winning.",
     },
     Entry {
         name: "scan",

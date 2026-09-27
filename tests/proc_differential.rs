@@ -305,6 +305,13 @@ const PROGRAMS: &[&str] = &[
     "catch {error {divide by zero}} r o\nputs [dict get $o -errorcode]",
     // An error from a procedure reached from another chunk keeps its code.
     "proc r2 {} {return -code error -errorcode {A B} x}\nproc t {} {catch {uplevel 1 {r2}} m o\nputs [dict get $o -errorcode]}\nt",
+    // ── return -options: the dictionary merged, the written options winning ──
+    "proc rethrow {} {catch {expr {1/0}} m o\nreturn -options $o $m}\ncatch {rethrow} r o\nputs [list $r [dict get $o -code] [dict get $o -errorcode]]",
+    "proc plain {} {return -options {-code 0 -level 1} value}\nputs [plain]",
+    "proc brk {} {return -options {-code break} x}\nforeach i {1 2} {puts i$i\nbrk}\nputs done",
+    "proc over {} {return -options {-code error} -code ok fine}\nputs [over]",
+    "proc withcode {} {return -options {-code error} -errorcode {X Y} m}\ncatch {withcode} r o\nputs [dict get $o -errorcode]",
+    "proc wrap {script} {catch {uplevel 1 $script} m o\nreturn -options $o $m}\nputs [wrap {expr 3}]\ncatch {wrap {error deep}} r o\nputs [list $r [dict get $o -errorcode]]",
 ];
 
 fn tclsh() -> Option<PathBuf> {

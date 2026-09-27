@@ -88,6 +88,11 @@ pub mod ext {
     /// code. `break` and `continue` outside any loop the chunk can see raise
     /// one, and so does every `return` whose code is not `ok`.
     pub const RAISE: u16 = 37;
+    /// The [`RAISE`] operand for `return -options`: the stack is instead
+    /// `[options, overrides, message]`, merged at run time.
+    pub const RAISE_OPTIONS: u8 = 2;
+    /// [`RAISE_OPTIONS`] with an `-errorcode` word under the message.
+    pub const RAISE_OPTIONS_CODED: u8 = 3;
     /// `[type, message]` — `throw`. Raises `message` as an error once `type`
     /// has been checked to be a list of at least one element, which is the
     /// whole of `Tcl_ThrowObjCmd` (`generic/tclCmdMZ.c:3959-4002`) this
