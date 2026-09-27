@@ -71,7 +71,7 @@ A procedure's variables are frame slots; a script's are VM globals.
 .TP
 .B Control flow
 .BR if ", " while ", " for ", " foreach ", " switch ", " break ", "
-.BR continue ", " return ", " catch ", " error .
+.BR continue ", " return ", " catch ", " try ", " error .
 Every loop is emitted rotated \(em entered at the test, closed by a conditional
 backward branch \(em because that is the shape the tracing JIT installs a trace
 for.
@@ -297,7 +297,7 @@ reports which tiers a given script actually reached, rather than asserting it.
 lowers the whole chunk through fusevm's closed-world compiler and links it into
 a native executable with no parser and no bytecode dispatch loop inside it.
 Refused for a script using
-.B catch
+.BR catch ", " try
 or a coroutine, which need a driver outside
 .BR VM::run .
 .SH "WHAT IS REFUSED"

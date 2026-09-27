@@ -389,7 +389,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Expressions | `expr` |
 | Control flow | `if` / `elseif` / `else` — with the `else` keyword optional, so `if {$x} {a} {b}` is the form it is in tclsh — `while`, `for`, `foreach`, `switch` (`-exact`, `-glob`, `-nocase`), `break`, `continue` |
 | Procedures | `proc`, `return` (with `-code` — `ok`, `error`, `return`, `break`, `continue` or any integer — and `-level`), `apply` |
-| Errors | `catch` (with a result variable and an options variable), `error`, `throw`; Tcl return codes across every boundary — a `break` or `continue` out of an `eval`, `uplevel` or `source` script reaches the loop, and one out of a procedure reaches its caller |
+| Errors | `catch` (with a result variable and an options variable), `try` (`on`, `trap`, `finally`), `error`, `throw`, `return -options`; `-errorcode` for the errors builtins raise, where tclsh's message template determines it; Tcl return codes across every boundary — a `break` or `continue` out of an `eval`, `uplevel` or `source` script reaches the loop, and one out of a procedure reaches its caller |
 | Coroutines | `coroutine`, `yield`, `yieldto`, `info coroutine` |
 | Namespaces | `namespace` — `eval`, `current`, `qualifiers`, `tail`, `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`, `import`, `forget`, `origin`, `which`, `ensemble exists` / `create` / `configure`; `variable`; `rename` |
 | The event loop | `after` — `ms`, `ms script`, `idle script`, `cancel`, `info`; `update`, `update idletasks`; `vwait` |
@@ -826,7 +826,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `format %a` / `%A`; any other letter is `bad field specifier "n"` instead. These are the one conversion Tcl does not perform: it builds the C spec and calls the platform `snprintf` (`generic/tclStringObj.c:2547`), so the answer is the C library's and the libraries this crate builds against do not agree — [see BUGS.md](BUGS.md) | `the "%a" conversion is not supported: tclsh hands it to the platform C library …` |
 | `regexp -about`. The group count is easy; the flag list is the reference engine's own compile-time telemetry (`REG_UUNPORT`, `REG_UNONPOSIX`, …), which a different engine can only guess at — and the result is one list, so half of it right and half of it guessed is a wrong list | `regexp -about is not supported yet: its second element is the reference engine's own compile-time telemetry …` |
 | Redefining a built-in — including from a `proc` away from the top level; redefining a procedure *at the top level*; a procedure and a coroutine of the same name. A `proc` away from the top level is *not* refused: it binds its name when it runs | `redefining the built-in command "set" is not supported` |
-| `return -errorcode`, `-errorinfo` and `-options`. `-code` and `-level` are implemented, and so is `catch`'s options variable — which carries those two and not tclsh's `-errorstack` / `-errorcode` / `-errorinfo` / `-errorline` | `return option "-errorinfo" is not supported` |
+| `return -errorinfo`. `-code`, `-level`, `-errorcode` and `-options` are implemented, and so is `catch`'s options variable — which carries `-code`, `-level` and `-errorcode` and not tclsh's `-errorstack` / `-errorinfo` / `-errorline` | `return option "-errorinfo" is not supported` |
 | `yield` or `yieldto` inside a script run by `eval`, `uplevel` or `apply`. tclsh suspends the coroutine from inside the nested script; here that script runs a machine of its own, below the VM that would have to park, and that VM saves only its own state — so resuming could not return to the middle of the script | `yield inside a script run by "eval", "uplevel" or "apply" is not supported: a coroutine cannot suspend across one` |
 | `coroutine` anywhere but a script's top level or a command substitution in one; a coroutine of a built-in or of anything but one of the script's procedures; `yieldto` at a command that is not a coroutine of the script | `"coroutine" is only supported at the top level of a script, or in a command substitution in one` |
 | A computed `namespace eval` name or body, or a computed `namespace import` pattern | `a computed "namespace eval" name is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out` |
@@ -845,7 +845,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | A decode whose result would be an unpaired surrogate, which only `-profile tcl8` produces. tclsh's strings can hold one and this frontend's cannot, so the code point is named rather than substituted | `encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+D800, which a string in this frontend cannot hold` |
 | A non-literal option *name* in `encoding convertfrom` / `convertto` (`encoding convertfrom $opt tcl8 …`). Which argument is an option is decided by their count, which is known while compiling; which option it is, is not | the word is refused where a literal is required |
 | Input nesting past `parser::MAX_NESTING_DEPTH` — 64_000 command substitutions or array indices deep, well past anything the reference interpreter survives | `too many nested substitutions (infinite loop?)` |
-| Ahead-of-time compilation of a script using `catch` or a coroutine | `ahead-of-time compilation of a script using "catch" is not supported: it needs the driver that only the interpreter has` |
+| Ahead-of-time compilation of a script using `catch`, `try` or a coroutine | `ahead-of-time compilation of a script using "catch" is not supported: it needs the driver that only the interpreter has` |
 
 `coroprobe`, `coroinject` and deleting a coroutine by renaming its command are
 not implemented; a coroutine goes away when its body ends.
@@ -1272,7 +1272,7 @@ every VM, cannot wrap either.
 
 ### Limitations
 
-- **`catch` and coroutines are refused.** Both are driven from outside
+- **`catch`, `try` and coroutines are refused.** They are driven from outside
   `VM::run` — the driver reads a cell an op parked, restores the VM and runs it
   again — and fusevm's ahead-of-time entry owns the run and never hands control
   back mid-way. Compiling one would turn a caught error into a fatal one, so

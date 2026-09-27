@@ -48,7 +48,7 @@ Run \fISCRIPT\fR instead of a file. Arguments after it are the script's.
 Compile the script through fusevm's closed-world compiler and link it into a
 standalone native executable at \fIOUT\fR \(em no parser and no bytecode
 dispatch loop inside it. Refused for a script that uses
-.B catch
+.BR catch ", " try
 or a coroutine, which need a driver outside \fBVM::run\fR.
 .TP
 .BR \-\-aot\-object " " \fIOUT\fR
@@ -129,7 +129,7 @@ them. \fBexit\fR, \fBexit N\fR, \fBquit\fR or Ctrl\-D leaves.
 Commands:
 .BR set ", " unset ", " eval ", " puts ", " expr ", " incr ", " append ", "
 .BR format ", " if ", " while ", " for ", " foreach ", " switch ", " break ", "
-.BR continue ", " proc ", " return ", " global ", " catch ", " error ", "
+.BR continue ", " proc ", " return ", " global ", " catch ", " try ", " error ", "
 .BR array ", " dict ", " coroutine ", " yield ", " yieldto ", " uplevel ", "
 .BR upvar ", " apply ", " regexp ", " regsub ", " namespace ", " variable ", "
 .BR rename ", " source ", " tcl_findLibrary ", " after ", " update ", "

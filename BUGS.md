@@ -134,6 +134,18 @@ approximated, and nothing is silently mis-run.
 - **`throw`.** `throw type message`, with the type checked to be a list of at
   least one element when the command runs (`Tcl_ThrowObjCmd`), and the type word
   carried into the options dictionary as `-errorcode`.
+- **`try`.** `try body ?on code varList script? ?trap pattern varList script? …
+  ?finally script?` (`Tcl_TryObjCmd`). An `on` clause takes a code by name or
+  number, a `trap` clause an error whose `-errorcode` begins with its pattern, a
+  body of `-` falls through to the next handler's, and an outcome no handler
+  takes leaves unchanged — `return`, `break` and `continue` included. `finally`
+  runs on every path with its value dropped, and an error it raises replaces the
+  outgoing one. Clause errors carry tclsh's messages. Built out of two `catch`
+  regions and a dispatch op (`src/control.rs`); `tests/proc_differential.rs`
+  runs it against tclsh.
+- **`return -options`.** The dictionary is merged when the command runs, under
+  the `-code`/`-level`/`-errorcode` written beside it (`TclMergeReturnOptions`),
+  so `catch {…} m o; return -options $o $m` re-raises an outcome unchanged.
 - **Lists.** List parsing and canonical quoting ported from `TclFindElement` and
   `TclScanElement` / `TclConvertElement` (`src/list.rs`), plus `list`,
   `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`,
@@ -565,13 +577,14 @@ approximated, and nothing is silently mis-run.
   reference interpreter's `yield can only be called in a coroutine`, and an
   `eval` inside a coroutine that does not yield is unaffected
   (`tests/frame_differential.rs`).
-- **Return options beyond `-code`, `-level` and `-errorcode`.** The return-code
-  system itself is implemented — see the entry in "Implemented" — and
-  `-errorcode` now travels with the error: `error`'s third word, `throw`'s type
-  word and `return -errorcode` all set it, a plain `error` carries tclsh's
-  `NONE`, and it round-trips through the options dictionary as a list, so
-  `{A {B C}}` comes back with its element structure intact. `return -errorinfo`
-  and `return -options` are still refused.
+- **Return options beyond `-code`, `-level`, `-errorcode` and `-options`.** The
+  return-code system itself is implemented — see the entry in "Implemented" — and
+  `-errorcode` travels with the error: `error`'s third word, `throw`'s type
+  word and `return -errorcode` all set it, a plain `error` and a `return -code
+  error` carry tclsh's `NONE`, and it round-trips through the options dictionary
+  as a list, so `{A {B C}}` comes back with its element structure intact.
+  `return -options` merges a dictionary (see "Implemented"). `return -errorinfo`
+  is still refused.
 
   What remains is the rest of tclsh's *error* dictionary — `-errorstack`,
   `-errorinfo` and `-errorline` — so `catch {error boom} m o` still gives a
@@ -583,11 +596,24 @@ approximated, and nothing is silently mis-run.
   does not accumulate; `error`'s second word is still evaluated and dropped for
   that reason.
 
-  `-errorcode` is ABSENT rather than `NONE` on an error this frontend raises
-  itself. tclsh classifies those — `ARITH DIVZERO {divide by zero}`,
-  `POSIX ENOENT {no such file or directory}`, the `TCL` subcodes — and tclrs
-  does not model them, so emitting `NONE` there would be a wrong value where an
-  absent key is a visible gap. Every code it does emit is the reference's.
+  An error a builtin raises carries tclsh's code when its message template
+  determines one: tclrs raises builtin errors as message text held identical to
+  tclsh's, and `src/errorcode.rs` maps each template Tcl 9.0.4 emits with exactly
+  one code — `TCL WRONGARGS`, `ARITH DIVZERO`/`DOMAIN`, `TCL LOOKUP
+  COMMAND`/`DICT`/`CHANNEL`/`ENCODING`/`SUBCOMMAND`, `TCL VALUE INDEX`/`NUMBER`,
+  `TCL OPENMODE INVALID`, and `POSIX <errno> <reason>`. `-errorcode` is still
+  ABSENT where two raise sites share a template under different codes:
+
+  | message | tclsh codes |
+  | --- | --- |
+  | `expected integer but got "x"` | `TCL VALUE INTEGER` (`tclObj.c:2702`) or `TCL VALUE NUMBER` (`tclStrToD.c:1540`) |
+  | `can't read "x": no such variable` | `TCL LOOKUP VARNAME x` (`tclVar.c:719`) or `TCL READ VARNAME` (`tclVar.c:1472`) |
+  | `integer value too large to represent` | `ARITH IOVERFLOW` or `CLOCK dateTooLarge` |
+  | `bad <what> "x": must be …` | `TCL LOOKUP INDEX <what> x`, but `CLOCK badOption` and `TCL RESULT ILLEGAL_CODE` for `clock` and completion codes |
+
+  (`regexp`'s unknown switch states its code at the raise site and is exact.)
+  An absent key is a visible gap where `NONE` would be a wrong value. Every code
+  it does emit is the reference's.
   `::errorInfo` and `::errorCode` are not set either, and reading one is
   `no such variable`; the globals are the legacy face of the same information,
   and setting `::errorCode` only where a code is known would make
@@ -715,7 +741,7 @@ approximated, and nothing is silently mis-run.
   cannot become one slot afterwards. Written out rather than computed, the pair is
   a compile-time binding (`Compiler::top_aliases`) and is coherent everywhere.
 - **Every command outside those above.** `interp`, `socket`, `exec`, `trace`,
-  `try`, … An unknown command name is `invalid command name
+  … An unknown command name is `invalid command name
   "…"`, raised when the command runs — `puts [catch {nosuchcmd} m]` is `1` —
   because the compiler lowers that refusal as code rather than deciding it (see
   `Compiler::defer`).
@@ -773,8 +799,8 @@ approximated, and nothing is silently mis-run.
   subcommands outside the
   implemented set; `format` conversions outside the
   implemented set; `regexp -about`;
-  `return`'s options other than
-  `-code` and `-level`. They go through the reference option parser first,
+  `return -errorinfo` (the options `-code`, `-level`, `-errorcode` and
+  `-options` are implemented). They go through the reference option parser first,
   so abbreviation and ambiguity behave as tclsh does, and are then refused.
   `lsort -command`, `dict map` and `dict filter … script` were on this list until
   the change that added `subst`, `dict update` until the change that built the
