@@ -187,7 +187,22 @@ pub(crate) fn source(interp: &crate::runtime::Shared, path: &str) -> Result<Stri
             "couldn't read file \"{path}\": the file is not valid UTF-8"
         ))
     })?;
-    crate::runtime::run_source(interp, &text).map(|v| to_tcl_string(&v))
+    // A `return` at the file's own level ends the file with its result:
+    // `source` spends that one level, so a plain `return x` there is the
+    // value `x` and a `return -code break` is a `break` to whatever sourced
+    // the file (both measured against tclsh 9.0.4).
+    match crate::runtime::run_source(interp, &text) {
+        Ok(v) => Ok(to_tcl_string(&v)),
+        Err(e) if e.visible_code() == crate::runtime::TCL_RETURN => {
+            let e = e.descend();
+            if e.visible_code() == crate::runtime::TCL_OK {
+                Ok(e.msg)
+            } else {
+                Err(e)
+            }
+        }
+        Err(e) => Err(e),
+    }
 }
 
 // ── tcl_findLibrary ──────────────────────────────────────────────────────

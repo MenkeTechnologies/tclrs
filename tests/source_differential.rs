@@ -37,6 +37,10 @@ const PROGRAMS: &[&str] = &[
     "puts [catch {source} m]\nputs $m\nputs [catch {source a b c} m2]\nputs $m2",
     // An error inside the file reaches the caller, and `catch` traps it.
     "puts [catch {source {DIR}/raises.tcl} m]\nputs $m",
+    // A `return` at the file's own level ends the file with its result, and a
+    // `return -code break` there is a `break` to whatever sourced it.
+    "puts [source {DIR}/returns.tcl]\nputs $after_return",
+    "set n 0\nforeach i {1 2 3} {incr n\nsource {DIR}/breaks.tcl\nputs no}\nputs $n",
 
     // ── tcl_findLibrary ──
     "tcl_findLibrary fixture 1.0 1.0.0 fixture.tcl TCLRS_FIXTURE_LIBRARY fixture_library\nputs $fixture_library\nputs $::fixture_loaded",
@@ -68,6 +72,8 @@ const FIXTURES: &[(&str, &str)] = &[
     ("reads.tcl", "set out [expr {$into * 100}]\n"),
     ("unicode.tcl", "set ::greek \u{3b1}\u{3b2}\u{3b3}\n"),
     ("raises.tcl", "error \"from the sourced file\"\n"),
+    ("returns.tcl", "set after_return 0\nreturn val\nset after_return 1\n"),
+    ("breaks.tcl", "return -code break\n"),
     ("fixture1.0/fixture.tcl", "set ::fixture_loaded yes\n"),
 ];
 

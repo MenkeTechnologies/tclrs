@@ -239,6 +239,16 @@ const PROGRAMS: &[&str] = &[
     "puts [catch {return -code 42 hi} m]:<$m>",
     "puts [catch {return -level 0 -code error zap} m]:<$m>",
     "catch {break} m o\nputs $o",
+    // A bad `-code` or `-level` is raised when the `return` runs, with its
+    // errorcode, so a branch never taken costs nothing.
+    "puts [catch {return -code bogus} m o]\nputs \"$m [dict get $o -errorcode]\"",
+    "puts [catch {return -level -1 x} m o]\nputs \"$m [dict get $o -errorcode]\"",
+    "if {0} {return -code bogus}\nif {0} {return -level x}\nputs ok",
+    // A plain `return` at the top level ends the script once, with nothing
+    // after it run and nothing before it run twice.
+    "puts e1\nreturn x\nputs never",
+    // One inside an `eval` in a procedure returns from the procedure.
+    "proc p3 {} {eval {return inner}\nreturn outer}\nputs [p3]",
     // `catch {error boom} m o` is *not* here: tclsh's options dictionary for
     // an error also carries `-errorstack`, `-errorcode`, `-errorinfo` and
     // `-errorline`, none of which this frontend models. Its two options are

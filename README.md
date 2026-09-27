@@ -836,7 +836,6 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `namespace eval` inside a procedure body, where an unqualified name in its body would take a frame slot rather than the namespace's variable | `"namespace eval" inside a procedure is not supported yet: an unqualified name in its body would take a frame slot rather than the namespace's variable` |
 | `info` subcommands that need machinery this frontend has none of: `frame`, `errorstack`, `cmdcount`, `cmdtype`, `class`, `object`, `consts`, `constant`, `loaded`; and `info level N`, which needs a record of the command that entered a level | `info frame is not supported yet` |
 | `info library` — a raise rather than a refusal, carrying tclsh's own message for an interpreter with no script library, which this one permanently is | `no library has been specified for Tcl` |
-| A `return` inside a script `eval`, `uplevel` or `apply` runs, where the script is a chunk of its own and that chunk is no procedure | `"return" outside of a procedure is not supported` |
 | A lambda naming a namespace other than `::`, written out or computed | `the namespace "::ns" of a lambda is not supported yet: this frontend has only "::"` |
 | `vwait` on more than one variable, and its `-timeout` / `-readable` / `-writable` / `-all` options | `"vwait" takes at most one variable name in this phase` |
 | `open \|command` — the pipeline form | `opening a command pipeline is not implemented in this frontend; …` |

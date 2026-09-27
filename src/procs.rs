@@ -923,11 +923,13 @@ impl Compiler {
                         "continue" => crate::runtime::TCL_CONTINUE,
                         n => match n.parse() {
                             Ok(n) => n,
+                            // Raised when the command runs, where tclsh
+                            // raises it: `catch {return -code bogus}` is 1.
                             Err(_) => {
-                                return self.error(format!(
-                                "bad completion code \"{n}\": must be ok, error, return, break, \
-                                 continue, or an integer"
-                            ))
+                                return Err(self.deferrable_err(format!(
+                                    "bad completion code \"{n}\": must be ok, error, return, \
+                                     break, continue, or an integer"
+                                )))
                             }
                         },
                     };
@@ -938,10 +940,10 @@ impl Compiler {
                     level = match text.parse::<i32>() {
                         Ok(n) if n >= 0 => n,
                         _ => {
-                            return self.error(format!(
+                            return Err(self.deferrable_err(format!(
                                 "bad -level value: expected non-negative integer \
-                                                but got \"{text}\""
-                            ))
+                                 but got \"{text}\""
+                            )))
                         }
                     };
                     overrides.push(format!("-level {level}"));
@@ -986,20 +988,14 @@ impl Compiler {
             self.push_empty();
             return Ok(());
         }
-        // At the outermost level a plain `return` ends the script with its
-        // result. Anything else is raised and spends its levels on the way out
-        // — including against the outermost script itself, which is why
-        // `return -code error zap` there is the error and `catch {return 7}`
-        // there is still code 2.
-        if plain && self.scope.is_none() {
-            match result {
-                Some(w) => self.word(w)?,
-                None => self.push_empty(),
-            }
-            self.emit(Op::ReturnValue, -1);
-            self.push_empty();
-            return Ok(());
-        }
+        // Anything else is raised and spends its levels on the way out —
+        // including a plain `return` outside any procedure, which spends its one
+        // level against the script it is written in. That is what ends the
+        // outermost script with its result ([`crate::runtime::Interp::eval`]),
+        // what `source` absorbs, and what carries `eval {return x}` out of the
+        // `eval` to the procedure or script around it, as tclsh does.
+        // `Op::ReturnValue` here, with no call frame to return from, did not
+        // end the run cleanly: measured, `puts e1; return x` wrote `e1` twice.
         // Pushed under the message so the handler, which pops level/code/message
         // in that order, finds it last. The inline operand says it is there —
         // `RAISE` is emitted from two places and only this one can state a code.

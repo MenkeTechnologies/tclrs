@@ -79,6 +79,18 @@ pub(crate) fn classify(msg: &str) -> Option<String> {
         // the `cleanup` label's `TCL WRITE VARNAME` (`:2073`), which is what
         // tclsh 9.0.4 reports (measured: `set a 1` on an array).
         vec!["TCL", "WRITE", "VARNAME"]
+    } else if quoted(
+        msg,
+        "bad completion code \"",
+        "\": must be ok, error, return, break, continue, or an integer",
+    )
+    .is_some()
+    {
+        // `TclGetCompletionCodeFromObj` (`tclIndexObj.c:1384-1387`).
+        vec!["TCL", "RESULT", "ILLEGAL_CODE"]
+    } else if msg.starts_with("bad -level value: expected non-negative integer but got \"") {
+        // `TclMergeReturnOptions` (`tclResult.c:904-906`).
+        vec!["TCL", "RESULT", "ILLEGAL_LEVEL"]
     } else if quoted(msg, "illegal access mode \"", "\"").is_some() {
         // `TclGetOpenMode` (`tclIOUtil.c:1519`).
         vec!["TCL", "OPENMODE", "INVALID"]

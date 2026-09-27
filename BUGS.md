@@ -26,7 +26,12 @@ approximated, and nothing is silently mis-run.
   `proc stop {} {return -code break}` end the loop that called `stop`, and what
   makes `catch {break}` answer 3 while `while {1} {catch {break}}` does not end
   the loop. A code nothing absorbs is reported at the outermost level by what it
-  was: `invoked "break" outside of a loop`. Compiled as a loop region
+  was: `invoked "break" outside of a loop`. A `return` outside any procedure
+  spends its one level against the script it is written in: at the top level it
+  ends the script, at a sourced file's own level it ends the file with its result,
+  and inside an `eval` in a procedure it returns from the procedure. A bad
+  `-code` or `-level` is raised when the `return` runs, with `TCL RESULT
+  ILLEGAL_CODE` or `ILLEGAL_LEVEL`. Compiled as a loop region
   (`ext::LOOP_ENTER`) the driver in `src/runtime.rs` resumes at, alongside the
   `catch` regions; the direct jump a `break` in its own loop's body compiles to
   is unchanged, and so is the traced body between them.
@@ -602,6 +607,7 @@ approximated, and nothing is silently mis-run.
   one code — `TCL WRONGARGS`, `ARITH DIVZERO`/`DOMAIN`, `TCL LOOKUP
   COMMAND`/`DICT`/`CHANNEL`/`ENCODING`/`SUBCOMMAND`, `TCL VALUE INDEX`/`NUMBER`,
   `TCL READ VARNAME` and `TCL WRITE VARNAME` for a variable that is an array,
+  `TCL RESULT ILLEGAL_CODE` and `ILLEGAL_LEVEL` for a bad `return` option,
   `TCL OPENMODE INVALID`, and `POSIX <errno> <reason>`. `-errorcode` is still
   ABSENT where two raise sites share a template under different codes:
 
@@ -610,7 +616,7 @@ approximated, and nothing is silently mis-run.
   | `expected integer but got "x"` | `TCL VALUE INTEGER` (`tclObj.c:2702`) or `TCL VALUE NUMBER` (`tclStrToD.c:1540`) |
   | `can't read "x": no such variable` | `TCL LOOKUP VARNAME x` (`tclVar.c:719`) or `TCL READ VARNAME` (`tclVar.c:1472`) |
   | `integer value too large to represent` | `ARITH IOVERFLOW` or `CLOCK dateTooLarge` |
-  | `bad <what> "x": must be …` | `TCL LOOKUP INDEX <what> x`, but `CLOCK badOption` and `TCL RESULT ILLEGAL_CODE` for `clock` and completion codes |
+  | `bad <what> "x": must be …` | `TCL LOOKUP INDEX <what> x`, but `CLOCK badOption` for `clock` |
 
   (`regexp`'s unknown switch states its code at the raise site and is exact.)
   An absent key is a visible gap where `NONE` would be a wrong value. Every code
@@ -653,10 +659,6 @@ approximated, and nothing is silently mis-run.
   runtime command table fixes both. This is why `tcl_findLibrary tk … tk.tcl`
   finds and reads the real `tk.tcl` but the procedures it defines are not yet
   callable.
-- **`return` at the top level of a sourced file.** `return` is refused outside a
-  procedure body, so a library file that ends early with a bare `return` — a
-  common shape — fails rather than answering. This is `return`'s own gap, not
-  `source`'s.
 - **`coroprobe` and `coroinject`.** Inspecting or injecting a command into a
   suspended coroutine is not implemented; both are `invalid command name`.
   Deleting a coroutine by destroying its command is not either: `rename` is

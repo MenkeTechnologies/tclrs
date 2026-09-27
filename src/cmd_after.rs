@@ -499,7 +499,17 @@ fn run_script(interp: &Shared, vm: &mut VM, script: &str) {
         // tclsh prints the message, the stack that produced it and then
         // `("after" script)`. There is no error stack here, so the two lines
         // that exist are printed and the third is not invented.
-        eprintln!("{}\n    (\"after\" script)", e.msg);
+        //
+        // A code that is not an error is reported by what it was. A `break` or
+        // `continue` is `invoked "break" outside of a loop`, and a `return` is
+        // `command returned bad code: 2` with its result run on after it —
+        // measured against tclsh 9.0.4: `after 0 {return -code 7 zz}` prints
+        // `command returned bad code: 2zz`.
+        let msg = match e.visible_code() {
+            crate::runtime::TCL_RETURN => format!("command returned bad code: 2{}", e.msg),
+            _ => e.escaped().msg,
+        };
+        eprintln!("{msg}\n    (\"after\" script)");
     }
 }
 

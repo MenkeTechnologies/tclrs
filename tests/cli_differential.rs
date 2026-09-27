@@ -367,6 +367,22 @@ fn exit_status_follows_the_script() {
     }
 }
 
+/// An `after` script that ends in a code other than an error is reported by
+/// what it was — `invoked "break" outside of a loop`, and for a `return`
+/// `command returned bad code: 2` run on into its result — and the next
+/// handler still fires. stdout, stderr and exit status in full.
+#[test]
+fn an_after_script_that_returns_a_code_is_reported_like_tclsh() {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
+        return;
+    };
+    let program = "after 0 {return -code 7 zz}\nafter 0 {return x}\nafter 0 {break}\n\
+                   after 0 {continue}\nafter 0 {puts ok}\nupdate\nputs done";
+    let (reference, actual) = run_file(&tclsh, program, 4000);
+    assert_eq!(actual, reference);
+}
+
 /// A nested script runs on a VM of its own, so nesting costs native stack and
 /// a runaway `eval` would overflow it — a signal, not an error. It is refused
 /// instead, at the depth the reference interpreter refuses it and with the same
