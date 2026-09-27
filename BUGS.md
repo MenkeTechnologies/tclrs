@@ -625,18 +625,6 @@ approximated, and nothing is silently mis-run.
   `no such variable`; the globals are the legacy face of the same information,
   and setting `::errorCode` only where a code is known would make
   `info exists ::errorCode` disagree with tclsh more often than it agrees.
-- **Procedures across an `eval`.** An evaluated script shares the interpreter's
-  variables but not its procedures: it is a chunk of its own, and a call site
-  resolves its command against that chunk. So `eval {proc twice {x} {…}}`
-  followed by `twice 21` is `invalid command name "twice"`, and so is
-  `eval {twice 21}` for a procedure the outer script defined — both run in
-  tclsh. The run-time command table a conditional `proc` binds into *is* shared
-  across evaluations, and this is the one thing it deliberately will not do: an
-  entry records the chunk its body entry point indexes into (`op_hash` and op
-  count), and a lookup from another chunk misses rather than jumping to whatever
-  op sits at that index. `eval {if {1} {proc f {} {…}}}` followed by `f` is
-  therefore `invalid command name "f"` as well. Carrying the callee's *chunk*
-  through the call — not just its entry — is the fix.
 - **`namespace path`, `namespace unknown` and `namespace upvar`.** All three
   change how a name resolves *after* the point this frontend resolved it, so
   honouring them would mean re-resolving names at run time. Refused where they
@@ -653,14 +641,6 @@ approximated, and nothing is silently mis-run.
   but calling the ensemble command resolves a subcommand when it runs and this
   frontend resolves a call while compiling. The call is `invalid command name`
   rather than a guess.
-- **Procedures across a `source`, as across an `eval`.** A sourced file's
-  variables — including its namespace variables — are the interpreter's, and
-  survive; its procedures are its own chunk's and do not, for exactly the reason
-  the `eval` entry above gives. So `source` of a library file that defines
-  procedures leaves them unreachable from the script that sourced it. The same
-  runtime command table fixes both. This is why `tcl_findLibrary tk … tk.tcl`
-  finds and reads the real `tk.tcl` but the procedures it defines are not yet
-  callable.
 - **`coroprobe` and `coroinject`.** Inspecting or injecting a command into a
   suspended coroutine is not implemented; both are `invalid command name`.
   Deleting a coroutine by destroying its command is not either: `rename` is
@@ -716,10 +696,12 @@ approximated, and nothing is silently mis-run.
   The same ordering is what lets a procedure call one defined below it, which
   tclsh also allows; only the introspection disagrees.
 - **`info body` and `info procs` for a procedure a nested script defined.**
-  `proc p {} $b` runs as a command of its own chunk, like `eval {proc p …}`, and
-  binds `p` when it runs, so calls reach it; but `info body p` answers `"p" isn't
-  a procedure` and `info procs` does not list it, because both read the
-  signatures of the running chunk. A `proc` inside a `namespace eval` block is in
+  A procedure defined by `eval {proc p …}`, by a `source`d file, or by
+  `proc p {} $b` (which runs as a command of its own chunk) binds `p` in the
+  shared run-time table when it runs, and calls from any chunk reach it through
+  the chunk it was compiled into (`crate::procs::enter_elsewhere`); but
+  `info body p` answers `"p" isn't a procedure` and `info procs` does not list
+  it, because both read the signatures of the running chunk. A `proc` inside a `namespace eval` block is in
   a similar position: its signature is prescanned and its body text is not.
 - **An array element as the variable `dict incr` names.** `set a(1) x` followed
   by `dict incr a(1) k` is `array element is not supported yet`.
