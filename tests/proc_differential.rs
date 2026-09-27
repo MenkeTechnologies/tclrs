@@ -244,6 +244,8 @@ const PROGRAMS: &[&str] = &[
     "puts [catch {return -code bogus} m o]\nputs \"$m [dict get $o -errorcode]\"",
     "puts [catch {return -level -1 x} m o]\nputs \"$m [dict get $o -errorcode]\"",
     "if {0} {return -code bogus}\nif {0} {return -level x}\nputs ok",
+    // So is a literal `incr` increment that is not an integer.
+    "if {0} {incr x y}\nputs [catch {incr x y} m]\nputs $m\nset x 1\nputs [catch {incr x 1.5} m o]\nputs \"$m $x\"",
     // A plain `return` at the top level ends the script once, with nothing
     // after it run and nothing before it run twice.
     "puts e1\nreturn x\nputs never",

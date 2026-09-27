@@ -1760,7 +1760,8 @@ Each of these was a divergence in the run above and is now parity, pinned in
   and a zero base is `exponentiation of zero by negative power`.
 - **An out-of-`i64` integer is refused** rather than silently becoming a double.
 - **`format %.2f -0`** prints `0.00`; the double `-0.0` still keeps its sign.
-- **`incr x abc`** reports `expected integer but got "abc"`.
+- **`incr x abc`** reports `expected integer but got "abc"` when it runs, so
+  `if {0} {incr x abc}` costs nothing and `catch {incr x abc}` is 1.
 - **A character `expr` cannot use** is `invalid character "Ü"`, not the lead byte
   of its UTF-8 encoding.
 - **`${name}` ends at the close brace that BALANCES the ones inside it**, not at

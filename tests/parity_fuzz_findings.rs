@@ -617,8 +617,8 @@ fn format_drops_the_sign_of_integer_negative_zero() {
 }
 
 /// **Fixed for an increment the script wrote.** `incr x abc` is
-/// `expected integer but got "abc"`, checked while compiling, where the
-/// increment is a literal word.
+/// `expected integer but got "abc"`, raised when the command runs, as tclsh
+/// raises it.
 #[test]
 fn incr_reports_its_own_diagnostic_for_a_literal_increment() {
     let Some(tclsh) = tclsh() else {

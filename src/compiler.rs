@@ -2394,10 +2394,10 @@ impl Compiler {
         if let Some(text) = by.and_then(|w| w.as_literal()) {
             if crate::runtime::tcl_int(&Value::Str(std::sync::Arc::new(text.to_string()))).is_err()
             {
-                return self.error(format!(
-                    "expected integer but got {}",
-                    crate::runtime::named(text, 50)
-                ));
+                // Raised when the command runs, as tclsh raises it: `if {0}
+                // {incr x y}` costs nothing and `catch {incr x y}` is 1.
+                let msg = format!("expected integer but got {}", crate::runtime::named(text, 50));
+                return Err(self.deferrable_err(msg));
             }
         }
         // `incr $v` resolves its variable when it runs, for the reason `set $v`
