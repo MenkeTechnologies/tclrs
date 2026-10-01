@@ -704,7 +704,7 @@ pub fn lookup(name: &str) -> Option<usize> {
 
 /// The error `Tcl_GetChannel` leaves when the name is not a channel
 /// (`generic/tclIO.c:1465-1466`).
-fn resolve(name: &str) -> Result<usize, String> {
+pub(crate) fn resolve(name: &str) -> Result<usize, String> {
     lookup(name).ok_or_else(|| format!("can not find channel named \"{name}\""))
 }
 

@@ -385,7 +385,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 
 | Group | Commands |
 | --- | --- |
-| Variables | `set`, `incr`, `unset`, `append`, array variables (`a(k)`), `global`, `variable`, `upvar #0` |
+| Variables | `set`, `incr`, `unset`, `append`, array variables (`a(k)`), `global`, `variable`, `upvar #0`, `upvar 0` at the global frame |
 | Output | `puts`, with `-nonewline` and an optional channel |
 | Expressions | `expr` |
 | Control flow | `if` / `elseif` / `else` — with the `else` keyword optional, so `if {$x} {a} {b}` is the form it is in tclsh — `while`, `for`, `foreach`, `switch` (`-exact`, `-glob`, `-nocase`), `break`, `continue` |
@@ -399,10 +399,10 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Packages | `package` — `files`, `forget`, `ifneeded`, `names`, `prefer`, `present`, `provide`, `require`, `unknown`, `vcompare`, `versions`, `vsatisfies` |
 | Run-time evaluation | `eval`, `subst`, `source`, `tcl_findLibrary` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
-| Associative data | `array` — `exists`, `get`, `names` (`-exact`, `-glob`, `-regexp`), `set`, `size`, `unset`; `dict` — `append`, `create`, `exists`, `filter` (`key`, `value` and `script`), `for`, `get`, `getdef`, `getwithdefault`, `incr`, `keys`, `lappend`, `map`, `merge`, `remove`, `replace`, `set`, `size`, `unset`, `update`, `values`, `with` |
+| Associative data | `array` — `exists`, `get`, `names` (`-exact`, `-glob`, `-regexp`), `set`, `size`, `unset`; `parray` (the library procedure, with an optional pattern); `dict` — `append`, `create`, `exists`, `filter` (`key`, `value` and `script`), `for`, `get`, `getdef`, `getwithdefault`, `incr`, `keys`, `lappend`, `map`, `merge`, `remove`, `replace`, `set`, `size`, `unset`, `update`, `values`, `with` |
 | Regular expressions | `regexp`, `regsub` — with `-nocase`, `-all`, `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`, `-start`, `regsub -command` and `--`; `switch -regexp` (with `-matchvar` and `-indexvar`), `lsearch -regexp` and `array names -regexp` take one too |
 | Strings | `format`, `scan`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright`, `wordend`, `wordstart` |
-| Channels | `open`, `close`, `gets`, `read`, `flush`, `eof`, `seek`, `tell`, `fconfigure`, and `puts` to a channel; `stdin`, `stdout` and `stderr` |
+| Channels | `open`, `close`, `gets`, `read`, `flush`, `eof`, `seek`, `tell`, `fconfigure`, and `puts` to a channel; `stdin`, `stdout` and `stderr`; `pid` |
 | Math functions | The whole of `mathfunc(n)` inside `expr`: `abs`, `acos`, `asin`, `atan`, `atan2`, `bool`, `ceil`, `cos`, `cosh`, `double`, `entier`, `exp`, `floor`, `fmod`, `hypot`, `int`, `isfinite`, `isinf`, `isnan`, `isnormal`, `isqrt`, `issubnormal`, `isunordered`, `log`, `log10`, `max`, `min`, `pow`, `rand`, `round`, `sin`, `sinh`, `sqrt`, `srand`, `tan`, `tanh`, `wide` |
 | Time | `clock` — `seconds`, `milliseconds`, `microseconds`, `clicks`, `format`, `scan` (with `-format`), `add`; `-gmt`, `-timezone` (a numeric offset or any zone with a `TZif` file) and the root locale |
 | Encodings | `encoding` — `convertfrom`, `convertto` (with `-profile tcl8` / `strict` / `replace` and `-failindex`), `dirs`, `names`, `profiles`, `system`, `user`; see [Encodings](#encodings) for which |

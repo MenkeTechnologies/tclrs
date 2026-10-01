@@ -342,6 +342,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "The package ensemble: what a name is provided at, what would load it, and TIP 268's version arithmetic over both.",
     },
     Entry {
+        name: "pid",
+        synopsis: "pid ?channel?",
+        summary: "The process id; for a channel, the ids of its pipeline's processes, which no channel this frontend opens has.",
+    },
+    Entry {
         name: "proc",
         synopsis: "proc name args body",
         summary: "Define a procedure. Parameters and locals are frame slots; defaults and a trailing `args` are resolved at the call site.",

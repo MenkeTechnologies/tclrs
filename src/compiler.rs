@@ -2224,7 +2224,7 @@ impl Compiler {
             // names `proc` refuses. Ahead of the namespace block below, like
             // every other builtin.
             "clock" => crate::cmd_clock::compile(self, args),
-            "file" | "glob" | "pwd" | "cd" => crate::cmd_file::compile(self, name, args),
+            "file" | "glob" | "pid" | "pwd" | "cd" => crate::cmd_file::compile(self, name, args),
             // ── end of the clock/file block ──────────────────────────────
             // ── the encoding ensemble ────────────────────────────────────
             // One arm, as `clock` above is: the name is claimed here and the
@@ -2291,6 +2291,10 @@ impl Compiler {
             // same `invalid command name`, on the same line, that the arm below
             // would have deferred — which is why this needs no feature gate and
             // costs a script that calls no such command nothing.
+            // tclsh's library procedure, auto-loaded on first use. Reached only
+            // when the script defines no `parray` of its own (the procedure arms
+            // above win) and every word is written out.
+            "parray" if args.iter().all(|w| w.as_literal().is_some()) => self.cmd_parray(args),
             other if !crate::cmd_list::COMMANDS.contains(&other) => self.call_runtime(other, args),
             // The list commands own the tail of the dispatch. Reached by name
             // rather than by trying them, so that `llength` with three arguments
@@ -2298,6 +2302,42 @@ impl Compiler {
             // for a command called `llength`.
             other => crate::cmd_list::compile(self, other, args),
         }
+    }
+
+    /// `parray arrayName ?pattern?`, tclsh's library procedure
+    /// (`library/parray.tcl`), which tclsh auto-loads the first time a script
+    /// calls it.
+    ///
+    /// Lowered as the procedure's own body, run as a lambda over the array's
+    /// contents: the array is read here, in the caller's scope, with `array
+    /// exists` and `array get`, which is what the library's `upvar 1` reaches.
+    /// The width arithmetic, the `lsort` of the matching names and the `format
+    /// "%-*s = %s"` line are the library's, so the output is byte for byte
+    /// tclsh's.
+    fn cmd_parray(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        if args.is_empty() || args.len() > 2 {
+            return self.error("wrong # args: should be \"parray a ?pattern?\"");
+        }
+        let literal = |w: &Word| w.as_literal().unwrap_or_default().to_string();
+        let name = literal(&args[0]);
+        let pattern = args.get(1).map_or_else(|| "*".to_string(), literal);
+        let quoted = crate::list::join(&[name.as_str()]);
+        let refusal = crate::list::join(&[format!("\"{name}\" isn't an array")]);
+        let text = format!(
+            "if {{![array exists {quoted}]}} {{error {refusal}}}\n\
+             apply {{{{a l pattern}} {{\
+             set d [dict create]\n\
+             foreach {{k v}} $l {{if {{[string match $pattern $k]}} {{dict set d $k $v}}}}\n\
+             set names [lsort [dict keys $d]]\n\
+             set maxl 0\n\
+             foreach name $names {{if {{[string length $name] > $maxl}} {{set maxl [string length $name]}}}}\n\
+             set maxl [expr {{$maxl + [string length $a] + 2}}]\n\
+             foreach name $names {{puts stdout [format \"%-*s = %s\" $maxl [format %s(%s) $a $name] [dict get $d $name]]}}\
+             }}}} {quoted} [array get {quoted}] {}",
+            crate::list::join(&[pattern.as_str()])
+        );
+        let script = crate::parser::parse(&text).map_err(|e| self.err(e.to_string()))?;
+        self.nested_value(&script)
     }
 
     fn cmd_set(&mut self, args: &[Word]) -> Result<(), CompileError> {

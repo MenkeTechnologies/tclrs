@@ -144,6 +144,8 @@ const PROGRAMS: &[&str] = &[
     // the completion code and the message's tail are comparable.
     "set f [open %F w]\nputs [catch {gets $f} e]\nputs [string range $e [string first {wasn} $e] end]\nclose $f",
     "puts [catch {open /nonexistent-directory-for-tclrs/x} e]\nputs $e",
+    // ── pid: the process id, and no pipeline behind an ordinary channel ──
+    "puts [expr {[pid] == [pid]}]\nputs [string is integer -strict [pid]]\nputs <[pid stdout]>\nputs [list [catch {pid nosuch} m] $m]\nputs [list [catch {pid a b} m] $m]",
 ];
 
 /// Programs whose *error* must agree, first line for first line.

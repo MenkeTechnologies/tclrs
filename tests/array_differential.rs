@@ -434,6 +434,11 @@ const FIXED: &[&str] = &[
     "set a(9) x\nputs [catch {set a(1)} m]:$m",
     "set a(9) x\nputs [catch {unset a(1)} m]:$m",
     "set a(9) x\nincr a(1) 3\nappend a(2) q\nlappend a(3) e\nputs [lsort [array names a]]",
+    // ── parray, the library procedure: widths, sorting, a pattern, the refusal ──
+    "array set g {x 1 yy 2 {a b} 3}\nparray g\nparray g y*\narray set e {}\nparray e",
+    "proc p {} {array set loc {a 1 bb 22}\nparray loc\nreturn <[parray loc b*]>}\nputs [p]",
+    "set s 1\nputs [list [catch {parray s} m] $m]\nputs [list [catch {parray nope} m] $m]\nputs [list [catch {parray} m] $m]",
+    "proc parray {x} {puts mine:$x}\nparray q",
 ];
 
 /// The selection sort that turns `array get`'s undefined order into a defined

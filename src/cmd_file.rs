@@ -41,11 +41,13 @@ pub mod ext {
     pub const PWD: u16 = BASE + 2;
     /// `[dir?]` → `""`, having changed the working directory.
     pub const CD: u16 = BASE + 3;
+    /// `[channel?]` → the process id, or a channel's pipeline ids.
+    pub const PID: u16 = BASE + 4;
 }
 
 /// The command names this module claims, for the REPL's completion and for the
 /// reference page.
-pub const COMMANDS: &[&str] = &["cd", "file", "glob", "pwd"];
+pub const COMMANDS: &[&str] = &["cd", "file", "glob", "pid", "pwd"];
 
 /// Every `file` subcommand, in the order the interpreter lists them when it
 /// rejects one. The refused ones are listed because their presence decides
@@ -110,6 +112,16 @@ const REFUSED: &[&str] = &[
 
 pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(), CompileError> {
     match name {
+        "pid" => {
+            if args.len() > 1 {
+                return c.error("wrong # args: should be \"pid ?channel?\"");
+            }
+            for w in args {
+                c.word(w)?;
+            }
+            c.emit(Op::Extended(ext::PID, args.len() as u8), 1 - args.len() as i32);
+            Ok(())
+        }
         "pwd" => {
             if !args.is_empty() {
                 return c.error("wrong # args: should be \"pwd\"");
@@ -551,6 +563,16 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     words.reverse();
     let value = match id {
         ext::PWD => Value::Str(Arc::new(working_directory()?)),
+        // `Tcl_PidObjCmd`: the process id, or for a channel the ids of the
+        // processes in its pipeline — none, for every channel this frontend
+        // opens, since it opens no command pipelines. The channel must exist.
+        ext::PID => match words.first() {
+            None => Value::Int(i64::from(std::process::id())),
+            Some(name) => {
+                crate::cmd_channel::resolve(name)?;
+                Value::Str(Arc::new(String::new()))
+            }
+        },
         ext::CD => {
             let target = if words[0].is_empty() {
                 std::env::var("HOME")
