@@ -680,3 +680,80 @@ fn hostname() -> String {
         .collect();
     String::from_utf8_lossy(&bytes).into_owned()
 }
+
+/// The variables `Tcl_CreateInterp` and `TclpSetVariables` give every tclsh
+/// interpreter before a script runs: `tcl_version`, `tcl_patchLevel`,
+/// `tcl_platform` and `env` (`generic/tclBasic.c`, `unix/tclUnixInit.c`).
+///
+/// `env` is the process environment as it stood when the interpreter was
+/// made. tclsh keeps it linked to the environment through a trace, so a write
+/// reaches a child process; this frontend starts no child processes, so the
+/// copy answers every read a script can make.
+pub(crate) fn startup_globals() -> std::collections::HashMap<String, Value> {
+    use std::collections::HashMap;
+    let str_val = |s: &str| Value::Str(Arc::new(s.to_string()));
+    let env: HashMap<String, Value> = std::env::vars_os()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                Value::Str(Arc::new(v.to_string_lossy().into_owned())),
+            )
+        })
+        .collect();
+    let (os, os_version, machine) = uname();
+    let mut platform: HashMap<String, Value> = HashMap::new();
+    for (key, value) in [
+        (
+            "byteOrder",
+            if cfg!(target_endian = "little") { "littleEndian" } else { "bigEndian" }.to_string(),
+        ),
+        ("engine", "Tcl".to_string()),
+        ("machine", machine),
+        ("os", os),
+        ("osVersion", os_version),
+        ("pathSeparator", ":".to_string()),
+        ("platform", "unix".to_string()),
+        ("pointerSize", std::mem::size_of::<usize>().to_string()),
+        ("user", user_name()),
+        ("wordSize", std::mem::size_of::<libc::c_long>().to_string()),
+    ] {
+        platform.insert(key.to_string(), Value::Str(Arc::new(value)));
+    }
+    let mut globals = HashMap::new();
+    globals.insert("tcl_version".to_string(), str_val(TCL_VERSION));
+    globals.insert("tcl_patchLevel".to_string(), str_val(TCL_PATCHLEVEL));
+    globals.insert("tcl_platform".to_string(), Value::Hash(platform));
+    globals.insert("env".to_string(), Value::Hash(env));
+    globals
+}
+
+/// `uname(2)`'s sysname, release and machine — what `TclpSetVariables` copies
+/// into `tcl_platform(os)`, `(osVersion)` and `(machine)`.
+fn uname() -> (String, String, String) {
+    // SAFETY: `utsname` is plain old data, so all-zeroes is a valid value, and
+    // `uname` fills each field with a NUL-terminated string or fails.
+    let mut u: libc::utsname = unsafe { std::mem::zeroed() };
+    if unsafe { libc::uname(&mut u) } != 0 {
+        return (String::new(), String::new(), String::new());
+    }
+    let field = |f: &[libc::c_char]| {
+        let bytes: Vec<u8> = f.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    (field(&u.sysname), field(&u.release), field(&u.machine))
+}
+
+/// The login name of the real user, as `TclpGetUserName` finds it through the
+/// password database; empty when the uid has no entry.
+fn user_name() -> String {
+    // SAFETY: `getpwuid` returns NULL or a pointer to a static record whose
+    // `pw_name` is a NUL-terminated string, read before any other call could
+    // overwrite it.
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if pw.is_null() || (*pw).pw_name.is_null() {
+            return String::new();
+        }
+        std::ffi::CStr::from_ptr((*pw).pw_name).to_string_lossy().into_owned()
+    }
+}

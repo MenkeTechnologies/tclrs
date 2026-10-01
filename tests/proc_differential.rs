@@ -352,6 +352,11 @@ const PROGRAMS: &[&str] = &[
     "proc f {x} {try {expr {10 / $x}} trap {ARITH DIVZERO} {msg} {return \"div: $msg\"} on ok {v} {return \"ok $v\"}}\nputs [f 2]\nputs [f 0]",
     "puts [list [catch {try} m] $m]\nputs [list [catch {try {x} on error {r}} m] $m]\nputs [list [catch {try {x} on foo {r} {}} m] $m]\nputs [list [catch {try {x} trap {A} {r}} m] $m]",
     "puts [list [catch {try {x} finally} m] $m]\nputs [list [catch {try {x} finally {a} {b}} m] $m]\nputs [list [catch {try {x} bogus {a}} m] $m]\nputs [list [catch {try {x} on error {r} -} m] $m]",
+    // ── an unset procedure-local read names its variable, as a global one does ──
+    "proc f {} {puts [catch {set y $u} m]\nputs $m}\nf",
+    "proc f {} {set u 1\nunset u\nputs [list [catch {puts $u} m] $m]}\nf",
+    // The reads that tolerate absence keep tolerating it.
+    "proc f {} {puts [list [catch {set x} m] $m]\nforeach i {} {}\nputs [list [catch {set i} m] $m]\nincr k\nappend s a\nlappend l b\nputs $k$s$l}\nf",
 ];
 
 fn tclsh() -> Option<PathBuf> {

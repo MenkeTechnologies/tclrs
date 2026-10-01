@@ -998,7 +998,7 @@ fn lower(
     // as an array, and a `proc` whose definition only happens when the
     // enclosing code runs.
     let first = Compiler::run(script, ArrayNames::new(), HashSet::new(), debug, projected)?;
-    let (mut chunk, tolerant, incr_sites, procs, slot_names) =
+    let (mut chunk, tolerant, incr_sites, procs, slot_names, slot_reads) =
         if first.seen_arrays.is_empty() && first.seen_runtime.is_empty() && known.is_empty() {
             let procs = signature_table(&first);
             let names = first.slot_names.clone();
@@ -1008,6 +1008,7 @@ fn lower(
                 first.incr_sites,
                 procs,
                 names,
+                first.slot_reads,
             )
         } else {
             let mut arrays = first.seen_arrays;
@@ -1023,7 +1024,8 @@ fn lower(
             let incrs = second.incr_sites.clone();
             let procs = signature_table(&second);
             let names = second.slot_names.clone();
-            (second.b.build(), reads, incrs, procs, names)
+            let slot_reads = second.slot_reads.clone();
+            (second.b.build(), reads, incrs, procs, names, slot_reads)
         };
     // Tcl's integers are arbitrary-precision, and so are this frontend's: an
     // `i64` that overflows promotes, in the numeric hook. Native codegen would
@@ -1035,6 +1037,7 @@ fn lower(
     chunk.int_overflow_deopt = true;
     crate::runtime::note_tolerant_reads(&chunk, &tolerant);
     crate::runtime::note_incr_sites(&chunk, &incr_sites);
+    crate::runtime::note_slot_reads(&chunk, &slot_reads);
     crate::runtime::note_procs(&chunk, &procs);
     // Which name each frame slot was written as, for the frames a *lambda*
     // occupies. A procedure's are carried by the chunk itself
@@ -1212,6 +1215,14 @@ pub(crate) struct Compiler {
     /// chunk they belong to and [`crate::runtime`] answers fusevm's undef hook
     /// from that set.
     pub(crate) tolerant_reads: Vec<usize>,
+    /// Op indices of the `Op::GetSlot` reads of a script-named local, with the
+    /// name each one reads.
+    ///
+    /// fusevm hands its undef hook `name: None` for a frame slot, so the name a
+    /// procedure-local read has to report — `can't read "x": no such variable`
+    /// — is recovered from the site, the way `tolerant_reads` recovers
+    /// tolerance. `lower` registers these with the chunk.
+    pub(crate) slot_reads: Vec<(usize, String)>,
     /// Op indices of the `Op::Add` / `Op::Sub` an `incr` lowered.
     ///
     /// `incr` words an operand refusal in its own terms — `expected integer but
@@ -1331,6 +1342,7 @@ impl Compiler {
         let mut c = Compiler {
             b: ChunkBuilder::new(),
             tolerant_reads: Vec::new(),
+            slot_reads: Vec::new(),
             incr_sites: Vec::new(),
             depth: 0,
             loops: Vec::new(),
@@ -1764,7 +1776,12 @@ impl Compiler {
     /// Read a variable onto the stack.
     pub(crate) fn emit_get_var(&mut self, name: &str) {
         match self.var_place(name) {
-            Place::Slot(slot) => self.emit(Op::GetSlot(slot), 1),
+            Place::Slot(slot) => {
+                if !name.starts_with('\u{0}') {
+                    self.slot_reads.push((self.b.current_pos(), name.to_string()));
+                }
+                self.emit(Op::GetSlot(slot), 1)
+            }
             Place::Global(idx) => self.emit(Op::GetVar(idx), 1),
             // A link has no native op: the descriptor in the slot has to be
             // followed, which only the frontend can do. See
@@ -2469,7 +2486,7 @@ impl Compiler {
             return Ok(());
         }
         self.expr(&parsed)?;
-        if !Self::yields_number(&parsed) {
+        if !Self::yields_number(&parsed) || Self::nan_literal_result(&parsed) {
             self.emit(Op::Extended(ext::CANON, 0), 0);
         }
         Ok(())
@@ -3000,6 +3017,11 @@ impl Compiler {
     pub(crate) fn expr_word(&mut self, word: &Word) -> Result<(), CompileError> {
         let text = self.literal_of(word, "condition")?.to_string();
         match expr::parse(&text) {
+            Ok(parsed) if Self::folded_nan_condition(&parsed) => {
+                // Raised where the condition is evaluated, as tclsh's folded
+                // refusal is, so a condition control never reaches costs nothing.
+                self.raise_at_run_time("domain error: argument not in valid range")
+            }
             Ok(parsed) => self.condition(&parsed),
             Err(e) => {
                 // The raise carries the wording, the `in expression …` context
@@ -3118,6 +3140,45 @@ impl Compiler {
             BinOp::StrNe => Some(5),
             _ => None,
         }
+    }
+
+    /// Whether a NaN literal can be this expression's *result* without passing
+    /// through an operation that would refuse it — an arm of `?:`. `expr`
+    /// refuses a NaN result (`expr {$c ? nan : 2}` is `domain error: argument
+    /// not in valid range`, as `expr {nan}` is), so such an expression needs
+    /// [`ext::CANON`]'s check on the way out. Only the result is checked: an
+    /// operator above the `?:` refuses the NaN in its own words, as
+    /// `expr {($c ? nan : 2) + 0}` does in tclsh.
+    fn nan_literal_result(e: &Expr) -> bool {
+        match e {
+            Expr::Float(v, _) => v.is_nan(),
+            Expr::Ternary(_, then, other) => {
+                Self::nan_literal_result(then) || Self::nan_literal_result(other)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether this condition is a `?:` whose test is a literal and whose
+    /// selected arm is a NaN literal — after following any chain of such.
+    ///
+    /// tclsh folds an operator whose operands are all literals while it
+    /// compiles, and a fold that produces a NaN is refused as `expr`'s own NaN
+    /// result is: `if {1 ? nan : 2} {}` is `domain error: argument not in valid
+    /// range` even inside a procedure, where `if {$c ? nan : 2} {}` meets the
+    /// NaN at run time and is the boolean rule's `floating point value is Not a
+    /// Number`. A lone `nan` is not an operator and is not folded.
+    fn folded_nan_condition(e: &Expr) -> bool {
+        let Expr::Ternary(test, then, other) = e else {
+            return false;
+        };
+        let taken = match test.as_ref() {
+            Expr::Int(v, _) => *v != 0,
+            Expr::Float(v, _) if !v.is_nan() => *v != 0.0,
+            _ => return false,
+        };
+        let arm = if taken { then } else { other };
+        matches!(arm.as_ref(), Expr::Float(v, _) if v.is_nan()) || Self::folded_nan_condition(arm)
     }
 
     fn yields_number(e: &Expr) -> bool {

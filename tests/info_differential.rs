@@ -147,6 +147,10 @@ const PROGRAMS: &[&str] = &[
     // ── shape of the machine-dependent answers, never their content ──
     "puts [expr {[string length [info hostname]] > 0}]",
     "puts [string match /* [info nameofexecutable]]",
+    // ── the variables every interpreter starts with ──
+    "puts [lsort [array names tcl_platform]]\nputs $tcl_platform(platform)/$tcl_platform(engine)/$tcl_platform(pathSeparator)/$tcl_platform(os)/$tcl_platform(user)",
+    "puts $tcl_platform(wordSize)$tcl_platform(pointerSize)$tcl_platform(byteOrder)\nputs $tcl_version\nputs [info exists env(PATH)]\nputs [string equal $env(PATH) $::env(PATH)]",
+    "proc p {} {global env tcl_platform\nreturn [list [array exists env] [array exists tcl_platform] [info exists env(HOME)]]}\nputs [p]",
 ];
 
 /// Failures: the message tclsh produces is the specification.

@@ -283,6 +283,9 @@ const PROGRAMS: &[&str] = &[
     "set b 1\nset n b(1)\nputs [catch {append $n x} m]:$m",
     "set b 1\nset n b(1)\nputs [catch {incr $n} m]:$m",
     "set a(9) x\nset n a(1)\nappend $n q\nputs [lsort [array names a]]",
+    // ── upvar at the global frame: the relative level 0 is #0 there ──
+    "set x 5\nupvar 0 x y\nputs $y\nset y 8\nputs $x",
+    "upvar 0 nx ny\nset ny 3\nputs $nx\nunset ny\nputs [info exists nx]",
 ];
 
 fn tclsh() -> Option<PathBuf> {

@@ -459,7 +459,7 @@ impl Interp {
     fn with_output(output: Output) -> Self {
         Interp {
             shared: Arc::new(Mutex::new(State {
-                globals: HashMap::new(),
+                globals: crate::cmd_info::startup_globals(),
                 commands: HashMap::new(),
                 ns: crate::cmd_namespace::Registry::default(),
                 running: Vec::new(),
@@ -1683,11 +1683,15 @@ impl Hooks {
                     Err(format!("can't read \"{name}\": no such variable"))
                 }
                 // fusevm builds this read's `UndefRead` with `name: None` for a
-                // frame slot, so a procedure's local keeps the old reading:
-                // `Undef` is exactly that reading. The chunk *does* carry the
-                // names now — `src/procs.rs` publishes them and `uplevel` and
-                // `apply` run against them — so what is left is for fusevm to
-                // resolve one at its `Op::GetSlot` arm. See BUGS.md.
+                // frame slot. The compiler recorded which name every slot read
+                // it emitted reads ([`note_slot_reads`]), so a procedure's
+                // local is refused in the same words a global is. A slot read
+                // the compiler did not record — one of its own hidden slots —
+                // keeps the empty reading.
+                None if read.from_slot => match slot_read_name(read.chunk, read.ip) {
+                    Some(name) => Err(format!("can't read \"{name}\": no such variable")),
+                    None => Ok(Value::Undef),
+                },
                 _ => Ok(Value::Undef),
             }
         }));
@@ -4732,6 +4736,34 @@ pub(crate) fn place_at(operand: &Value, slot_form: bool) -> Result<Place, String
 /// replacing, because a cached chunk can be run long after a later one was
 /// lowered.
 static TOLERANT_READS: Mutex<Option<HashSet<(u64, usize)>>> = Mutex::new(None);
+
+/// The name each procedure-local read reports, keyed `(chunk identity, op
+/// index)` as [`TOLERANT_READS`] is. fusevm builds a frame slot's
+/// `UndefRead` with `name: None`; the compiler knows which name every
+/// `Op::GetSlot` it emitted reads, and this is where it leaves that.
+static SLOT_READS: Mutex<Option<HashMap<(u64, usize), String>>> = Mutex::new(None);
+
+/// Record which name each of `chunk`'s frame-slot reads reads.
+pub(crate) fn note_slot_reads(chunk: &fusevm::Chunk, reads: &[(usize, String)]) {
+    if reads.is_empty() {
+        return;
+    }
+    let id = chunk_identity(chunk);
+    let mut guard = SLOT_READS.lock().expect("slot reads lock");
+    let map = guard.get_or_insert_with(HashMap::new);
+    for (ip, name) in reads {
+        map.insert((id, *ip), name.clone());
+    }
+}
+
+/// The name the frame-slot read at `ip` in the chunk `id` was written as.
+fn slot_read_name(id: u64, ip: usize) -> Option<String> {
+    SLOT_READS
+        .lock()
+        .expect("slot reads lock")
+        .as_ref()
+        .and_then(|map| map.get(&(id, ip)).cloned())
+}
 
 /// fusevm's identity for a chunk: its ops **and** its names.
 ///

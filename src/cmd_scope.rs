@@ -423,9 +423,15 @@ impl Compiler {
         // the whole body used to be restricted to: an absolute level 0 with both
         // names written out. `local` becomes another spelling of the global
         // `other` for the rest of the body, through `Scope::aliases`.
-        let literal_global = level
-            .and_then(|w| w.as_literal())
-            .is_some_and(|text| parse_level(text) == Some(Level::Absolute(0)));
+        // Outside a procedure and outside any `namespace eval`, the relative
+        // level 0 is the global frame too: `set x 5; upvar 0 x y` at a script's
+        // top level makes `y` another name for `x`, exactly as `upvar #0` does.
+        let at_global_frame = self.scope.is_none() && self.ns.current == "::";
+        let literal_global = level.and_then(|w| w.as_literal()).is_some_and(|text| {
+            let parsed = parse_level(text);
+            parsed == Some(Level::Absolute(0))
+                || (at_global_frame && parsed == Some(Level::Up(0)))
+        });
         if literal_global {
             let literal_pairs: Option<Vec<(String, String)>> = pairs
                 .chunks(2)
@@ -656,6 +662,14 @@ pub(crate) fn upvar_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), Tcl
         };
         return Err(TclError::plain(format!("bad level \"{named}\"")));
     }
+    // An alias outside a procedure is made in the interpreter's variable table,
+    // so the running chunk's values have to be there first: `set x 5; upvar 0 x
+    // y` in one script aliases `y` to the 5 this chunk holds, not to whatever
+    // the table held before it ran.
+    let aliases_globals = locals.iter().any(|(slot, _)| *slot == NO_SLOT);
+    if aliases_globals {
+        crate::runtime::flush_globals(vm, interp);
+    }
 
     for ((slot, local), other) in locals.iter().zip(others.iter()) {
         if *slot == NO_SLOT {
@@ -683,8 +697,7 @@ pub(crate) fn upvar_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), Tcl
     // Whatever the alias displaced, the running chunk's projection was taken
     // before it existed, so it is taken again — the same exchange `eval` makes
     // around a nested script.
-    if locals.iter().any(|(slot, _)| *slot == NO_SLOT) {
-        crate::runtime::flush_globals(vm, interp);
+    if aliases_globals {
         crate::runtime::reseed_globals(vm, interp);
     }
     vm.push(Value::Str(std::sync::Arc::new(String::new())));

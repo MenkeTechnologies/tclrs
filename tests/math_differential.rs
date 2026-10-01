@@ -162,6 +162,14 @@ const PROGRAMS: &[&str] = &[
     "set x -7\nputs [expr {abs($x)}]",
     "set x 007\nputs [expr {int($x)} ]",
     "set x 0x10\nputs [expr {abs($x)}]",
+    // ── a NaN arm of `?:`: `expr` refuses it as its own NaN result; a condition
+    // refuses it as a domain error only where tclsh folds the `?:` (a literal
+    // test), and as the boolean rule where the NaN is met at run time ──
+    "puts [list [catch {expr {1 ? nan : 2}} m] $m]",
+    "proc f {c} {set x nan\nlist [catch {expr {$c ? $x : 0}} m] $m}\nputs [f 1]\nputs [f 0]",
+    "proc f {} {list [catch {if {1 ? nan : 2} {}} m] $m}\nputs [f]",
+    "proc f {} {set c 1\nlist [catch {if {$c ? nan : 2} {}} m] $m}\nputs [f]",
+    "puts [expr {1 ? \"0x10\" : 0}]\nputs [expr {0 ? 1 : \"007\"}]\nputs [expr {1 ? \"a b\" : 0}]\nputs [expr {1 ? \"1e2\" : 0}]",
 ];
 
 fn tclsh() -> Option<PathBuf> {

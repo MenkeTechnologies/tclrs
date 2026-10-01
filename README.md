@@ -171,6 +171,7 @@ directory on `fpath`. The manual pages are [`man/man1/tclrs.1`](man/man1/tclrs.1
 | Stdin, not a terminal | A sequence of commands. Each is evaluated as it completes, a failure is reported on stderr and the next command still runs, and end of input exits 0 — which is why `tclrs < script` exits 0 where `tclrs script` exits 1. |
 | Stdin, a terminal | The same evaluation, driven by a line editor: prompt, history, completion, multi-line editing, and the value of each command echoed. See [The REPL](#the-repl). |
 | `argv0`, `argc`, `argv` | Set before the script runs, as `tclsh` sets them. |
+| `tcl_version`, `tcl_patchLevel`, `tcl_platform`, `env` | Set in every interpreter, as `Tcl_CreateInterp` sets them: `tcl_platform` from `uname(2)` and the password database, `env` a copy of the process environment taken when the interpreter is made. |
 | Errors | stderr only. No banner, no prompt outside a terminal, and no output the binary produces that the script did not ask for. |
 
 An unknown option is refused (`tclrs: unknown option "--wat"`) rather than

@@ -730,7 +730,9 @@ approximated, and nothing is silently mis-run.
   coherent *inside* a chunk that already holds two projections of the two names:
   a chunk's variables are a slot vector taken on entry, and two entries of it
   cannot become one slot afterwards. Written out rather than computed, the pair is
-  a compile-time binding (`Compiler::top_aliases`) and is coherent everywhere.
+  a compile-time binding (`Compiler::top_aliases`) and is coherent everywhere —
+  at the global frame that covers the relative level `0` as well as `#0`, so
+  `set x 5; upvar 0 x y` at a script's top level makes `y` and `x` one variable.
 - **Every command outside those above.** `interp`, `socket`, `exec`, `trace`,
   … An unknown command name is `invalid command name
   "…"`, raised when the command runs — `puts [catch {nosuchcmd} m]` is `1` —
@@ -1357,23 +1359,15 @@ fixes this.
   before the guard could answer — `set b 5` emits its guard *before* the
   assignment, so every first assignment to a name used as an array would refuse.
 
-  **What is left**: a procedure-local read. `proc p {} {puts $x}` still reads
-  empty rather than naming `x`, and `catch {set x}` in a body answers 0 where
-  tclsh answers 1. It is the one case the fuzzer's `A1c` entry still excuses.
-
-  The blocker used to be that nothing carried slot names. That is no longer true:
-  fusevm 0.17.0 added `Chunk::sub_slot_names` and `Frame::entry_ip`, and
-  `src/procs.rs` fills in the name of every slot of every procedure — which is
-  what `uplevel`, `apply` and `eval` in a body now run against. What remains is
-  one site in fusevm: `Op::GetSlot` builds its `UndefRead` with `name: None`
-  (`vm.rs:1940`), under a comment that 0.17.0 made stale. Resolving it there —
-  `self.frames.last().and_then(|f| f.entry_ip)`, then
-  `self.chunk.sub_slot_names_at(entry).get(slot)`, skipping an empty name — is
-  the whole change, in the shape the `Op::GetVar` arm above it already uses.
-  Nothing in this frontend needs to change with it: the hook already reports a
-  name it is given (`runtime.rs`, `Hooks::install`) and only falls back to
-  `Ok(Value::Undef)` when there is none. The read stays a native op, so no traced
-  loop pays for it.
+  **The procedure-local read is closed too.** fusevm's `Op::GetSlot` still
+  builds its `UndefRead` with `name: None`, but the hook is told the read's
+  chunk and op index, and that pair is enough: the compiler records the name of
+  every `Op::GetSlot` it emits for a script-named local (`Compiler::slot_reads`)
+  and `lower` registers them beside the tolerant reads
+  (`runtime::note_slot_reads`). So `proc p {} {puts $x}` is `can't read "x": no
+  such variable` and `catch {set x}` in a body answers 1, as in tclsh, with no
+  fusevm change. The read stays a native op, so no traced loop pays for it. The
+  fuzzer's `A1c` allowlist entry now scores 0.
 
   The entry used to say this was not a patchable defect — that resolving a name
   while compiling is what makes a call an `Op::Call` to a known sub, so fixing
@@ -1787,7 +1781,7 @@ Each of these was a divergence in the run above and is now parity, pinned in
 The four divergences the fuzzer's report allowlists rather than counting are the
 documented ones, and each is pinned in `tests/parity_fuzz_findings.rs` too, so an
 entry cannot outlive the behavior it excuses: an unset *procedure-local* reading
-as `""` — a frame slot has no name to report, and the global case is fixed —
+as `""` (fixed since: the entry scores 0 and is due for retirement) —
 `array names` / `array get` sorted where tclsh hashes (order is unspecified in
 `array(n)`), arity refused before anything runs, and a message carrying
 ` (line N)` through the library. A fifth, an unterminated brace located where
