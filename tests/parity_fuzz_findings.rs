@@ -2638,3 +2638,21 @@ fn fixed_incr_names_the_value_before_the_increment() {
         "if {0} {incr x y}\nputs [catch {incr x y} m]$m",
     ]);
 }
+
+/// The in-place `dict` subcommands take an array element as their variable,
+/// creating it when it does not exist. They were refused with `dict set into
+/// an array element is not supported yet`.
+#[test]
+fn fixed_dict_writes_into_an_array_element() {
+    all_agree(&[
+        "dict set a(1) k v; puts $a(1)\ndict set a(1) k2 x y; puts $a(1)",
+        "dict lappend a(2) k v w; dict append a(2) j x y; puts $a(2)",
+        "dict incr a(3) n; dict incr a(3) n 5; puts $a(3)",
+        "set a(1) {k v k2 w}\nputs [dict unset a(1) k]\ndict unset a(9) z\nputs [lsort [array names a]]",
+        "set i 4; dict set a($i) q r; puts $a(4)",
+        "proc p {} {dict set b(x) k 1; dict incr b(x) k; dict lappend b(y) l a; list $b(x) $b(y)}\nputs [p]",
+        "set s 1\nputs [catch {dict set s(1) k v} m]$m\nputs [catch {dict incr s(1) k} m]$m",
+        "set a(5) notadict\nputs [catch {dict set a(5) k v} m]$m",
+        "set a(1) {k x}\nputs [catch {dict incr a(1) k} m]$m",
+    ]);
+}

@@ -49,6 +49,9 @@ fn quoting_matrix(template: &str) -> String {
 }
 
 const FIXED: &[&str] = &[
+    // ── an in-place `dict` write into an array element ──
+    "set a(1) x\nputs [catch {dict incr a(1) k} m]$m\nputs [catch {dict set a(1) k v} m]$m\nputs $a(1)",
+    "dict set a(1) k v\ndict incr a(2) n 3\ndict lappend a(3) l x y\ndict append a(4) s p q\nputs [lsort -stride 2 [array get a]]",
     // ── a computed body or variable name: the command runs as a list ──
     "set d {a 1}\nset b {set a 9}\nputs [dict with d $b]\nputs $d",
     "set d {a 1}\nset n v\nputs [dict update d a $n {set v 5}]\nputs $d",
@@ -674,12 +677,9 @@ fn unimplemented_subcommands_are_refused() {
         // `array names -regexp` landed; what it answers is compared against
         // tclsh in `FIXED`, and a pattern that will not compile is in the
         // error corpus.
-        // `dict incr` is implemented; what it still refuses is an array element
-        // as the target, which is `dict set`'s limitation and now also its own.
-        (
-            "set a(1) x\ndict incr a(1) k",
-            "array element is not supported yet",
-        ),
+        // `dict set`, `dict incr`, `dict unset`, `dict lappend` and `dict append`
+        // on an array element landed; what they answer is compared against
+        // tclsh in `FIXED`.
         // `dict filter … script` and `dict map` were refused here until they
         // landed; what they answer is now compared against tclsh in `FIXED`.
         ("dict info {a 1}", "dict info is not supported yet"),
@@ -696,10 +696,6 @@ fn unimplemented_subcommands_are_refused() {
         // and is compared in `FIXED`.
         (
             "set a(1) x\ndict update a(1) k v {}",
-            "array element is not supported yet",
-        ),
-        (
-            "set a(1) x\ndict set a(1) k v",
             "array element is not supported yet",
         ),
     ] {

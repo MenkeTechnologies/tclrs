@@ -709,8 +709,6 @@ approximated, and nothing is silently mis-run.
   `info body p` answers `"p" isn't a procedure` and `info procs` does not list
   it, because both read the signatures of the running chunk. A `proc` inside a `namespace eval` block is in
   a similar position: its signature is prescanned and its body text is not.
-- **An array element as the variable `dict incr` names.** `set a(1) x` followed
-  by `dict incr a(1) k` is `array element is not supported yet`.
 - **An `upvar` to a variable the procedure running there never names.** An
   `upvar` link is the *address* of one frame slot, and another frame's slots are
   addressed through a table of the names its procedure *wrote*
@@ -770,8 +768,12 @@ approximated, and nothing is silently mis-run.
   limit (measured), and the binary runs on `RECOMMENDED_STACK` so the limit is
   what stops it rather than the stack. A host embedding the library on a small
   stack should lower the limit, as it already should for `eval`.
-- **An array element as the variable a `dict set` names.** `dict set a(1) k v` is
-  `array element is not supported yet`. The list commands took this refusal until
+- **An array element as the variable `dict update` or `dict with` names.**
+  `dict update a(1) k v {...}` and `dict with a(1) {...}` are refused with
+  `... on an array element is not supported yet`. `dict set`, `dict incr`,
+  `dict unset`, `dict lappend` and `dict append` took this refusal until
+  `Compiler::dict_elem_in_place` read the element, ran the op on its value and
+  stored the result back; the list commands took it until
   `Compiler::elem_store` landed: `lappend a(x) v`, `append a(x) v`,
   `lassign {1 2} a(x) a(y)`, `lset a(x) 0 v`, `lpop a(x)`, `ledit a(x) 0 0 v`,
   `foreach a(x) … ` and `lmap a(x) …` all take one now, and are byte-compared
@@ -926,10 +928,6 @@ approximated, and nothing is silently mis-run.
 
   What did change is the wording: the refusal names the C library rather than
   saying "not supported *yet*", which promised a port that is not writable.
-- **A `dict` written into an array element.** `dict set a(1) k v` and
-  `dict incr a(1) k` are refused: the target travels as a variable *place* — a
-  name index or a frame slot — and an array element is neither. Both work on a
-  procedure-local variable, which is what the place operand bought.
 - **An array variable in a `foreach` variable list.** Refused.
 - **Indices outside `i64`.** Tcl computes index arithmetic in arbitrary
   precision and truncates; tclrs saturates at the `i64` ends instead. Both

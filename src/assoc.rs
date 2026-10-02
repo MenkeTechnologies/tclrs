@@ -1047,8 +1047,16 @@ impl Compiler {
                         "wrong # args: should be \"dict set dictVarName key ?key ...? value\"",
                     );
                 }
-                let Some(Target::Scalar(name)) = target_of(name) else {
-                    return self.error("dict set into an array element is not supported yet");
+                let name = match target_of(name) {
+                    Some(Target::Scalar(name)) => name,
+                    Some(Target::Elem { name, index }) => {
+                        let mut operands = keys.to_vec();
+                        operands.push(value.clone());
+                        return self.dict_elem_in_place(&name, &index, &operands, ext::DICT_SET);
+                    }
+                    None => {
+                        return self.error("dict set into an array element is not supported yet")
+                    }
                 };
                 self.push_str(&name);
                 // `dict set` creates the variable when it does not exist, so
@@ -1121,8 +1129,19 @@ impl Compiler {
                         )
                     }
                 };
-                let Some(Target::Scalar(name)) = target_of(name) else {
-                    return self.error("dict incr into an array element is not supported yet");
+                let name = match target_of(name) {
+                    Some(Target::Scalar(name)) => name,
+                    Some(Target::Elem { name, index }) => {
+                        let by = by.cloned().unwrap_or_else(|| Word {
+                            parts: vec![Part::Lit("1".to_string())],
+                            ..Word::default()
+                        });
+                        let operands = [key.clone(), by];
+                        return self.dict_elem_in_place(&name, &index, &operands, ext::DICT_INCR);
+                    }
+                    None => {
+                        return self.error("dict incr into an array element is not supported yet")
+                    }
                 };
                 self.push_str(&name);
                 // Same reach as `dict set`: the place operand reads the current
@@ -1249,8 +1268,14 @@ impl Compiler {
         op: u16,
         what: &str,
     ) -> Result<(), CompileError> {
-        let Some(Target::Scalar(name)) = target_of(name) else {
-            return self.error(format!("{what} into an array element is not supported yet"));
+        let name = match target_of(name) {
+            Some(Target::Scalar(name)) => name,
+            Some(Target::Elem { name, index }) => {
+                return self.dict_elem_in_place(&name, &index, operands, op)
+            }
+            None => {
+                return self.error(format!("{what} into an array element is not supported yet"))
+            }
         };
         self.push_str(&name);
         let place = self.var_place_operand(&name);
@@ -1263,6 +1288,37 @@ impl Compiler {
         self.emit(Op::Dup, 1);
         self.emit_set_var(&name);
         Ok(())
+    }
+
+    /// The in-place `dict` subcommands on an array element: `dict set a(1) k v`
+    /// and the rest read the element tolerantly — a missing one is the empty
+    /// dict, a variable that is not an array is refused as `$a(1)` would be —
+    /// hand its value to the op where the place would stand (operand 1), and
+    /// store the result back into the element. `DictSetCmd` and its siblings
+    /// reach an element through `Tcl_ObjSetVar2` the same way they reach a
+    /// scalar, so the element is created when it does not exist.
+    ///
+    /// `DICT_INCR` takes its two operands bare; every other op takes a counted
+    /// list, as its scalar form does.
+    fn dict_elem_in_place(
+        &mut self,
+        name: &str,
+        index: &[Part],
+        operands: &[Word],
+        op: u16,
+    ) -> Result<(), CompileError> {
+        self.push_str(name);
+        self.elem_get_tolerant(name, index)?;
+        for w in operands {
+            self.word(w)?;
+        }
+        if op == ext::DICT_INCR {
+            self.emit(Op::Extended(op, 1), -3);
+        } else {
+            self.emit(Op::LoadInt(operands.len() as i64), 1);
+            self.emit(Op::Extended(op, 1), -(operands.len() as i32 + 2));
+        }
+        self.elem_store(name, index)
     }
 
     /// Emit `n` argument words followed by their count, then the op that reads
@@ -2511,25 +2567,15 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let mut args = pop_args(vm);
             let value = args.pop().expect("value operand");
             let keys = args;
-            let place = place_of(vm);
-            let current = peek(vm, place).cloned().unwrap_or(Value::Undef);
-            let name = pop_str(vm);
-            if matches!(current, Value::Hash(_)) {
-                return Err(format!("can't set \"{name}\": variable is array"));
-            }
-            push_str(vm, dict_set(&to_tcl_string(&current), &keys, value)?);
+            let (current, _name) = dict_variable(vm, arg == 1)?;
+            push_str(vm, dict_set(&current, &keys, value)?);
             Ok(())
         }
         ext::DICT_INCR => {
             let by = pop_str(vm);
             let key = pop_str(vm);
-            let place = place_of(vm);
-            let current = peek(vm, place).cloned().unwrap_or(Value::Undef);
-            let name = pop_str(vm);
-            if matches!(current, Value::Hash(_)) {
-                return Err(format!("can't set \"{name}\": variable is array"));
-            }
-            push_str(vm, dict_incr(&to_tcl_string(&current), &key, &by)?);
+            let (current, _name) = dict_variable(vm, arg == 1)?;
+            push_str(vm, dict_incr(&current, &key, &by)?);
             Ok(())
         }
         ext::DICT_EACH => dict_each_op(vm, arg),
@@ -2585,14 +2631,14 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
         ext::DICT_UNSET => {
             let keys = pop_args(vm);
-            let (current, _name) = dict_variable(vm)?;
+            let (current, _name) = dict_variable(vm, arg == 1)?;
             push_str(vm, dict_unset(&current, &keys)?);
             Ok(())
         }
         ext::DICT_LAPPEND | ext::DICT_APPEND => {
             let mut args = pop_args(vm);
             let key = args.remove(0);
-            let (current, _name) = dict_variable(vm)?;
+            let (current, _name) = dict_variable(vm, arg == 1)?;
             let mut d = Dict::parse(&current)?;
             let existing = d.get(&key).unwrap_or("").to_string();
             let updated = if id == ext::DICT_LAPPEND {
@@ -2633,9 +2679,17 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
 /// operands: the variable's current value as a string, and its name. An array
 /// is refused with the reference implementation's wording, and a variable that
 /// does not exist reads as the empty dict rather than as a failure.
-fn dict_variable(vm: &mut VM) -> Result<(String, String), String> {
-    let place = place_of(vm);
-    let current = peek(vm, place).cloned().unwrap_or(Value::Undef);
+///
+/// `on_stack` is the element form (operand 1): the target is an array element,
+/// and the compiler has already pushed its current value — read tolerantly, so
+/// a missing element is the empty dict — where the place would stand.
+fn dict_variable(vm: &mut VM, on_stack: bool) -> Result<(String, String), String> {
+    let current = if on_stack {
+        vm.pop()
+    } else {
+        let place = place_of(vm);
+        peek(vm, place).cloned().unwrap_or(Value::Undef)
+    };
     let name = pop_str(vm);
     if matches!(current, Value::Hash(_)) {
         return Err(format!("can't set \"{name}\": variable is array"));
