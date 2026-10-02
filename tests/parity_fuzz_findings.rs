@@ -2541,3 +2541,100 @@ fn fixed_if_takes_the_interpreters_grammar_and_wording() {
     );
     agrees(&tclsh, "puts [catch {if {1} {} else {} junk}]", out("1\n"));
 }
+
+/// Every program in `programs` observes exactly what tclsh 9.0.4 observes.
+fn all_agree(programs: &[&str]) {
+    let Some(tclsh) = tclsh() else {
+        eprintln!("skipping: no tclsh 9.0.4 on PATH");
+        return;
+    };
+    for program in programs {
+        assert_eq!(subject(program), reference(&tclsh, program), "{program}");
+    }
+}
+
+/// A `return` from inside a loop in a procedure left the loop's region open,
+/// so the next `catch` to close popped the stale loop record instead of its own
+/// and a later top-level error re-entered that `catch`'s handler — the fuzzer's
+/// case printed `m:E` and then reported `E`.
+#[test]
+fn fixed_return_from_a_loop_closes_the_loop_region() {
+    all_agree(&[
+        "proc p {} {while {1} {return 1}}\ncatch {p} m; puts m:$m\nerror E",
+        "proc p {} {while 1 {foreach x {1 2} {return $x}}}\nputs [catch p m]$m\nerror E",
+        "proc p {} {for {set i 0} {$i < 3} {incr i} {if {$i == 1} {return $i}}}\n\
+         set n 0; while {$n < 2} {incr n; catch {puts [p]} m}\nputs m:$m\nerror E",
+        "proc p {} {foreach i {a b} {return $i}}\nputs [p][p]\nforeach i {1 2} {catch {p} m; puts $i$m}",
+    ]);
+}
+
+/// `in` and `ni` compare strings, so a numeric literal on either side is the
+/// text the script wrote: `7 in 007` is 0. It was lowered as the number 7.
+#[test]
+fn fixed_in_and_ni_keep_a_literals_spelling() {
+    all_agree(&[
+        "puts [expr {7 in 007}]",
+        "puts [expr {(7) ni 007}]",
+        "set x 7\nputs [expr {$x in 007}]",
+        "puts [expr {0x10 in {16}}]",
+        "puts [expr {(1+1) in {2 3}}]",
+        "if {7 in 007} {puts y} else {puts n}",
+        "proc q {x} {expr {$x in {01 2.0}}}\nputs [q 1][q 01][q 2][q 2.0]",
+    ]);
+}
+
+/// A body that will not parse still runs the commands ahead of the one that
+/// fails, because tclsh compiles a body command by command: `if 1 {puts a;
+/// puts "b}` writes `a` before reporting `missing "`. The whole body used to be
+/// replaced by the raise.
+#[test]
+fn fixed_an_unparsable_body_runs_its_valid_prefix() {
+    all_agree(&[
+        "if 1 {puts c; puts [x}",
+        "proc p {} {puts a; puts \"b}\ncatch p m; puts m:$m",
+        "catch {puts c; puts \"x} m; puts m:$m",
+        "switch a {a {puts s1; puts \"q}}",
+        "for {set i 0} {$i < 1} {incr i} {puts a; continue \"x}",
+        "while 1 {puts w; set y 1; puts {z}",
+    ]);
+}
+
+/// A `?:` test made of a sign or `!` over a literal is folded by tclsh as a
+/// bare literal is, so a NaN arm it selects is the folded refusal.
+#[test]
+fn fixed_a_signed_literal_test_selecting_nan_is_the_folded_refusal() {
+    all_agree(&[
+        "if {-5 ? NaN : 1} {}",
+        "if {!0 ? NaN : 1} {}",
+        "if {+0.0 ? 1 : NaN} {}",
+        "if {-(3) ? NaN : 1} {}",
+        "if {!!2 ? NaN : 1} {}",
+    ]);
+}
+
+/// A procedure called at the script's own level before its `proc` has run does
+/// not exist yet: tclsh says `invalid command name`. tclrs bound it from the
+/// prescan and ran it.
+#[test]
+fn fixed_a_call_before_the_definition_is_an_unknown_command() {
+    all_agree(&[
+        "catch {p1 x} m; puts m:$m\nproc p1 {a} {return a$a}\nputs [p1 y]",
+        "p2\nproc p2 {} {puts no}",
+        "proc a {} {b}\nproc b {} {return ok}\nputs [a]",
+        "if {1} {catch {p3} m; puts $m}\nproc p3 {} {return x}\nputs [p3]",
+    ]);
+}
+
+/// `incr` parses the variable's value before the increment (`TclIncrObj`), so
+/// a variable that is not an integer is the one named even when the literal
+/// increment is not an integer either.
+#[test]
+fn fixed_incr_names_the_value_before_the_increment() {
+    all_agree(&[
+        "set s 2h\nincr s end",
+        "proc p {} {set s 2h; incr s end}\np",
+        "array set a {k 2h}\nincr a(k) end",
+        "catch {incr u end} m; puts $m; puts [info exists u]",
+        "if {0} {incr x y}\nputs [catch {incr x y} m]$m",
+    ]);
+}

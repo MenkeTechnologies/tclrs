@@ -39,7 +39,9 @@ approximated, and nothing is silently mis-run.
   as frame slots rather than entries in the global table (`src/procs.rs`).
   Signatures are collected before anything is emitted, so a procedure may call
   one the script defines further down; defaults and a trailing `args` are
-  resolved at the call site.
+  resolved at the call site. A call the script's own level makes before the
+  `proc` that defines the name has run resolves at run time instead, and is
+  `invalid command name` there, as it is in tclsh.
 - **`proc` in any position.** A `proc` inside an `if`, a loop, a command
   substitution or another procedure's body binds its name when the defining code
   *runs*, which is what tclsh does: `if {0} {proc f {} {}}` leaves `f` an
@@ -1787,6 +1789,33 @@ as `""` (fixed since: the entry scores 0 and is due for retirement) —
 ` (line N)` through the library. A fifth, an unterminated brace located where
 the input ran out, was retired when the behaviour was fixed. `scripts/fuzz/classify.pl` holds them with their reasons, and every run
 prints a hit count per entry.
+
+### Fixed in the second parity sweep
+
+Found by `scripts/fuzz_parity.sh -n 1000 -s 2026` and `-M -n 1000 -s 77`, each
+byte-verified against tclsh 9.0.4 and pinned in `tests/parity_fuzz_findings.rs`:
+
+- **A `return` from inside a loop left the loop's region open.** The loop's
+  `LOOP_LEAVE` is never reached on that path, so the record outlived the frame and
+  the next `CATCH_END` popped it in place of its own; a later top-level error then
+  re-entered that `catch`'s handler and the script's output ran twice. A plain
+  `return` now closes every loop region it leaves.
+- **`in` and `ni` lowered a numeric literal as its number.** `7 in 007` answered
+  1; both operands now carry the text the script wrote, as `eq` already did.
+- **A body that will not parse ran none of its commands.** tclsh compiles a body
+  command by command, so the commands ahead of the unparsable one still run
+  (`if 1 {puts a; puts "b}` writes `a`). `Body::deferred` keeps that prefix for
+  every body: loops, `if`, `catch`, `switch` arms, `try` handlers and procedures.
+- **A `?:` test of a sign or `!` over a literal was not folded.** `if {-5 ? NaN :
+  1} {}` is the folded `domain error: argument not in valid range` in tclsh, as
+  `if {1 ? NaN : 1} {}` already was here. A test containing a binary operator
+  (`1+1 ? NaN : 1`) is still not folded and keeps the boolean rule's message.
+- **A procedure called at the top level before its `proc` ran was found.** It is
+  `invalid command name` now. `info commands` and `info procs` still list such a
+  name early, per the entry above about `info args`.
+- **`incr` checked a literal increment before the variable's value.**
+  `set s 2h; incr s end` names `2h` in tclsh, since `TclIncrObj` parses the value
+  first; scalar and element `incr` both do so now.
 
 ## What the differential fuzzer cannot reach
 

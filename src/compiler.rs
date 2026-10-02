@@ -1122,8 +1122,27 @@ pub(crate) struct Scope {
 /// body's code would have.
 pub(crate) enum Body {
     Script(Script),
-    /// The message the body's own parse failed with.
-    Deferred(String),
+    /// The body's own parse failed: `prefix` is the commands ahead of the
+    /// one that would not parse, and `msg` is what that one raised.
+    Deferred {
+        prefix: Option<Script>,
+        msg: String,
+    },
+}
+
+impl Body {
+    /// A body whose text failed to parse with `msg`.
+    ///
+    /// tclsh compiles a body one command at a time and turns the command that
+    /// will not parse into a syntax-error op (`TclCompileScript`), so every
+    /// command ahead of it still runs: `if 1 {puts a; puts "b}` writes `a`
+    /// before it reports `missing "`. The prefix is kept for the same reason.
+    pub(crate) fn deferred(text: &str, msg: String) -> Body {
+        let prefix = crate::parser::valid_prefix(text)
+            .filter(|(end, _, _)| *end > 0)
+            .and_then(|(end, _, _)| crate::parser::parse(&text[..end]).ok());
+        Body::Deferred { prefix, msg }
+    }
 }
 
 /// What reading an unset variable answers, for the commands that read one
@@ -2272,6 +2291,11 @@ impl Compiler {
             other if self.runtime.contains(other) => self.call_runtime(other, args),
             // A procedure the script defines shadows nothing built in: the
             // names above are refused to `proc` at its definition.
+            // A call the script's own level reaches before the `proc` that
+            // defines the name has run: tclsh has no such command yet, and
+            // reports `invalid command name` (measured: `p 1` then
+            // `proc p {a} {}`). The run-time table is where that is decided.
+            other if self.precedes_definition(other) => self.call_runtime(other, args),
             other if self.procs.contains_key(other) => self.call_proc(other, args),
             // A function an inline `rust { ... }` block exported. Asked after
             // the procedures, so a Tcl procedure of the same name still wins —
@@ -2539,18 +2563,11 @@ impl Compiler {
             _ => return self.error("wrong # args: should be \"incr varName ?increment?\""),
         };
         // `incr` takes an integer, not an `expr` operand, and says so in its own
-        // words. An increment the script wrote out is checked here, where the
-        // check is free; see the note on the lowering below for the one it
-        // cannot reach.
-        if let Some(text) = by.and_then(|w| w.as_literal()) {
-            if crate::runtime::tcl_int(&Value::Str(std::sync::Arc::new(text.to_string()))).is_err()
-            {
-                // Raised when the command runs, as tclsh raises it: `if {0}
-                // {incr x y}` costs nothing and `catch {incr x y}` is 1.
-                let msg = format!("expected integer but got {}", crate::runtime::named(text, 50));
-                return Err(self.deferrable_err(msg));
-            }
-        }
+        // words — but only once it has read the variable: `TclIncrObj` parses
+        // the value before the increment, so `set s 2h; incr s end` is
+        // `expected integer but got "2h"` in tclsh 9.0. A literal increment
+        // that is not an integer therefore takes the same run-time path a
+        // computed one does, which checks the two in that order.
         // `incr $v` resolves its variable when it runs, for the reason `set $v`
         // does. The read tolerates absence there too — `incr` on a variable
         // that does not exist creates it at zero.
@@ -2947,9 +2964,25 @@ impl Compiler {
         match self.body_script(word) {
             Ok(script) => self.nested_value(&script),
             Err(e) if self.deferrable && self.rebuild_pending(&e) => Err(e),
-            Err(e) if std::mem::take(&mut self.deferrable) => self.raise_at_run_time(&e.msg),
+            Err(e) if std::mem::take(&mut self.deferrable) => {
+                let text = self.literal_of(word, "script body")?.to_string();
+                self.emit_body_value(&Body::deferred(&text, e.msg))
+            }
             Err(e) => Err(e),
         }
+    }
+
+    /// Whether a call to `name` runs at the script's own level before the
+    /// top-level `proc` that defines it has been reached. Only the global
+    /// namespace's own code qualifies: a procedure body runs when it is
+    /// called, and a namespace body resolves its names through the qualified
+    /// spellings its prescan recorded.
+    fn precedes_definition(&self, name: &str) -> bool {
+        self.scope.is_none()
+            && self.ns.current == "::"
+            && !name.contains("::")
+            && self.procs.contains_key(name)
+            && !self.defined.contains(name)
     }
 
     /// Lower a failure as the only thing a stretch of code does: push its
@@ -3011,7 +3044,10 @@ impl Compiler {
             // A computed body, with nothing of the command emitted yet: the
             // whole command can still run as the list its words make.
             Err(e) if self.deferrable && self.rebuild_pending(&e) => Err(e),
-            Err(e) if std::mem::take(&mut self.deferrable) => Ok(Body::Deferred(e.msg)),
+            Err(e) if std::mem::take(&mut self.deferrable) => {
+                let text = self.literal_of(word, "script body")?.to_string();
+                Ok(Body::deferred(&text, e.msg))
+            }
             Err(e) => Err(e),
         }
     }
@@ -3020,7 +3056,10 @@ impl Compiler {
     pub(crate) fn emit_body(&mut self, body: &Body) -> Result<(), CompileError> {
         match body {
             Body::Script(script) => self.nested_effect(script),
-            Body::Deferred(msg) => {
+            Body::Deferred { prefix, msg } => {
+                if let Some(prefix) = prefix {
+                    self.nested_effect(prefix)?;
+                }
                 let msg = msg.clone();
                 self.raise_at_run_time(&msg)?;
                 self.emit(Op::Pop, -1);
@@ -3033,7 +3072,10 @@ impl Compiler {
     pub(crate) fn emit_body_value(&mut self, body: &Body) -> Result<(), CompileError> {
         match body {
             Body::Script(script) => self.nested_value(script),
-            Body::Deferred(msg) => {
+            Body::Deferred { prefix, msg } => {
+                if let Some(prefix) = prefix {
+                    self.nested_effect(prefix)?;
+                }
                 let msg = msg.clone();
                 self.raise_at_run_time(&msg)
             }
@@ -3208,14 +3250,26 @@ impl Compiler {
     /// range` even inside a procedure, where `if {$c ? nan : 2} {}` meets the
     /// NaN at run time and is the boolean rule's `floating point value is Not a
     /// Number`. A lone `nan` is not an operator and is not folded.
+    /// The truth of a test tclsh folds while it compiles: a literal, or a sign
+    /// or `!` applied to one. `if {-5 ? nan : 1} {}` and `if {!0 ? nan : 1} {}`
+    /// are the folded refusal in tclsh 9.0 exactly as `if {1 ? nan : 1} {}` is.
+    /// A test with a binary operator is not followed here.
+    fn literal_truth(e: &Expr) -> Option<bool> {
+        match e {
+            Expr::Int(v, _) => Some(*v != 0),
+            Expr::Float(v, _) if !v.is_nan() => Some(*v != 0.0),
+            Expr::Unary(UnOp::Neg | UnOp::Plus, operand) => Self::literal_truth(operand),
+            Expr::Unary(UnOp::Not, operand) => Self::literal_truth(operand).map(|t| !t),
+            _ => None,
+        }
+    }
+
     fn folded_nan_condition(e: &Expr) -> bool {
         let Expr::Ternary(test, then, other) = e else {
             return false;
         };
-        let taken = match test.as_ref() {
-            Expr::Int(v, _) => *v != 0,
-            Expr::Float(v, _) if !v.is_nan() => *v != 0.0,
-            _ => return false,
+        let Some(taken) = Self::literal_truth(test) else {
+            return false;
         };
         let arm = if taken { then } else { other };
         matches!(arm.as_ref(), Expr::Float(v, _) if v.is_nan()) || Self::folded_nan_condition(arm)
@@ -3465,6 +3519,20 @@ impl Compiler {
                 self.string_operand(a)?;
                 self.string_operand(b)?;
                 self.emit(Op::Extended(ext::STR_CMP, which), -1);
+                Ok(())
+            }
+            // Membership is a string test too, so a numeric literal on either
+            // side is the text the script wrote: `7 in 007` is 0 in tclsh 9.0,
+            // where lowering `007` as the number 7 answered 1.
+            Expr::Binary(op @ (BinOp::In | BinOp::Ni), a, b) => {
+                self.string_operand(a)?;
+                self.string_operand(b)?;
+                let id = if matches!(op, BinOp::In) {
+                    ext::IN
+                } else {
+                    ext::NI
+                };
+                self.emit(Op::Extended(id, 2), -1);
                 Ok(())
             }
             Expr::Binary(op, a, b) => {

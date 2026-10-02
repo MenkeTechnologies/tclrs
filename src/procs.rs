@@ -741,9 +741,15 @@ impl Compiler {
         }
         let compiled = match &body {
             crate::compiler::Body::Script(script) => self.script_value(script),
-            crate::compiler::Body::Deferred(msg) => {
+            crate::compiler::Body::Deferred { prefix, msg } => {
+                let ran = match prefix {
+                    Some(prefix) => self.script_value(prefix).map(|()| {
+                        self.emit(Op::Pop, -1);
+                    }),
+                    None => Ok(()),
+                };
                 let msg = msg.clone();
-                self.raise_at_run_time(&msg)
+                ran.and_then(|()| self.raise_at_run_time(&msg))
             }
         };
         // A body that falls off its end returns the value of its last command.
@@ -988,6 +994,14 @@ impl Compiler {
             match result {
                 Some(w) => self.word(w)?,
                 None => self.push_empty(),
+            }
+            // Every loop this return leaves has a region open at run time, and
+            // its `LOOP_LEAVE` is never reached: closed here, or the record
+            // outlives the frame and the next `CATCH_END` pops it in place of
+            // its own. Measured: `proc p {} {while 1 {return 1}}; catch p;
+            // error E` re-entered the `catch` handler with `E`.
+            for _ in 0..self.loops.len() {
+                self.emit(Op::Extended(ext::LOOP_LEAVE, 0), 0);
             }
             self.emit(Op::ReturnValue, -1);
             self.push_empty();

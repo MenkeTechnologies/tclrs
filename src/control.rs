@@ -311,10 +311,7 @@ impl Compiler {
         // whose text will not parse raises only if it is the arm chosen.
         match crate::parser::parse(text) {
             Ok(script) => self.nested_value(&script),
-            Err(e) => {
-                let msg = e.msg;
-                self.raise_at_run_time(&msg)
-            }
+            Err(e) => self.emit_body_value(&Body::deferred(text, e.msg)),
         }
     }
 
@@ -626,7 +623,7 @@ impl Compiler {
             self.emit(Op::Pop, -1);
             let body = match crate::parser::parse(script) {
                 Ok(script) => Body::Script(script),
-                Err(e) => Body::Deferred(e.msg),
+                Err(e) => Body::deferred(script, e.msg),
             };
             self.emit_body_value(&body)?;
             to_end.push(self.emit(Op::Jump(usize::MAX), 0));

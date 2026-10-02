@@ -2202,7 +2202,7 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
         ext::ELEM_INCR => {
             let place = place_of(vm);
-            let by = tcl_int(&vm.pop())?;
+            let by = vm.pop();
             let index = pop_str(vm);
             let name = pop_str(vm);
             // `incr` reads before it writes, so a variable that is not an array
@@ -2223,6 +2223,9 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                 Some(v) => tcl_int(v)?,
                 None => 0,
             };
+            // The increment is parsed after the value, as `TclIncrObj` does:
+            // `incr a(k) end` on `a(k)` = `2h` names `2h`.
+            let by = tcl_int(&by)?;
             let next = current
                 .checked_add(by)
                 .ok_or("integer value too large to represent")?;
