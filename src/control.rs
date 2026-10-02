@@ -323,7 +323,7 @@ impl Compiler {
             [b, v, o] => (b, Some(self.var_name_of(v)?), Some(self.var_name_of(o)?)),
             _ => {
                 return self.error(
-                    "wrong # args: should be \"catch script ?resultVarName? ?optionsVarName?\"",
+                    "wrong # args: should be \"catch script ?resultVarName? ?optionVarName?\"",
                 )
             }
         };

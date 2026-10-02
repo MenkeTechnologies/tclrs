@@ -2685,3 +2685,49 @@ fn fixed_a_missing_namespace_is_named_as_written() {
         "catch {namespace parent nope} m o; puts [dict get $o -errorcode]",
     ]);
 }
+
+/// A `!` whose value goes straight to a branch is dropped by tclsh's peephole
+/// pass and the jump inverted, so its operand meets the branch's boolean rule:
+/// `if {!$s} {}` with `s` = `abc` is `expected boolean value but got "abc"`.
+#[test]
+fn fixed_a_branch_tested_not_takes_the_boolean_rule() {
+    all_agree(&[
+        "set s abc\nputs [catch {if {!$s} {}} m]$m\nputs [catch {expr {!$s}} m]$m",
+        "set s abc\nputs [catch {while {!$s} {break}} m]$m",
+        "set s abc\nputs [catch {if {!!$s} {}} m]$m",
+        "set s abc\nputs [catch {expr {!$s && 1}} m]$m\nputs [catch {expr {0 || !$s}} m]$m",
+        "set s abc\nputs [catch {expr {!$s ? 1 : 0}} m]$m\nputs [catch {expr {1 || !$s}} m]$m",
+        "set s abc\nputs [catch {if {!$s == 1} {}} m]$m",
+        "puts [catch {if {!\"abc\"} {}} m]$m",
+        "set n NaN\nputs [catch {if {!$n} {}} m]$m",
+        "set e {}\nputs [catch {if {!$e} {}} m]$m",
+        "set y yes\nif {!$y} {puts d} else {puts e}\nset i 0; while {!($i > 3)} {incr i}; puts $i",
+    ]);
+}
+
+/// A shift distance wider than an `i64`: `>>` leaves the sign, `0 <<` is 0 and
+/// any other `<<` is the bare `integer value too large to represent`.
+#[test]
+fn fixed_a_bignum_shift_distance() {
+    all_agree(&[
+        "puts [catch {expr {10 << 18446744073709551615}} m]$m",
+        "puts [expr {10 >> 18446744073709551615}][expr {-1 >> 18446744073709551615}]",
+        "puts [expr {0 << 18446744073709551615}]",
+        "puts [catch {expr {10 << -18446744073709551615}} m]$m",
+        "puts [expr {-(1<<80) >> 18446744073709551615}]",
+    ]);
+}
+
+/// The smaller findings of the same sweep: `catch`'s usage line, a format
+/// width or precision that reaches `WIDE_MAX`, and a NaN under `-real`.
+#[test]
+fn fixed_catch_usage_format_fields_and_real_nan() {
+    all_agree(&[
+        "catch",
+        "puts [catch {format %9223372036854775807 x} m]$m",
+        "puts [catch {format %.99999999999999999999 x} m]$m",
+        "puts [catch {format %99999999999999999999999d 1} m]$m",
+        "puts [catch {lsort -real {1 nan 2}} m]$m\nputs [catch {lsort -real -nan} m]$m",
+        "puts [catch {lsearch -real -exact {1 2} nan} m]$m\nputs [catch {lsearch -real -exact {nan 1} 1} m]$m",
+    ]);
+}

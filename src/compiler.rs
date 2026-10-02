@@ -3124,11 +3124,48 @@ impl Compiler {
     /// string. An arithmetic or relational condition, which is what a counted
     /// loop's test is, already produces a number and keeps the loop traceable.
     pub(crate) fn condition(&mut self, e: &Expr) -> Result<(), CompileError> {
+        // A `!` whose value goes straight to a branch is not executed by
+        // tclsh: its peephole pass drops an `INST_LNOT` followed by a
+        // conditional jump and inverts the jump (`generic/tclOptimize.c`,
+        // `case INST_LNOT`), so the operand is tested by the branch's boolean
+        // rule. `if {!$s} {}` with `s` = `abc` is therefore `expected boolean
+        // value but got "abc"`, where `expr {!$s}` is `!`'s operand refusal.
+        // Every position lowered through here is one tclsh follows with a
+        // jump: a condition, a `?:` test and both operands of `&&` and `||`.
+        // Only the outermost `!` goes; `!!$s` still runs the inner one. An
+        // operand with no substitution in it is folded while compiling instead,
+        // and a fold that fails keeps the operator's wording: `if {!"abc"} {}`
+        // is `cannot use non-numeric string "abc" as operand of "!"`.
+        if let Expr::Unary(UnOp::Not, operand) = e {
+            if Self::substitutes(operand) {
+                self.expr(operand)?;
+                if !Self::yields_number(operand) || Self::can_be_nan(operand) {
+                    self.emit(Op::Extended(ext::BOOL, 0), 0);
+                }
+                self.emit(Op::LogNot, 0);
+                return Ok(());
+            }
+        }
         self.expr(e)?;
         if !Self::yields_number(e) || Self::can_be_nan(e) {
             self.emit(Op::Extended(ext::BOOL, 0), 0);
         }
         Ok(())
+    }
+
+    /// Whether evaluating `e` reads a variable, runs a command or calls a math
+    /// function — anything tclsh's compile-time fold cannot reach.
+    fn substitutes(e: &Expr) -> bool {
+        match e {
+            Expr::Int(_, _) | Expr::Float(_, _) => false,
+            Expr::Subst(parts) => parts.iter().any(|p| !matches!(p, Part::Lit(_))),
+            Expr::Unary(_, a) => Self::substitutes(a),
+            Expr::Binary(_, a, b) => Self::substitutes(a) || Self::substitutes(b),
+            Expr::Ternary(c, a, b) => {
+                Self::substitutes(c) || Self::substitutes(a) || Self::substitutes(b)
+            }
+            Expr::Call(_, _) => true,
+        }
     }
 
     /// Whether this expression's value could be a NaN, which a condition has to

@@ -1792,7 +1792,8 @@ prints a hit count per entry.
 
 ### Fixed in the second parity sweep
 
-Found by `scripts/fuzz_parity.sh -n 1000 -s 2026` and `-M -n 1000 -s 77`, each
+Found by `scripts/fuzz_parity.sh` at seeds 2026, 9001, 31337 and 8080 and in
+mutation mode at seeds 77, 4242 and 555, each
 byte-verified against tclsh 9.0.4 and pinned in `tests/parity_fuzz_findings.rs`:
 
 - **A `return` from inside a loop left the loop's region open.** The loop's
@@ -1816,6 +1817,38 @@ byte-verified against tclsh 9.0.4 and pinned in `tests/parity_fuzz_findings.rs`:
 - **`incr` checked a literal increment before the variable's value.**
   `set s 2h; incr s end` names `2h` in tclsh, since `TclIncrObj` parses the value
   first; scalar and element `incr` both do so now.
+- **A `!` whose value goes straight to a branch took the operator's wording.**
+  tclsh's peephole pass drops an `INST_LNOT` that a conditional jump follows and
+  inverts the jump (`generic/tclOptimize.c`), so in a condition, a `?:` test and
+  either operand of `&&`/`||` the operand meets the boolean rule: `if {!$s} {}`
+  with `s` = `abc` is `expected boolean value but got "abc"`. Only the
+  outermost `!` goes, and an operand with no substitution keeps the operator's
+  wording, as tclsh's compile-time fold does.
+- **A shift distance wider than an `i64`** said `integer value too large to
+  represent: N`. tclsh answers without the number for `<<`, leaves the sign for
+  `>>`, and answers 0 for `0 << N`.
+- **`catch`'s usage line** said `?optionsVarName?`; tclsh says `?optionVarName?`.
+- **A format width or precision that reaches `WIDE_MAX`** is `max size for a
+  Tcl value exceeded` where it is read, before the conversion character is
+  looked for (`format %9223372036854775807`).
+- **`lsort -real` and `lsearch -real` compared a NaN.** `Tcl_GetDoubleFromObj`
+  refuses one: `floating point value is Not a Number`.
+
+Still open from the same runs:
+
+- **A NaN made from substituted infinities is answered.** `set s Inf; expr
+  {$s - $s}` is `NaN` here and `domain error: argument not in valid range` in
+  tclsh. `+`, `-` and `*` lower to fusevm's native ops so that arithmetic loops
+  stay traceable, and those ops have no NaN-result check; only a literal
+  infinity (`Compiler::may_be_non_finite`) adds the `CANON` op that refuses one.
+  Closing it without an extension op per arithmetic op needs a NaN-result trap in
+  fusevm itself.
+- **A literal index tclsh folds while compiling.** `string range {} end+5 bad`
+  is the empty string in tclsh, because `TclCompileStringRangeCmd` encodes a
+  literal first index past the end and never reads the second; here the second
+  index is parsed and refused.
+- **`lsearch -sorted -real` over a list holding a NaN** finds what a linear scan
+  finds; tclsh's binary search meets the NaN and refuses it.
 
 ## What the differential fuzzer cannot reach
 

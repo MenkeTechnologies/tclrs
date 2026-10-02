@@ -1993,11 +1993,7 @@ fn format_string(fmt: &str, args: &[String]) -> Result<String, String> {
         } else {
             let stop = digit_run(&f, i);
             if stop > i {
-                width = f[i..stop]
-                    .iter()
-                    .collect::<String>()
-                    .parse()
-                    .map_err(|_| "integer value too large to represent".to_string())?;
+                width = literal_field(&f[i..stop])?;
                 i = stop;
             }
         }
@@ -2012,22 +2008,18 @@ fn format_string(fmt: &str, args: &[String]) -> Result<String, String> {
                 0
             } else {
                 let stop = digit_run(&f, i);
-                // A spelling too long for an `i64` saturates rather than
-                // reading as zero: it is a precision larger than any result,
-                // so it belongs on the far side of the size check below, not
-                // on the "no precision at all" side. tclsh reports
-                // `max size for a Tcl value exceeded` for
-                // `format %.99999999999999999999d 1`, which is what saturating
-                // produces here.
+                // A spelling that reaches `WIDE_MAX` is refused where it is
+                // read (`literal_field`): `format %.99999999999999999999d 1`
+                // is `max size for a Tcl value exceeded` in tclsh.
                 //
                 // `%.f` — a point with no digits after it — is a precision of
                 // zero, so an *empty* run is still zero.
-                let text = f[i..stop].iter().collect::<String>();
+                let digits = &f[i..stop];
                 i = stop;
-                if text.is_empty() {
+                if digits.is_empty() {
                     0
                 } else {
-                    text.parse().unwrap_or(i64::MAX)
+                    literal_field(digits)?
                 }
             };
             precision = Some(value.max(0));
@@ -2145,6 +2137,19 @@ const MAX_VALUE_BYTES: usize = i32::MAX as usize;
 /// `format %9223372036854775807d 1` and `format %.9223372036854775807f 1e-5`
 /// both print it.
 const TOO_BIG: &str = "max size for a Tcl value exceeded";
+
+/// A width or precision the format string spells out in digits.
+///
+/// `Tcl_AppendFormatToObj` reads one with `strtoull` and refuses it on the spot
+/// when it reaches `WIDE_MAX` (`generic/tclStringObj.c`, steps 3 and 4) — before
+/// it looks for the conversion character, so `format %9223372036854775807`
+/// is [`TOO_BIG`] rather than a format string that ended early.
+fn literal_field(digits: &[char]) -> Result<i64, String> {
+    match digits.iter().collect::<String>().parse::<i64>() {
+        Ok(n) if n < i64::MAX => Ok(n),
+        _ => Err(TOO_BIG.to_string()),
+    }
+}
 
 /// The largest precision Rust's formatter accepts: it holds one in a `u16`, and
 /// anything above is `Formatting argument out of range` — a panic, not an error.

@@ -1176,7 +1176,7 @@ fn lsearch(args: &[String]) -> Result<String, String> {
                 Some(Compare::Integer(list::wide(pattern)?))
             }
             (Mode::Exact | Mode::Sorted, DataType::Real) => {
-                Some(Compare::Real(list::double(pattern)?))
+                Some(Compare::Real(real_value(pattern)?))
             }
             _ => None,
         };
@@ -1186,7 +1186,7 @@ fn lsearch(args: &[String]) -> Result<String, String> {
             let item = key_at(i)?;
             let mut hit = match (&target, mode) {
                 (Some(Compare::Integer(want)), _) => list::wide(&item)? == *want,
-                (Some(Compare::Real(want)), _) => list::double(&item)? == *want,
+                (Some(Compare::Real(want)), _) => real_value(&item)? == *want,
                 (None, Mode::Exact | Mode::Sorted) => match data {
                     DataType::Dictionary => dictionary_compare(&item, pattern).is_eq(),
                     // The reference implementation compares the byte lengths
@@ -1422,7 +1422,7 @@ fn key_of(text: &str, data: DataType) -> Result<Key, String> {
         DataType::AsciiNoCase => Key::TextNoCase(text.to_string()),
         DataType::Dictionary => Key::Dictionary(text.to_string()),
         DataType::Integer => Key::Integer(list::wide(text)?),
-        DataType::Real => Key::Real(list::double(text)?),
+        DataType::Real => Key::Real(real_value(text)?),
         DataType::Command => Key::Command(text.to_string()),
     })
 }
@@ -2254,6 +2254,16 @@ fn borrow_state(value: &Value) -> Result<(i64, i64, &[Value]), String> {
             _ => Err(CORRUPT.to_string()),
         },
         _ => Err(CORRUPT.to_string()),
+    }
+}
+
+/// A `-real` operand of `lsort` or `lsearch`, read the way
+/// `Tcl_GetDoubleFromObj` reads it: a NaN is refused rather than compared, so
+/// `lsort -real {1 nan}` is `floating point value is Not a Number` in tclsh 9.0.
+fn real_value(text: &str) -> Result<f64, String> {
+    match list::double(text)? {
+        d if d.is_nan() => Err("floating point value is Not a Number".to_string()),
+        d => Ok(d),
     }
 }
 

@@ -4075,10 +4075,29 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let a = vm.pop();
             let sym = sym_of(id);
             let x = big_operand(&a, Side::Left, sym)?;
-            // The distance is an `i64` in every case: tclsh refuses a negative
-            // one, and a positive one wide enough not to fit would ask for a
-            // value no memory holds.
-            let by = int_operand(&b, Side::Right, sym)?;
+            // A distance wider than an `i64` cannot be honoured, and tclsh
+            // answers it without trying: a negative one is refused, `>>` leaves
+            // only the sign, `0 <<` is 0 and any other `<<` is too large to
+            // represent — the bare wording, with no number after it.
+            let by = match big_operand(&b, Side::Right, sym)? {
+                BigOperand::Int(by) => by,
+                BigOperand::Big(by) if by.sign() == num_bigint::Sign::Minus => {
+                    return Err("negative shift argument".to_string())
+                }
+                BigOperand::Big(_) => {
+                    let negative = match &x {
+                        BigOperand::Int(v) => *v < 0,
+                        BigOperand::Big(v) => v.sign() == num_bigint::Sign::Minus,
+                    };
+                    let zero = matches!(x, BigOperand::Int(0));
+                    vm.push(Value::Int(match (id == ext::SHR, negative, zero) {
+                        (true, true, _) => -1,
+                        (true, false, _) | (false, _, true) => 0,
+                        (false, _, false) => return Err(int_too_wide()),
+                    }));
+                    return Ok(());
+                }
+            };
             vm.push(shift(id, x, by)?);
             Ok(())
         }
@@ -4332,27 +4351,6 @@ fn sym_of(id: u16) -> &'static str {
     }
 }
 
-/// An operand of an integer-only operator — `%`, `&`, `|`, `^`, `<<`, `>>`, `~`
-/// — refused in `expr(n)`'s own words when it is anything else.
-///
-/// The two refusals are distinct and both are the operator's, not a command's:
-/// a string that is no number at all is `non-numeric string`, and a perfectly
-/// good double is `floating-point value`. fusevm's native `Op::BitAnd` and
-/// friends would take either, coercing through `Value::to_int` — `expr {1.5 |
-/// 2}` answered 3 — so these operators are lowered to extension ops whenever
-/// the compiler cannot prove both operands integral
-/// ([`crate::compiler::Compiler::yields_integer`]).
-fn int_operand(v: &Value, side: Side, op: &str) -> Result<i64, String> {
-    match big_operand(v, side, op)? {
-        BigOperand::Int(i) => Ok(i),
-        // Every caller of this either handles a bignum itself before asking, or
-        // is an operator with no bignum meaning; none can answer from a
-        // truncation, so reaching here with one is a bug rather than a script
-        // error.
-        BigOperand::Big(b) => Err(format!("integer value too large to represent: {b}")),
-    }
-}
-
 /// An integer operand that may be wider than an `i64`.
 enum BigOperand {
     Int(i64),
@@ -4368,7 +4366,18 @@ impl BigOperand {
     }
 }
 
-/// The same refusals as [`int_operand`], with a bignum allowed through.
+/// An operand of an integer-only operator — `%`, `&`, `|`, `^`, `<<`, `>>`, `~`
+/// — refused in `expr(n)`'s own words when it is anything else.
+///
+/// The two refusals are distinct and both are the operator's, not a command's:
+/// a string that is no number at all is `non-numeric string`, and a perfectly
+/// good double is `floating-point value`. fusevm's native `Op::BitAnd` and
+/// friends would take either, coercing through `Value::to_int` — `expr {1.5 |
+/// 2}` answered 3 — so these operators are lowered to extension ops whenever
+/// the compiler cannot prove both operands integral
+/// ([`crate::compiler::Compiler::yields_integer`]).
+///
+/// A bignum is allowed through; each caller decides what one means.
 fn big_operand(v: &Value, side: Side, op: &str) -> Result<BigOperand, String> {
     match num_operand(v, side, op)? {
         Num::Int(i) => Ok(BigOperand::Int(i)),
