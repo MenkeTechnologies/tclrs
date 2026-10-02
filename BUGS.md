@@ -627,10 +627,12 @@ approximated, and nothing is silently mis-run.
   `no such variable`; the globals are the legacy face of the same information,
   and setting `::errorCode` only where a code is known would make
   `info exists ::errorCode` disagree with tclsh more often than it agrees.
-- **`namespace path`, `namespace unknown` and `namespace upvar`.** All three
-  change how a name resolves *after* the point this frontend resolved it, so
-  honouring them would mean re-resolving names at run time. Refused where they
-  are written.
+- **`namespace path` and `namespace unknown`.** Both change how a name
+  resolves *after* the point this frontend resolved it, so honouring them would
+  mean re-resolving names at run time. Refused where they are written.
+  `namespace upvar` was refused with them; with the namespace and every
+  `otherVar` written out it is the `upvar #0` to the fully qualified name, and is
+  lowered as that. A computed namespace or `otherVar` is still refused.
 - **A computed `namespace eval` name or body inside a procedure.** At a
   script's top level the command runs as the list its words make, where every
   word is written out. Inside a procedure that list would run against the

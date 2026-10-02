@@ -163,7 +163,7 @@
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">142/169</div>
+            <div class="stat-val">143/169</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -1241,7 +1241,7 @@
 
       <section class="tutorial-section" id="ch-namespace">
         <h2>The <code>namespace</code> ensemble</h2>
-        <p class="chapter-meta">19 subcommands recognised &middot; 16 implemented &middot; 3 refused</p>
+        <p class="chapter-meta">19 subcommands recognised &middot; 17 implemented &middot; 2 refused</p>
         <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
         <article class="doc-entry" id="doc-namespace-children">
           <h3><a class="doc-anchor" href="#doc-namespace-children">#</a> <code>namespace children</code></h3>
@@ -1351,8 +1351,7 @@
           <h3><a class="doc-anchor" href="#doc-namespace-upvar">#</a> <code>namespace upvar</code></h3>
           <pre><code class="lang-tcl">namespace upvar ns ?otherVar myVar ...?
 </code></pre>
-          <p>Refused, for the same reason <code>namespace path</code> is.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>"namespace upvar" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out</code></p>
+          <p>Link each <code>myVar</code> to the variable <code>otherVar</code> names in namespace <code>ns</code>, as <code>upvar #0</code> to its qualified name. The namespace and every <code>otherVar</code> must be written out.</p>
         </article>
         <article class="doc-entry" id="doc-namespace-which">
           <h3><a class="doc-anchor" href="#doc-namespace-which">#</a> <code>namespace which</code></h3>

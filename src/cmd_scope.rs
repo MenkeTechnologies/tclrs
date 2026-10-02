@@ -583,7 +583,13 @@ impl Compiler {
                 line: self.command_line,
             });
         }
-        scope.aliases.insert(local.to_string(), other.to_string());
+        // The target is a variable of the global frame, so it resolves from the
+        // root namespace and is stored under its table key: `upvar #0 ::ns::v
+        // loc` and `upvar #0 ns::v loc` both name the key `ns::v`. The written
+        // spelling reached the table with its `::` and found nothing.
+        let other = crate::cmd_namespace::resolve("::", other);
+        let other = crate::cmd_namespace::store_key(&other).to_string();
+        scope.aliases.insert(local.to_string(), other);
         Ok(())
     }
 }

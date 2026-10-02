@@ -2656,3 +2656,32 @@ fn fixed_dict_writes_into_an_array_element() {
         "set a(1) {k x}\nputs [catch {dict incr a(1) k} m]$m",
     ]);
 }
+
+/// `upvar #0 ::ns::v loc` in a procedure read nothing: the alias kept the
+/// written `::` spelling, which is not the key the variable is stored under.
+/// `namespace upvar`, which is that same link, was refused outright.
+#[test]
+fn fixed_namespace_variables_link_through_upvar_and_namespace_upvar() {
+    all_agree(&[
+        "namespace eval ns {variable v 5}\nproc f {} {upvar #0 ::ns::v loc; incr loc}\nputs [f]$ns::v",
+        "namespace eval ns {variable w 1; variable v 2}\nproc g {} {upvar #0 ns::w a ::ns::v b; list $a $b}\nputs [g]",
+        "set ::g 3\nproc h {} {upvar #0 ::g l; set l 4}\nh; puts $g",
+        "namespace eval ns {variable q 1}\nproc p {} {namespace upvar ns q x; incr x}\nputs [p]$ns::q",
+        "namespace eval ns {namespace eval inner {variable iv 3}; proc r {} {namespace upvar inner iv v; return $v}}\nputs [ns::r]",
+        "namespace eval ns {variable q 1}\nnamespace upvar ns q gq; set gq 10; puts $ns::q",
+        "namespace eval ns {}\nputs [catch {namespace upvar ns} m]<$m>",
+        "puts [catch {namespace upvar nope a b} m]$m",
+    ]);
+}
+
+/// A namespace that does not exist is named as the script wrote it, and a
+/// relative one with the namespace it was looked up from:
+/// `TclGetNamespaceFromObj`'s two wordings and its `TCL LOOKUP NAMESPACE` code.
+#[test]
+fn fixed_a_missing_namespace_is_named_as_written() {
+    all_agree(&[
+        "foreach n {nope ::nope a::b} {puts [catch {namespace parent $n} m]$m; puts [catch {namespace children $n} m]$m}",
+        "namespace eval x {puts [catch {namespace parent nope} m]$m}",
+        "catch {namespace parent nope} m o; puts [dict get $o -errorcode]",
+    ]);
+}

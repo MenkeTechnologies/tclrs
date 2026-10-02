@@ -1371,7 +1371,7 @@ const NAMESPACE_CORPUS: &[Entry] = &[
     Entry {
         name: "upvar",
         synopsis: "namespace upvar ns ?otherVar myVar ...?",
-        summary: "Refused, for the same reason `namespace path` is.",
+        summary: "Link each `myVar` to the variable `otherVar` names in namespace `ns`, as `upvar #0` to its qualified name. The namespace and every `otherVar` must be written out.",
     },
     Entry {
         name: "which",

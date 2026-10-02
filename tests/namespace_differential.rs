@@ -24,6 +24,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const PROGRAMS: &[&str] = &[
+    // ── `namespace upvar`, lowered as `upvar #0` to the qualified name ──
+    "namespace eval ::a {variable v 1}\nnamespace eval foo {namespace upvar ::a v v; incr v}\nputs $::a::v",
     // ── a computed `namespace eval` name or body, run as a list ──
     "set n foo\nnamespace eval $n {variable x 1; proc get {} {variable x; return $x}}\nputs [foo::get]\nputs $foo::x",
     "set b {set x 1}\nnamespace eval foo $b\nputs $foo::x\nset n foo\nnamespace eval $n {puts [namespace current]}",
@@ -237,9 +239,11 @@ fn constructs_that_cannot_be_resolved_while_compiling_are_refused() {
             "namespace eval foo {namespace unknown x}",
             "\"namespace unknown\"",
         ),
+        // `namespace upvar` with its names written out is lowered as `upvar #0`
+        // and compared in `PROGRAMS`; a computed namespace is still refused.
         (
-            "namespace eval foo {namespace upvar ::a v v}",
-            "\"namespace upvar\"",
+            "namespace eval foo {set n ::a\n  namespace upvar $n v v}",
+            "computed \"namespace upvar\"",
         ),
         (
             "namespace eval foo {set p a::*\n  namespace import $p}",

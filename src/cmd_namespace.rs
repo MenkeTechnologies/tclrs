@@ -40,9 +40,10 @@
 //! A namespace name or a body this compiler cannot read while compiling is
 //! refused rather than approximated: `namespace eval $n {…}` names a namespace
 //! that is not known until the command runs, and every resolution above depends
-//! on knowing it. `namespace path`, `namespace unknown` and `namespace upvar`
-//! change resolution at run time and are refused for the same reason. See
-//! `refuse_dynamic`.
+//! on knowing it. `namespace path` and `namespace unknown` change
+//! resolution at run time and are refused for the same reason. See
+//! `refuse_dynamic`. `namespace upvar` with its names written out is the
+//! `upvar #0` to the fully qualified name, and is lowered as that.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -329,6 +330,26 @@ fn resolve_var(c: &Compiler, name: &str) -> String {
 
 // ── the runtime registry ─────────────────────────────────────────────────
 
+/// `TclGetNamespaceFromObj`'s refusal (`generic/tclNamesp.c`): the name as the
+/// script wrote it, and — for a relative one — the namespace it was looked up
+/// from, with the `TCL LOOKUP NAMESPACE` errorcode.
+fn namespace_not_found(written: &str, here: &str) -> TclError {
+    let msg = if written.starts_with("::") {
+        format!("namespace \"{written}\" not found")
+    } else {
+        format!("namespace \"{written}\" not found in \"{here}\"")
+    };
+    TclError {
+        errorcode: Some(crate::list::join(&[
+            "TCL".to_string(),
+            "LOOKUP".to_string(),
+            "NAMESPACE".to_string(),
+            written.to_string(),
+        ])),
+        ..TclError::plain(msg)
+    }
+}
+
 /// What one command in the registry is.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Entry {
@@ -561,11 +582,10 @@ impl Compiler {
                 2..=usize::MAX,
                 "namespace inscope ns script ?arg...?",
             ),
-            // These three change how a *later* name resolves, which this
+            "upvar" => self.ns_upvar(rest),
+            // These two change how a *later* name resolves, which this
             // frontend decided while compiling. Nothing here could honour them.
-            "path" | "unknown" | "upvar" => {
-                Err(refuse_dynamic(self, &format!("\"namespace {sub}\"")))
-            }
+            "path" | "unknown" => Err(refuse_dynamic(self, &format!("\"namespace {sub}\""))),
             _ => unreachable!("every subcommand above is one of SUBCOMMANDS"),
         }
     }
@@ -612,6 +632,59 @@ impl Compiler {
         }
         self.emit(Op::Extended(ext::NS, count), 1 - count as i32);
         Ok(())
+    }
+
+    /// `namespace upvar ns ?otherVar myVar ...?`.
+    ///
+    /// `NamespaceUpvarCmd` (`generic/tclNamesp.c:4673`) looks each `otherVar`
+    /// up in `ns` alone and links `myVar` to it with `TclPtrMakeUpvar` — the link
+    /// `upvar #0` makes to a namespace variable spelt out in full. So the names
+    /// are resolved here, `ns` against the current namespace and each
+    /// `otherVar` against `ns`, and the command is lowered as that `upvar #0`.
+    /// Both have to be written out, as every namespace name here does.
+    ///
+    /// `ns` must exist when the command runs, and tclsh says so as `namespace
+    /// "x" not found in "::"` — `namespace parent ns` raises exactly that, so
+    /// it runs first and its value is dropped.
+    fn ns_upvar(&mut self, rest: &[Word]) -> Result<(), CompileError> {
+        let [ns_w, pairs @ ..] = rest else {
+            return self
+                .error("wrong # args: should be \"namespace upvar ns ?otherVar myVar ...?\"");
+        };
+        if !pairs.len().is_multiple_of(2) {
+            return self
+                .error("wrong # args: should be \"namespace upvar ns ?otherVar myVar ...?\"");
+        }
+        let Some(ns) = ns_w.as_literal() else {
+            return Err(refuse_dynamic(
+                self,
+                "a computed \"namespace upvar\" namespace",
+            ));
+        };
+        let target = resolve(&self.ns.current, ns);
+        let mut words = vec![literal_word("#0")];
+        for pair in pairs.chunks(2) {
+            let Some(other) = pair[0].as_literal() else {
+                return Err(refuse_dynamic(
+                    self,
+                    "a computed \"namespace upvar\" variable",
+                ));
+            };
+            words.push(literal_word(&resolve(&target, other)));
+            words.push(pair[1].clone());
+        }
+        self.ns_runtime(
+            "parent",
+            std::slice::from_ref(ns_w),
+            0..=1,
+            "namespace parent ?name?",
+        )?;
+        self.emit(Op::Pop, -1);
+        if pairs.is_empty() {
+            self.push_empty();
+            return Ok(());
+        }
+        self.cmd_upvar(&words)
     }
 
     /// `namespace eval name arg ?arg ...?` — the one subcommand that is a
@@ -1244,7 +1317,8 @@ fn run(
                 None => here.to_string(),
             };
             if !reg.exists(&fqn) {
-                return Err(TclError::plain(format!("namespace \"{fqn}\" not found")));
+                let written = args.first().map_or(here, String::as_str);
+                return Err(namespace_not_found(written, here));
             }
             Ok(parent_of(&fqn))
         }
@@ -1254,7 +1328,8 @@ fn run(
                 None => here.to_string(),
             };
             if !reg.exists(&fqn) {
-                return Err(TclError::plain(format!("namespace \"{fqn}\" not found")));
+                let written = args.first().map_or(here, String::as_str);
+                return Err(namespace_not_found(written, here));
             }
             // A pattern with no `::` is matched against children of `fqn`; one
             // with `::` is qualified first, as `Tcl_GetNamespaceChildren` does.
