@@ -2,7 +2,7 @@
 
 Reference interpreter: **tclsh 9.0.4**. Suite: `tcl9.0.4/tests` — the `tests/` directory of the matching Tcl source release, fetched and checksum-verified by `conformance/fetch-suite.sh`.
 
-**43661 of 48845 attempted cases pass — 89.4%.** Over every case the suite contains, including the ones that cannot be run here, that is 43661 of 69424 — 62.9%.
+**40647 of 45358 attempted cases pass — 89.6%.** Over every case the suite contains, including the ones that cannot be run here, that is 40647 of 65657 — 61.9%.
 
 ## How the number is produced
 
@@ -30,21 +30,21 @@ Three things about the extraction are worth stating plainly. First, suite files 
 
 | | Cases | Share |
 | --- | ---: | ---: |
-| Extracted from the suite | 69424 | 100% |
-| Skipped — cannot be run | 20579 | 29.6% |
-| Attempted | 48845 | 70.4% |
-| ⤷ passed | 43661 | 89.4% of attempted |
-| ⤷ failed | 5184 | 10.6% of attempted |
+| Extracted from the suite | 65657 | 100% |
+| Skipped — cannot be run | 20299 | 30.9% |
+| Attempted | 45358 | 69.1% |
+| ⤷ passed | 40647 | 89.6% of attempted |
+| ⤷ failed | 4711 | 10.4% of attempted |
 
-Of the 5184 failures, 902 are a feature tclrs documents as not built yet rather than a wrong answer. Counting those as skips instead would give 43661 of 47943 — 91.1% — and that looser number is stated here only so the choice of rule is visible. The headline above uses the strict rule.
+Of the 4711 failures, 666 are a feature tclrs documents as not built yet rather than a wrong answer. Counting those as skips instead would give 40647 of 44692 — 90.9% — and that looser number is stated here only so the choice of rule is visible. The headline above uses the strict rule.
 
 ## Why cases were skipped
 
 | Reason | Cases |
 | --- | ---: |
-| tcltest constraint not met | 13663 |
-| needs a command plain tclsh has not got | 4751 |
-| tclrs has no such command | 2164 |
+| tcltest constraint not met | 13486 |
+| needs a command plain tclsh has not got | 4724 |
+| tclrs has no such command | 2088 |
 | tclsh produced no reference outcome | 1 |
 
 ### Commands tclrs does not have, by how many cases they block
@@ -54,14 +54,13 @@ A case is attributed to the first command tclrs refused, so a body using several
 | Command | Cases |
 | --- | ---: |
 | `interp` | 424 |
-| `oo::class` | 386 |
+| `oo::class` | 385 |
 | `trace` | 280 |
 | `socket` | 123 |
-| `try` | 91 |
-| `chan` | 78 |
+| `chan` | 79 |
 | `oo::object` | 74 |
 | `zipfs` | 55 |
-| `safe::interpCreate` | 44 |
+| `safe::interpCreate` | 47 |
 | `const` | 40 |
 | `tcl::prefix` | 36 |
 | `fpclassify` | 30 |
@@ -69,14 +68,14 @@ A case is attributed to the first command tclrs refused, so a body using several
 | `exec` | 24 |
 | `ns` | 24 |
 | `history` | 23 |
+| `tcl::unsupported::getbytecode` | 23 |
 | `tcl::unsupported::disassemble` | 22 |
-| `tcl::unsupported::getbytecode` | 22 |
+| `tcl::unsupported::representation` | 20 |
 | `::apply` | 19 |
-| `tailcall` | 18 |
+| `tailcall` | 19 |
 | `::tcl::tm::path` | 17 |
 | `load` | 16 |
-| `tcl::unsupported::representation` | 16 |
-| `timerate` | 15 |
+| `timerate` | 16 |
 | `unload` | 14 |
 | `::tcl::Bgerror` | 13 |
 | `tcl_startOfNextWord` | 12 |
@@ -93,17 +92,18 @@ A case is attributed to the first command tclrs refused, so a body using several
 | `auto_qualify` | 8 |
 | `tcl::process` | 7 |
 | `time` | 7 |
-| *50 further commands* | 100 |
+| `safe::setLogCmd` | 6 |
+| *51 further commands* | 99 |
 
 ## Why cases failed
 
 | Cause | Cases | Share of failures | For example |
 | --- | ---: | ---: | --- |
-| results differ | 2572 | 49.6% | `append.test` append-3.4, `append.test` append-3.5, `append.test` append-3.6 |
-| tclrs raised an error, tclsh did not | 1539 | 29.7% | `append.test` append-7.1, `apply.test` apply-2.2, `apply.test` apply-2.3 |
-| both raised an error, messages differ | 882 | 17.0% | `append.test` append-3.1, `append.test` append-6.1, `append.test` append-10.2 |
-| tclsh raised an error, tclrs did not | 164 | 3.2% | `appendComp.test` appendComp-10.4, `binary.test` binary-73.29, `binary.test` binary-75.25 |
-| tclrs was killed or crashed | 27 | 0.5% | `clock-ivm.test` clock-6.0.vm:0, `clock-ivm.test` clock-6.9.vm:0, `clock-ivm.test` clock-6.10.vm:0 |
+| results differ | 2452 | 52.0% | `append.test` append-3.4, `append.test` append-3.5, `append.test` append-3.6 |
+| tclrs raised an error, tclsh did not | 1307 | 27.7% | `append.test` append-7.1, `apply.test` apply-2.2, `apply.test` apply-2.3 |
+| both raised an error, messages differ | 776 | 16.5% | `append.test` append-3.1, `append.test` append-6.1, `append.test` append-10.2 |
+| tclsh raised an error, tclrs did not | 149 | 3.2% | `appendComp.test` appendComp-10.4, `binary.test` binary-73.29, `binary.test` binary-75.25 |
+| tclrs was killed or crashed | 27 | 0.6% | `clock-ivm.test` clock-6.0.vm:0, `clock-ivm.test` clock-6.9.vm:0, `clock-ivm.test` clock-6.10.vm:0 |
 
 Every failing case is written out in full — its program, the tclsh outcome and the tclrs outcome — to `conformance/work/failures.txt` by the same run that produced this table.
 
@@ -113,42 +113,42 @@ Error text with the quoted part elided and tclrs's trailing `(line N)` removed, 
 
 | Message | Cases |
 | --- | ---: |
-| identical text apart from tclrs's trailing (line N) | 384 |
-| can't read "…": no such variable | 315 |
+| identical text apart from tclrs's trailing (line N) | 391 |
+| can't read "…": no such variable | 295 |
 | clock scan: the free-form parser is not supported yet; use -format | 252 |
 | encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+D800, which a string in this frontend cannot hold | 181 |
-| expression must be a literal in this phase | 132 |
 | encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+DC00, which a string in this frontend cannot hold | 116 |
 | unable to convert input string: ambiguous day | 48 |
-| key "…" not known in dictionary | 40 |
-| script body must be a literal in this phase | 36 |
 | time zone "…" not found: no zone file names it, and a POSIX time zone rule is not supported yet | 36 |
-| return option "…" is not supported | 35 |
 | encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+DBFF, which a string in this frontend cannot hold | 32 |
-| "…" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out | 31 |
-| invalid bareword "…" in expression "…"; should be "…" or "…" or "…" or ... | 31 |
 | input string does not match supplied format | 30 |
 | clock: dates before the Gregorian changeover of 1752-09-14 are not supported yet | 26 |
+| info frame is not supported yet: it reports on the stack of *commands*, and only the stack of call frames is kept | 26 |
+| key "…" not known in dictionary | 26 |
 | a coroutine of the built-in command "…" is not supported; its body must be a procedure this script defines | 25 |
-| integer value too large to represent | 25 |
 | "…" into an array element is not supported yet | 24 |
 | array default is not supported yet | 24 |
 | array startsearch is not supported yet | 24 |
 | file attributes is not supported yet: it needs an interface this frontend has not built | 24 |
+| integer value too large to represent | 24 |
 | the namespace "…" of a lambda is not supported yet: this frontend has only "…" | 22 |
 | "…" with a level number is not supported: no record of the command that entered a level is kept | 21 |
-| file link is not supported yet: it needs an interface this frontend has not built | 19 |
-| info frame is not supported yet: it reports on the stack of *commands*, and only the stack of call frames is kept | 19 |
-| wrong # args: should be "…" | 19 |
+| invalid bareword "…" in expression "…"; should be "…" or "…" or "…" or ... | 21 |
+| "…" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out | 20 |
+| file link is not supported yet: it needs an interface this frontend has not built | 18 |
 | info class is not supported yet: TclOO is not implemented | 18 |
 | encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+DFFF, which a string in this frontend cannot hold | 16 |
-| a computed "…" body is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out | 15 |
+| info object is not supported yet: TclOO is not implemented | 15 |
+| unable to convert input string: invalid day of week | 15 |
+| killed after 15s without progress | 14 |
+| opening a command pipeline is not implemented in this frontend; open refuses it rather than opening a file named "…" | 14 |
+| bad level "…" | 13 |
 
 ## Command coverage
 
-Independently of the suite: of the 109 commands the reference interpreter defines in the global namespace, tclrs answers to 80 — 73.4%. A name counts as answered when tclrs does not refuse it with `invalid command name`.
+Independently of the suite: of the 109 commands the reference interpreter defines in the global namespace, tclrs answers to 82 — 75.2%. A name counts as answered when tclrs does not refuse it with `invalid command name`.
 
-Implemented: `after`, `append`, `apply`, `array`, `binary`, `break`, `catch`, `cd`, `clock`, `close`, `concat`, `continue`, `coroutine`, `dict`, `encoding`, `eof`, `error`, `eval`, `expr`, `fconfigure`, `file`, `flush`, `for`, `foreach`, `format`, `gets`, `glob`, `global`, `if`, `incr`, `info`, `join`, `lappend`, `lassign`, `ledit`, `lindex`, `linsert`, `list`, `llength`, `lmap`, `lpop`, `lrange`, `lremove`, `lrepeat`, `lreplace`, `lreverse`, `lsearch`, `lseq`, `lset`, `lsort`, `namespace`, `open`, `package`, `proc`, `puts`, `pwd`, `read`, `regexp`, `regsub`, `rename`, `return`, `scan`, `seek`, `set`, `source`, `split`, `string`, `subst`, `switch`, `tell`, `throw`, `unset`, `update`, `uplevel`, `upvar`, `variable`, `vwait`, `while`, `yield`, `yieldto`
+Implemented: `after`, `append`, `apply`, `array`, `binary`, `break`, `catch`, `cd`, `clock`, `close`, `concat`, `continue`, `coroutine`, `dict`, `encoding`, `eof`, `error`, `eval`, `expr`, `fconfigure`, `file`, `flush`, `for`, `foreach`, `format`, `gets`, `glob`, `global`, `if`, `incr`, `info`, `join`, `lappend`, `lassign`, `ledit`, `lindex`, `linsert`, `list`, `llength`, `lmap`, `lpop`, `lrange`, `lremove`, `lrepeat`, `lreplace`, `lreverse`, `lsearch`, `lseq`, `lset`, `lsort`, `namespace`, `open`, `package`, `pid`, `proc`, `puts`, `pwd`, `read`, `regexp`, `regsub`, `rename`, `return`, `scan`, `seek`, `set`, `source`, `split`, `string`, `subst`, `switch`, `tell`, `throw`, `try`, `unset`, `update`, `uplevel`, `upvar`, `variable`, `vwait`, `while`, `yield`, `yieldto`
 
 ## Per file
 
@@ -157,7 +157,7 @@ Implemented: `after`, `append`, `apply`, `array`, `binary`, `break`, `catch`, `c
 | `aaa_exit.test` | 2 | 2 | 0 | 0 | 0 | — |
 | `abstractlist.test` | 123 | 123 | 0 | 0 | 0 | — |
 | `append.test` | 52 | 9 | 43 | 34 | 9 | 79.1% |
-| `appendComp.test` | 48 | 12 | 36 | 32 | 4 | 88.9% |
+| `appendComp.test` | 48 | 12 | 36 | 34 | 2 | 94.4% |
 | `apply.test` | 42 | 6 | 36 | 11 | 25 | 30.6% |
 | `assemble.test` | 283 | 235 | 48 | 2 | 46 | 4.2% |
 | `assocd.test` | 11 | 11 | 0 | 0 | 0 | — |
@@ -165,61 +165,61 @@ Implemented: `after`, `append`, `apply`, `array`, `binary`, `break`, `catch`, `c
 | `autoMkindex.test` | 11 | 10 | 1 | 1 | 0 | 100.0% |
 | `basic.test` | 147 | 132 | 15 | 5 | 10 | 33.3% |
 | `bigdata.test` | 113 | 113 | 0 | 0 | 0 | — |
-| `binary.test` | 750 | 90 | 660 | 610 | 50 | 92.4% |
+| `binary.test` | 750 | 91 | 659 | 610 | 49 | 92.6% |
 | `brodnik.test` | 422 | 422 | 0 | 0 | 0 | — |
 | `chan.test` | 42 | 40 | 2 | 2 | 0 | 100.0% |
 | `chanio.test` | 779 | 439 | 340 | 334 | 6 | 98.2% |
 | `clock-ivm.test` | 8744 | 66 | 8678 | 7478 | 1200 | 86.2% |
 | `clock-no-tzdata.test` | 0 | 0 | 0 | 0 | 0 | — |
 | `clock.test` | 8744 | 78 | 8666 | 7475 | 1191 | 86.3% |
-| `cmdAH.test` | 17001 | 206 | 16795 | 16245 | 550 | 96.7% |
-| `cmdIL.test` | 168 | 8 | 160 | 134 | 26 | 83.8% |
+| `cmdAH.test` | 13234 | 2 | 13232 | 12873 | 359 | 97.3% |
+| `cmdIL.test` | 168 | 8 | 160 | 137 | 23 | 85.6% |
 | `cmdInfo.test` | 12 | 12 | 0 | 0 | 0 | — |
-| `cmdMZ.test` | 97 | 29 | 68 | 15 | 53 | 22.1% |
-| `compExpr-old.test` | 184 | 4 | 180 | 117 | 63 | 65.0% |
+| `cmdMZ.test` | 97 | 30 | 67 | 31 | 36 | 46.3% |
+| `compExpr-old.test` | 184 | 4 | 180 | 133 | 47 | 73.9% |
 | `compExpr.test` | 82 | 7 | 75 | 63 | 12 | 84.0% |
-| `compile.test` | 171 | 122 | 49 | 37 | 12 | 75.5% |
+| `compile.test` | 171 | 123 | 48 | 44 | 4 | 91.7% |
 | `concat.test` | 9 | 0 | 9 | 9 | 0 | 100.0% |
 | `config.test` | 9 | 3 | 6 | 0 | 6 | 0.0% |
-| `coroutine.test` | 77 | 40 | 37 | 5 | 32 | 13.5% |
+| `coroutine.test` | 77 | 41 | 36 | 5 | 31 | 13.9% |
 | `dcall.test` | 6 | 6 | 0 | 0 | 0 | — |
-| `dict.test` | 373 | 24 | 349 | 264 | 85 | 75.6% |
+| `dict.test` | 373 | 24 | 349 | 265 | 84 | 75.9% |
 | `dstring.test` | 46 | 46 | 0 | 0 | 0 | — |
 | `encoding.test` | 232 | 46 | 186 | 130 | 56 | 69.9% |
 | `env.test` | 32 | 29 | 3 | 2 | 1 | 66.7% |
-| `error.test` | 317 | 95 | 222 | 23 | 199 | 10.4% |
+| `error.test` | 317 | 9 | 308 | 107 | 201 | 34.7% |
 | `eval.test` | 12 | 0 | 12 | 11 | 1 | 91.7% |
 | `event.test` | 65 | 51 | 14 | 7 | 7 | 50.0% |
 | `exec.test` | 145 | 140 | 5 | 0 | 5 | 0.0% |
-| `execute.test` | 157 | 96 | 61 | 41 | 20 | 67.2% |
-| `expr-old.test` | 461 | 31 | 430 | 385 | 45 | 89.5% |
-| `expr.test` | 2168 | 1091 | 1077 | 878 | 199 | 81.5% |
-| `fCmd.test` | 306 | 219 | 87 | 55 | 32 | 63.2% |
-| `fileName.test` | 306 | 199 | 107 | 79 | 28 | 73.8% |
-| `fileSystem.test` | 140 | 82 | 58 | 40 | 18 | 69.0% |
+| `execute.test` | 157 | 96 | 61 | 51 | 10 | 83.6% |
+| `expr-old.test` | 461 | 31 | 430 | 389 | 41 | 90.5% |
+| `expr.test` | 2168 | 1091 | 1077 | 986 | 91 | 91.6% |
+| `fCmd.test` | 306 | 221 | 85 | 48 | 37 | 56.5% |
+| `fileName.test` | 306 | 199 | 107 | 78 | 29 | 72.9% |
+| `fileSystem.test` | 140 | 82 | 58 | 42 | 16 | 72.4% |
 | `fileSystemEncoding.test` | 1 | 1 | 0 | 0 | 0 | — |
 | `for-old.test` | 9 | 0 | 9 | 7 | 2 | 77.8% |
-| `for.test` | 88 | 26 | 62 | 36 | 26 | 58.1% |
-| `foreach.test` | 43 | 1 | 42 | 36 | 6 | 85.7% |
-| `format.test` | 269 | 1 | 268 | 264 | 4 | 98.5% |
+| `for.test` | 88 | 26 | 62 | 43 | 19 | 69.4% |
+| `foreach.test` | 43 | 1 | 42 | 37 | 5 | 88.1% |
+| `format.test` | 269 | 1 | 268 | 265 | 3 | 98.9% |
 | `get.test` | 23 | 17 | 6 | 6 | 0 | 100.0% |
 | `history.test` | 62 | 25 | 37 | 18 | 19 | 48.6% |
-| `http.test` | 528 | 501 | 27 | 9 | 18 | 33.3% |
+| `http.test` | 528 | 501 | 27 | 24 | 3 | 88.9% |
 | `http11.test` | 147 | 147 | 0 | 0 | 0 | — |
 | `httpPipeline.test` | 5988 | 5988 | 0 | 0 | 0 | — |
 | `httpProxy.test` | 150 | 150 | 0 | 0 | 0 | — |
 | `httpcookie.test` | 60 | 54 | 6 | 0 | 6 | 0.0% |
 | `icu.test` | 58 | 58 | 0 | 0 | 0 | — |
-| `if-old.test` | 33 | 0 | 33 | 32 | 1 | 97.0% |
-| `if.test` | 73 | 4 | 69 | 36 | 33 | 52.2% |
+| `if-old.test` | 33 | 0 | 33 | 33 | 0 | 100.0% |
+| `if.test` | 73 | 4 | 69 | 42 | 27 | 60.9% |
 | `incr-old.test` | 14 | 1 | 13 | 11 | 2 | 84.6% |
-| `incr.test` | 69 | 2 | 67 | 48 | 19 | 71.6% |
+| `incr.test` | 69 | 2 | 67 | 50 | 17 | 74.6% |
 | `indexObj.test` | 65 | 65 | 0 | 0 | 0 | — |
-| `info.test` | 287 | 137 | 150 | 68 | 82 | 45.3% |
+| `info.test` | 287 | 137 | 150 | 67 | 83 | 44.7% |
 | `init.test` | 10 | 10 | 0 | 0 | 0 | — |
 | `interp.test` | 355 | 344 | 11 | 0 | 11 | 0.0% |
-| `io.test` | 884 | 482 | 402 | 380 | 22 | 94.5% |
-| `ioCmd.test` | 377 | 244 | 133 | 56 | 77 | 42.1% |
+| `io.test` | 884 | 482 | 402 | 381 | 21 | 94.8% |
+| `ioCmd.test` | 377 | 244 | 133 | 69 | 64 | 51.9% |
 | `ioTrans.test` | 106 | 104 | 2 | 0 | 2 | 0.0% |
 | `iogt.test` | 17 | 17 | 0 | 0 | 0 | — |
 | `join.test` | 10 | 0 | 10 | 7 | 3 | 70.0% |
@@ -230,42 +230,42 @@ Implemented: `after`, `append`, `apply`, `array`, `binary`, `break`, `catch`, `c
 | `listObj.test` | 59 | 17 | 42 | 42 | 0 | 100.0% |
 | `listRep.test` | 231 | 227 | 4 | 4 | 0 | 100.0% |
 | `llength.test` | 6 | 0 | 6 | 6 | 0 | 100.0% |
-| `lmap.test` | 66 | 1 | 65 | 51 | 14 | 78.5% |
+| `lmap.test` | 66 | 1 | 65 | 52 | 13 | 80.0% |
 | `load.test` | 30 | 30 | 0 | 0 | 0 | — |
 | `lpop.test` | 19 | 2 | 17 | 16 | 1 | 94.1% |
-| `lrange.test` | 1766 | 2 | 1764 | 1760 | 4 | 99.8% |
+| `lrange.test` | 1766 | 6 | 1760 | 1760 | 0 | 100.0% |
 | `lrepeat.test` | 12 | 1 | 11 | 10 | 1 | 90.9% |
 | `lreplace.test` | 3579 | 0 | 3579 | 3578 | 1 | 100.0% |
 | `lsearch.test` | 165 | 0 | 165 | 156 | 9 | 94.5% |
-| `lseq.test` | 136 | 25 | 111 | 82 | 29 | 73.9% |
+| `lseq.test` | 136 | 22 | 114 | 86 | 28 | 75.4% |
 | `lset.test` | 89 | 89 | 0 | 0 | 0 | — |
 | `lsetComp.test` | 19 | 19 | 0 | 0 | 0 | — |
 | `macOSXFCmd.test` | 14 | 1 | 13 | 0 | 13 | 0.0% |
 | `macOSXLoad.test` | 57 | 57 | 0 | 0 | 0 | — |
 | `main.test` | 67 | 62 | 5 | 5 | 0 | 100.0% |
 | `mathop.test` | 385 | 222 | 163 | 163 | 0 | 100.0% |
-| `misc.test` | 301 | 299 | 2 | 0 | 2 | 0.0% |
+| `misc.test` | 301 | 299 | 2 | 1 | 1 | 50.0% |
 | `msgcat.test` | 135 | 123 | 12 | 12 | 0 | 100.0% |
 | `mutex.test` | 12 | 12 | 0 | 0 | 0 | — |
-| `namespace-old.test` | 126 | 32 | 94 | 63 | 31 | 67.0% |
-| `namespace.test` | 314 | 75 | 239 | 115 | 124 | 48.1% |
+| `namespace-old.test` | 126 | 32 | 94 | 77 | 17 | 81.9% |
+| `namespace.test` | 314 | 78 | 236 | 120 | 116 | 50.8% |
 | `notify.test` | 23 | 23 | 0 | 0 | 0 | — |
 | `nre.test` | 28 | 24 | 4 | 0 | 4 | 0.0% |
 | `obj.test` | 84 | 76 | 8 | 7 | 1 | 87.5% |
-| `oo.test` | 388 | 357 | 31 | 0 | 31 | 0.0% |
+| `oo.test` | 388 | 356 | 32 | 0 | 32 | 0.0% |
 | `ooNext2.test` | 62 | 54 | 8 | 0 | 8 | 0.0% |
 | `ooProp.test` | 55 | 55 | 0 | 0 | 0 | — |
 | `ooUtil.test` | 33 | 33 | 0 | 0 | 0 | — |
 | `opt.test` | 31 | 26 | 5 | 3 | 2 | 60.0% |
 | `package.test` | 0 | 0 | 0 | 0 | 0 | — |
-| `parse.test` | 271 | 182 | 89 | 76 | 13 | 85.4% |
+| `parse.test` | 271 | 182 | 89 | 77 | 12 | 86.5% |
 | `parseExpr.test` | 286 | 219 | 67 | 3 | 64 | 4.5% |
 | `parseOld.test` | 158 | 9 | 149 | 145 | 4 | 97.3% |
-| `pid.test` | 5 | 3 | 2 | 0 | 2 | 0.0% |
+| `pid.test` | 5 | 2 | 3 | 3 | 0 | 100.0% |
 | `pkgMkIndex.test` | 27 | 27 | 0 | 0 | 0 | — |
-| `platform.test` | 9 | 8 | 1 | 0 | 1 | 0.0% |
+| `platform.test` | 9 | 8 | 1 | 1 | 0 | 100.0% |
 | `proc-old.test` | 74 | 13 | 61 | 49 | 12 | 80.3% |
-| `proc.test` | 38 | 12 | 26 | 10 | 16 | 38.5% |
+| `proc.test` | 38 | 12 | 26 | 13 | 13 | 50.0% |
 | `process.test` | 18 | 18 | 0 | 0 | 0 | — |
 | `pwd.test` | 3 | 0 | 3 | 2 | 1 | 66.7% |
 | `reg.test` | 1141 | 1107 | 34 | 22 | 12 | 64.7% |
@@ -278,23 +278,23 @@ Implemented: `after`, `append`, `apply`, `array`, `binary`, `break`, `catch`, `c
 | `safe-stock.test` | 11 | 7 | 4 | 4 | 0 | 100.0% |
 | `safe-stock86.test` | 0 | 0 | 0 | 0 | 0 | — |
 | `safe-zipfs.test` | 22 | 6 | 16 | 9 | 7 | 56.2% |
-| `safe.test` | 155 | 98 | 57 | 49 | 8 | 86.0% |
+| `safe.test` | 155 | 101 | 54 | 49 | 5 | 90.7% |
 | `scan.test` | 185 | 3 | 182 | 169 | 13 | 92.9% |
 | `security.test` | 1 | 1 | 0 | 0 | 0 | — |
-| `set-old.test` | 153 | 6 | 147 | 94 | 53 | 63.9% |
-| `set.test` | 64 | 4 | 60 | 56 | 4 | 93.3% |
+| `set-old.test` | 153 | 6 | 147 | 95 | 52 | 64.6% |
+| `set.test` | 64 | 4 | 60 | 58 | 2 | 96.7% |
 | `socket.test` | 189 | 181 | 8 | 6 | 2 | 75.0% |
 | `source.test` | 23 | 22 | 1 | 0 | 1 | 0.0% |
 | `split.test` | 18 | 0 | 18 | 16 | 2 | 88.9% |
 | `stack.test` | 3 | 3 | 0 | 0 | 0 | — |
 | `string.test` | 705 | 596 | 109 | 103 | 6 | 94.5% |
 | `stringObj.test` | 81 | 81 | 0 | 0 | 0 | — |
-| `subst.test` | 63 | 2 | 61 | 54 | 7 | 88.5% |
+| `subst.test` | 63 | 2 | 61 | 57 | 4 | 93.4% |
 | `switch.test` | 113 | 11 | 102 | 72 | 30 | 70.6% |
-| `tailcall.test` | 37 | 31 | 6 | 0 | 6 | 0.0% |
+| `tailcall.test` | 37 | 32 | 5 | 0 | 5 | 0.0% |
 | `tcltest.test` | 127 | 57 | 70 | 50 | 20 | 71.4% |
 | `thread.test` | 52 | 52 | 0 | 0 | 0 | — |
-| `timer.test` | 54 | 4 | 50 | 44 | 6 | 88.0% |
+| `timer.test` | 54 | 4 | 50 | 47 | 3 | 94.0% |
 | `tm.test` | 21 | 19 | 2 | 0 | 2 | 0.0% |
 | `trace.test` | 290 | 227 | 63 | 1 | 62 | 1.6% |
 | `unixFCmd.test` | 49 | 25 | 24 | 5 | 19 | 20.8% |
@@ -305,13 +305,13 @@ Implemented: `after`, `append`, `apply`, `array`, `binary`, `break`, `catch`, `c
 | `unknown.test` | 7 | 5 | 2 | 1 | 1 | 50.0% |
 | `unload.test` | 27 | 27 | 0 | 0 | 0 | — |
 | `uplevel.test` | 57 | 11 | 46 | 34 | 12 | 73.9% |
-| `upvar.test` | 70 | 17 | 53 | 22 | 31 | 41.5% |
+| `upvar.test` | 70 | 17 | 53 | 30 | 23 | 56.6% |
 | `utf.test` | 399 | 251 | 148 | 131 | 17 | 88.5% |
 | `utfext.test` | 842 | 842 | 0 | 0 | 0 | — |
 | `util.test` | 462 | 327 | 135 | 135 | 0 | 100.0% |
-| `var.test` | 221 | 92 | 129 | 38 | 91 | 29.5% |
-| `while-old.test` | 15 | 0 | 15 | 13 | 2 | 86.7% |
-| `while.test` | 46 | 0 | 46 | 24 | 22 | 52.2% |
+| `var.test` | 221 | 90 | 131 | 41 | 90 | 31.3% |
+| `while-old.test` | 15 | 0 | 15 | 14 | 1 | 93.3% |
+| `while.test` | 46 | 0 | 46 | 37 | 9 | 80.4% |
 | `winConsole.test` | 46 | 46 | 0 | 0 | 0 | — |
 | `winDde.test` | 50 | 50 | 0 | 0 | 0 | — |
 | `winFCmd.test` | 173 | 173 | 0 | 0 | 0 | — |
@@ -325,13 +325,16 @@ Implemented: `after`, `append`, `apply`, `array`, `binary`, `break`, `catch`, `c
 
 ## What the run could not reach
 
-Every suite file was extracted to the end: no file contributed a partial set of cases.
+These files stopped part way through extraction, so the cases after the stopping point are not in the measurement at all. The count column is what was recorded before the stop.
+
+| File | Cases recorded | Why extraction stopped |
+| --- | ---: | --- |
+| `cmdAH.test` | 13234 | killed: extraction exceeded its time limit or died |
 
 The recorder only sees `test` calls made in the interpreter it runs in. These files created a child interpreter while being read, and any test they declare inside one was not extracted — their case counts are a floor, not a total.
 
 | File | Child interpreters | Cases extracted |
 | --- | ---: | ---: |
-| `cmdAH.test` | 3 | 17001 |
 | `init.test` | 1 | 10 |
 | `interp.test` | 2 | 355 |
 | `load.test` | 1 | 30 |
