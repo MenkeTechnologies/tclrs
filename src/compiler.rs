@@ -69,7 +69,7 @@ pub mod ext {
     /// An operand of [`ERROR_BUILTIN`] instead raises a message the COMPILER
     /// chose for a builtin's own failure (an unknown `regexp` switch, `expr
     /// {nan}`): no extras, and no `NONE`, so the message's own code applies
-    /// ([`crate::errorcode::classify`]).
+    /// (`crate::errorcode::classify`).
     pub const ERROR: u16 = 8;
     /// The [`ERROR`] operand for a builtin-raised message.
     pub const ERROR_BUILTIN: u8 = u8::MAX;
