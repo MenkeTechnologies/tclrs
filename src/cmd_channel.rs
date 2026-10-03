@@ -1747,7 +1747,9 @@ fn get_open_mode(access: &str) -> Result<OpenMode, String> {
 /// `TclGetIntFromObj` accepts within `±UINT_MAX` and truncates to an `int`.
 fn open_permissions(word: &str) -> Result<u32, String> {
     let trimmed = word.trim_start_matches(|c: char| crate::list::is_space(c as u8) && c.is_ascii());
-    let legacy = trimmed.strip_prefix('0').filter(|r| r.starts_with(|c: char| ('0'..='7').contains(&c)));
+    let legacy = trimmed
+        .strip_prefix('0')
+        .filter(|r| r.starts_with(|c: char| ('0'..='7').contains(&c)));
     if let Some(v) = legacy.and_then(|r| crate::list::parse_int_exact(&format!("0o{r}"))) {
         return Ok(v as u32);
     }
@@ -1770,7 +1772,10 @@ fn open_permissions(word: &str) -> Result<u32, String> {
 fn open(path: &str, access: Option<&str>, permissions: Option<&str>) -> Result<String, String> {
     // The permissions are read before the file name is looked at, as
     // `Tcl_OpenObjCmd` does.
-    let prot = permissions.map(open_permissions).transpose()?.unwrap_or(0o666);
+    let prot = permissions
+        .map(open_permissions)
+        .transpose()?
+        .unwrap_or(0o666);
     if path.starts_with('|') {
         return Err(
             "opening a command pipeline is not implemented in this frontend; \

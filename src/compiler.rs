@@ -1013,13 +1013,7 @@ fn lower(
         } else {
             let mut arrays = first.seen_arrays;
             arrays.extend(known.iter().cloned());
-            let second = Compiler::run(
-                script,
-                arrays,
-                first.seen_runtime,
-                debug,
-                projected,
-            )?;
+            let second = Compiler::run(script, arrays, first.seen_runtime, debug, projected)?;
             let reads = second.tolerant_reads.clone();
             let incrs = second.incr_sites.clone();
             let procs = signature_table(&second);
@@ -1487,8 +1481,9 @@ impl Compiler {
     /// codes cross it unchanged: a `break` in a rebuilt loop body ends that
     /// loop, and one in a rebuilt `catch` script is caught.
     fn eval_rebuilt(&mut self, words: &[Word]) -> Result<(), CompileError> {
-        let count = u8::try_from(words.len())
-            .map_err(|_| self.err("too many words in a command with a computed body".to_string()))?;
+        let count = u8::try_from(words.len()).map_err(|_| {
+            self.err("too many words in a command with a computed body".to_string())
+        })?;
         let declared = self.declared_globals();
         if let Some(declared) = &declared {
             self.push_str(declared);
@@ -1797,7 +1792,8 @@ impl Compiler {
         match self.var_place(name) {
             Place::Slot(slot) => {
                 if !name.starts_with('\u{0}') {
-                    self.slot_reads.push((self.b.current_pos(), name.to_string()));
+                    self.slot_reads
+                        .push((self.b.current_pos(), name.to_string()));
                 }
                 self.emit(Op::GetSlot(slot), 1)
             }

@@ -72,7 +72,10 @@ const FIXTURES: &[(&str, &str)] = &[
     ("reads.tcl", "set out [expr {$into * 100}]\n"),
     ("unicode.tcl", "set ::greek \u{3b1}\u{3b2}\u{3b3}\n"),
     ("raises.tcl", "error \"from the sourced file\"\n"),
-    ("returns.tcl", "set after_return 0\nreturn val\nset after_return 1\n"),
+    (
+        "returns.tcl",
+        "set after_return 0\nreturn val\nset after_return 1\n",
+    ),
     ("breaks.tcl", "return -code break\n"),
     ("fixture1.0/fixture.tcl", "set ::fixture_loaded yes\n"),
 ];

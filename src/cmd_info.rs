@@ -705,7 +705,12 @@ pub(crate) fn startup_globals() -> std::collections::HashMap<String, Value> {
     for (key, value) in [
         (
             "byteOrder",
-            if cfg!(target_endian = "little") { "littleEndian" } else { "bigEndian" }.to_string(),
+            if cfg!(target_endian = "little") {
+                "littleEndian"
+            } else {
+                "bigEndian"
+            }
+            .to_string(),
         ),
         ("engine", "Tcl".to_string()),
         ("machine", machine),
@@ -737,7 +742,11 @@ fn uname() -> (String, String, String) {
         return (String::new(), String::new(), String::new());
     }
     let field = |f: &[libc::c_char]| {
-        let bytes: Vec<u8> = f.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+        let bytes: Vec<u8> = f
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| c as u8)
+            .collect();
         String::from_utf8_lossy(&bytes).into_owned()
     };
     (field(&u.sysname), field(&u.release), field(&u.machine))
@@ -754,6 +763,8 @@ fn user_name() -> String {
         if pw.is_null() || (*pw).pw_name.is_null() {
             return String::new();
         }
-        std::ffi::CStr::from_ptr((*pw).pw_name).to_string_lossy().into_owned()
+        std::ffi::CStr::from_ptr((*pw).pw_name)
+            .to_string_lossy()
+            .into_owned()
     }
 }

@@ -146,7 +146,11 @@ fn strerror(code: i32) -> Option<String> {
     if text.is_null() {
         return None;
     }
-    Some(unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy().to_lowercase())
+    Some(
+        unsafe { std::ffi::CStr::from_ptr(text) }
+            .to_string_lossy()
+            .to_lowercase(),
+    )
 }
 
 /// `Tcl_ErrnoId` (`generic/tclPosixStr.c`) for the errno values both macOS

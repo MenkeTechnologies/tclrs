@@ -539,7 +539,9 @@ impl Compiler {
             }
         }
         if handlers.last().is_some_and(|h| h.script == "-") {
-            return Err(self.deferrable_err("last non-finally clause must not have a body of \"-\""));
+            return Err(
+                self.deferrable_err("last non-finally clause must not have a body of \"-\"")
+            );
         }
         let body = self.body_of(body)?;
         match finally {

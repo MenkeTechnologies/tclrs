@@ -119,7 +119,10 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
             for w in args {
                 c.word(w)?;
             }
-            c.emit(Op::Extended(ext::PID, args.len() as u8), 1 - args.len() as i32);
+            c.emit(
+                Op::Extended(ext::PID, args.len() as u8),
+                1 - args.len() as i32,
+            );
             Ok(())
         }
         "pwd" => {
@@ -191,7 +194,9 @@ fn compile_stat_into(
     var: &Word,
 ) -> Result<(), CompileError> {
     let crate::assoc::Target::Scalar(name) = c.target_of(var)? else {
-        return c.error(format!("file {sub} into an array element is not supported yet"));
+        return c.error(format!(
+            "file {sub} into an array element is not supported yet"
+        ));
     };
     let slot = c.array_place(&name);
     c.push_str(&name);
@@ -697,7 +702,9 @@ fn run_file(words: &[String]) -> Result<Value, String> {
         "stat" | "lstat" => {
             let into_array = words.get(2).is_some_and(|w| w == STAT_INTO_ARRAY);
             if words.len() != 2 && !into_array {
-                return Err(format!("wrong # args: should be \"file {sub} name ?varName?\""));
+                return Err(format!(
+                    "wrong # args: should be \"file {sub} name ?varName?\""
+                ));
             }
             let s = stat_buf(&words[1], sub == "lstat")?;
             Ok(text(crate::list::join(&stat_fields(&s, into_array))))

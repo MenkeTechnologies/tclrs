@@ -1891,7 +1891,8 @@ impl Hooks {
                 // only answer with a message.
                 ext::RAISE if arg == ext::RAISE_OPTIONS || arg == ext::RAISE_OPTIONS_CODED => {
                     let msg = to_tcl_string(&vm.pop());
-                    let errorcode = (arg == ext::RAISE_OPTIONS_CODED).then(|| to_tcl_string(&vm.pop()));
+                    let errorcode =
+                        (arg == ext::RAISE_OPTIONS_CODED).then(|| to_tcl_string(&vm.pop()));
                     let overrides = to_tcl_string(&vm.pop());
                     let options = to_tcl_string(&vm.pop());
                     let merged = format!("-code 0 -level 1 {options} {overrides}");

@@ -429,8 +429,7 @@ impl Compiler {
         let at_global_frame = self.scope.is_none() && self.ns.current == "::";
         let literal_global = level.and_then(|w| w.as_literal()).is_some_and(|text| {
             let parsed = parse_level(text);
-            parsed == Some(Level::Absolute(0))
-                || (at_global_frame && parsed == Some(Level::Up(0)))
+            parsed == Some(Level::Absolute(0)) || (at_global_frame && parsed == Some(Level::Up(0)))
         });
         if literal_global {
             let literal_pairs: Option<Vec<(String, String)>> = pairs

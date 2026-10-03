@@ -180,7 +180,9 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
                 // `Tcl_GetIndexFromObj`'s code (`generic/tclIndexObj.c:360`),
                 // raised the way `error message info code` raises one.
                 c.push_empty();
-                c.push_str(&crate::list::join(&["TCL", "LOOKUP", "INDEX", "option", other]));
+                c.push_str(&crate::list::join(&[
+                    "TCL", "LOOKUP", "INDEX", "option", other,
+                ]));
                 c.emit(Op::Extended(base_ext::ERROR, 2), -3);
                 c.push_empty();
                 return Ok(());

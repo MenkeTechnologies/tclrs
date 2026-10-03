@@ -2356,7 +2356,11 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                 } else {
                     Value::Str(Arc::new(String::new()))
                 };
-                vm.push(if matches!(value, Value::Undef) { absent } else { value });
+                vm.push(if matches!(value, Value::Undef) {
+                    absent
+                } else {
+                    value
+                });
                 return Ok(());
             }
             if arg != 1 {
