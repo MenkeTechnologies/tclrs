@@ -1064,6 +1064,16 @@ The first few are not fuzzer findings — four belong to the event loop and four
 `encoding` — and they are listed first because each is a deliberate decision with
 the measurement behind it.
 
+- **A double kept in a list, or anywhere only its string survives, can come back
+  as a different double.** A double prints with `TclDoubleDigits`' digits
+  (`src/dtoa.rs`), and for an exact power of two those do not always read back
+  to the same value: tclsh prints `2.0**64` as `1.844674407370955e+19`, which
+  is the double below it — 212 of the 2098 powers of two do this in tclsh
+  itself. tclsh rarely re-reads that string because the object keeps its
+  double; a list here is held as its string, so
+  `expr {[lindex [list [expr {2.0**64}]] 0] == 2.0**64}` is 0 where tclsh
+  answers 1. A double held in a variable, passed as an argument, or handed to
+  `binary format` keeps its value.
 - **`< > <= >= == !=` between an integer past 2^53 and a double round where
   tclsh is exact.** Measured against tclsh 9.0.4: `set l [expr {3**34}]` is
   16677181699666569 and `double($l)` is 16677181699666568, one apart, so tclsh

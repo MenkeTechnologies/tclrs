@@ -40,6 +40,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// difference is legible in a failure message and so the comparison does not
 /// depend on how either interpreter encodes its output.
 const PROGRAMS: &[&str] = &[
+    // A double reaches a floating-point field as the double, not as its
+    // printed form: Tcl prints 2.0**65 as 3.68934881474191e+19, which reads
+    // back as the double below it (util.test util-17.1).
+    "foreach v {0x1fffffffffffff800 0x1ffffffffffffe800} {binary scan [binary format q [expr {double($v)}]] wu x; puts [format %#llx $x]; binary scan [binary format R [expr {double($v)}]] Iu y; puts [format %#x $y]}\nset d [expr {2.0**64}]\nbinary scan [binary format Q $d] Wu x\nputs [format %#llx $x]",
     // The helper every program below shares.
     "puts [hex [binary format a5A5 abc abc]]",
     "puts [hex [binary format a3a*a abc de f]]",

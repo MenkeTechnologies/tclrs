@@ -337,7 +337,12 @@ struct Planned {
 }
 
 /// `binary format formatString ?arg ...?`.
-fn format(fmt: &str, args: &[String]) -> Result<Vec<u8>, String> {
+/// `exact` holds, per argument, the double a `Value::Float` argument carries.
+/// A floating-point field takes it rather than re-reading the string form:
+/// that is what the object's internal representation gives tclsh, and Tcl's
+/// printed form of a power of two does not always read back to the same double
+/// (`2.0**64` prints as `1.844674407370955e+19`, the double below it).
+fn format(fmt: &str, args: &[String], exact: &[Option<f64>]) -> Result<Vec<u8>, String> {
     let f: Vec<char> = fmt.chars().collect();
     let (plan, length) = plan_format(&f, args)?;
     let mut out = vec![0u8; length];
@@ -428,6 +433,13 @@ fn format(fmt: &str, args: &[String]) -> Result<Vec<u8>, String> {
             '@' => at = count,
             cmd => {
                 let size = item_size(cmd).expect("plan_format rejected every other type");
+                if let (true, Some(f), 'f' | 'r' | 'R' | 'd' | 'q' | 'Q') =
+                    (step.scalar, exact.get(step.arg).copied().flatten(), cmd)
+                {
+                    write_double(&mut out[at..at + size], cmd, f);
+                    at += size;
+                    continue;
+                }
                 let values = numeric_items(&args[step.arg], count, step.scalar)?;
                 for value in values {
                     write_number(&mut out[at..at + size], cmd, &value)?;
@@ -560,8 +572,10 @@ fn numeric_items(arg: &str, count: usize, scalar: bool) -> Result<Vec<String>, S
 /// to hold a blank.
 fn write_number(slot: &mut [u8], cmd: char, text: &str) -> Result<(), String> {
     let bytes: Vec<u8> = match cmd {
-        'f' | 'r' | 'R' => (double(text)? as f32).to_le_bytes().to_vec(),
-        'd' | 'q' | 'Q' => double(text)?.to_le_bytes().to_vec(),
+        'f' | 'r' | 'R' | 'd' | 'q' | 'Q' => {
+            write_double(slot, cmd, double(text)?);
+            return Ok(());
+        }
         _ => {
             let value =
                 crate::cmd_string::parse_big(text.trim_matches(is_space)).ok_or_else(|| {
@@ -581,6 +595,23 @@ fn write_number(slot: &mut [u8], cmd: char, text: &str) -> Result<(), String> {
         slot.copy_from_slice(&bytes);
     }
     Ok(())
+}
+
+/// Store a floating-point field: single precision for `f`, `r` and `R`, double
+/// for the rest, in the field's byte order.
+fn write_double(slot: &mut [u8], cmd: char, f: f64) {
+    let bytes: Vec<u8> = if matches!(cmd, 'f' | 'r' | 'R') {
+        (f as f32).to_le_bytes().to_vec()
+    } else {
+        f.to_le_bytes().to_vec()
+    };
+    if big_endian(cmd) {
+        for (i, b) in bytes.iter().rev().enumerate() {
+            slot[i] = *b;
+        }
+    } else {
+        slot.copy_from_slice(&bytes);
+    }
 }
 
 /// `value` reduced into `bits` bits, little-endian — the modular truncation
@@ -1215,12 +1246,19 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         ext::FORMAT => {
             let count = popped_count(vm);
             let mut args = Vec::with_capacity(count);
+            let mut exact = Vec::with_capacity(count);
             for _ in 0..count {
-                args.push(to_tcl_string(&vm.pop()));
+                let v = vm.pop();
+                exact.push(match v {
+                    Value::Float(f) => Some(f),
+                    _ => None,
+                });
+                args.push(to_tcl_string(&v));
             }
             args.reverse();
+            exact.reverse();
             let fmt = to_tcl_string(&vm.pop());
-            let bytes = format(&fmt, &args)?;
+            let bytes = format(&fmt, &args, &exact)?;
             vm.push(Value::Str(Arc::new(from_bytes(&bytes))));
             Ok(())
         }
