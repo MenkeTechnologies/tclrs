@@ -118,6 +118,12 @@ const PROGRAMS: &[&str] = &[
 
     // ── ensemble, as far as it is answered ──
     "namespace eval ens {proc sub {} {return S}\n  namespace export sub}\nputs [namespace eval ens {namespace ensemble exists ens}]\nnamespace eval ens {namespace ensemble create}\nputs [namespace ensemble exists ::ens]\nputs [namespace ensemble exists ::nope]\nputs [catch {namespace ensemble create -bogusopt x} m]\nputs $m",
+    // The `namespace ensemble` subcommands themselves: prefixes, argument
+    // counts, reading and setting options with `configure`, and the errors.
+    "namespace ensemble create -command e -m {a list}\nputs [e a 1]\nforeach c {{configure e -bogus} {configure e -bogus 1} {configure e -namespace ::x} {configure e -map {} -prefixes} {configure} {exists} {exists a b} {create -map} {create -bogus 1} {create -p 1} {configure nosuch} {?} {c}} {puts [list [catch {namespace ensemble {*}$c} m] $m]}\nputs [namespace ensemble configure e -map]\nputs [namespace ensemble configure e -pre]\nnamespace ensemble configure e -map {b list} -prefixes 0\nputs [namespace ensemble configure e]\nputs [e b x]\nputs [list [catch {e a} m] $m]\nputs [namespace ensemble configure e -namespace]",
+    "namespace eval ns {namespace ensemble create}\nputs [list [catch {ns x} m] $m]\nputs [namespace ens cr -command zz]",
+    // `namespace which`, `inscope`, `import`, `forget` and `delete` errors.
+    "foreach c {{which -fred x} {which a b} {which a b c} {inscope} {inscope ::} {import {}} {import foo} {forget xyzzy::*} {delete a::b}} {puts [list [catch {namespace {*}$c} m] $m]}\nset gx 1\nputs [namespace which -var gx]\nnamespace eval t1 {namespace eval t2 {}}\nputs [list [catch {namespace eval t1 {namespace delete t2::bar}} m] $m]\nnamespace eval ti {namespace export puts}\nputs [list [catch {namespace eval ti {namespace import ::ti::puts}} m] $m]",
     // Dispatch: exported commands, unique prefixes, -map, -subcommands,
     // -prefixes 0, and the two errors a call can raise.
     "namespace eval e {namespace export a b c; proc a {} {return A}; proc b {} {}; proc c {} {}; namespace ensemble create}\nputs [e a]\nputs [catch {e zz} m]\nputs $m\nputs [catch {e} m]\nputs $m",

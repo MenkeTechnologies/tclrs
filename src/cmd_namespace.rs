@@ -581,7 +581,7 @@ impl Compiler {
                 sub,
                 rest,
                 2..=usize::MAX,
-                "namespace inscope ns script ?arg...?",
+                "namespace inscope name arg ?arg...?",
             ),
             "upvar" => self.ns_upvar(rest),
             // These two change how a *later* name resolves, which this
@@ -1360,7 +1360,7 @@ fn run(
                 let fqn = resolve(here, name);
                 if !reg.exists(&fqn) {
                     return Err(TclError::plain(format!(
-                        "unknown namespace \"{fqn}\" in namespace delete command"
+                        "unknown namespace \"{name}\" in namespace delete command"
                     )));
                 }
                 let prefix = format!("{}::", fqn.trim_end_matches(':'));
@@ -1429,6 +1429,9 @@ fn run(
                 patterns.remove(0);
             }
             for p in patterns {
+                if p.is_empty() {
+                    return Err(TclError::plain("empty import pattern"));
+                }
                 let fqn = resolve(here, &p);
                 let from = parent_of(&fqn);
                 let pat = tail(&fqn).to_string();
@@ -1436,6 +1439,18 @@ fn run(
                     return Err(TclError::plain(format!(
                         "unknown namespace in import pattern \"{p}\""
                     )));
+                }
+                // `Tcl_Import`: a pattern may not name the namespace it is
+                // imported into.
+                if from == here {
+                    return Err(TclError::plain(if p.contains("::") {
+                        format!(
+                            "import pattern \"{p}\" tries to import from namespace \"{}\" into itself",
+                            tail(&from)
+                        )
+                    } else {
+                        format!("no namespace specified in import pattern \"{p}\"")
+                    }));
                 }
                 let exported = reg.exports.get(&from).cloned().unwrap_or_default();
                 let matches: Vec<String> = reg
@@ -1493,6 +1508,11 @@ fn run(
                 let fqn = resolve(here, p);
                 let from = parent_of(&fqn);
                 let pat = tail(&fqn).to_string();
+                if !reg.exists(&from) {
+                    return Err(TclError::plain(format!(
+                        "unknown namespace in namespace forget pattern \"{p}\""
+                    )));
+                }
                 let sources: Vec<String> = reg
                     .commands_in(&from)
                     .into_iter()
@@ -1542,11 +1562,25 @@ fn run(
 /// resolves to nothing, which is what makes `namespace which` the way a script
 /// asks whether a command exists.
 fn which(state: &crate::runtime::State, here: &str, args: &[String]) -> Result<String, TclError> {
-    let (kind, name) = match args {
-        [name] => ("-command", name.as_str()),
-        [flag, name] => (flag.as_str(), name.as_str()),
-        _ => unreachable!("the arity was checked while compiling"),
-    };
+    // `Tcl_GetIndexFromObj` over the two options, unique prefixes included; a
+    // word that names neither is the usage error, not a bad option.
+    let (kind, name) =
+        match args {
+            [name] => ("-command", name.as_str()),
+            [flag, name] => {
+                let hits: Vec<&str> = ["-command", "-variable"]
+                    .into_iter()
+                    .filter(|o| !flag.is_empty() && o.starts_with(flag.as_str()))
+                    .collect();
+                match hits.as_slice() {
+                    [one] => (*one, name.as_str()),
+                    _ => return Err(TclError::plain(
+                        "wrong # args: should be \"namespace which ?-command? ?-variable? name\"",
+                    )),
+                }
+            }
+            _ => unreachable!("the arity was checked while compiling"),
+        };
     match kind {
         "-command" => Ok(which_command(&state.ns, here, name).unwrap_or_default()),
         "-variable" => {
@@ -1666,9 +1700,57 @@ fn boolean(value: &str) -> Result<bool, TclError> {
 /// read it, and [`ensemble_call`] dispatches a call to the command when it
 /// runs.
 fn ensemble(reg: &mut Registry, here: &str, args: &[String]) -> Result<String, TclError> {
-    const OPTIONS: &str =
-        "must be -command, -map, -parameters, -prefixes, -subcommands, or -unknown";
-    match args[0].as_str() {
+    const CREATE_OPTIONS: &[&str] = &[
+        "-command",
+        "-map",
+        "-parameters",
+        "-prefixes",
+        "-subcommands",
+        "-unknown",
+    ];
+    const CONFIGURE_OPTIONS: &[&str] = &[
+        "-map",
+        "-namespace",
+        "-parameters",
+        "-prefixes",
+        "-subcommands",
+        "-unknown",
+    ];
+    // `Tcl_GetIndexFromObj(… "subcommand" …)`: a unique prefix names one.
+    const SUBS: [&str; 3] = ["configure", "create", "exists"];
+    let word = args[0].as_str();
+    let hits: Vec<&str> = SUBS
+        .into_iter()
+        .filter(|s| *s == word || (!word.is_empty() && s.starts_with(word)))
+        .collect();
+    let sub = match hits.as_slice() {
+        [one] => *one,
+        _ if SUBS.contains(&word) => word,
+        [] => {
+            return Err(TclError::plain(format!(
+                "bad subcommand \"{word}\": must be configure, create, or exists"
+            )))
+        }
+        _ => {
+            return Err(TclError::plain(format!(
+                "ambiguous subcommand \"{word}\": must be configure, create, or exists"
+            )))
+        }
+    };
+    let usage = |u: &str| {
+        TclError::plain(format!(
+            "wrong # args: should be \"namespace ensemble {u}\""
+        ))
+    };
+    match (sub, args.len()) {
+        ("exists", n) if n != 2 => return Err(usage("exists cmdname")),
+        ("configure", n) if n == 1 || (n > 3 && n % 2 == 1) => {
+            return Err(usage("configure cmdname ?-option value ...? ?arg ...?"))
+        }
+        ("create", n) if n % 2 == 0 => return Err(usage("create ?option value ...?")),
+        _ => {}
+    }
+    match sub {
         "create" => {
             let mut cmd = here.to_string();
             let mut e = Ensemble {
@@ -1679,37 +1761,12 @@ fn ensemble(reg: &mut Registry, here: &str, args: &[String]) -> Result<String, T
                 parameters: String::new(),
                 unknown: String::new(),
             };
-            let mut i = 1;
-            while i < args.len() {
-                let opt = &args[i];
-                let value = args.get(i + 1).map(String::as_str).unwrap_or("");
-                match opt.as_str() {
+            for pair in args[1..].chunks(2) {
+                let value = pair.get(1).map(String::as_str).unwrap_or("");
+                match option(&pair[0], CREATE_OPTIONS)? {
                     "-command" => cmd = resolve(here, value),
-                    "-map" => {
-                        let flat = words(value)?;
-                        if flat.len() % 2 != 0 {
-                            return Err(TclError::plain("missing value to go with key"));
-                        }
-                        let mut map = Vec::new();
-                        for pair in flat.chunks(2) {
-                            let mut prefix = words(&pair[1])?;
-                            if prefix.is_empty() {
-                                return Err(TclError::plain(
-                                    "ensemble subcommand implementations must be non-empty lists",
-                                ));
-                            }
-                            prefix[0] = resolve(here, &prefix[0]);
-                            map.push((pair[0].clone(), prefix));
-                        }
-                        e.map = Some(map);
-                    }
-                    "-parameters" => e.parameters = value.to_string(),
-                    "-prefixes" => e.prefixes = boolean(value)?,
-                    "-subcommands" => e.subcommands = words(value)?,
-                    "-unknown" => e.unknown = value.to_string(),
-                    _ => return Err(TclError::plain(format!("bad option \"{opt}\": {OPTIONS}"))),
+                    opt => set_option(&mut e, here, opt, value)?,
                 }
-                i += 2;
             }
             reg.define(&cmd);
             reg.ensembles.insert(cmd.clone(), e);
@@ -1721,36 +1778,39 @@ fn ensemble(reg: &mut Registry, here: &str, args: &[String]) -> Result<String, T
         }
         "configure" => {
             let fqn = resolve(here, args.get(1).map(String::as_str).unwrap_or(""));
-            let Some(e) = reg.ensembles.get(&fqn) else {
-                return Err(TclError::plain(format!(
-                    "\"{}\" is not an ensemble command",
-                    args.get(1).map(String::as_str).unwrap_or("")
-                )));
+            let Some(e) = reg.ensembles.get_mut(&fqn) else {
+                let written = args.get(1).map(String::as_str).unwrap_or("");
+                return Err(TclError::plain(
+                    if which_command(reg, here, written).is_some() {
+                        format!("\"{written}\" is not an ensemble command")
+                    } else {
+                        format!("unknown command \"{written}\"")
+                    },
+                ));
             };
-            let map: Vec<String> = e
-                .map
+            // `configure cmd -option` reads one; `-option value ...` sets them.
+            if args.len() == 3 {
+                return Ok(option_value(e, option(&args[2], CONFIGURE_OPTIONS)?));
+            }
+            if args.len() > 3 {
+                for pair in args[2..].chunks(2) {
+                    match option(&pair[0], CONFIGURE_OPTIONS)? {
+                        "-namespace" => {
+                            return Err(TclError::plain("option -namespace is read-only"))
+                        }
+                        opt => set_option(e, here, opt, &pair[1])?,
+                    }
+                }
+                return Ok(String::new());
+            }
+            let e = &*e;
+            let listing: Vec<String> = CONFIGURE_OPTIONS
                 .iter()
-                .flatten()
-                .flat_map(|(k, v)| [k.clone(), crate::list::join(v)])
+                .flat_map(|o| [o.to_string(), option_value(e, o)])
                 .collect();
-            Ok(crate::list::join(&[
-                "-map".to_string(),
-                crate::list::join(&map),
-                "-namespace".to_string(),
-                e.ns.clone(),
-                "-parameters".to_string(),
-                e.parameters.clone(),
-                "-prefixes".to_string(),
-                u8::from(e.prefixes).to_string(),
-                "-subcommands".to_string(),
-                crate::list::join(&e.subcommands),
-                "-unknown".to_string(),
-                e.unknown.clone(),
-            ]))
+            Ok(crate::list::join(&listing))
         }
-        other => Err(TclError::plain(format!(
-            "unknown or ambiguous subcommand \"{other}\": must be configure, create, or exists"
-        ))),
+        _ => unreachable!("resolved against SUBS above"),
     }
 }
 
@@ -1805,6 +1865,12 @@ pub(crate) fn ensemble_call(
         None
     };
     let Some(chosen) = chosen else {
+        if table.is_empty() {
+            return Err(format!(
+                "unknown subcommand \"{sub}\": namespace {} does not export any commands",
+                e.ns
+            ));
+        }
         let what = if e.prefixes {
             "unknown or ambiguous subcommand"
         } else {
@@ -1831,4 +1897,80 @@ pub(crate) fn ensemble_call(
     }
     target.extend(rest.iter().cloned());
     Ok(Some(target))
+}
+
+/// `Tcl_GetIndexFromObj(… "option" …)` over an ensemble's option names, unique
+/// prefixes included.
+fn option<'a>(word: &str, table: &[&'a str]) -> Result<&'a str, TclError> {
+    if let Some(exact) = table.iter().find(|o| **o == word) {
+        return Ok(exact);
+    }
+    let hits: Vec<&str> = table
+        .iter()
+        .copied()
+        .filter(|o| !word.is_empty() && o.starts_with(word))
+        .collect();
+    match hits.as_slice() {
+        [one] => Ok(one),
+        _ => {
+            let listed = match table {
+                [init @ .., last] => format!("{}, or {last}", init.join(", ")),
+                [] => String::new(),
+            };
+            let what = if hits.is_empty() { "bad" } else { "ambiguous" };
+            Err(TclError::plain(format!(
+                "{what} option \"{word}\": must be {listed}"
+            )))
+        }
+    }
+}
+
+/// Set one of an ensemble's writable options (`create` and `configure`).
+fn set_option(e: &mut Ensemble, here: &str, opt: &str, value: &str) -> Result<(), TclError> {
+    match opt {
+        "-map" => {
+            let flat = words(value)?;
+            if flat.len() % 2 != 0 {
+                return Err(TclError::plain("missing value to go with key"));
+            }
+            let mut map = Vec::new();
+            for pair in flat.chunks(2) {
+                let mut prefix = words(&pair[1])?;
+                if prefix.is_empty() {
+                    return Err(TclError::plain(
+                        "ensemble subcommand implementations must be non-empty lists",
+                    ));
+                }
+                prefix[0] = resolve(here, &prefix[0]);
+                map.push((pair[0].clone(), prefix));
+            }
+            e.map = (!map.is_empty()).then_some(map);
+        }
+        "-parameters" => e.parameters = value.to_string(),
+        "-prefixes" => e.prefixes = boolean(value)?,
+        "-subcommands" => e.subcommands = words(value)?,
+        "-unknown" => e.unknown = value.to_string(),
+        _ => unreachable!("options are resolved against the table first"),
+    }
+    Ok(())
+}
+
+/// One option's value, as `namespace ensemble configure` reports it.
+fn option_value(e: &Ensemble, opt: &str) -> String {
+    match opt {
+        "-map" => {
+            let map: Vec<String> = e
+                .map
+                .iter()
+                .flatten()
+                .flat_map(|(k, v)| [k.clone(), crate::list::join(v)])
+                .collect();
+            crate::list::join(&map)
+        }
+        "-namespace" => e.ns.clone(),
+        "-parameters" => e.parameters.clone(),
+        "-prefixes" => u8::from(e.prefixes).to_string(),
+        "-subcommands" => crate::list::join(&e.subcommands),
+        _ => e.unknown.clone(),
+    }
 }

@@ -661,7 +661,9 @@ approximated, and nothing is silently mis-run.
   a port of `TclEnsembleImplementationCmd`): the table is `-subcommands`, the
   keys of `-map` or the namespace's exports, a subcommand matches exactly or as
   a unique prefix under `-prefixes`, and the call runs as its `-map` prefix or
-  the namespace's command. An ensemble configured with `-parameters` or
+  the namespace's command; `namespace ensemble configure` reads one option or
+  all of them and sets options, with `Tcl_GetIndexFromObj`'s prefix matching on
+  the subcommand and option names. An ensemble configured with `-parameters` or
   `-unknown` is refused when called. The ensemble command is looked up from the
   global namespace, so one created inside a namespace under a relative
   `-command` name is reached by its qualified name.
