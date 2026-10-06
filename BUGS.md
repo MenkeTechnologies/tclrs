@@ -656,11 +656,15 @@ approximated, and nothing is silently mis-run.
   refused. A computed `namespace import` pattern is refused everywhere: the
   imported name decides which procedure a call reaches, and that is decided
   while compiling.
-- **Dispatching through an ensemble.** `namespace ensemble create` records that
-  the namespace is one, so `namespace ensemble exists` and `configure` answer,
-  but calling the ensemble command resolves a subcommand when it runs and this
-  frontend resolves a call while compiling. The call is `invalid command name`
-  rather than a guess.
+- **Ensembles with `-parameters` or `-unknown`.** A call through an ensemble
+  command is dispatched when it runs (`ensemble_call` in `src/cmd_namespace.rs`,
+  a port of `TclEnsembleImplementationCmd`): the table is `-subcommands`, the
+  keys of `-map` or the namespace's exports, a subcommand matches exactly or as
+  a unique prefix under `-prefixes`, and the call runs as its `-map` prefix or
+  the namespace's command. An ensemble configured with `-parameters` or
+  `-unknown` is refused when called. The ensemble command is looked up from the
+  global namespace, so one created inside a namespace under a relative
+  `-command` name is reached by its qualified name.
 - **`coroprobe` and `coroinject`.** Inspecting or injecting a command into a
   suspended coroutine is not implemented; both are `invalid command name`.
   Deleting a coroutine by destroying its command is not either: `rename` is

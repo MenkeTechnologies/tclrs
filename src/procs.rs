@@ -509,6 +509,23 @@ fn enter_elsewhere(
 /// is the `invalid command name` the compiler used to defer — same wording,
 /// same line.
 fn foreign(interp: &Shared, vm: &mut VM, name: &str, args: &[Value]) -> Result<(), String> {
+    // An ensemble command decides its callee only now, from its subcommand.
+    let target = {
+        let state = interp.lock().expect("interpreter lock");
+        let text: Vec<String> = args.iter().map(to_tcl_string).collect();
+        crate::cmd_namespace::ensemble_call(&state.ns, name, &text)?
+    };
+    if let Some(words) = target {
+        let words: Vec<Value> = words.into_iter().map(|w| Value::Str(Arc::new(w))).collect();
+        let callee = to_tcl_string(&words[0]);
+        let defined = defined_proc(interp, &callee);
+        let outcome = if defined.is_none() && crate::names::is_command(&callee) {
+            as_script(interp, vm, &words)
+        } else {
+            dispatch(interp, vm, &callee, &words[1..], 0, defined)
+        };
+        return outcome.map_err(|e| e.msg);
+    }
     #[cfg(feature = "tk")]
     {
         // Two exchanges, and they are not the same one.

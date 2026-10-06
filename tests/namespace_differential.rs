@@ -118,6 +118,13 @@ const PROGRAMS: &[&str] = &[
 
     // ── ensemble, as far as it is answered ──
     "namespace eval ens {proc sub {} {return S}\n  namespace export sub}\nputs [namespace eval ens {namespace ensemble exists ens}]\nnamespace eval ens {namespace ensemble create}\nputs [namespace ensemble exists ::ens]\nputs [namespace ensemble exists ::nope]\nputs [catch {namespace ensemble create -bogusopt x} m]\nputs $m",
+    // Dispatch: exported commands, unique prefixes, -map, -subcommands,
+    // -prefixes 0, and the two errors a call can raise.
+    "namespace eval e {namespace export a b c; proc a {} {return A}; proc b {} {}; proc c {} {}; namespace ensemble create}\nputs [e a]\nputs [catch {e zz} m]\nputs $m\nputs [catch {e} m]\nputs $m",
+    "namespace eval f {namespace export ab ac; proc ab {x} {return AB$x}; proc ac {} {}; namespace ensemble create}\nputs [catch {f a} m]\nputs $m\nputs [f ab 1]\nproc q {} {return [f ab 2]}\nputs [q]",
+    "namespace ensemble create -command g -map {x {string length} y {string toupper}} -prefixes 0\nputs [catch {g z} m]\nputs $m\nputs [g y abc]\nputs [g x abcd]\nputs [namespace ensemble exists g]\nputs [namespace ensemble configure g]",
+    "namespace eval e {proc a {} {return A}}\nnamespace ensemble create -command ::h -subcommands {a b} -map {b ::e::a}\nputs [h b]\nputs [catch {h a} m]\nputs $m",
+    "namespace eval e {namespace export p; proc p {} {error boom}; namespace ensemble create}\nputs [catch {e p} m]\nputs $m\nnamespace delete e\nputs [catch {e p} m]\nputs $m",
 
     // ── the refusals, which are errors in both ──
     "puts [catch {namespace bogus} m]\nputs $m",
