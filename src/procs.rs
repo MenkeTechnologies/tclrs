@@ -520,7 +520,7 @@ fn foreign(interp: &Shared, vm: &mut VM, name: &str, args: &[Value]) -> Result<(
         let callee = to_tcl_string(&words[0]);
         let defined = defined_proc(interp, &callee);
         let outcome = if defined.is_none() && crate::names::is_command(&callee) {
-            as_script(interp, vm, &words)
+            as_script(interp, vm, &words, None)
         } else {
             dispatch(interp, vm, &callee, &words[1..], 0, defined)
         };
@@ -558,8 +558,9 @@ fn foreign(interp: &Shared, vm: &mut VM, name: &str, args: &[Value]) -> Result<(
     }
 }
 
-/// [`ext::EXPAND_CALL`]: the operands are the script line and then one flag and
-/// one value per word of the command, in the order the compiler pushed them.
+/// [`ext::EXPAND_CALL`]: the operands are the script line, the enclosing body's
+/// declarations, and then one flag and one value per word of the command, in the
+/// order the compiler pushed them.
 ///
 /// The words become an argument vector — a flagged one contributing its list
 /// elements, an unflagged one contributing itself — and the vector's first
@@ -596,6 +597,9 @@ pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(
         Some(Value::Int(n)) => *n as usize,
         _ => 0,
     };
+    // The body's `global`/`variable` declarations, which a builtin reached
+    // here needs in order to run against the procedure's frame.
+    let declared = to_tcl_string(&values[1]);
     let at = located(vm, line);
     let here = move |msg: String| TclError {
         msg,
@@ -604,7 +608,7 @@ pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(
         level: 0,
         errorcode: None,
     };
-    let words = splice(&values[1..]).map_err(here)?;
+    let words = splice(&values[2..]).map_err(here)?;
     let Some((first, args)) = words.split_first() else {
         vm.push(Value::Str(Arc::new(String::new())));
         return Ok(());
@@ -616,7 +620,7 @@ pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(
     // procedure to enter, or whether to fall through to the compiler.
     let defined = defined_proc(interp, &name);
     if defined.is_none() && crate::names::is_command(&name) {
-        return as_script(interp, vm, &words).map_err(|e| here(e.msg));
+        return as_script(interp, vm, &words, Some(&declared)).map_err(|e| here(e.msg));
     }
     dispatch(interp, vm, &name, args, line, defined)
 }
@@ -654,14 +658,30 @@ fn splice(pairs: &[Value]) -> Result<Vec<Value>, String> {
 /// compiles once — which is the price of not having a second implementation of
 /// every command that takes an argument vector.
 ///
-/// The nested script cannot see a procedure's *local* variables, since a chunk
-/// addresses locals as frame slots of its own; every word here is already a value,
-/// so the only case that reaches the difference is an expanded command that
-/// assigns — `set {*}{a b}` inside a procedure body writes the global `a`.
-/// BUGS.md records it.
-fn as_script(interp: &Shared, vm: &mut VM, words: &[Value]) -> Result<(), TclError> {
+/// Inside a procedure the command runs against that procedure's frame, as
+/// `eval` does there ([`crate::runtime::in_frame`]): `set z incr; $z foo` and
+/// `set {*}{a b}` reach the local, not a global of the same name. `declared` is
+/// the body's `global`/`variable` declarations, the one fact about the frame
+/// the frame does not hold; `None` from a call site that has no body to speak
+/// for — an ensemble's mapping, resolved in [`foreign`] — which keeps the
+/// interpreter's table.
+fn as_script(
+    interp: &Shared,
+    vm: &mut VM,
+    words: &[Value],
+    declared: Option<&str>,
+) -> Result<(), TclError> {
     let text: Vec<String> = words.iter().map(to_tcl_string).collect();
     let src = list::join(&text);
+    // The innermost procedure activation, as `eval` inside a body finds it.
+    let up = crate::runtime::levels(vm).first().copied();
+    if let (Some(declared), Some(up)) = (declared, up) {
+        let value = crate::runtime::in_frame(interp, vm, up, declared, |interp| {
+            crate::runtime::run_source(interp, &src)
+        })?;
+        vm.push(value);
+        return Ok(());
+    }
     let value = crate::runtime::with_written_back(interp, vm, |interp| {
         crate::runtime::run_source(interp, &src)
     })?;
@@ -861,10 +881,14 @@ impl Compiler {
     /// the dispatch then fails: `n [puts before] {*}{x "y}` prints `before` and
     /// then reports `unmatched open quote in list` in tclsh 9.0.4 (measured).
     pub(crate) fn call_expanded(&mut self, words: &[Word]) -> Result<(), CompileError> {
-        let count = u8::try_from(1 + 2 * words.len()).map_err(|_| {
+        let count = u8::try_from(2 + 2 * words.len()).map_err(|_| {
             self.err("more than 126 words in a command with {*} argument expansion".to_string())
         })?;
         self.push_value(Value::Int(self.command_line as i64));
+        // The body's declarations, for a builtin this call turns out to reach:
+        // it runs against the procedure's frame. Empty at a script's top level.
+        let declared = self.declared_globals().unwrap_or_default();
+        self.push_str(&declared);
         for w in words {
             self.emit(Op::LoadInt(i64::from(w.expand)), 1);
             self.word_value(w)?;

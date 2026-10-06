@@ -75,10 +75,12 @@ approximated, and nothing is silently mis-run.
   y` calls `n` with `x y`. Three kinds of callee, in tclsh's resolution order: a
   procedure of the interpreter; a command this frontend compiles, reached by
   rebuilding the words as a *list* and evaluating it, which is why `set {*}{a b}`
-  assigns and `if {*}{1 {puts yes}}` runs its body; and a command Tk registered,
+  assigns and `if {*}{1 {puts yes}}` runs its body; inside a procedure that
+  list runs against the procedure's frame, as `eval` does there, so
+  `set {*}{a b}` and `set c incr; $c n` reach the local; and a command Tk registered,
   or nothing, which is `invalid command name`. A command whose words all expand to
   nothing runs nothing and answers the empty string, as tclsh does. Only a command
-  that has a `{*}` pays anything. 41 programs against tclsh in
+  that has a `{*}` pays anything. Compared against tclsh in
   `tests/expand_differential.rs`.
 - **Namespaces.** `namespace` — `eval`, `current`, `qualifiers`, `tail`,
   `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`,
@@ -764,19 +766,13 @@ approximated, and nothing is silently mis-run.
   "…"`, raised when the command runs — `puts [catch {nosuchcmd} m]` is `1` —
   because the compiler lowers that refusal as code rather than deciding it (see
   `Compiler::defer`).
-- **An expanded command that assigns, inside a procedure body.** `{*}` itself is
-  implemented (see the entry under "Implemented"), and a command it expands into
-  that this compiler owns is reached by evaluating the words as a list — which is
-  a chunk of its own, and a chunk addresses a procedure's locals as frame slots
-  it cannot share. So `set {*}{a b}` inside a procedure body writes the *global*
-  `a` where tclsh writes the local one. The words are already values by the time
-  this happens, so only a command that names a variable can reach the difference:
-  `set`, `incr`, `append`, `lappend`, `unset` and `upvar` written with an
-  expansion, inside a procedure, and only for the variable they name. A procedure
-  or a Tk command called with `{*}` — every use in `tk.tcl` — is entered directly
-  and is unaffected. The fix is the same one `eval` inside a procedure needs: a
-  variable table addressable by name at any level, which is the trade recorded at
-  the end of this file.
+- **An ensemble subcommand mapped to a builtin that names a variable, inside a
+  procedure body.** The call is resolved through the ensemble's map when it runs
+  and the builtin is evaluated as a list against the interpreter's table, not the
+  procedure's frame, so `incr` reached through an ensemble writes the global. A
+  computed command name and a `{*}` command do run against the frame (see the
+  `{*}` entry under "Implemented"); the ensemble path has no body's
+  declarations to project with.
 - **A coroutine created or resumed with `{*}`.** A coroutine lives on the
   evaluation that created it — its context command is in that driver's table, not
   in the interpreter's — so both halves miss when the command is expanded.

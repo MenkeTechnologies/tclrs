@@ -567,8 +567,8 @@ A word written `{*}$list` supplies a *number* of arguments, which the script
 decides while it runs. Every other command in this frontend has its callee and
 its argument count settled while the script is read — the count is an inline
 operand of the op the call lowers to — so a command containing a `{*}` is lowered
-whole instead: the line, then one flag and one value per word, then
-`ext::EXPAND_CALL`, which splices the flagged words by list rules and calls what
+whole instead: the line, the enclosing body's `global` declarations, then
+one flag and one value per word, then `ext::EXPAND_CALL`, which splices the flagged words by list rules and calls what
 the result spells. That covers the name as well, since `{*}{n x} y` calls `n`.
 
 Three kinds of callee, in the order tclsh resolves them: a procedure of the
@@ -576,13 +576,14 @@ interpreter, entered exactly as any run-time call enters one; a command this
 frontend compiles, which is rebuilt as a *list* and evaluated — a list evaluated
 as a script is one command whose words are its elements, with no substitution left
 to do, which is why `set {*}{a b}` assigns and `if {*}{1 {puts yes}}` runs its
-body; and anything else, which is a command Tk registered or an `invalid command
+body; inside a procedure the list runs against the procedure's frame, as
+`eval` does there; and anything else, which is a command Tk registered or an `invalid command
 name`. A command whose words all expand to nothing runs nothing and answers the
 empty string, as tclsh does.
 
 Only a command that has a `{*}` pays anything: one `LoadInt` per word of that
 command, and the op instead of the call. `tests/expand_differential.rs` compares
-41 programs against tclsh byte for byte.
+its programs against tclsh byte for byte.
 
 ### Coroutines
 

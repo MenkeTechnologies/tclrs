@@ -28,6 +28,10 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const PROGRAMS: &[&str] = &[
+    // ── a builtin reached at run time, inside a procedure ──
+    // It runs against the procedure's frame, as `eval` does: the local is
+    // the one written, a `global` declaration still links (incr.test incr-2.12).
+    "proc p {} {set z incr; set foo 100; $z foo}\nputs [p]\nproc u {} {set {*}{a b}; return $a}\nputs [u]\nputs [info exists a]\nset g 5\nproc v {} {global g; set c incr; $c g; set d set; $d loc 7; return \"$g [$d loc]\"}\nputs [v]\nputs $g",
     // ── what a `{*}` word contributes ──
     "proc n {args} {puts \"argc=[llength $args] <$args>\"}\nn {*}{}\nn {*}[list]\nn a {*}{b c} d",
     "proc n {args} {puts \"argc=[llength $args] <$args>\"}\nn {*}{a {b c} d}\nn {*}{{} x}",
