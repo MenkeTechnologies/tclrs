@@ -815,6 +815,10 @@ struct IfPlan<'a> {
     branches: Vec<(&'a Word, &'a Word)>,
     /// The `else` script, present or not.
     otherwise: Option<&'a Word>,
+    /// A computed word where `elseif` or `else` may stand, with more words
+    /// after it. Only its value can say which it is, so the command is
+    /// rebuilt and read when it runs, as `Tcl_IfObjCmd` reads it.
+    keyword_at: Option<usize>,
 }
 
 /// Read `if expr ?then? body ?elseif expr ?then? body ...? ?else? ?body?`.
@@ -869,6 +873,14 @@ fn parse_if(args: &[Word]) -> Result<IfPlan<'_>, String> {
             return Ok(IfPlan {
                 branches,
                 otherwise: None,
+                keyword_at: None,
+            });
+        }
+        if args[i].as_literal().is_none() && i + 1 < args.len() {
+            return Ok(IfPlan {
+                branches,
+                otherwise: None,
+                keyword_at: Some(i),
             });
         }
         if args[i].as_literal() == Some("elseif") {
@@ -891,6 +903,7 @@ fn parse_if(args: &[Word]) -> Result<IfPlan<'_>, String> {
         return Ok(IfPlan {
             branches,
             otherwise: Some(&args[i]),
+            keyword_at: None,
         });
     }
 }
@@ -2655,6 +2668,9 @@ impl Compiler {
             Ok(plan) => plan,
             Err(msg) => return self.defer(&msg, args),
         };
+        if let Some(k) = plan.keyword_at {
+            self.literal_of(&args[k], "\"if\" keyword")?;
+        }
         // A computed body makes the whole command a rebuilt one, decided
         // before the first condition is emitted.
         let bodies = plan.branches.iter().map(|(_, b)| *b).chain(plan.otherwise);

@@ -87,6 +87,9 @@ const PROGRAMS: &[&str] = &[
     "for {set i 0} {$i < 3} {incr i} {puts $i}",
     // tclsh 9 names the fourth word `command` (for.test for-1.1).
     "puts [catch {for {set i 0} {$i<3}} m]:$m",
+    // A computed word where `elseif` or `else` may stand is read when the
+    // command runs (if.test if-10.5).
+    "set e else; set f elseif\nputs [if 0 {} $e {list b}]\nputs [if 0 {} $f 1 {list c}]\nproc p {} {set e else; if 0 {} $e {return d}}\nputs [p]",
     "for {set i 0} {0} {incr i} {puts never}\nputs done",
     "for {set i 0} {$i < 9} {incr i} {if {$i == 4} {break}}\nputs $i",
     "for {set i 0} {$i < 5} {incr i} {if {$i == 2} {continue}; puts $i}",
