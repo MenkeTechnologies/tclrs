@@ -814,7 +814,9 @@ approximated, and nothing is silently mis-run.
   The list is `BEYOND_UNICODE_16` in `src/cmd_string.rs`; regenerate it when the
   crate's Unicode version catches up, at which point it should be empty.
 - **Subcommands and options recognised and then refused.** `array startsearch`
-  and the other search subcommands; `dict info`;
+  on an array (a search cannot be started, so `anymore`, `nextelement` and
+  `donesearch` answer with tclsh's errors for an array with no search active,
+  and every one of the four answers a name that is not an array as tclsh does); `dict info`;
   `dict set`, `dict incr`, `dict update` or `dict with` into an array element;
   `string`
   subcommands outside the

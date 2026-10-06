@@ -619,6 +619,12 @@ pub mod ext {
     /// longer exists drops the whole write-back (`:3875-3877`), and so does a
     /// path that no longer leads anywhere (`:3912-3917`).
     pub const DICT_WITH_END: u16 = ASSOC_BASE + 33;
+    /// `[name, searchId, place]` → an error: `array anymore`, `nextelement`
+    /// and `donesearch` against an array with no search active, which is every
+    /// array here since `array startsearch` is refused. The inline operand is 1
+    /// for `[name, place]`, `array startsearch` itself. See
+    /// [`crate::assoc`]'s `array_search`.
+    pub const ARR_SEARCH: u16 = ASSOC_BASE + 34;
 
     /// Where the string commands' ops begin — the `string` ensemble, `append`
     /// and `format` — dispatched to [`crate::cmd_string`], which names them.

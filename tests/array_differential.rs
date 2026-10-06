@@ -92,6 +92,11 @@ const FIXED: &[&str] = &[
     "set p 1\nset q 2\nunset p q\nputs [array exists p]",
     "set a(k) v\nunset -nocomplain a(nope)\nputs [array size a]",
     "puts [unset -nocomplain nothing]x",
+    // The array-search commands with no search active: `NotArrayError`, and
+    // `ParseSearchId`'s three errors, decided by the identifier's spelling.
+    "puts [list [catch {array a} m] $m]\nputs [list [catch {array anymore nosuch b} m] $m]\nset s 44\nputs [list [catch {array nextelement s b} m] $m]",
+    "set a(1) 1\nforeach id {x s-1-b s-1-a s--a {s- 7-a} s-+7-a} {puts [list [catch {array donesearch a $id} m] $m]}\ncatch {array anymore a x} m o\nputs [dict get $o -errorcode]",
+    "proc foo {} {set a 44; upvar 0 a x; list [catch {array anymore x b} msg] $msg}\nputs [foo]\nputs [list [catch {array startsearch} m] $m]\nputs [list [catch {array startsearch nosuch} m] $m]",
     // `Tcl_UnsetObjCmd` takes one `-nocomplain` and then one `--`, and only
     // when the first word begins with a dash.
     "set -nocomplain abc\nset var abc\nputs [list [catch {unset -nocomplain bogus var bogus}] [info exists var] [catch {unset -nocomplain -nocomplain}] [info exists -nocomplain]]",
@@ -673,8 +678,10 @@ fn array_names_and_get_are_sorted() {
 #[test]
 fn unimplemented_subcommands_are_refused() {
     for (src, expected) in [
+        // Refused on an array; a name that is not one is tclsh's own error,
+        // compared in `FIXED`.
         (
-            "array startsearch a",
+            "set a(1) 1\narray startsearch a",
             "array startsearch is not supported yet",
         ),
         ("array for {k v} a {}", "array for is not supported yet"),

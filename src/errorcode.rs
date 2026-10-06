@@ -91,6 +91,20 @@ pub(crate) fn classify(msg: &str) -> Option<String> {
     } else if msg.starts_with("bad -level value: expected non-negative integer but got \"") {
         // `TclMergeReturnOptions` (`tclResult.c:904-906`).
         vec!["TCL", "RESULT", "ILLEGAL_LEVEL"]
+    } else if let Some(name) = quoted(msg, "\"", "\" isn't an array") {
+        // `NotArrayError` (`tclVar.c:358-361`), the template's one raise site.
+        vec!["TCL", "LOOKUP", "ARRAY", name]
+    } else if let Some(handle) = quoted(msg, "illegal search identifier \"", "\"")
+        .or_else(|| quoted(msg, "couldn't find search \"", "\""))
+        .or_else(|| {
+            msg.strip_prefix("search identifier \"")
+                .and_then(|r| r.split_once("\" isn't for variable \""))
+                .filter(|(_, v)| v.ends_with('"'))
+                .map(|(h, _)| h)
+        })
+    {
+        // `ParseSearchId` (`tclVar.c:5326-5338`).
+        vec!["TCL", "LOOKUP", "ARRAYSEARCH", handle]
     } else if quoted(msg, "illegal access mode \"", "\"").is_some() {
         // `TclGetOpenMode` (`tclIOUtil.c:1519`).
         vec!["TCL", "OPENMODE", "INVALID"]
