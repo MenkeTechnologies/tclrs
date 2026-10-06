@@ -238,6 +238,9 @@ const PROGRAMS: &[&str] = &[
     "puts [catch {return -code break} m]:<$m>",
     "puts [catch {return -code 42 hi} m]:<$m>",
     "puts [catch {return -level 0 -code error zap} m]:<$m>",
+    // `-level 0 -code ok` is the value of the command, not an exception: the
+    // loop goes on and `lmap` collects it (lmap.test lmap-1.2a, dict-24.22).
+    "puts [lmap i {a b c} {return -level 0 $i}]\nforeach i {a b} {return -level 0 $i; puts x$i}\nputs [return -level 0 -errorcode E q]",
     "catch {break} m o\nputs $o",
     // A bad `-code` or `-level` is raised when the `return` runs, with its
     // errorcode, so a branch never taken costs nothing.

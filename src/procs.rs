@@ -998,6 +998,23 @@ impl Compiler {
             return self.return_with_options(dict, &overrides, errorcode, result);
         }
 
+        // `TclProcessReturn` with `-level 0` hands back the code itself, and
+        // code `ok` is no exception at all: `return -level 0 x` is a command
+        // whose value is `x`, so an `lmap` body ending in it collects `x` and
+        // the loop carries on. A `-errorcode` word is still evaluated where it
+        // is written.
+        if level == 0 && code == crate::runtime::TCL_OK {
+            if let Some(w) = errorcode {
+                self.word(w)?;
+                self.emit(Op::Pop, -1);
+            }
+            match result {
+                Some(w) => self.word(w)?,
+                None => self.push_empty(),
+            }
+            return Ok(());
+        }
+
         // The one case that is a plain frame return rather than a raised code:
         // an ordinary `return` from a procedure body, with no `catch` between
         // it and the frame it is returning from. Inside a `catch` even a bare
