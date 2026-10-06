@@ -71,6 +71,10 @@ const PROGRAMS: &[&str] = &[
     "set l {{a b}}; lset l 0 2 Z; puts $l",
     "set l {a b}; lset l 0 \"x y\"; puts $l",
     "proc f {} {set l {a b c}; lset l 1 Q; return $l}\nputs [f]",
+    // Inside a loop body, where the compiler checks the body leaves the stack
+    // as it found it: each of the three takes five operands under its
+    // arguments (dict.test dict-14.16, 24.16).
+    "proc q {} {set res {x x x}; dict for {k v} {a 0 b 1 c 2} {lset res $v $k; continue}; return $res}\nputs [q]\nset l {a b c}; foreach i {0 1} {puts [lpop l]}; puts $l\nset l {a b c}; set n 0; while {$n < 2} {ledit l 0 0 X$n; incr n}; puts $l\narray set A {k {1 2 3}}; for {set i 0} {$i < 3} {incr i} {lset A(k) $i z$i}; puts $A(k)",
     // ── lpop ─────────────────────────────────────────────────────────────
     "set l {a b c}; set v [lpop l]; puts \"$v <$l>\"",
     "set l {a b c}; set v [lpop l 0]; puts \"$v <$l>\"",

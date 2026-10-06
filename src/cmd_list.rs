@@ -228,7 +228,7 @@ fn var_target(c: &mut Compiler, target: &Target) -> Result<usize, CompileError> 
             c.push_value(Value::Int(1));
         }
     }
-    Ok(4)
+    Ok(5)
 }
 
 /// `lset listVar ?index ...? value`.
@@ -1982,11 +1982,11 @@ fn lassign_op(vm: &mut VM, arg: u8) -> Result<(), String> {
 /// be reported by name, which is what tclsh does and what a plain read of the
 /// empty string would not.
 fn list_var_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
-    let count = arg as usize - 4;
+    let count = arg as usize - 5;
     let mut rest: Vec<String> = (0..count).map(|_| to_tcl_string(&vm.pop())).collect();
     rest.reverse();
-    // The four the compiler pushed, innermost last: name, slot flag, place,
-    // element index — the last of which is empty unless the variable is one.
+    // The five the compiler pushed, innermost last: name, slot flag, place,
+    // element index — empty unless the variable is one — and the element flag.
     let is_elem = matches!(vm.pop(), Value::Int(1));
     let index = to_tcl_string(&vm.pop());
     let operand = vm.pop();
