@@ -194,10 +194,10 @@ fn value_classes_match_tclsh() {
 /// `-failindex` writes the index of the first character that failed — and only
 /// when the answer is 0, leaving the variable alone otherwise.
 ///
-/// The index is the length of the longest prefix that still belongs to the
-/// class, which is one rule for every class: `"  12x"` is 4 as an integer
+/// For a character class or a number the index is the length of the longest
+/// prefix that still belongs to the class: `"  12x"` is 4 as an integer
 /// because `"  12"` still is one, and `"1.2e+"` is 3 as a double but 1 as an
-/// integer.
+/// integer. `list` and `dict` report the element that would not parse.
 #[test]
 fn failindex_matches_tclsh() {
     let Some(tclsh) = tclsh() else {
@@ -225,6 +225,12 @@ fn failindex_matches_tclsh() {
         ("boolean", "maybe"),
         ("list", "a {b"),
         ("list", "{a} {b"),
+        // `list` and `dict` walk the elements: the offset of the first one that
+        // will not parse, or -1 for a well-formed list of odd length
+        // (string.test string-32.9a to 32.14).
+        ("dict", "a b c"),
+        ("dict", "a {b c d"),
+        ("dict", "éé {b c}d e"),
         ("xdigit", "12g"),
     ];
 

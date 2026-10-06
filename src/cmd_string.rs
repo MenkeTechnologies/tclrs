@@ -657,7 +657,7 @@ fn is_failindex(vm: &mut VM, id: u16) -> Result<(), String> {
     if !ok {
         let at = fail_index(&class, strict, &text);
         if let Some(cell) = var_cell(vm, place) {
-            *cell = Value::Int(at as i64);
+            *cell = Value::Int(at);
         }
     }
     vm.push(Value::Str(Arc::new((ok as i32).to_string())));
@@ -667,19 +667,30 @@ fn is_failindex(vm: &mut VM, id: u16) -> Result<(), String> {
 /// Where a string stopped belonging to its class: the length, in characters, of
 /// the longest prefix that still does.
 ///
-/// One rule covers every class, which is what the reference interpreter's
+/// One rule covers every class but `list` and `dict`, which is what the reference interpreter's
 /// answers say it is rather than what its source suggests: `string is integer
 /// -failindex v "  12x"` is 4 because `"  12"` is still an integer, `string is
 /// double -failindex v 1.2e+` is 3 where the same string as an *integer* is 1,
 /// and `string is list -failindex v "{a} {b"` is 4 — the offset of the element
 /// that would not parse. A character class falls out of the same rule as the
 /// index of its first offending character.
-fn fail_index(class: &str, strict: bool, text: &str) -> usize {
+///
+/// `list` and `dict` are not prefixes but a walk over the elements, ported
+/// from `StringIsCmd`: the offset of the first element that will not parse,
+/// past the white space ahead of it, and -1 when every element parses — a
+/// dict with an odd number of them (`string is dict -failindex v {a b c}`).
+fn fail_index(class: &str, strict: bool, text: &str) -> i64 {
+    if class == "list" || class == "dict" {
+        return match crate::list::unparsable_element(text) {
+            Some(at) => text[..at].chars().count() as i64,
+            None => -1,
+        };
+    }
     let chars: Vec<char> = text.chars().collect();
     for n in (0..=chars.len()).rev() {
         let prefix: String = chars[..n].iter().collect();
         if is_class(class, strict, &prefix).unwrap_or(false) {
-            return n;
+            return n as i64;
         }
     }
     0

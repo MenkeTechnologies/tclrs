@@ -50,6 +50,27 @@ pub fn split(src: &str) -> Result<Vec<String>, String> {
     }
 }
 
+/// The byte offset of the first element of `src` that will not parse, past the
+/// white space ahead of it, or `None` when every element parses. The walk
+/// `string is list -failindex` and `string is dict -failindex` make over
+/// `TclFindElement` (`generic/tclCmdMZ.c`, `StringIsCmd`).
+pub(crate) fn unparsable_element(src: &str) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut pos = 0;
+    loop {
+        while pos < bytes.len() && is_space(bytes[pos]) {
+            pos += 1;
+        }
+        if pos == bytes.len() {
+            return None;
+        }
+        match find_element(src, pos) {
+            Ok((_, next)) => pos = next,
+            Err(_) => return Some(pos),
+        }
+    }
+}
+
 /// The number of elements without building them.
 pub fn length(src: &str) -> Result<usize, String> {
     split(src).map(|v| v.len())
