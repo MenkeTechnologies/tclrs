@@ -539,6 +539,9 @@ const PROGRAMS: &[&str] = &[
     // Rounding behaviour across a whole decade.
     "set i 0\nwhile {$i < 40} {puts [format {%.1f %.2e %g} [expr {$i/8.0}] [expr {$i/8.0}] [expr {$i/8.0}]]; incr i}",
     // ── scan: the inline form ────────────────────────────────────────────
+    // `%d`/`%u`/`%x` narrow through `Tcl_GetLongFromObj`, which casts a value
+    // up to `ULONG_MAX` to a long before the int range check.
+    "foreach v {18446744073709551615 4294967296 -1 99999999999999999999 2147483648 18446744073709551616 18446744071562067968 9223372036854775808} {puts [list [scan $v %u] [scan $v %d]]}\nputs [scan FFFFFFFFFFFFFFFF %x]",
     "puts [scan {1 2 3} {%d %d %d}]",
     "puts [scan abc %s]",
     "puts [scan abc123 {%[a-z]%d}]",

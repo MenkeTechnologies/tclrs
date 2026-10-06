@@ -700,11 +700,17 @@ fn narrow(value: BigInt, size: Size, unsigned: bool) -> String {
         return value.to_string();
     }
     let fitted = match size {
-        // `TclGetIntFromObj` takes anything from `INT_MIN` to `UINT_MAX` and
-        // casts it, so `scan 4294967295 %d` is -1 rather than a saturation;
-        // only what is outside *that* range saturates, by its sign.
-        Size::Int => match i64::try_from(&value) {
-            Ok(w) if (i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(&w) => {
+        // `TclGetIntFromObj` goes through `Tcl_GetLongFromObj`, which takes a
+        // value from `LONG_MIN` to `ULONG_MAX` and casts it to a long — so
+        // 18446744073709551615 becomes -1 — and then keeps anything from
+        // `INT_MIN` to `UINT_MAX` and casts it to an int, so
+        // `scan 4294967295 %d` is -1 rather than a saturation. Only what fails
+        // either step saturates, by its sign.
+        Size::Int => match i64::try_from(&value)
+            .ok()
+            .or_else(|| u64::try_from(&value).ok().map(|u| u as i64))
+        {
+            Some(w) if (i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(&w) => {
                 i64::from(w as i32)
             }
             _ => {

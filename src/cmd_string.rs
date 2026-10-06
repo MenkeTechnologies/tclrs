@@ -1032,6 +1032,18 @@ fn want_int(text: &str) -> Result<i64, String> {
     })
 }
 
+/// `Tcl_GetLongFromObj`: a value from `LONG_MIN` to `ULONG_MAX`, cast to a
+/// long — so 18446744073709551615 is -1 — and `integer value too large to
+/// represent` past either end.
+fn long_of(text: &str) -> Result<i64, String> {
+    want_int(text)?;
+    let big = parse_big(text.trim_matches(is_ascii_space)).unwrap_or_default();
+    i64::try_from(&big)
+        .ok()
+        .or_else(|| u64::try_from(&big).ok().map(|u| u as i64))
+        .ok_or_else(|| "integer value too large to represent".to_string())
+}
+
 /// The character `%c` produces for `n`, or the refusal tclsh gives instead.
 ///
 /// `%c` hands its argument to a C `int`, and `Tcl_GetIntFromObj` accepts a
@@ -2078,7 +2090,7 @@ fn format_string(fmt: &str, args: &[String]) -> Result<String, String> {
                 Some(p) => value.chars().take(p as usize).collect(),
                 None => value.clone(),
             }),
-            'c' => Signed::plain(code_point(want_int(value)?)?),
+            'c' => Signed::plain(code_point(long_of(value)?)?),
             'd' | 'i' | 'u' | 'o' | 'x' | 'X' | 'b' => {
                 integer(conv, flags, precision, size, value)?
             }

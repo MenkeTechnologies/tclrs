@@ -309,6 +309,10 @@ fn character_conversions_match_tclsh() {
         "-2147483649",
         "4294967295",
         "4294967296",
+        // `Tcl_GetLongFromObj` casts anything up to `ULONG_MAX` to a long
+        // first, so these two are -1 and `INT_MIN`, not too large.
+        "18446744073709551615",
+        "18446744071562067968",
     ] {
         for width in ["", "3", "-3"] {
             program.push_str(&format!(
