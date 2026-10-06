@@ -136,13 +136,17 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
             if args.len() > 1 {
                 return c.error("wrong # args: should be \"cd ?dirName?\"");
             }
+            // An absent argument is the home directory; an empty one is a
+            // directory named "", which `chdir` refuses (cmdAH-2.6.1).
             match args.first() {
-                Some(w) => c.word(w)?,
-                // The absent argument is the home directory, and travels as
-                // the empty string so the handler has one shape.
-                None => c.push_str(""),
+                Some(w) => {
+                    c.word(w)?;
+                    c.emit(Op::Extended(ext::CD, 1), 0);
+                }
+                None => {
+                    c.emit(Op::Extended(ext::CD, 0), 1);
+                }
             }
-            c.emit(Op::Extended(ext::CD, 1), 0);
             Ok(())
         }
         "glob" => words_op(c, ext::GLOB, args),
@@ -579,11 +583,10 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             }
         },
         ext::CD => {
-            let target = if words[0].is_empty() {
-                std::env::var("HOME")
-                    .map_err(|_| "couldn't find HOME environment variable".to_string())?
-            } else {
-                words[0].clone()
+            let target = match words.first() {
+                Some(dir) => dir.clone(),
+                None => std::env::var("HOME")
+                    .map_err(|_| "couldn't find HOME environment variable".to_string())?,
             };
             std::env::set_current_dir(&target).map_err(|e| {
                 format!(

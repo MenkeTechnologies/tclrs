@@ -47,6 +47,9 @@ const PATH_PROGRAMS: &[&str] = &[
     "puts [catch {file tildeexpand ~nosuchuser99} m]\nputs $m",
     "puts [file home]",
     "puts [file dirname [file tildeexpand ~/x/y]]",
+    // An empty directory name is a directory named "", not the home one
+    // (cmdAH.test cmdAH-2.6.1); no argument at all is the home directory.
+    "puts [catch {cd {}} m]\nputs $m\ncd\nputs [pwd]",
 ];
 
 /// Programs run inside the scratch tree. `@` is replaced by its path.
