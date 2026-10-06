@@ -188,7 +188,7 @@ pub const CORPUS: &[Entry] = &[
     },
     Entry {
         name: "for",
-        synopsis: "for start test next body",
+        synopsis: "for start test next command",
         summary: "Run start, then the body while test holds, running next after each iteration. Emitted rotated, like every loop here.",
     },
     Entry {

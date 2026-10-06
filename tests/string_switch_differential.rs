@@ -189,6 +189,15 @@ fn switch_options_match_tclsh() {
         programs.push(form.to_string());
     }
 
+    // Options resolve as `Tcl_GetIndexFromObj` resolves them: a unique prefix
+    // is the option, `-` alone is ambiguous, a second mode option is refused
+    // naming the first, and a variable option short of words has its own
+    // message (switch.test switch-3.12 to 3.14).
+    programs.push(
+        "foreach s {{switch -exa Foo Foo {set r OK}} {switch -gl Foo Fo? {set r OK}} {switch -re Foo F.o {set r OK}} {switch -n FOO foo {set r OK}} {switch - Foo Foo {set r OK}} {switch -exact -glob Foo Fo? {set r OK}} {switch -regexp -exact Foo Fo? {set r OK}} {switch -indexvar Foo Fo?} {switch -regexp -matchvar Foo {Fo? x}} {switch -regexp -m m Foo {F(o) {set m}}}} {puts [list [catch $s m] $m]}"
+            .to_string(),
+    );
+
     // The matching modes, with and without case folding, against subjects that
     // separate them: same letters different case, and a glob metacharacter.
     for opts in [

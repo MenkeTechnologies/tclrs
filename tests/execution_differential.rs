@@ -85,6 +85,8 @@ const PROGRAMS: &[&str] = &[
     // and the next test sits below the body. What that moves is where `break`
     // and `continue` land and at what stack depth — these programs pin both.
     "for {set i 0} {$i < 3} {incr i} {puts $i}",
+    // tclsh 9 names the fourth word `command` (for.test for-1.1).
+    "puts [catch {for {set i 0} {$i<3}} m]:$m",
     "for {set i 0} {0} {incr i} {puts never}\nputs done",
     "for {set i 0} {$i < 9} {incr i} {if {$i == 4} {break}}\nputs $i",
     "for {set i 0} {$i < 5} {incr i} {if {$i == 2} {continue}; puts $i}",

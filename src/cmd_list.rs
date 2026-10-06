@@ -1927,7 +1927,7 @@ fn merge(
 
 /// `Tcl_GetIndexFromObj`: an exact match wins, otherwise a unique prefix does,
 /// and anything else names the whole table in the error.
-fn option(table: &[&str], word: &str) -> Result<usize, String> {
+pub(crate) fn option(table: &[&str], word: &str) -> Result<usize, String> {
     if let Some(i) = table.iter().position(|&name| name == word) {
         return Ok(i);
     }

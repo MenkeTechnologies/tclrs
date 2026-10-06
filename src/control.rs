@@ -20,6 +20,18 @@ use crate::compiler::{ext, ext_wide, Body, CompileError, Compiler};
 use crate::list;
 use crate::parser::Word;
 
+/// `Tcl_SwitchObjCmd`'s option table, in its order: the order a refusal lists
+/// them in, and the order a prefix is resolved against.
+const SWITCH_OPTIONS: &[&str] = &[
+    "-exact",
+    "-glob",
+    "-indexvar",
+    "-matchvar",
+    "-nocase",
+    "-regexp",
+    "--",
+];
+
 /// `switch`'s own usage line, quoted by every arity refusal it makes.
 const SWITCH_USAGE: &str =
     "wrong # args: should be \"switch ?-option ...? string ?pattern body ...? ?default body?\"";
@@ -46,10 +58,10 @@ struct Clause {
 }
 
 impl Compiler {
-    /// `for start test next body`.
+    /// `for start test next command`.
     pub(crate) fn cmd_for(&mut self, args: &[Word]) -> Result<(), CompileError> {
         let [start, test, next, body] = args else {
-            return self.error("wrong # args: should be \"for start test next body\"");
+            return self.error("wrong # args: should be \"for start test next command\"");
         };
         // The test is compiled at the *bottom* of the rotated shape, so a
         // computed one would be refused after ops exist and could no longer
@@ -81,6 +93,8 @@ impl Compiler {
         let mut nocase = false;
         let mut matchvar: Option<String> = None;
         let mut indexvar: Option<String> = None;
+        // Whether a mode option was written, which a second one is refused for.
+        let mut foundmode = false;
         // `switch(n)`: a leading `-` argument is an option only while at least
         // two arguments follow it — the subject and the patterns. That bound is
         // the interpreter's own (`Tcl_SwitchObjCmd` scans `i < objc-2`), and it
@@ -95,40 +109,53 @@ impl Compiler {
                 break;
             }
             i += 1;
-            match text {
-                "-exact" => mode = Match::Exact,
-                "-glob" => mode = Match::Glob,
-                "-nocase" => nocase = true,
-                // Named so the option list above stays honest, and refused with
-                // this frontend's own wording rather than being mistaken for a
-                // bad option. `-regexp` needs the regular-expression engine.
-                "-regexp" => mode = Match::Regexp,
-                // Both take the *next* word as a variable name, and both leave
-                // fewer than two arguments behind if that word was the subject:
-                // `Tcl_SwitchObjCmd` re-tests `i >= objc-2` after consuming it
-                // and reports the command's usage, which is what a missing name
-                // looks like from outside.
-                "-matchvar" | "-indexvar" => {
-                    if i + 2 >= args.len() {
-                        return Err(self.deferrable_err(SWITCH_USAGE));
-                    }
-                    let name = self.var_name_of(&args[i])?;
-                    i += 1;
-                    if text == "-matchvar" {
-                        matchvar = Some(name);
-                    } else {
-                        indexvar = Some(name);
-                    }
-                }
+            // `Tcl_GetIndexFromObj` over the option table, so a unique prefix
+            // is the option (`-exa`, `-gl`, `-m`) and `-` alone is ambiguous.
+            // A refusal is the command's own, reported when it runs: deferred
+            // here for the reason `wrong # args` is.
+            let option = crate::cmd_list::option(SWITCH_OPTIONS, text)
+                .map_err(|m| self.deferrable_err(m))?;
+            match SWITCH_OPTIONS[option] {
                 "--" => break,
-                // A bad option is `Tcl_GetIndexFromObj` inside the command's own
-                // implementation, so tclsh reports it when the command runs:
-                // deferred here for the reason `wrong # args` is.
-                other => {
-                    return Err(self.deferrable_err(format!(
-                        "bad option \"{other}\": must be -exact, -glob, -indexvar, \
-                         -matchvar, -nocase, -regexp, or --"
-                    )))
+                "-nocase" => nocase = true,
+                // A second mode option names the first one found — `-exact`
+                // when none was written yet is impossible, since the first
+                // one sets `foundmode`.
+                name @ ("-exact" | "-glob" | "-regexp") => {
+                    if foundmode {
+                        let found = match mode {
+                            Match::Exact => "-exact",
+                            Match::Glob => "-glob",
+                            Match::Regexp => "-regexp",
+                        };
+                        return Err(self.deferrable_err(format!(
+                            "bad option \"{text}\": {found} option already found"
+                        )));
+                    }
+                    foundmode = true;
+                    mode = match name {
+                        "-exact" => Match::Exact,
+                        "-glob" => Match::Glob,
+                        _ => Match::Regexp,
+                    };
+                }
+                // Both take the *next* word as a variable name, and that word
+                // must leave the subject and a pattern behind it: the
+                // `i >= objc-2` re-test `Tcl_SwitchObjCmd` makes after
+                // consuming it.
+                name => {
+                    if i + 2 >= args.len() {
+                        return Err(self.deferrable_err(format!(
+                            "missing variable name argument to {name} option"
+                        )));
+                    }
+                    let var = self.var_name_of(&args[i])?;
+                    i += 1;
+                    if name == "-matchvar" {
+                        matchvar = Some(var);
+                    } else {
+                        indexvar = Some(var);
+                    }
                 }
             }
         }
