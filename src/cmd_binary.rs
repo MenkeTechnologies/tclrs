@@ -40,7 +40,7 @@ use crate::assoc::{target_of, Target};
 use crate::compiler::{CompileError, Compiler};
 use crate::list;
 use crate::parser::Word;
-use crate::runtime::{format_double, place_at, to_tcl_string, var_cell};
+use crate::runtime::{format_double, place_at, set_scalar, to_tcl_string};
 
 /// Extension opcode ids owned by this module.
 pub mod ext {
@@ -1268,8 +1268,8 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             for _ in 0..count {
                 let operand = vm.pop();
                 let in_frame = to_tcl_string(&vm.pop()) == "1";
-                let _name = vm.pop();
-                places.push(place_at(&operand, in_frame)?);
+                let name = to_tcl_string(&vm.pop());
+                places.push((place_at(&operand, in_frame)?, name));
             }
             places.reverse();
             let fmt = to_tcl_string(&vm.pop());
@@ -1277,12 +1277,13 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
 
             let scanned = scan(&data, &fmt, count)?;
             let mut assigned = 0i64;
-            for (place, value) in places.into_iter().zip(scanned.values) {
+            // The first variable that refuses ends the command, the ones
+            // before it keeping their values: `BinaryScanCmd` returns at the
+            // first failed `Tcl_ObjSetVar2`.
+            for ((place, name), value) in places.into_iter().zip(scanned.values) {
                 let Some(value) = value else { continue };
                 assigned += 1;
-                if let Some(cell) = var_cell(vm, place) {
-                    *cell = Value::Str(Arc::new(value));
-                }
+                set_scalar(vm, place, &name, Value::Str(Arc::new(value)))?;
             }
             vm.push(Value::Int(assigned));
             Ok(())

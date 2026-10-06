@@ -225,14 +225,16 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
         c.word(word)?;
     }
     // A variable travels as where it lives, not as its value: the op assigns to
-    // it. Encoded one operand per variable — the index shifted up by one with
-    // the frame-slot bit at the bottom — so the operand count stays the arity.
+    // it. Two operands per variable: its name, for the refusal an array earns
+    // (`can't set "a": variable is array`), then its place — the index shifted
+    // up by one with the frame-slot bit at the bottom.
     for name in &var_names {
+        c.push_str(name);
         let encoded = c.place_operand(name);
         c.emit(Op::LoadInt(encoded), 1);
     }
 
-    let operands = 2 + fixed + vars.len();
+    let operands = 2 + fixed + 2 * vars.len();
     let Ok(argc) = u8::try_from(operands) else {
         return c.error("too many match variables");
     };
@@ -640,6 +642,18 @@ fn assign(vm: &mut VM, encoded: &Value, value: String) -> Result<(), String> {
     Ok(())
 }
 
+/// The same for a variable the command was handed by name — `regexp`'s match
+/// variables, `regsub`'s result variable — which refuses an array as
+/// `Tcl_ObjSetVar2` does.
+fn assign_named(vm: &mut VM, name: &str, encoded: &Value, value: String) -> Result<(), String> {
+    let raw = match encoded {
+        Value::Int(v) => *v,
+        other => return Err(format!("regexp: not a variable place: {other:?}")),
+    };
+    let place = place_at(&Value::Int(raw >> 1), raw & 1 == 1)?;
+    crate::runtime::set_scalar(vm, place, name, Value::Str(Arc::new(value)))
+}
+
 /// Where a match loop stops, which is not the same question for the two
 /// commands — see [`matches`].
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -771,7 +785,10 @@ fn run_regexp(vm: &mut VM, operands: &[Value]) -> Result<(), String> {
     };
     // With `-all` the variables keep the last match, which is what tclsh
     // leaves behind.
-    for (i, place) in places.iter().enumerate() {
+    for (i, var) in places.chunks(2).enumerate() {
+        let [name, place] = var else {
+            return Err("regexp: malformed match variable".to_string());
+        };
         let span = caps.get(i).map(|m| (m.start(), m.end()));
         let text = if flags & F_INDICES != 0 {
             indices(span, &idx)
@@ -779,7 +796,7 @@ fn run_regexp(vm: &mut VM, operands: &[Value]) -> Result<(), String> {
             span.map(|(s, e)| subject[s..e].to_string())
                 .unwrap_or_default()
         };
-        assign(vm, place, text)?;
+        assign_named(vm, &to_tcl_string(name), place, text)?;
     }
     vm.push(Value::Int(if flags & F_ALL != 0 { count } else { 1 }));
     Ok(())
@@ -856,8 +873,10 @@ fn run_regsub(interp: Option<&Shared>, vm: &mut VM, operands: &[Value]) -> Resul
     out.push_str(&subject[cursor..]);
 
     if flags & F_INTO_VAR != 0 {
-        let place = operands.last().ok_or("regsub: variable place missing")?;
-        assign(vm, place, out)?;
+        let [name, place] = &operands[operands.len().saturating_sub(2)..] else {
+            return Err("regsub: variable place missing".to_string());
+        };
+        assign_named(vm, &to_tcl_string(name), place, out)?;
         vm.push(Value::Int(count));
     } else {
         vm.push(Value::Str(Arc::new(out)));

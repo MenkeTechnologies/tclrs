@@ -24,7 +24,7 @@ use crate::assoc::{target_of, Target};
 use crate::compiler::{CompileError, Compiler};
 use crate::list;
 use crate::parser::Word;
-use crate::runtime::{format_double, place_at, to_tcl_string, var_cell};
+use crate::runtime::{format_double, place_at, set_scalar, to_tcl_string};
 
 /// The ids this command owns, inside [`crate::cmd_string`]'s block: `scan` is
 /// `format`'s inverse and shares its range rather than opening a new one.
@@ -78,8 +78,8 @@ pub(crate) fn extension(vm: &mut VM) -> Result<(), String> {
     for _ in 0..count {
         let operand = vm.pop();
         let in_frame = to_tcl_string(&vm.pop()) == "1";
-        let _name = vm.pop();
-        places.push(place_at(&operand, in_frame)?);
+        let name = to_tcl_string(&vm.pop());
+        places.push((place_at(&operand, in_frame)?, name));
     }
     places.reverse();
     let format = to_tcl_string(&vm.pop());
@@ -104,13 +104,20 @@ pub(crate) fn extension(vm: &mut VM) -> Result<(), String> {
         return Ok(());
     }
 
+    // Every variable is assigned even after one refuses, and the first
+    // refusal is the command's error: `Tcl_ScanObjCmd` keeps going with
+    // `code = TCL_ERROR`, leaving the message of the first.
     let mut assigned = 0i64;
-    for (place, value) in places.into_iter().zip(scanned.values) {
+    let mut refused: Option<String> = None;
+    for ((place, name), value) in places.into_iter().zip(scanned.values) {
         let Some(value) = value else { continue };
         assigned += 1;
-        if let Some(cell) = var_cell(vm, place) {
-            *cell = Value::Str(Arc::new(value));
+        if let Err(msg) = set_scalar(vm, place, &name, Value::Str(Arc::new(value))) {
+            refused.get_or_insert(msg);
         }
+    }
+    if let Some(msg) = refused {
+        return Err(msg);
     }
     // Running out of input before the first conversion is -1, which is how a
     // caller tells "nothing there" from "nothing matched".

@@ -4604,6 +4604,25 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
     }
 }
 
+/// Write a scalar value into the variable `name` lives in, as
+/// `Tcl_ObjSetVar2` does for an op that assigns a result variable — `scan`'s,
+/// `binary scan`'s, `regexp`'s, `gets`'s. A variable that is an array refuses,
+/// in tclsh's wording: `can't set "a": variable is array`.
+pub(crate) fn set_scalar(
+    vm: &mut VM,
+    place: Place,
+    name: &str,
+    value: Value,
+) -> Result<(), String> {
+    if let Some(cell) = var_cell(vm, place) {
+        if matches!(cell, Value::Hash(_)) {
+            return Err(format!("can't set \"{name}\": variable is array"));
+        }
+        *cell = value;
+    }
+    Ok(())
+}
+
 /// The storage a variable lives in, grown to reach it — the same growth
 /// `VM::set_var` and `VM::set_slot` do, which those cannot be used for here
 /// because both hand back a clone rather than the value itself.

@@ -690,7 +690,13 @@ impl Compiler {
     /// given no variable to write.
     fn store_or_drop(&mut self, var: Option<&str>) {
         match var {
-            Some(name) => self.emit_set_var(name),
+            Some(name) => {
+                // An array refuses, as `set` does, and the refusal is `catch`'s
+                // own error: `Tcl_CatchObjCmd` returns `TCL_ERROR` when
+                // `Tcl_ObjSetVar2` fails.
+                self.scalar_set_guard(name);
+                self.emit_set_var(name)
+            }
             None => {
                 self.emit(Op::Pop, -1);
             }

@@ -69,7 +69,7 @@ use fusevm::{Op, Value, VM};
 
 use crate::compiler::{ext, CompileError, Compiler};
 use crate::parser::Word;
-use crate::runtime::{place_at, to_tcl_string, var_cell, Output};
+use crate::runtime::{place_at, to_tcl_string, Output};
 
 // ── the driver interface ─────────────────────────────────────────────────
 
@@ -1501,10 +1501,12 @@ fn compile_gets(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     let operands = match var {
         None => 1,
         Some(word) => {
+            // The name too, for the refusal an array earns.
             let name = c.var_name_of(word)?;
+            c.push_str(&name);
             let encoded = c.place_operand(&name);
             c.emit(Op::LoadInt(encoded), 1);
-            2
+            3
         }
     };
     c.emit(Op::Extended(ext::GETS, operands), 1 - operands as i32);
@@ -1554,11 +1556,11 @@ pub(crate) fn run(vm: &mut VM, id: u16, arg: u8, sink: &Output) -> Result<(), St
         ext::GETS => {
             let channel = resolve_readable(&text(0))?;
             let line = gets_id(channel)?;
-            match operands.get(1) {
+            match operands.get(2) {
                 None => Value::Str(Arc::new(line.unwrap_or_default())),
                 Some(place) => {
                     let value = line.clone().unwrap_or_default();
-                    assign(vm, place, &value)?;
+                    assign(vm, &text(1), place, &value)?;
                     Value::Int(match line {
                         Some(l) => l.chars().count() as i64,
                         None => -1,
@@ -1603,17 +1605,15 @@ fn empty() -> Value {
 }
 
 /// Store a line in the variable an encoded place operand names, as
-/// [`crate::regexp`]'s match variables are stored.
-fn assign(vm: &mut VM, encoded: &Value, value: &str) -> Result<(), String> {
+/// [`crate::regexp`]'s match variables are stored: an array refuses, in
+/// `Tcl_ObjSetVar2`'s words, naming `name`.
+fn assign(vm: &mut VM, name: &str, encoded: &Value, value: &str) -> Result<(), String> {
     let raw = match encoded {
         Value::Int(v) => *v,
         other => return Err(format!("gets: not a variable place: {other:?}")),
     };
     let place = place_at(&Value::Int(raw >> 1), raw & 1 == 1)?;
-    if let Some(cell) = var_cell(vm, place) {
-        *cell = Value::Str(Arc::new(value.to_string()));
-    }
-    Ok(())
+    crate::runtime::set_scalar(vm, place, name, Value::Str(Arc::new(value.to_string())))
 }
 
 /// A channel that must be readable, in `Tcl_ReadChars`'s wording for one that

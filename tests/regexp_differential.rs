@@ -25,6 +25,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Matching, the switches, and the two commands' return values.
 const PROGRAMS: &[&str] = &[
+    // A result variable that is an array refuses as `Tcl_ObjSetVar2` does, for
+    // every command that assigns one by name; `scan` still assigns the others,
+    // `regexp` the ones before it, and a failed match touches nothing
+    // (scan.test scan-4.60, scan-8.12).
+    "set a(0) 44\nforeach c {{scan 44 %d a} {regexp (.) x a} {regexp (.)(.) xy y a} {regexp z x a} {regsub x x y a} {binary scan abc a1a1 y a} {catch {error x} a} {scan {1 2 3} {%d %d %d} x a z}} {set x -; set y -; set z -; puts [list [catch $c m] $m $x $y $z]}\nproc p {} {set a(0) 1; list [catch {scan 4 %d a} m] $m [catch {regexp . x a} m] $m}\nputs [p]",
     // The return value is 1/0, a count under -all, and the text under -inline.
     "puts [regexp {b} abc]",
     "puts [regexp {z} abc]",
