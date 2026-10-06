@@ -170,6 +170,12 @@ const PROGRAMS: &[&str] = &[
     "proc f {} {list [catch {if {1 ? nan : 2} {}} m] $m}\nputs [f]",
     "proc f {} {set c 1\nlist [catch {if {$c ? nan : 2} {}} m] $m}\nputs [f]",
     "puts [expr {1 ? \"0x10\" : 0}]\nputs [expr {0 ? 1 : \"007\"}]\nputs [expr {1 ? \"a b\" : 0}]\nputs [expr {1 ? \"1e2\" : 0}]",
+    // ── a double's string form is `TclDoubleDigits`'s: an exact tie keeps the
+    // even digit, and a power-of-two significand is given the wider tolerance
+    // below it, so 2.0**64 prints digits that read back as the double below ──
+    "puts [expr {1e15+0.3}]\nputs [expr {2.0**64}]\nputs [expr {2.0**65}]\nputs [expr {-2.0**64}]\nputs [expr {double(3**40)}]",
+    "for {set e -1074} {$e < 1024} {incr e 7} {puts [expr {2.0**$e}]}",
+    "foreach v {0.1 2.675 1e23 9007199254740993 5e-324 2.2250738585072014e-308 1e-5 1e17 0.0001} {puts [expr {$v * 1.0}]}",
 ];
 
 fn tclsh() -> Option<PathBuf> {

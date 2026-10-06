@@ -4976,9 +4976,10 @@ pub fn to_tcl_string(v: &Value) -> String {
     tcl_str(v).into_owned()
 }
 
-/// Format a double the way Tcl does: the shortest representation that reads
-/// back exactly, never looking like an integer, and in exponential form when
-/// the magnitude is outside what `%g` would print positionally.
+/// Format a double the way Tcl does: `Tcl_PrintDouble` (`generic/tclUtil.c`)
+/// over the digits `TclDoubleDigits` chooses ([`crate::dtoa`]) — exponential
+/// form when the decimal exponent is below -4 or above 16, otherwise positional
+/// with at least one digit after the point.
 pub fn format_double(f: f64) -> String {
     if f.is_nan() {
         return "NaN".to_string();
@@ -4986,22 +4987,43 @@ pub fn format_double(f: f64) -> String {
     if f.is_infinite() {
         return if f > 0.0 { "Inf" } else { "-Inf" }.to_string();
     }
-    let mag = f.abs();
-    if mag != 0.0 && !(1e-4..1e17).contains(&mag) {
-        let raw = format!("{f:e}"); // e.g. "1e301", "1.5e-7"
-        let (mantissa, exponent) = raw.split_once('e').expect("exponential form");
-        let (sign, digits) = match exponent.strip_prefix('-') {
-            Some(rest) => ('-', rest),
-            None => ('+', exponent),
-        };
-        return format!("{mantissa}e{sign}{digits}");
+    let mut out = String::with_capacity(24);
+    if f.is_sign_negative() {
+        out.push('-');
     }
-    let plain = format!("{f}");
-    if plain.contains(['.', 'e', 'n', 'i']) {
-        plain
+    if f == 0.0 {
+        out.push_str("0.0");
+        return out;
+    }
+    let (digits, exponent) = crate::dtoa::shortest(f);
+    if !(-4..=16).contains(&exponent) {
+        out.push_str(&digits[..1]);
+        if digits.len() > 1 {
+            out.push('.');
+            out.push_str(&digits[1..]);
+        }
+        out.push_str(&format!("e{exponent:+}"));
+        return out;
+    }
+    if exponent < 0 {
+        out.push_str("0.");
+        for _ in 0..(-exponent - 1) {
+            out.push('0');
+        }
+        out.push_str(&digits);
+        return out;
+    }
+    let whole = exponent as usize + 1;
+    if digits.len() <= whole {
+        out.push_str(&digits);
+        out.extend(std::iter::repeat_n('0', whole - digits.len()));
+        out.push_str(".0");
     } else {
-        format!("{plain}.0")
+        out.push_str(&digits[..whole]);
+        out.push('.');
+        out.push_str(&digits[whole..]);
     }
+    out
 }
 
 #[cfg(test)]

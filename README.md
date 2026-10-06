@@ -451,9 +451,12 @@ The whole operator set of `expr(n)`:
 | Membership | `in` `ni` — string equality against a list's elements, so `1 in {01}` is false |
 
 Operands are literals, variables, nested commands (`[…]`), quoted and braced
-strings, and parenthesised subexpressions. Doubles print in Tcl's format: the
-shortest representation that reads back exactly, never looking like an integer,
-exponential outside the positional range. A *literal*, though, prints as the
+strings, and parenthesised subexpressions. Doubles print in Tcl's format, with
+the digits `TclDoubleDigits` chooses (`src/dtoa.rs`): the shortest that read
+back, an exact tie kept on the even digit, and Tcl's wider tolerance below a
+power-of-two significand — so `2.0**64` is `1.844674407370955e+19`, as in
+tclsh. A double never looks like an integer, and is exponential outside the
+positional range. A *literal*, though, prints as the
 script wrote it — Tcl's first rule — so `puts 3.0` is `3.0` and `puts 007.0` is
 `007.0`.
 
