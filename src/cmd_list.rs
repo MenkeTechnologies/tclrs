@@ -25,7 +25,7 @@ use crate::assoc::Target;
 use crate::compiler::{ext, CompileError, Compiler, Place};
 use crate::list;
 use crate::parser::Word;
-use crate::runtime::{place_at, place_of, take_var, to_tcl_string, var_cell, Shared};
+use crate::runtime::{place_at, place_of, take_var, to_tcl_string, var_cell, Num, Shared};
 
 // ── compiling ────────────────────────────────────────────────────────────
 
@@ -586,140 +586,360 @@ fn lremove(value: &str, indices: &[String]) -> Result<String, String> {
     Ok(list::join(&kept))
 }
 
-/// `lseq n`, `lseq from to`, `lseq from to step`, and the keyword spellings
-/// `from to n`, `from .. n`, `from to n by step`, `from count n`.
+/// `lseq`: `Tcl_LseqObjCmd` (`generic/tclCmdIL.c`) and the arithmetic series it
+/// builds (`TclNewArithSeriesObj`, `generic/tclArithSeries.c`), materialised
+/// as the list's string the way `UpdateStringOfArithSeries` writes it.
 ///
-/// The rules are tclsh's and are not what the manual suggests: a step of zero
-/// yields one element rather than looping forever, a step pointing away from
-/// the end yields none, and with no step at all the direction is inferred, so
-/// `lseq 5 1` counts down. Integers stay integers; one float operand makes the
-/// whole sequence floats, which is why `lseq 0 1 0.25` starts at `0.0`.
+/// Each argument is classified as a number or a keyword (`..`, `to`, `count`,
+/// `by`) and the classifications, as decimal digits, select one of the shapes
+/// `lseq n`, `n n`, `n n n`, `n op n`, `n op n n`, `n n by n` and
+/// `n op n by n`; anything else is the usage line. A double among the numbers
+/// makes the series one of doubles, rounded to the most decimal places any of
+/// its operands was written with, so `lseq 4 10 0.1` is `4.0 4.1 …` and not
+/// the accumulated error of repeated addition.
 fn lseq(args: &[String]) -> Result<String, String> {
-    // The grammar is `from ?op? to ?by step?`, and which error an ill-formed
-    // call gets depends on where the parse stops — all of it measured against
-    // tclsh rather than read off the usage string.
     const USAGE: &str = "wrong # args: should be \"lseq n ??op? n ??by? n??\"";
-    if args.is_empty() {
+    if args.len() > 5 {
         return Err(USAGE.to_string());
     }
-    let (from, to, step, by_count) = if args.len() == 1 {
-        (None, &args[0], None, false)
-    } else {
-        // `lseq 1 zz 4 by 2`: a trailing `by step` fixes the shape, so the
-        // slot before `to` is the operation slot even when what sits there is
-        // not a keyword — tclsh then reports it as a number it could not read.
-        let anchored = args.len() == 5 && args[3] == "by";
-        let (op, to_at) = if is_lseq_op(&args[1]) {
-            (Some(args[1].as_str()), 2)
-        } else if anchored {
-            return Err(format!("expected number but got \"{}\"", args[1]));
-        } else {
-            (None, 1)
-        };
-        let Some(to) = args.get(to_at) else {
-            return Err(USAGE.to_string());
-        };
-        let rest = &args[to_at + 1..];
-        let step = match rest {
-            [] => None,
-            // `lseq 1 2 3` is from/to/step; with an operation already given
-            // there is no bare step slot left.
-            [s] if op.is_none() => Some(s),
-            [s] if s == "by" => return Err("missing \"by\" value.".to_string()),
-            [_] => return Err(USAGE.to_string()),
-            [by, s] if by == "by" => Some(s),
-            // A keyword in the `by` slot is a shape error; anything else is
-            // named as the operation it failed to be.
-            [other, _] if is_lseq_op(other) => return Err(USAGE.to_string()),
-            [other, _] => {
-                return Err(format!(
-                    "bad operation \"{other}\": must be .., to, count, or by"
-                ))
+
+    let mut numbers: Vec<Option<(Num, &str)>> = Vec::with_capacity(5);
+    let mut ops: Vec<usize> = Vec::with_capacity(5);
+    let mut arg_key = 0u32;
+    let mut allowed = SEQ_NUMERIC;
+    let mut rem_nums = 3;
+    let mut use_doubles = 0;
+    for (i, arg) in args.iter().enumerate() {
+        arg_key *= 10;
+        let last = if i + 1 == args.len() { SEQ_LAST } else { 0 };
+        match seq_identify(arg, allowed | last)? {
+            None => {
+                // Neither a number nor a keyword where only a keyword fits:
+                // the keyword lookup's own refusal.
+                return Err(match index_from(SEQ_OPERATIONS, arg, "operation") {
+                    Err(msg) => msg,
+                    Ok(_) => USAGE.to_string(),
+                });
             }
-            _ => return Err(USAGE.to_string()),
-        };
-        (Some(&args[0]), to, step, op == Some("count"))
-    };
-
-    let number = |t: &str| list::parse_double(t).ok_or(format!("expected number but got \"{t}\""));
-    let integral = |t: &str| list::parse_int(t).is_some();
-
-    let (start, count_form) = match from {
-        Some(a) => (number(a)?, by_count),
-        None => (0.0, false),
-    };
-    let limit = number(to)?;
-    let stride = match step {
-        Some(s) => number(s)?,
-        None => {
-            if count_form || from.is_none() {
-                1.0
-            } else if limit < start {
-                -1.0
-            } else {
-                1.0
+            Some(SeqArg::Number(n)) => {
+                rem_nums -= 1;
+                arg_key += SEQ_NUMERIC;
+                allowed = SEQ_KEYWORD;
+                // After the last number but one, with two words left, the
+                // next can only be a keyword.
+                if rem_nums != 1 || args.len() - 1 - i != 2 {
+                    allowed |= SEQ_NUMERIC;
+                }
+                if matches!(n, Num::Float(_)) {
+                    use_doubles += 1;
+                }
+                numbers.push(Some((n, arg.as_str())));
+                ops.push(usize::MAX);
+            }
+            Some(SeqArg::Keyword(op)) => {
+                arg_key += SEQ_KEYWORD;
+                allowed = SEQ_NUMERIC;
+                numbers.push(None);
+                ops.push(op);
             }
         }
+    }
+
+    let zero = (Num::Int(0), "0");
+    let one = (Num::Int(1), "1");
+    let num = |k: usize| numbers[k].clone().expect("a numeric argument");
+    let (dots, to, count, by) = (0, 1, 2, 3);
+    let (start, end, step, mut count_of): (
+        (Num, &str),
+        Option<(Num, &str)>,
+        Option<(Num, &str)>,
+        Option<(Num, &str)>,
+    ) = match arg_key {
+        1 => {
+            // A count alone is integral: `3.0` is used as 3, `3.1` refused
+            // later (bug f4a4bd7f1070).
+            use_doubles = 0;
+            (zero, None, Some(one), Some(num(0)))
+        }
+        11 => (num(0), Some(num(1)), None, None),
+        111 => (num(0), Some(num(1)), Some(num(2)), None),
+        121 => match ops[1] {
+            op if op == dots || op == to => (num(0), Some(num(2)), None, None),
+            op if op == by => (zero, None, Some(num(2)), Some(num(0))),
+            op if op == count => (num(0), None, Some(one), Some(num(2))),
+            _ => return Err(USAGE.to_string()),
+        },
+        1211 => match ops[1] {
+            op if op == dots || op == to => (num(0), Some(num(2)), Some(num(3)), None),
+            op if op == count => (num(0), None, Some(num(3)), Some(num(2))),
+            _ => return Err(USAGE.to_string()),
+        },
+        1121 if ops[2] == by => (num(0), Some(num(1)), Some(num(3)), None),
+        12121 if ops[3] == by => match ops[1] {
+            op if op == dots || op == to => (num(0), Some(num(2)), Some(num(4)), None),
+            op if op == count => (num(0), None, Some(num(4)), Some(num(2))),
+            _ => return Err(USAGE.to_string()),
+        },
+        _ => return Err(USAGE.to_string()),
     };
 
-    // A float start or step makes every element a float — `lseq 0 1 0.25`
-    // prints `0.0` for a start the script wrote as `0`. A float *count* does
-    // not: `lseq 3.0` is `0 1 2` and `lseq 1 count 3.0` is `1 2 3`, because a
-    // count is how many, not where. In a range form the end is a place on the
-    // same number line, so it counts.
-    let counting = count_form || from.is_none();
-    let floating = from.is_some_and(|a| !integral(a))
-        || step.is_some_and(|s| !integral(s))
-        || (!counting && !integral(to));
+    // A count written as a double is not what makes the series one of
+    // doubles; an integral one is used as the integer it is.
+    if let Some((Num::Float(d), _)) = &count_of {
+        let d = *d;
+        use_doubles -= i32::from(use_doubles > 0);
+        if d.is_finite() && d.floor() == d {
+            count_of = Some(if d >= i64::MAX as f64 || d <= i64::MIN as f64 {
+                (Num::Big(num_bigint::BigInt::from(0)), "")
+            } else {
+                (Num::Int(d as i64), "")
+            });
+        }
+    }
+    arith_series(use_doubles > 0, start, end, step, count_of)
+}
+
+/// `seq_operations`, in its order.
+const SEQ_OPERATIONS: &[&str] = &["..", "to", "count", "by"];
+/// What `SequenceIdentifyArgument` may accept, and the digit each kind adds
+/// to the shape key.
+const SEQ_NUMERIC: u32 = 1;
+const SEQ_KEYWORD: u32 = 2;
+const SEQ_LAST: u32 = 4;
+
+enum SeqArg {
+    Number(Num),
+    Keyword(usize),
+}
+
+/// `SequenceIdentifyArgument`: a number when numbers are allowed, else a
+/// keyword when keywords are — a keyword in the last position is missing its
+/// value — else `None`, or the number parser's refusal when a number would
+/// have fitted.
+fn seq_identify(arg: &str, allowed: u32) -> Result<Option<SeqArg>, String> {
+    if allowed & SEQ_NUMERIC != 0 {
+        if let Some(n) = seq_number(arg) {
+            return Ok(Some(SeqArg::Number(n)));
+        }
+    }
+    let keyword = if allowed & SEQ_KEYWORD != 0 {
+        index_from(SEQ_OPERATIONS, arg, "range operation").ok()
+    } else {
+        None
+    };
+    if let Some(op) = keyword {
+        if allowed & SEQ_LAST != 0 {
+            return Err(format!("missing \"{arg}\" value."));
+        }
+        return Ok(Some(SeqArg::Keyword(op)));
+    }
+    if allowed & SEQ_NUMERIC == 0 {
+        return Ok(None);
+    }
+    Err(list::number_error("number", arg))
+}
+
+/// `Tcl_GetNumberFromObj`: an integer of any width or a double, NaN included.
+fn seq_number(text: &str) -> Option<Num> {
+    crate::runtime::tcl_num(&Value::Str(Arc::new(text.to_string()))).ok()
+}
+
+/// `TclNewArithSeriesObj` and the string of the series it makes.
+fn arith_series(
+    use_doubles: bool,
+    start: (Num, &str),
+    end: Option<(Num, &str)>,
+    step: Option<(Num, &str)>,
+    len_of: Option<(Num, &str)>,
+) -> Result<String, String> {
+    const INVALID: &str = "invalid arithmetic series parameter values";
+    let mut len: i64 = match &len_of {
+        Some((Num::Int(n), _)) => *n,
+        Some((Num::Big(_), _)) => return Err("integer value too large to represent".to_string()),
+        Some((Num::Float(_), text)) => list::wide(text)?,
+        None => -1,
+    };
+    let (mut istep, mut dstep) = match &step {
+        Some(s) => seq_assign(s)?,
+        None => (1, 1.0),
+    };
+    let (istart, dstart) = seq_assign(&start)?;
+    let ends = match &end {
+        Some(e) => Some(seq_assign(e)?),
+        None => None,
+    };
+    let texts = [
+        Some(start.1),
+        end.as_ref().map(|e| e.1),
+        step.as_ref().map(|s| s.1),
+    ];
+    let precision_of = |texts: &[Option<&str>]| {
+        texts
+            .iter()
+            .flatten()
+            .map(|t| seq_precision(t))
+            .max()
+            .unwrap_or(0)
+    };
+    let mut precision: Option<u32> = None;
+
+    if let Some((iend, dend)) = ends {
+        if step.is_none() {
+            let down = if use_doubles {
+                dstart > dend
+            } else {
+                istart > iend
+            };
+            if down {
+                istep = -1;
+                dstep = -1.0;
+            }
+        }
+        if len_of.is_none() {
+            if use_doubles {
+                if dstart.is_infinite() || dend.is_infinite() {
+                    return Err("max length of a Tcl list exceeded".to_string());
+                }
+                if dstart.is_nan() || dend.is_nan() {
+                    return Err(format!(
+                        "cannot use non-numeric floating-point value \"{}\" to estimate \
+                         length of arith-series",
+                        crate::runtime::format_double(if dstart.is_nan() { dstart } else { dend })
+                    ));
+                }
+                let p = precision_of(&texts);
+                precision = Some(p);
+                len = seq_len_dbl(dstart, dend, dstep, p);
+            } else {
+                len = seq_len_int(istart, iend, istep);
+            }
+        }
+    } else if use_doubles {
+        precision = Some(precision_of(&[texts[0], texts[2]]));
+    }
 
     let mut out: Vec<String> = Vec::new();
-    let mut push = |v: f64| {
-        out.push(if floating {
-            crate::runtime::format_double(v)
-        } else {
-            (v as i64).to_string()
-        });
-    };
-
-    if count_form {
-        // `lseq 5 count 3` is three elements from 5. A count of zero is empty.
-        let n = limit as i64;
-        for i in 0..n.max(0) {
-            push(start + stride * i as f64);
+    if use_doubles {
+        let last = dstart + (len - 1) as f64 * dstep;
+        if last.is_nan() {
+            return Err("domain error: argument not in valid range".to_string());
+        }
+        let precision = precision.unwrap_or_else(|| precision_of(&texts));
+        for i in 0..len.max(0) {
+            let mut d = dstart;
+            if i != 0 {
+                d += i as f64 * dstep;
+            }
+            out.push(crate::runtime::format_double(seq_round(d, precision)));
         }
         return Ok(list::join(&out));
     }
-    if from.is_none() {
-        // `lseq 5` is 0..4, and a non-positive n is empty.
-        let n = limit as i64;
-        for i in 0..n.max(0) {
-            push(i as f64);
-        }
-        return Ok(list::join(&out));
-    }
-    if stride == 0.0 {
-        // Not an error and not a hang: tclsh answers with the start alone.
-        push(start);
-        return Ok(list::join(&out));
-    }
 
-    let mut at = start;
-    // A guard rather than a `while` on the value alone, so a step that cannot
-    // reach the end stops instead of running away on a rounding error.
-    let span = (limit - start) / stride;
-    if span < 0.0 {
-        return Ok(String::new());
+    if len >= 1 && !seq_int_fits(istart, istep, len - 1) {
+        return Err(INVALID.to_string());
     }
-    let iterations = span.floor() as i64;
-    for _ in 0..=iterations {
-        push(at);
-        at += stride;
+    for i in 0..len.max(0) {
+        out.push(istart.wrapping_add(i.wrapping_mul(istep)).to_string());
     }
     Ok(list::join(&out))
 }
 
-fn is_lseq_op(text: &str) -> bool {
-    matches!(text, ".." | "to" | "count" | "by")
+/// `assignNumber`: the operand as both a wide integer and a double. A bignum
+/// is refused as `Tcl_GetWideIntFromObj` refuses it.
+fn seq_assign((n, _): &(Num, &str)) -> Result<(i64, f64), String> {
+    match n {
+        Num::Int(i) => Ok((*i, *i as f64)),
+        Num::Float(d) => Ok((*d as i64, *d)),
+        Num::Big(_) => Err("integer value too large to represent".to_string()),
+    }
+}
+
+/// `ObjPrecision`: the digits after the point of an operand written as a
+/// double without an exponent, and 0 for anything else.
+fn seq_precision(text: &str) -> u32 {
+    if !matches!(seq_number(text), Some(Num::Float(_))) || text.contains(['e', 'E']) {
+        return 0;
+    }
+    text.find('.').map_or(0, |at| (text.len() - at - 1) as u32)
+}
+
+/// `power10`.
+fn seq_power10(n: u32) -> f64 {
+    if n <= 50 {
+        format!("1e{n}").parse().expect("a power of ten")
+    } else {
+        10f64.powi(n as i32)
+    }
+}
+
+/// `ArithRound`.
+fn seq_round(d: f64, n: u32) -> f64 {
+    if n == 0 {
+        return d;
+    }
+    let scale = seq_power10(n);
+    (d * scale).round() / scale
+}
+
+/// `ArithSeriesLenInt`.
+fn seq_len_int(start: i64, end: i64, step: i64) -> i64 {
+    let distance = end.wrapping_sub(start);
+    if (step < 0 && distance > 0) || (step > 0 && distance < 0) {
+        return 0;
+    }
+    if step == 0 {
+        return 1;
+    }
+    (distance.wrapping_div(step) + 1).max(0)
+}
+
+/// `ArithSeriesLenDbl`: integer arithmetic on the scaled distance and step
+/// whenever both fit a wide integer, for its stability.
+fn seq_len_dbl(mut start: f64, mut end: f64, mut step: f64, precision: u32) -> i64 {
+    if step == 0.0 {
+        return 1;
+    }
+    if precision != 0 {
+        let scale = seq_power10(precision);
+        start *= scale;
+        end *= scale;
+        step *= scale;
+    }
+    end -= start;
+    let wide = (i64::MIN as f64)..=(i64::MAX as f64);
+    if wide.contains(&end) && wide.contains(&step) {
+        let iend = (if end < 0.0 { end - 0.5 } else { end + 0.5 }) as i64;
+        let istep = (if step < 0.0 { step - 0.5 } else { step + 0.5 }) as i64;
+        if istep != 0 {
+            return (iend / istep + 1).max(0);
+        }
+    }
+    let len = end / step + 1.0;
+    if len >= i64::MAX as f64 {
+        i64::MAX
+    } else if len <= 0.0 {
+        1
+    } else {
+        len as i64
+    }
+}
+
+/// `NewArithSeriesInt`'s overflow screen: the last element must be a wide
+/// integer, reached from `start` in `intervals` steps.
+fn seq_int_fits(start: i64, step: i64, intervals: i64) -> bool {
+    let absolute = step.unsigned_abs();
+    if absolute != 0 && u64::MAX / absolute < intervals as u64 {
+        return false;
+    }
+    if step > 0 {
+        start <= i64::MAX - step * intervals
+    } else if step == i64::MIN {
+        !(intervals > 0 || start < 0)
+    } else if step < 0 {
+        start >= i64::MIN + (-step) * intervals
+    } else {
+        true
+    }
 }
 
 /// `lindex list ?index ...?`. With exactly one index argument the argument may
@@ -1925,9 +2145,15 @@ fn merge(
 
 // ── option words ─────────────────────────────────────────────────────────
 
-/// `Tcl_GetIndexFromObj`: an exact match wins, otherwise a unique prefix does,
-/// and anything else names the whole table in the error.
+/// `Tcl_GetIndexFromObj` over a table of options.
 pub(crate) fn option(table: &[&str], word: &str) -> Result<usize, String> {
+    index_from(table, word, "option")
+}
+
+/// `Tcl_GetIndexFromObj`: an exact match wins, otherwise a unique prefix does,
+/// and anything else names the whole table in the error, calling an entry
+/// `what`.
+fn index_from(table: &[&str], word: &str, what: &str) -> Result<usize, String> {
     if let Some(i) = table.iter().position(|&name| name == word) {
         return Ok(i);
     }
@@ -1938,10 +2164,10 @@ pub(crate) fn option(table: &[&str], word: &str) -> Result<usize, String> {
     match (hits.next(), hits.next()) {
         (Some((i, _)), None) => Ok(i),
         (Some(_), Some(_)) => Err(format!(
-            "ambiguous option \"{word}\": must be {}",
+            "ambiguous {what} \"{word}\": must be {}",
             names(table)
         )),
-        _ => Err(format!("bad option \"{word}\": must be {}", names(table))),
+        _ => Err(format!("bad {what} \"{word}\": must be {}", names(table))),
     }
 }
 

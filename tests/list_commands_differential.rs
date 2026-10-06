@@ -114,6 +114,10 @@ const PROGRAMS: &[&str] = &[
     "puts [lremove {a b c} 5]",
     "puts [lremove {a b c} -1]",
     // ── lseq ─────────────────────────────────────────────────────────────
+    // The argument shapes `Tcl_LseqObjCmd` decodes, a series of doubles rounded
+    // to its operands' decimal places rather than accumulated, and the
+    // overflow and NaN refusals of `TclNewArithSeriesObj` (lseq.test).
+    "foreach c {{lseq 1 to 10 -1} {lseq 5 count 5 2} {lseq 5 count 5 -2} {lseq 16 to} {lseq 18 count} {lseq 1 to 1 1} {lseq 1 5 by 2} {lseq 1 t 3} {lseq 1 x 3} {lseq 3.1} {lseq 1 count 3.5} {lseq 4 6 0.1} {lseq 29.9 27 -0.3} {lseq 4.03 4.208 0.013} {lseq 0 NaN} {lseq 0 Inf} {lseq 0x7fffffffffffffff count 2} {lseq 0xfffffffffffffffe 0xffffffffffffffff} {lseq 0x7fffffffffffffff -0x8000000000000000}} {puts \"$c => [catch $c m] <$m>\"}",
     "puts [lseq 5]",
     "puts <[lseq 0]>",
     "puts <[lseq -3]>",

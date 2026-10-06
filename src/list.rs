@@ -577,7 +577,7 @@ pub fn double(text: &str) -> Result<f64, String> {
 /// `expected integer but got "x"` — except that a value which is itself a list
 /// of several elements is reported as “a list”, and a long one is cut at fifty
 /// bytes.
-fn number_error(kind: &str, text: &str) -> String {
+pub(crate) fn number_error(kind: &str, text: &str) -> String {
     if is_multi_element(text) {
         return format!("expected {kind} but got a list");
     }

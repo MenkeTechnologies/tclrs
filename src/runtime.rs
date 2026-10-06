@@ -3555,7 +3555,7 @@ pub(crate) fn parse_number(text: &str) -> Result<Num, NotNumeric> {
             // with no valid digit at all is simply not a number.
             Err(_) if !digits.is_empty() && digits.chars().all(|c| c.is_digit(radix)) => {
                 match BigInt::parse_bytes(digits.as_bytes(), radix) {
-                    Some(b) => Ok(Num::Big(if sign < 0 { -b } else { b })),
+                    Some(b) => Ok(signed_big(sign, b)),
                     None => Err(NotNumeric::Unparsable),
                 }
             }
@@ -3570,7 +3570,7 @@ pub(crate) fn parse_number(text: &str) -> Result<Num, NotNumeric> {
     // value the script never wrote.
     if !body.is_empty() && body.bytes().all(|b| b.is_ascii_digit()) {
         return match BigInt::parse_bytes(body.as_bytes(), 10) {
-            Some(b) => Ok(Num::Big(if sign < 0 { -b } else { b })),
+            Some(b) => Ok(signed_big(sign, b)),
             None => Err(NotNumeric::Unparsable),
         };
     }
@@ -3579,6 +3579,18 @@ pub(crate) fn parse_number(text: &str) -> Result<Num, NotNumeric> {
     body.parse::<f64>()
         .map(|f| Num::Float(sign as f64 * f))
         .map_err(|_| NotNumeric::Unparsable)
+}
+
+/// A magnitude too wide for an `i64`, given its sign. The one negative value
+/// whose magnitude does not fit but which does — `-0x8000000000000000`,
+/// `-9223372036854775808` — is the wide integer `i64::MIN`, as
+/// `TclParseNumber` makes it, not a bignum.
+fn signed_big(sign: i64, magnitude: BigInt) -> Num {
+    let value = if sign < 0 { -magnitude } else { magnitude };
+    match i64::try_from(&value) {
+        Ok(i) => Num::Int(i),
+        Err(_) => Num::Big(value),
+    }
 }
 
 /// Remove Tcl 9's numeric whitespace, or answer `None` when one of the `_` runs

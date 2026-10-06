@@ -773,6 +773,12 @@ approximated, and nothing is silently mis-run.
   computed command name and a `{*}` command do run against the frame (see the
   `{*}` entry under "Implemented"); the ensemble path has no body's
   declarations to project with.
+- **`lseq` as an abstract list.** tclsh 9 keeps a series as start, step and
+  length and computes an element when asked, so `llength [lseq 0 count
+  4294967296]` answers at once. Here the series is written out as the list it
+  spells (`src/cmd_list.rs`, ported from `TclNewArithSeriesObj` and
+  `UpdateStringOfArithSeries`), so a series too long to hold runs out of time
+  or memory instead.
 - **A coroutine created or resumed with `{*}`.** A coroutine lives on the
   evaluation that created it — its context command is in that driver's table, not
   in the interpreter's — so both halves miss when the command is expanded.
