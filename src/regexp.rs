@@ -8,7 +8,7 @@
 //! `regex` crate at any price, because that crate's guarantee is linear time
 //! and those constructs are what costs it.
 //!
-//! So this module translates the ARE syntax it *can* express and **refuses**
+//! So [`crate::are`] translates the ARE syntax it *can* express and **refuses**
 //! the rest with a Tcl-shaped error, which is this crate's convention
 //! everywhere else: a refusal a script can catch beats a match that is quietly
 //! wrong. What is refused is listed in `BUGS.md` and reported by name at the
@@ -243,233 +243,18 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
 
 // ── translating ARE to the regex crate's syntax ──────────────────────────
 
-/// Translate an ARE pattern, or refuse it by name.
-///
-/// The refusals are the constructs `regex` cannot express at all. Everything
-/// else is either identical between the two syntaxes or rewritten here; a
-/// construct neither this function nor `regex` understands comes back as
-/// `regex`'s own error, reworded to the interpreter's.
-fn translate(are: &str, flags: i64) -> Result<String, String> {
-    // The directors, which must be the very first characters of the pattern.
-    // `***=` makes the rest a literal string; `***:` says "this is an ARE",
-    // which is what it already is.
-    if let Some(literal) = are.strip_prefix("***=") {
-        return Ok(format!("{}{}", prefix(flags), regex::escape(literal)));
-    }
-    let body = are.strip_prefix("***:").unwrap_or(are);
-
-    let mut out = String::with_capacity(body.len() + 8);
-    let chars: Vec<char> = body.chars().collect();
-    let mut i = 0;
-    // Bracket expressions have their own sub-grammar: `\` is not an escape
-    // inside one in ARE, and `[[.x.]]` / `[[=x=]]` only exist there.
-    let mut in_class = false;
-    // How many quantifiers the atom just emitted already carries. ARE allows
-    // one, plus a single `?` after it meaning non-greedy, and calls anything
-    // more `invalid quantifier operand` — `a**`, `a?*`, `a{2}{3}`, `a*??` are
-    // all errors in tclsh while `regex` accepts every one of them with a
-    // different meaning. Measured against tclsh 9.0.3.
-    let mut quantifiers = 0u8;
-    // Whether the previous character opened a group, in which case a `?` is
-    // the start of `(?:`, `(?i)` and friends rather than a quantifier.
-    let mut after_open = false;
-    while i < chars.len() {
-        let ch = chars[i];
-        if in_class {
-            // `[.` and `[=` open a collating element or an equivalence class,
-            // neither of which `regex` has.
-            if ch == '[' && matches!(chars.get(i + 1), Some('.') | Some('=')) {
-                return Err(refusal(if chars[i + 1] == '.' {
-                    "a collating element ([. .])"
-                } else {
-                    "an equivalence class ([= =])"
-                }));
-            }
-            if ch == ']' {
-                // The whole bracket expression is one atom, and a quantifier
-                // may follow it: `[*]*` is a legal ARE.
-                in_class = false;
-                quantifiers = 0;
-            }
-            out.push(ch);
-            i += 1;
-            continue;
-        }
-        let opened = std::mem::take(&mut after_open);
-        match ch {
-            // A quantifier, and the place ARE's one-quantifier-per-atom rule is
-            // enforced. `?` is two things at once: a quantifier of its own, and
-            // the non-greedy marker on the quantifier before it — which is why
-            // it is the one that may follow another and still be legal.
-            '*' | '+' | '?' if !(ch == '?' && opened) => {
-                let allowed = if ch == '?' { 1 } else { 0 };
-                if quantifiers > allowed {
-                    return Err(quantifier_operand());
-                }
-                quantifiers += 1;
-                out.push(ch);
-                i += 1;
-            }
-            // A bound is a quantifier too, and is emitted whole so the digits
-            // inside it are not read as atoms of their own.
-            '{' if is_bound(&chars[i..]) => {
-                if quantifiers > 0 {
-                    return Err(quantifier_operand());
-                }
-                let Some(close) = chars[i..].iter().position(|&c| c == '}') else {
-                    // Malformed: let the engine report it, which `regerror`
-                    // turns into `braces {} not balanced`.
-                    out.push(ch);
-                    i += 1;
-                    continue;
-                };
-                out.extend(&chars[i..=i + close]);
-                i += close + 1;
-                quantifiers = 1;
-            }
-            '[' => {
-                in_class = true;
-                quantifiers = 0;
-                out.push(ch);
-                i += 1;
-                // A `]` immediately after the opening bracket (or after a
-                // negating `^`) is a literal, not the close.
-                if chars.get(i) == Some(&'^') {
-                    out.push('^');
-                    i += 1;
-                }
-                if chars.get(i) == Some(&']') {
-                    out.push_str("\\]");
-                    i += 1;
-                }
-            }
-            '(' => {
-                match chars.get(i + 1) {
-                    // Look-ahead is a backtracking construct. ARE has no
-                    // look-behind at all — tclsh answers `invalid quantifier
-                    // operand` for `(?<=a)b` — so only these two are refused.
-                    Some('?') if matches!(chars.get(i + 2), Some('=') | Some('!')) => {
-                        return Err(refusal("look-ahead ((?= ) or (?! ))"));
-                    }
-                    Some('?') if chars.get(i + 2) == Some(&'<') => {
-                        return Err(refusal("look-behind ((?< ))"));
-                    }
-                    _ => {}
-                }
-                quantifiers = 0;
-                after_open = true;
-                out.push(ch);
-                i += 1;
-            }
-            // ARE's bound is `{m}`, `{m,}` or `{m,n}` with decimal digits and
-            // nothing else between the braces (`re_syntax(n)`). A `{` that does
-            // not begin one is an ordinary character there — `regexp {a{} "a{"`
-            // is 1 in tclsh — while `regex` reads `a{`, `a{,2}` and `a{x}` as
-            // malformed repetitions and `a{ 2}` as `a{2}`. Escaping the ones
-            // that are not bounds is what restores the ARE reading.
-            '{' if !is_bound(&chars[i..]) => {
-                quantifiers = 0;
-                out.push_str("\\{");
-                i += 1;
-            }
-            '\\' => {
-                quantifiers = 0;
-                let Some(&next) = chars.get(i + 1) else {
-                    // A trailing backslash: let the engine report it.
-                    out.push(ch);
-                    i += 1;
-                    continue;
-                };
-                match next {
-                    // A back-reference. `\0` is not one — it is the whole match
-                    // in a substitution and an octal escape in a pattern — so
-                    // only 1-9 are refused.
-                    '1'..='9' => return Err(refusal("a back-reference (\\1 … \\9)")),
-                    // Word boundaries. `\y` is the plain one; `\m` and `\M` are
-                    // its two halves, which need look-around to express.
-                    'y' => {
-                        out.push_str("\\b");
-                        i += 2;
-                        continue;
-                    }
-                    'Y' => {
-                        out.push_str("\\B");
-                        i += 2;
-                        continue;
-                    }
-                    'm' => return Err(refusal("a word-start boundary (\\m)")),
-                    'M' => return Err(refusal("a word-end boundary (\\M)")),
-                    // ARE's end-of-string; `regex` spells it `\z`.
-                    'Z' => {
-                        out.push_str("\\z");
-                        i += 2;
-                        continue;
-                    }
-                    _ => {
-                        out.push(ch);
-                        out.push(next);
-                        i += 2;
-                        continue;
-                    }
-                }
-            }
-            _ => {
-                quantifiers = 0;
-                out.push(ch);
-                i += 1;
-            }
-        }
-    }
-    Ok(format!("{}{}", prefix(flags), out))
-}
-
-/// Whether `chars`, which starts at a `{`, begins an ARE bound.
-///
-/// A digit is what commits to one. `{m}`, `{m,}` and `{m,n}` are the three
-/// forms, and `regcomp` reports what is wrong with a *malformed* bound rather
-/// than falling back to a literal — `a{1,` is `braces {} not balanced` in tclsh
-/// and `a{2,1}` is `invalid repetition count(s)`, both errors. Anything else
-/// after the brace never was a bound: `a{`, `a{,2}`, `a{x}` and `a{ 2}` all
-/// match a literal `{` there, where `regex` would read the last two as
-/// repetitions.
-fn is_bound(chars: &[char]) -> bool {
-    chars.get(1).is_some_and(char::is_ascii_digit)
-}
-
-/// The inline flags every translated pattern carries.
-///
-/// `(?s)` is the one that is not optional: ARE's `.` matches a newline and
-/// Rust's does not, so the default has to be restored on every pattern and
-/// `-linestop` is what removes it again.
-fn prefix(flags: i64) -> String {
-    let mut f = String::from("(?");
-    if flags & F_NOCASE != 0 {
-        f.push('i');
-    }
-    if flags & F_EXPANDED != 0 {
-        f.push('x');
-    }
-    if flags & F_LINEANCHOR != 0 {
-        f.push('m');
-    }
-    if flags & F_LINESTOP == 0 {
-        f.push('s');
-    }
-    if f == "(?" {
-        return String::new();
-    }
-    f.push(')');
-    f
-}
-
-/// `REG_BADRPT`, the error a second quantifier on one atom raises.
-fn quantifier_operand() -> String {
-    "cannot compile regular expression pattern: invalid quantifier operand".to_string()
-}
-
-/// The wording for a construct this crate will not approximate.
-fn refusal(what: &str) -> String {
-    format!("{what} is not supported yet: the regular expression engine here matches in linear time, which back-references and look-around cannot")
+/// Translate an ARE pattern, or refuse it by name: [`crate::are`], under the
+/// command's switches.
+fn translate(are: &str, flags: i64) -> Result<crate::are::Translated, String> {
+    crate::are::translate(
+        are,
+        crate::are::Flags {
+            icase: flags & F_NOCASE != 0,
+            expanded: flags & F_EXPANDED != 0,
+            nlstop: flags & F_LINESTOP != 0,
+            nlanch: flags & F_LINEANCHOR != 0,
+        },
+    )
 }
 
 thread_local! {
@@ -493,7 +278,7 @@ thread_local! {
     /// rewrite is paid once per pattern as well. A pattern that does not
     /// translate is not stored, so its refusal is raised on every call and not
     /// only the first.
-    static CACHE: RefCell<HashMap<(i64, String), Arc<Regex>>> = RefCell::new(HashMap::new());
+    static CACHE: RefCell<HashMap<(i64, String), Arc<Compiled>>> = RefCell::new(HashMap::new());
 }
 
 /// How many compiled patterns one thread keeps. At the limit the whole cache is
@@ -536,14 +321,21 @@ fn regerror(detail: &str) -> &str {
     }
 }
 
-fn compiled(are: &str, flags: i64) -> Result<Arc<Regex>, String> {
+/// A compiled pattern and what [`exec`] needs to know about it.
+pub(crate) struct Compiled {
+    re: Regex,
+    /// See [`crate::are::Translated::left_context`].
+    left_context: bool,
+}
+
+fn compiled(are: &str, flags: i64) -> Result<Arc<Compiled>, String> {
     let key = (flags, are.to_string());
     if let Some(re) = CACHE.with(|cache| cache.borrow().get(&key).map(Arc::clone)) {
         return Ok(re);
     }
     let translated = translate(are, flags)?;
     CACHE.with(|cache| {
-        let re = Regex::new(&translated).map_err(|e| {
+        let re = Regex::new(&translated.pattern).map_err(|e| {
             // The interpreter's wording, with the engine's own complaint as the
             // detail — reworded from a multi-line report to one line.
             let detail = e.to_string();
@@ -557,7 +349,10 @@ fn compiled(are: &str, flags: i64) -> Result<Arc<Regex>, String> {
                 regerror(first)
             )
         })?;
-        let re = Arc::new(re);
+        let re = Arc::new(Compiled {
+            re,
+            left_context: translated.left_context,
+        });
         let mut cache = cache.borrow_mut();
         if cache.len() >= CACHE_CAPACITY {
             cache.clear();
@@ -604,6 +399,94 @@ impl CharIndex {
     }
 }
 
+/// One group's span, as byte offsets into the subject.
+#[derive(Clone, Copy)]
+struct Span {
+    start: usize,
+    end: usize,
+}
+
+impl Span {
+    fn start(&self) -> usize {
+        self.start
+    }
+
+    fn end(&self) -> usize {
+        self.end
+    }
+}
+
+/// One match: every group's span, group 0 first, `None` for a group that did
+/// not participate.
+struct Caps(Vec<Option<Span>>);
+
+impl Caps {
+    /// The captures of a search over `hay`, which begins at byte `base` of the
+    /// subject less `skip` bytes of left context that are not the subject's.
+    fn from(caps: &regex::Captures, base: usize, skip: usize) -> Caps {
+        Caps(
+            (0..caps.len())
+                .map(|g| {
+                    caps.get(g).map(|m| Span {
+                        start: m.start() + base - skip,
+                        end: m.end() + base - skip,
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn get(&self, g: usize) -> Option<Span> {
+        self.0.get(g).copied().flatten()
+    }
+}
+
+/// The first match at or after byte `pos`, found the way `Tcl_RegExpExecObj`
+/// finds it: on the subject *from* `pos`, with `TCL_REG_NOTBOL` unless `pos`
+/// is 0 or follows a newline (`Tcl_RegexpObjCmd`, `Tcl_RegsubObjCmd`). So at
+/// `pos` there is no character behind: a word boundary sees a non-word there,
+/// `\A` matches, and `^` matches exactly when the search is not `NOTBOL`.
+///
+/// `regex` looks at the real character before `pos`, which only matters for
+/// a pattern with such a constraint; every other pattern is searched in place.
+/// The one case not reproduced is `\A` at a `NOTBOL` position, which matches
+/// in tclsh and not here.
+fn exec(re: &Compiled, subject: &str, pos: usize) -> Option<Caps> {
+    if pos == 0 || pos > subject.len() || !re.left_context {
+        return re
+            .re
+            .captures_at(subject, pos)
+            .map(|c| Caps::from(&c, 0, 0));
+    }
+    let prev = subject[..pos].chars().next_back()?;
+    if prev == '\n' {
+        // Not `NOTBOL`: the rest of the subject is searched as a string of its
+        // own, whose start is a line start.
+        return re
+            .re
+            .captures(&subject[pos..])
+            .map(|c| Caps::from(&c, pos, 0));
+    }
+    // `NOTBOL`: one character of left context that is neither a newline nor a
+    // word character. The real one serves when it already is; otherwise a
+    // space stands in for it.
+    if prev.is_ascii() && !(prev.is_ascii_alphanumeric() || prev == '_') {
+        let from = pos - 1;
+        return re
+            .re
+            .captures_at(&subject[from..], 1)
+            .map(|c| Caps::from(&c, from, 0));
+    }
+    let mut hay = String::with_capacity(subject.len() - pos + 1);
+    hay.push(' ');
+    hay.push_str(&subject[pos..]);
+    re.re.captures_at(&hay, 1).map(|c| Caps::from(&c, pos, 1))
+}
+
 /// Whether `pattern` matches anywhere in `subject`, for the commands that take
 /// a regular expression without being one: `lsearch -regexp` and
 /// `switch -regexp`. `nocase` is their `-nocase`.
@@ -612,7 +495,7 @@ impl CharIndex {
 /// `regexp`'s, so a construct refused there is refused here with one wording.
 pub(crate) fn matches_anywhere(pattern: &str, subject: &str, nocase: bool) -> Result<bool, String> {
     let flags = if nocase { F_NOCASE } else { 0 };
-    Ok(compiled(pattern, flags)?.is_match(subject))
+    Ok(compiled(pattern, flags)?.re.is_match(subject))
 }
 
 /// Execute one of this module's ops.
@@ -651,7 +534,7 @@ fn run_switch_vars(vm: &mut VM, operands: &[Value]) -> Result<(), String> {
         _ => 0,
     };
     let re = compiled(&pattern, if nocase { F_NOCASE } else { 0 })?;
-    let Some(caps) = re.captures(&subject) else {
+    let Some(caps) = exec(&re, &subject, 0) else {
         vm.push(Value::Str(Arc::new("0".to_string())));
         return Ok(());
     };
@@ -789,13 +672,7 @@ enum Stop {
 /// counted by `regexp`. The third line is the exception that is not a rule: an
 /// empty *pattern* — the literal `{}`, not `(?:)` or `a{0}`, which both behave
 /// like `x*` — stops where `regexp` stops.
-fn matches<'s>(
-    re: &Regex,
-    subject: &'s str,
-    from: usize,
-    idx: &CharIndex,
-    stop: Stop,
-) -> Vec<regex::Captures<'s>> {
+fn matches(re: &Compiled, subject: &str, from: usize, idx: &CharIndex, stop: Stop) -> Vec<Caps> {
     let len = subject.len();
     let mut found = Vec::new();
     let mut pos = from;
@@ -805,7 +682,7 @@ fn matches<'s>(
     if stop == Stop::EachCharacter && len == 0 {
         return found;
     }
-    while let Some(caps) = re.captures_at(subject, pos) {
+    while let Some(caps) = exec(re, subject, pos) {
         let whole = caps.get(0).expect("group 0 always participates");
         let (s, e) = (whole.start(), whole.end());
         found.push(caps);
@@ -864,7 +741,7 @@ fn run_regexp(vm: &mut VM, operands: &[Value]) -> Result<(), String> {
     let found = if all {
         matches(&re, &subject, from_byte, &idx, Stop::BeforeEnd)
     } else {
-        re.captures_at(&subject, from_byte).into_iter().collect()
+        exec(&re, &subject, from_byte).into_iter().collect()
     };
 
     let count = found.len() as i64;
@@ -948,7 +825,7 @@ fn run_regsub(interp: Option<&Shared>, vm: &mut VM, operands: &[Value]) -> Resul
             },
         )
     } else {
-        re.captures_at(&subject, from_byte).into_iter().collect()
+        exec(&re, &subject, from_byte).into_iter().collect()
     };
 
     // Under `-command` every replacement is the result of a call, and the calls
@@ -999,7 +876,7 @@ fn call_replacements(
     interp: Option<&Shared>,
     vm: &mut VM,
     spec: &str,
-    found: &[regex::Captures],
+    found: &[Caps],
     subject: &str,
 ) -> Result<Vec<String>, String> {
     let prefix = crate::list::split(spec)?;
@@ -1038,7 +915,7 @@ fn call_replacements(
 
 /// Expand a `regsub` replacement: `&` and `\0` are the whole match, `\1`…`\9`
 /// are the groups, and a backslash escapes any of them.
-fn expand(spec: &str, caps: &regex::Captures, subject: &str, out: &mut String) {
+fn expand(spec: &str, caps: &Caps, subject: &str, out: &mut String) {
     let chars: Vec<char> = spec.chars().collect();
     let mut i = 0;
     while i < chars.len() {

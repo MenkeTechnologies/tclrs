@@ -17,6 +17,7 @@
 //! and links it into a standalone binary, and [`tiers`] reports which of those
 //! tiers a given script's bytecode actually reaches.
 
+mod are;
 pub mod aot;
 pub mod aot_runtime;
 pub mod assoc;
@@ -61,6 +62,8 @@ pub mod names;
 pub mod parser;
 pub mod procs;
 pub mod regexp;
+/// Tcl's regular-expression character tables, generated. See `scripts/gen_regc_locale.pl`.
+pub(crate) mod regc_locale;
 pub mod runtime;
 pub mod rust_ffi;
 pub mod tiers;

@@ -329,6 +329,184 @@ fn regexp_errors_match_tclsh() {
     compare_all(ERRORS, "error");
 }
 
+/// ARE as `regc_lex.c` reads it, against the `regex` crate's own syntax.
+///
+/// Each pattern is run under `catch`, so both a match and the `REG_*` error a
+/// malformed pattern raises are compared. The groups, in order: escapes the two
+/// syntaxes read differently (`\b` is a backspace in ARE, `\B` a backslash,
+/// `\x` takes at most two digits, `\<` is a plain `<`); the alphanumeric escapes
+/// ARE does not define; escapes inside a bracket expression; the leading
+/// embedded options, which are only legal at the very start; the `***`
+/// directors; character classes from `regc_locale.c`'s tables rather than
+/// ASCII; collating elements and equivalence classes; bounds and the
+/// constraints no quantifier may follow; `-expanded`, which keeps white space
+/// inside brackets; `-linestop`, which keeps a newline out of `[^…]`; and the
+/// case-insensitive match, which folds the pattern's characters only.
+const ARE_SYNTAX: &[(&str, &str)] = &[
+    ("\\b", "\u{8}"),
+    ("a\\b", "a"),
+    ("\\B", "\\"),
+    ("\\Ba", "ba"),
+    ("\\e", "\u{1b}"),
+    ("\\cA", "\u{1}"),
+    ("\\x041", "\u{4}1"),
+    ("\\x4", "\u{4}"),
+    ("\\x", "x"),
+    ("\\u41", "A"),
+    ("\\U0001F600", "\u{1F600}"),
+    ("\\0", "\u{0}"),
+    ("\\012", "\n"),
+    ("\\101", "A"),
+    ("\\1011", "A1"),
+    ("\\400", " 0"),
+    ("\\12", "\n"),
+    ("\\9", "9"),
+    ("(a)\\08", "a\u{0}8"),
+    ("\\<", "<"),
+    ("\\%", "%"),
+    ("\\q", "q"),
+    ("\\pL", "a"),
+    ("\\z", "z"),
+    ("\\N", "N"),
+    ("\\", "x"),
+    ("[\\b]", "\u{8}"),
+    ("[\\B]", "\\"),
+    ("[\\e]", "\u{1b}"),
+    ("[\\d]", "5"),
+    ("[\\D]", "a"),
+    ("[\\y]", "y"),
+    ("[\\1]", "1"),
+    ("[\\0]", "\u{0}"),
+    ("[\\c]", "c"),
+    ("[\\x41-\\x43]", "B"),
+    ("[\\d-z]", "b"),
+    ("[a&&b]", "&"),
+    ("[[]", "["),
+    ("[a-c-e]", "d"),
+    ("[--/]", "."),
+    ("[a-]", "-"),
+    ("(?i)A", "a"),
+    ("a(?i)b", "aB"),
+    ("(?q)a.b", "a.b"),
+    ("(?q)a.b", "axb"),
+    ("(?iq)A.B", "a.b"),
+    ("(?x)a b", "ab"),
+    ("(?c)a", "A"),
+    ("(?n).", "\n"),
+    ("(?p)^b", "a\nb"),
+    ("(?w)^b", "a\nb"),
+    ("(?w).", "\n"),
+    ("(?t)a", "a"),
+    ("(?z)a", "a"),
+    ("(?\u{e9})a", "a"),
+    ("(?i", "i"),
+    ("(?", "x"),
+    ("(?e)a\\d", "ad"),
+    ("(?e)a)", "a)"),
+    ("(?e)a??", "a"),
+    ("a(?#comment)*", "aa"),
+    ("(?#open", "x"),
+    ("a(?<=b)", "ab"),
+    ("***?", "x"),
+    ("***x", "x"),
+    ("***:(?i)A", "a"),
+    ("[[:alpha:]]+", "h\u{e9}llo"),
+    ("[[:digit:]]", "\u{663}"),
+    ("[[:upper:]]", "\u{c9}"),
+    ("(?i)[[:upper:]]", "\u{e9}1"),
+    ("[[:punct:]]+", "a!?\u{20ac}b"),
+    ("[[:space:]]+", "a\u{a0}\u{2003}b"),
+    ("\\w+", "a_\u{e9}1-"),
+    ("\\s+", "a \u{a0}b"),
+    ("[[:foo:]]", "x"),
+    ("[[::]]", "x"),
+    ("[[:alpha:]", "x"),
+    ("[[.a.]]", "a"),
+    ("[[.space.]]", " "),
+    ("[[.hyphen.]a]", "-"),
+    ("[[.a.]-c]", "b"),
+    ("[[.foo.]]", "x"),
+    ("[[=a=]]", "a"),
+    ("[[:alpha:]-z]", "b"),
+    ("\\mfoo\\M", "a foo b"),
+    ("a\\mb", "ab"),
+    ("[[:<:]]b", "a b"),
+    ("b[[:>:]]", "ab c"),
+    ("^*", "a"),
+    ("\\Z*", "a"),
+    ("x\\y*", "x"),
+    ("a{256}", "a"),
+    ("a{1x}", "a"),
+    ("a{1,0}", "a"),
+    ("(?x)a{ 1 , 2 }", "aa"),
+    ("(?x)[ ]", " "),
+    ("(?x)a#c\nb", "ab"),
+    ("(?x)a\\ b", "a b"),
+    ("(?n)[^x]", "\n"),
+    ("(?i)k", "\u{212a}"),
+    ("(?i)[a-c]", "B"),
+    ("(?i)\u{1c5}", "\u{1c6}"),
+    ("\\9", "x"),
+    ("(a\\1)", "aa"),
+    ("\\1(a)", "aa"),
+];
+
+/// `text` as the body of a double-quoted Tcl word that yields it exactly.
+fn quoted(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '"' | '\\' | '[' | ']' | '$' | '{' | '}' => format!("\\{c}"),
+            c if (c as u32) < 0x20 => format!("\\u{:04x}", c as u32),
+            c => c.to_string(),
+        })
+        .collect()
+}
+
+#[test]
+fn are_syntax_matches_tclsh() {
+    let programs: Vec<String> = ARE_SYNTAX
+        .iter()
+        .map(|(pattern, subject)| {
+            format!(
+                "set p \"{}\"\nset s \"{}\"\n\
+                 puts [list [catch {{regexp -inline -indices -- $p $s}} r] $r]\n",
+                quoted(pattern),
+                quoted(subject)
+            )
+        })
+        .collect();
+    let refs: Vec<&str> = programs.iter().map(String::as_str).collect();
+    compare_all(&refs, "ARE syntax");
+}
+
+/// tclsh starts every search after the first on the rest of the subject
+/// (`Tcl_RegExpExecObj`), with `NOTBOL` unless the previous character is a
+/// newline: a word boundary sees nothing behind the restart, and `^` holds
+/// there exactly when a newline does. This is the `-all` and `-start` loop.
+const RESTARTS: &[&str] = &[
+    "puts [regsub -all {\\y} \"ab cd\" |]",
+    "puts [regsub -all {\\m} \"ab cd\" <]",
+    "puts [regsub -all {\\M} \"ab cd\" >]",
+    "puts [regsub -all {\\Y} \"ab cd\" |]",
+    "puts [regexp -all -inline -indices {\\y} \"ab cd\"]",
+    "puts [regexp -all -inline {\\m\\w} \"ab cd\"]",
+    "puts [regexp -start 1 {\\mb} ab]",
+    "puts [regexp -start 1 -inline -indices {\\yb} ab]",
+    "puts [regexp -start 1 {^b} ab]",
+    "puts [regexp -start 2 {^b} \"a\\nb\"]",
+    "puts [regexp -line -start 1 {^b} ab]",
+    "puts [regexp -line -start 2 {^b} \"a\\nb\"]",
+    "puts [regsub -all -line {^.\\n?} \"a\\nb\\nc\" X]",
+    "puts [regexp -all -inline -line {^.} \"a\\nb\\nc\"]",
+    "puts [regsub -all {\\yb} \"ab b\" X]",
+    "puts [regsub -all {\\y} \"\u{e9}t\u{e9} x\" |]",
+];
+
+#[test]
+fn search_restarts_match_tclsh() {
+    compare_all(RESTARTS, "restart");
+}
+
 /// Where an empty match leaves the cursor, and whether the end of the subject
 /// is a position that matches.
 ///
@@ -382,10 +560,8 @@ fn unsupported_are_constructs_are_refused() {
         ("puts [regexp {(a+)\\1} aaaa]", "back-reference"),
         ("puts [regexp {a(?=b)} ab]", "look-ahead"),
         ("puts [regexp {a(?!b)} ac]", "look-ahead"),
-        ("puts [regexp {\\mfoo} \"a foo\"]", "word-start"),
-        ("puts [regexp {foo\\M} \"foo b\"]", "word-end"),
-        ("puts [regexp {[[.hyphen-minus.]]} -]", "collating element"),
-        ("puts [regexp {[[=a=]]} a]", "equivalence class"),
+        // `(?b)` selects POSIX BRE, a grammar of its own (`brenext`).
+        ("puts [regexp {(?b)a\\{2\\}} aa]", "BRE syntax"),
         // Not a construct but an option, and refused for a related reason: its
         // second element is the reference engine's report on its own compile.
         // Named rather than reported as a bad option, which is what it was —

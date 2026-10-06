@@ -240,43 +240,59 @@ approximated, and nothing is silently mis-run.
   `regexp -indices -inline {} abc` is `0 -1`.
 
   The engine underneath is the `regex` crate, not Henry Spencer's ARE, and the
-  two are not the same language. Three differences are corrected in the
-  translation and pinned by `tests/regexp_differential.rs` against tclsh: `.`
-  matches a newline in ARE and not in Rust, so every pattern is prefixed
-  `(?s)`; `-line` is `-lineanchor` *and* `-linestop`, so it moves both the
-  anchors and what `.` will cross; and the empty-match loop is Tcl's, where
-  `regexp -all {x*} ab` counts 2 but `regsub -all {x*} ab -` substitutes 3
-  times, and the literally empty pattern — not `(?:)` or `a{0}` — stops where
-  `regexp` stops.
+  two are not the same language, so a pattern is never handed to `regex` as
+  written. `src/are.rs` is a port of ARE's lexer (`generic/regc_lex.c`:
+  `prefixes`, `next`, `lexescape`, `lexdigits`, `skip`) and of the grammar
+  checks in `generic/regcomp.c` (`parseqatom`, `brackpart`, `scannum`): it reads
+  the pattern token for token as `regcomp` does, reports a malformed one with
+  `regcomp`'s own `REG_*` message at the point `regcomp` stops, and writes out a
+  `regex` pattern in which every character an escape or a bracket expression
+  names is a `\x{…}` literal. What that settles, each pinned against tclsh by
+  `tests/regexp_differential.rs`:
 
-  Four ARE constructs are **refused by name** rather than approximated, because
-  a finite-automaton matcher cannot express them at any price: back-references
-  (`(a+)\1`), look-ahead (`(?= )` and `(?! )`), the word-start and word-end
-  boundaries `\m` and `\M`, and collating elements and equivalence classes
-  (`[[. .]]`, `[[= =]]`). tclsh matches all of them. Look-*behind* is not on the
-  list because ARE has none either — tclsh answers `invalid quantifier operand`
-  for `(?<=a)b`. The refusal names the construct and is raised where the pattern
-  is used, so a script can catch it.
+  * **Escapes.** `\b` is a backspace and `\B` a backslash (word boundaries are
+    `\y`, `\Y`, `\m` and `\M`); `\x` takes at most two hex digits, `\u` four
+    and `\U` eight; `\0`, `\012` and a multi-digit number larger than the group
+    count are octal; `\e`, `\cX`; any other alphanumeric escape (`\z`, `\pL`,
+    `\q`) is `invalid escape \ sequence`, and a non-alphanumeric one (`\<`,
+    `\%`) is the character itself.
+  * **Bracket expressions.** `\` is an escape inside one too (`[\b]`, `[\B]`,
+    `[\d]`; `[\D]` is an error); `[` and `&&` are ordinary there; a range must
+    run upwards and may not end in a class; `[:class:]`, `\d`, `\s` and `\w`
+    come from `regc_locale.c`'s tables (vendored as `src/regc_locale.rs` by
+    `scripts/gen_regc_locale.pl`), so `[[:alpha:]]` matches `é` and
+    `[[:digit:]]` matches Arabic-Indic digits; `[[.name.]]` takes one character
+    or a `cnames` entry (`[[.space.]]`), and `[[=c=]]` is the character.
+  * **Embedded options and directors.** `(?bceimnpqstwx)` only at the very start
+    — `a(?i)b` is `invalid quantifier operand` — with `q` making the rest
+    literal; `***=`, `***:`, and `***?` / `***x` as errors.
+  * **Quantifiers.** One per atom plus an optional non-greedy `?`; none after a
+    constraint (`^*`, `\y*`); bounds up to 255.
+  * **Switches.** `.` crosses a newline unless `-linestop`, which also keeps a
+    newline out of `[^…]`; `-line` is `-lineanchor` and `-linestop`;
+    `-expanded` strips white space and `#` comments outside brackets only;
+    `-nocase` folds each pattern character to its lower, upper and title case
+    (`allcases`) rather than using `regex`'s wider case folding, so `k` does not
+    match U+212A KELVIN SIGN.
+  * **Where a search restarts.** tclsh runs every search after the first on the
+    rest of the subject (`Tcl_RegExpExecObj`), `NOTBOL` unless a newline
+    precedes it, so a word boundary sees no character behind the restart and
+    `^` holds there only after a newline: `regsub -all {\y} "ab cd" |` is
+    `|a|b |c|d`. The one case not reproduced is `\A` at a `NOTBOL` restart,
+    which matches in tclsh (`regsub -all {\A} abc X` is `XaXbXcX`) and not here.
+  * **The empty-match loop** is Tcl's, where `regexp -all {x*} ab` counts 2 but
+    `regsub -all {x*} ab -` substitutes 3 times, and the literally empty pattern
+    — not `(?:)` or `a{0}` — stops where `regexp` stops.
 
-  A pattern neither the translation nor `regex` accepts reports
-  `cannot compile regular expression pattern: …`, and the detail is translated
-  back to `regcomp`'s own `REG_*` wording (`generic/regex/regerrs.h`): the two
-  engines detect the same defects but name them differently — the interpreter
-  names the construct, `regex` names the parse state it was in — so `(a` is
-  `parentheses () not balanced` here as it is there, rather than
-  `unclosed group`. Two grammar rules ARE has and `regex` does not are enforced
-  in the translation for the same reason, because without them the engine
-  answers where tclsh refuses: a `{` that does not begin a bound is an ordinary
-  character (`regexp {a{} "a{"` is 1, and `a{ 2}` is *not* two `a`s), and an
-  atom takes one quantifier plus an optional `?` meaning non-greedy, so `a**`,
-  `a?*`, `a{2}{3}` and `a*??` are all `invalid quantifier operand`.
-
-  **Not closed**: three patterns are still classified differently, because the
-  two engines detect them at different points rather than wording them
-  differently — `(?` is `invalid quantifier operand` in tclsh and `parentheses
-  () not balanced` here, `[a-\` is `brackets [] not balanced` there and
-  `invalid character range` here, and `[[:bogus:]]` is `invalid character
-  class` there and compiles here.
+  Three constructs are **refused by name** rather than approximated:
+  back-references (`(a+)\1`) and look-ahead (`(?= )` and `(?! )`), which a
+  finite-automaton matcher cannot express at any price, and the BRE syntax
+  `(?b)` selects, a separate grammar (`brenext`). `(?e)` is POSIX ERE, which is
+  the same lexer with the ARE extensions off, and is supported. A
+  back-reference to a group that is not closed yet is tclsh's `invalid
+  backreference number`, not the refusal. Word boundaries and the classes are
+  as exact as Tcl's tables make them; the boundaries use `regex`'s Unicode
+  word characters, which agree with Tcl's `[[:alnum:]_]` over ASCII.
 - **`expr`.** The whole operator set of `expr(n)` with `expr(n)` precedence,
   compiled straight from a braced word with no runtime parse: `+ - * / % **`,
   unary `+ - ~ !`, `< > <= >= == !=`, `lt gt le ge eq ne`, `& ^ | << >>`,

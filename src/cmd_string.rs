@@ -1378,7 +1378,7 @@ fn is_list_space(b: u8) -> bool {
 /// ypogegrammeni letters are the set where the two disagree — their full
 /// mapping is two characters but their simple mapping is the capital eight code
 /// points along.
-fn upper(c: char) -> char {
+pub(crate) fn upper(c: char) -> char {
     let v = c as u32;
     let simple = match v {
         0x1F80..=0x1F87 | 0x1F90..=0x1F97 | 0x1FA0..=0x1FA7 => char::from_u32(v + 8).unwrap_or(c),
@@ -1392,7 +1392,7 @@ fn upper(c: char) -> char {
 
 /// Tcl's simple lowercase. U+0130 is the only character whose full lowercase
 /// runs to two code points, and its simple mapping is a plain `i`.
-fn lower(c: char) -> char {
+pub(crate) fn lower(c: char) -> char {
     let simple = if c == '\u{130}' {
         'i'
     } else {
@@ -1403,7 +1403,7 @@ fn lower(c: char) -> char {
 
 /// Tcl's titlecase. Georgian Mkhedruli has no titlecase in Tcl's tables even
 /// though it has an uppercase, so it is left alone.
-fn title(c: char) -> char {
+pub(crate) fn title(c: char) -> char {
     if matches!(c as u32, 0x10D0..=0x10FA | 0x10FD..=0x10FF) {
         return c;
     }
