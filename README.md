@@ -1529,11 +1529,11 @@ The differential suites test what tclrs claims to do. `conformance/` measures th
 opposite: how much of *real Tcl* it does, by running the Tcl project's own test
 suite against it.
 
-**40647 of 45358 attempted cases pass — 89.6%.** Over every case the suite
-contains, including the ones that cannot be run here, that is 40647 of 65657 —
-61.9%. Reports before this one extracted 69424 cases from the same pinned suite;
-the whole difference of 3767 is `cmdAH.test`, which extracted 17001 cases there
-and 13234 here. Why that one file extracts differently has not been traced, so
+**44209 of 48946 attempted cases pass — 90.3%.** Over every case the suite
+contains, including the ones that cannot be run here, that is 44209 of 69424 —
+63.7%. The report before this one extracted 65657 cases from the same pinned suite;
+the whole difference of 3767 is `cmdAH.test`, which extracted 13234 cases there
+and 17001 here. Why that one file extracts differently has not been traced, so
 the two denominators are not comparable. [`conformance/REPORT.md`](conformance/REPORT.md) has the breakdown behind
 the number: attempted, passed, failed and skipped per suite file, why each skipped
 case could not be run, and the failure causes ranked.
