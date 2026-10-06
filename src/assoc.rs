@@ -812,19 +812,23 @@ impl Compiler {
     }
 
     /// `unset ?-nocomplain? ?--? ?name ...?`.
+    ///
+    /// The switches are read as `Tcl_UnsetObjCmd` reads them: at most one
+    /// `-nocomplain`, then at most one `--`, and only when the first word
+    /// begins with a dash — so `unset -nocomplain -nocomplain` unsets the
+    /// variable named `-nocomplain`.
     pub(crate) fn cmd_unset(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        let literal = |i: usize| args.get(i).and_then(|w| w.as_literal());
         let mut i = 0;
         let mut complain = true;
-        while let Some(text) = args.get(i).and_then(|w| w.as_literal()) {
-            match text {
-                "-nocomplain" => complain = false,
-                "--" => {
-                    i += 1;
-                    break;
-                }
-                _ => break,
+        if literal(0).is_some_and(|t| t.starts_with('-')) {
+            if literal(0) == Some("-nocomplain") {
+                complain = false;
+                i = 1;
             }
-            i += 1;
+            if literal(i) == Some("--") {
+                i += 1;
+            }
         }
 
         for word in &args[i..] {

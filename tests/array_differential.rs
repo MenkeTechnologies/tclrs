@@ -92,6 +92,10 @@ const FIXED: &[&str] = &[
     "set p 1\nset q 2\nunset p q\nputs [array exists p]",
     "set a(k) v\nunset -nocomplain a(nope)\nputs [array size a]",
     "puts [unset -nocomplain nothing]x",
+    // `Tcl_UnsetObjCmd` takes one `-nocomplain` and then one `--`, and only
+    // when the first word begins with a dash.
+    "set -nocomplain abc\nset var abc\nputs [list [catch {unset -nocomplain bogus var bogus}] [info exists var] [catch {unset -nocomplain -nocomplain}] [info exists -nocomplain]]",
+    "set -- 1\nunset -nocomplain --\nputs [info exists --]\nunset -- --\nputs [info exists --]\nset -x 1\nunset -x\nputs [info exists -x]",
     // ── array subcommands ──
     "puts [array exists nope]",
     "set b 5\nputs [array exists b]",
