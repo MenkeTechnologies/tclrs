@@ -700,6 +700,8 @@ approximated, and nothing is silently mis-run.
   supported yet` rather than mis-answered. `info level N` is refused separately:
   the *value* of a level is the command and arguments that entered it, and
   `Op::Call` pushes the actual arguments and nothing that names the command.
+  The refusal is for a level that exists: a non-integer or a level outside the
+  stack is tclsh's own error (`expected integer but got`, `bad level "N"`).
   `info level` with no argument counts only the procedure activations of the
   machine it runs on: inside a script `eval` or `uplevel` runs in a procedure it
   answers 0 where tclsh answers 1, and in a procedure whose body was compiled

@@ -289,19 +289,25 @@ impl Compiler {
         Ok(())
     }
 
-    /// `info level` — the number of procedure activations on the stack.
+    /// `info level ?number?` — the number of procedure activations on the stack,
+    /// or the command that entered level `number`.
     ///
-    /// `info level N` answers with the *command* that entered level N. A call
-    /// site pushes the actual arguments and nothing that names the command, so
-    /// the record does not exist to be read back.
+    /// The second form is checked as `InfoLevelCmd` checks it — an integer, and a
+    /// level that exists — so a bad level is tclsh's `bad level "N"`. A level
+    /// that does exist is refused when the op runs: a call site pushes the actual
+    /// arguments and nothing that names the command, so the record does not exist
+    /// to be read back.
     fn info_level(&mut self, args: &[Word]) -> Result<(), CompileError> {
-        if !args.is_empty() {
-            return self.error(
-                "\"info level\" with a level number is not supported: no record of the command \
-                 that entered a level is kept",
-            );
+        match args {
+            [] => {
+                self.emit(Op::Extended(ext::LEVEL, 0), 1);
+            }
+            [number] => {
+                self.word(number)?;
+                self.emit(Op::Extended(ext::LEVEL, 1), 0);
+            }
+            _ => return self.error("wrong # args: should be \"info level ?number?\""),
         }
-        self.emit(Op::Extended(ext::LEVEL, 0), 1);
         Ok(())
     }
 
@@ -520,9 +526,29 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             vm.push(Value::Str(Arc::new(body)));
             Ok(())
         }
-        ext::LEVEL => {
+        ext::LEVEL if arg == 0 => {
             vm.push(Value::Int(crate::runtime::current_level(vm)));
             Ok(())
+        }
+        ext::LEVEL => {
+            let written = to_tcl_string(&vm.pop());
+            let mut level = crate::list::wide(&written)?;
+            let current = crate::runtime::current_level(vm);
+            let bad = || format!("bad level \"{written}\"");
+            if level <= 0 {
+                if current == 0 {
+                    return Err(bad());
+                }
+                level += current;
+            }
+            if level < 1 || level > current {
+                return Err(bad());
+            }
+            Err(
+                "\"info level\" with a level number is not supported: no record of the \
+                 command that entered a level is kept"
+                    .to_string(),
+            )
         }
         ext::FUNCTIONS => {
             let pattern = to_tcl_string(&vm.pop());

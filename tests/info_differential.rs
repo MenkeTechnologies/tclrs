@@ -27,6 +27,11 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const PROGRAMS: &[&str] = &[
+    // `info level N` for a level that does not exist: an integer is required,
+    // a number at or below zero counts back from the current level, and the
+    // top level has no level 0 to name.
+    "foreach n {0 1 -1 x} {puts [list [catch {info level $n} m] $m]}\nputs [catch {info level 1 2} m]\nputs $m",
+    "proc p {} {list [catch {info level 2} m] $m [catch {info level -1} m2] $m2 [catch {info level -5} m3] $m3}\nputs [p]",
     // ── info exists ──
     // The question must not be able to create its own answer: asking about an
     // unset variable leaves it unset, so a second ask agrees with the first.
