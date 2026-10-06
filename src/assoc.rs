@@ -1574,10 +1574,13 @@ impl Compiler {
         self.rotated_loop(
             |c| {
                 c.dict_each_step(Step::Take, 2);
-                c.scalar_set_guard(&value);
-                c.emit_set_var(&value);
+                // The key is assigned first and the value second, as
+                // `DictForLoopCallback` does, so `{k k}` leaves the value.
+                c.emit(Op::Swap, 0);
                 c.scalar_set_guard(&key);
                 c.emit_set_var(&key);
+                c.scalar_set_guard(&value);
+                c.emit_set_var(&value);
                 body(c)
             },
             |c| {

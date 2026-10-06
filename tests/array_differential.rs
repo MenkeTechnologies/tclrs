@@ -176,6 +176,9 @@ const FIXED: &[&str] = &[
     "set d {a 1 b 2 c 3}\ndict set d b 9\nputs $d",
     // ── dict for ──
     "dict for {k v} {b 2 a 1} {puts \"$k=$v\"}",
+    // The key is assigned before the value, so one name for both keeps the
+    // value (dict.test dict-17.17).
+    "dict filter {a b} script {k k} {continue}\nputs $k\ndict for {x x} {a b} {}\nputs $x\ndict map {y y} {a b} {}\nputs $y\nset A(0) 1\nputs [catch {dict for {A v} {a b} {}} m]$m",
     "dict for {k v} {} {puts never}\nputs done",
     "puts [dict for {k v} {a 1} {expr 1}]x",
     "dict for {k v} {a 1 b 2 c 3} {if {$k eq \"b\"} break; puts $k}",
