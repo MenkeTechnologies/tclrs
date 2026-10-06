@@ -1032,6 +1032,9 @@ fn lsearch(args: &[String]) -> Result<String, String> {
                 }
                 i += 1;
                 index_path = list::split(&args[i])?;
+                index_path
+                    .iter()
+                    .try_for_each(|spec| prescreen_index(spec))?;
             }
             "-exact" => mode = Mode::Exact,
             "-glob" => mode = Mode::Glob,
@@ -1072,9 +1075,7 @@ fn lsearch(args: &[String]) -> Result<String, String> {
             // is "stride length must be at least 2".
             "-stride" => {
                 if i + 2 > args.len() - 2 {
-                    return Err(
-                        "\"-stride\" option must be followed by a stride length".to_string()
-                    );
+                    return Err("\"-stride\" option must be followed by stride length".to_string());
                 }
                 i += 1;
                 let n = list::wide(&args[i])?;
@@ -1540,6 +1541,33 @@ fn dictionary_compare(left: &str, right: &str) -> std::cmp::Ordering {
     }
 }
 
+/// The syntax-and-scale screen `lsort` and `lsearch` put each `-index` value
+/// through while reading their options: `TclIndexEncode(interp, idx,
+/// TCL_INDEX_NONE, TCL_INDEX_NONE, &encoded)` (`tclUtil.c`). A malformed index
+/// is the index parser's own error; one that encodes as "none" — before the
+/// start, past `end`, or outside an `int` — is `index "x" out of range`, raised
+/// before any element is looked at.
+///
+/// The encoding resolves against `ENDVALUE`, twice `INT_MAX`: a plain index is
+/// in range from 0 to `INT_MAX`, and an `end`-relative one when it lands above
+/// `INT_MAX` and not past `ENDVALUE` itself.
+fn prescreen_index(spec: &str) -> Result<(), String> {
+    const INT_MAX: i64 = i32::MAX as i64;
+    const ENDVALUE: i64 = 2 * INT_MAX;
+    let wide = list::index(spec, ENDVALUE)?;
+    let end_relative = list::parse_int(spec).is_none() && spec.starts_with('e');
+    let in_range = if end_relative {
+        wide > INT_MAX && wide <= ENDVALUE
+    } else {
+        (0..=INT_MAX).contains(&wide)
+    };
+    if in_range {
+        Ok(())
+    } else {
+        Err(format!("index \"{spec}\" out of range"))
+    }
+}
+
 /// `SelectObjFromSublist`: walk an element down a path of list indices to the
 /// value `-index` names. An index that is not there is the reference
 /// implementation's own diagnostic, which names the sublist it looked in.
@@ -1672,8 +1700,12 @@ fn lsort(args: &[String], interp: Option<&Shared>) -> Result<String, String> {
             // `-command` is a sort *mode*, so a later `-integer` replaces it
             // and a later `-command` replaces that, exactly as the mode the
             // other options set is replaced.
+            // Each option taking a value refuses to take the list as it
+            // (`i == objc-2` in `Tcl_LsortObjCmd`): the last word is always
+            // the list, so `lsort -index {1 2}` is a missing index, not a
+            // sort of nothing by `1 2`.
             "-command" => {
-                let Some(value) = args.get(i + 1) else {
+                let Some(value) = args.get(i + 1).filter(|_| i + 2 < args.len()) else {
                     return Err(
                         "\"-command\" option must be followed by comparison command".to_string()
                     );
@@ -1683,19 +1715,20 @@ fn lsort(args: &[String], interp: Option<&Shared>) -> Result<String, String> {
                 i += 1;
             }
             "-index" => {
-                let Some(value) = args.get(i + 1) else {
+                let Some(value) = args.get(i + 1).filter(|_| i + 2 < args.len()) else {
                     return Err("\"-index\" option must be followed by list index".to_string());
                 };
                 index_path = list::split(value)?;
+                index_path
+                    .iter()
+                    .try_for_each(|spec| prescreen_index(spec))?;
                 i += 1;
             }
             // `-stride N` sorts groups of N as units, keyed on the group's first
             // element, and both refusals are the interpreter's own wording.
             "-stride" => {
-                let Some(value) = args.get(i + 1) else {
-                    return Err(
-                        "\"-stride\" option must be followed by a stride length".to_string()
-                    );
+                let Some(value) = args.get(i + 1).filter(|_| i + 2 < args.len()) else {
+                    return Err("\"-stride\" option must be followed by stride length".to_string());
                 };
                 let n = list::wide(value)?;
                 if n < 2 {

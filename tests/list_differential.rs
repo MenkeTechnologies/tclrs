@@ -202,6 +202,10 @@ const PROGRAMS: &[&str] = &[
     "puts [catch {lsort -index 5 {{a b}}} m]\nputs $m",
     "puts [catch {lsort -index end-5 {{a b}}} m]\nputs $m",
     "puts [catch {lsort -stride 2 -index 3 {b 1 a 2}} m]\nputs $m",
+    // Every -index value is screened while the options are read: one that
+    // encodes as "none" is out of range before any element is looked at, and
+    // a value option never takes the list as its value (cmdIL-1.11, 1.41, 3.5.x).
+    "foreach s {{lsort -index {1 3}} {lsort -command {1 3}} {lsort -stride {1 3}} {lsort -stride 2 -index -2 {a 2 b 1}} {lsort -index -1-1 {{1 c}}} {lsort -index end--1 {{1 c}}} {lsort -index end-2147483647 {{1 c}}} {lsort -index 2147483648 {{1 c}}} {lsort -index {0 -1} {{1 c}}} {lsearch -index end+1 {{a b}} a} {lsearch -stride {{a b}} a}} {catch $s m; puts $m}",
     // lsearch -sorted / -bisect: the binary search, in both orders, and the
     // leftmost-of-equals rule that separates the two.
     "puts [lsearch -sorted {1 3 5} 3]",
