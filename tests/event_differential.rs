@@ -517,7 +517,7 @@ fn unreachable_scopes_are_refused() {
         // The `info` subcommands that need machinery this frontend has none of.
         ("puts [info frame]", "info frame is not supported yet"),
         (
-            "puts [info level 1]",
+            "proc p {} {info level 1}\nputs [p]",
             "\"info level\" with a level number is not supported",
         ),
         // `info library` compiles and runs, then raises tclsh's own message for an

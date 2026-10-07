@@ -296,7 +296,7 @@ fn unsupported_constructs_are_refused() {
         // (`cmd_scope::runtime_slot_alloc`), so it answers too, byte-compared
         // against tclsh in `tests/frame_differential.rs`.
         (
-            "array startsearch a",
+            "array set a {x 1}\narray startsearch a",
             "array startsearch is not supported yet",
         ),
         // This entry was `expr {sin(1)}` until `src/expr_math.rs` landed the
