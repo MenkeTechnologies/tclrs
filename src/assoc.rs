@@ -2912,6 +2912,38 @@ fn push_str(vm: &mut VM, text: String) {
 /// compiler's first pass so the second can guard their scalar uses.
 pub(crate) type ArrayNames = HashSet<String>;
 
+/// `array startsearch`, and `array anymore`, `nextelement` and `donesearch`
+/// with no search active (`ArrayStartSearchCmd` and the others in
+/// `generic/tclVar.c`). A name that is not an array is `NotArrayError`. A
+/// search cannot be started, so `startsearch` on an array is refused and the
+/// other three meet `ParseSearchId` with an empty search list, whose error
+/// depends only on how the identifier is spelt.
+fn array_search(vm: &mut VM, place: Place, name: &str, id: Option<&str>) -> Result<(), String> {
+    if !matches!(peek(vm, place), Some(Value::Hash(_))) {
+        return Err(format!("\"{name}\" isn't an array"));
+    }
+    let Some(handle) = id else {
+        return Err("array startsearch is not supported yet".to_string());
+    };
+    // `s-<decimal>-<name>`, read as `strtoul` reads the number: optional
+    // leading white space and sign, then at least one digit.
+    let well_formed = handle.strip_prefix("s-").and_then(|rest| {
+        let body = rest.trim_start_matches([' ', '\t', '\n', '\r', '\u{b}', '\u{c}']);
+        let body = body.strip_prefix(['+', '-']).unwrap_or(body);
+        let digits = body.len() - body.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        (digits > 0)
+            .then(|| &body[digits..])
+            .and_then(|tail| tail.strip_prefix('-'))
+    });
+    Err(match well_formed {
+        None => format!("illegal search identifier \"{handle}\""),
+        Some(var) if var != name => {
+            format!("search identifier \"{handle}\" isn't for variable \"{name}\"")
+        }
+        Some(_) => format!("couldn't find search \"{handle}\""),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2947,36 +2979,4 @@ mod tests {
         assert_eq!(d.to_list(), "b 3 a 2");
         assert_eq!(d.len(), 2);
     }
-}
-
-/// `array startsearch`, and `array anymore`, `nextelement` and `donesearch`
-/// with no search active (`ArrayStartSearchCmd` and the others in
-/// `generic/tclVar.c`). A name that is not an array is `NotArrayError`. A
-/// search cannot be started, so `startsearch` on an array is refused and the
-/// other three meet `ParseSearchId` with an empty search list, whose error
-/// depends only on how the identifier is spelt.
-fn array_search(vm: &mut VM, place: Place, name: &str, id: Option<&str>) -> Result<(), String> {
-    if !matches!(peek(vm, place), Some(Value::Hash(_))) {
-        return Err(format!("\"{name}\" isn't an array"));
-    }
-    let Some(handle) = id else {
-        return Err("array startsearch is not supported yet".to_string());
-    };
-    // `s-<decimal>-<name>`, read as `strtoul` reads the number: optional
-    // leading white space and sign, then at least one digit.
-    let well_formed = handle.strip_prefix("s-").and_then(|rest| {
-        let body = rest.trim_start_matches([' ', '\t', '\n', '\r', '\u{b}', '\u{c}']);
-        let body = body.strip_prefix(['+', '-']).unwrap_or(body);
-        let digits = body.len() - body.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-        (digits > 0)
-            .then(|| &body[digits..])
-            .and_then(|tail| tail.strip_prefix('-'))
-    });
-    Err(match well_formed {
-        None => format!("illegal search identifier \"{handle}\""),
-        Some(var) if var != name => {
-            format!("search identifier \"{handle}\" isn't for variable \"{name}\"")
-        }
-        Some(_) => format!("couldn't find search \"{handle}\""),
-    })
 }

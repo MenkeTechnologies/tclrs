@@ -8,7 +8,7 @@
 //! `regex` crate at any price, because that crate's guarantee is linear time
 //! and those constructs are what costs it.
 //!
-//! So [`crate::are`] translates the ARE syntax it *can* express and **refuses**
+//! So `crate::are` translates the ARE syntax it *can* express and **refuses**
 //! the rest with a Tcl-shaped error, which is this crate's convention
 //! everywhere else: a refusal a script can catch beats a match that is quietly
 //! wrong. What is refused is listed in `BUGS.md` and reported by name at the

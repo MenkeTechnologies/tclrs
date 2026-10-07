@@ -586,6 +586,9 @@ fn lremove(value: &str, indices: &[String]) -> Result<String, String> {
     Ok(list::join(&kept))
 }
 
+/// One `lseq` operand: its value and the text it was written as.
+type SeqOperand<'a> = (Num, &'a str);
+
 /// `lseq`: `Tcl_LseqObjCmd` (`generic/tclCmdIL.c`) and the arithmetic series it
 /// builds (`TclNewArithSeriesObj`, `generic/tclArithSeries.c`), materialised
 /// as the list's string the way `UpdateStringOfArithSeries` writes it.
@@ -650,10 +653,10 @@ fn lseq(args: &[String]) -> Result<String, String> {
     let num = |k: usize| numbers[k].clone().expect("a numeric argument");
     let (dots, to, count, by) = (0, 1, 2, 3);
     let (start, end, step, mut count_of): (
-        (Num, &str),
-        Option<(Num, &str)>,
-        Option<(Num, &str)>,
-        Option<(Num, &str)>,
+        SeqOperand,
+        Option<SeqOperand>,
+        Option<SeqOperand>,
+        Option<SeqOperand>,
     ) = match arg_key {
         1 => {
             // A count alone is integral: `3.0` is used as 3, `3.1` refused

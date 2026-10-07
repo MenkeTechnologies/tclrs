@@ -17,9 +17,9 @@
 //! and links it into a standalone binary, and [`tiers`] reports which of those
 //! tiers a given script's bytecode actually reaches.
 
-mod are;
 pub mod aot;
 pub mod aot_runtime;
+mod are;
 pub mod assoc;
 pub mod cache;
 pub mod clock_locale;
@@ -50,11 +50,11 @@ pub mod control;
 pub mod coro;
 pub mod cursor;
 pub mod dap;
+pub(crate) mod dtoa;
 pub mod dump;
 /// The `.enc` tables, generated. See `scripts/gen_encoding_tables.py`.
 pub mod encoding_tables;
 pub(crate) mod errorcode;
-pub(crate) mod dtoa;
 pub mod expr;
 pub mod expr_math;
 pub mod list;
@@ -62,9 +62,9 @@ pub mod lsp;
 pub mod names;
 pub mod parser;
 pub mod procs;
-pub mod regexp;
 /// Tcl's regular-expression character tables, generated. See `scripts/gen_regc_locale.pl`.
 pub(crate) mod regc_locale;
+pub mod regexp;
 pub mod runtime;
 pub mod rust_ffi;
 pub mod tiers;

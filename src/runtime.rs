@@ -5008,7 +5008,7 @@ pub fn to_tcl_string(v: &Value) -> String {
 }
 
 /// Format a double the way Tcl does: `Tcl_PrintDouble` (`generic/tclUtil.c`)
-/// over the digits `TclDoubleDigits` chooses ([`crate::dtoa`]) — exponential
+/// over the digits `TclDoubleDigits` chooses (`crate::dtoa`) — exponential
 /// form when the decimal exponent is below -4 or above 16, otherwise positional
 /// with at least one digit after the point.
 pub fn format_double(f: f64) -> String {
