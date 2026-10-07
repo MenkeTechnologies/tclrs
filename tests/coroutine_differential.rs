@@ -372,7 +372,7 @@ fn unsupported_coroutine_constructs_are_refused() {
         // level, neither of which any call site here keeps.
         ("puts [info frame]", "info frame is not supported yet"),
         (
-            "puts [info level 1]",
+            "proc p {} {info level 1}\nputs [p]",
             "\"info level\" with a level number is not supported",
         ),
         ("info", "wrong # args"),
