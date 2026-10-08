@@ -2,7 +2,7 @@
 
 Reference interpreter: **tclsh 9.0.4**. Suite: `tcl9.0.4/tests` — the `tests/` directory of the matching Tcl source release, fetched and checksum-verified by `conformance/fetch-suite.sh`.
 
-**44209 of 48946 attempted cases pass — 90.3%.** Over every case the suite contains, including the ones that cannot be run here, that is 44209 of 69424 — 63.7%.
+**46186 of 48946 attempted cases pass — 94.4%.** Over every case the suite contains, including the ones that cannot be run here, that is 46186 of 69424 — 66.5%.
 
 ## How the number is produced
 
@@ -33,10 +33,10 @@ Three things about the extraction are worth stating plainly. First, suite files 
 | Extracted from the suite | 69424 | 100% |
 | Skipped — cannot be run | 20478 | 29.5% |
 | Attempted | 48946 | 70.5% |
-| ⤷ passed | 44209 | 90.3% of attempted |
-| ⤷ failed | 4737 | 9.7% of attempted |
+| ⤷ passed | 46186 | 94.4% of attempted |
+| ⤷ failed | 2760 | 5.6% of attempted |
 
-Of the 4737 failures, 688 are a feature tclrs documents as not built yet rather than a wrong answer. Counting those as skips instead would give 44209 of 48258 — 91.6% — and that looser number is stated here only so the choice of rule is visible. The headline above uses the strict rule.
+Of the 2760 failures, 633 are a feature tclrs documents as not built yet rather than a wrong answer. Counting those as skips instead would give 46186 of 48313 — 95.6% — and that looser number is stated here only so the choice of rule is visible. The headline above uses the strict rule.
 
 ## Why cases were skipped
 
@@ -98,11 +98,11 @@ A case is attributed to the first command tclrs refused, so a body using several
 
 | Cause | Cases | Share of failures | For example |
 | --- | ---: | ---: | --- |
-| results differ | 2463 | 52.0% | `append.test` append-3.4, `append.test` append-3.5, `append.test` append-3.6 |
-| tclrs raised an error, tclsh did not | 1302 | 27.5% | `append.test` append-7.1, `apply.test` apply-2.2, `apply.test` apply-2.3 |
-| both raised an error, messages differ | 786 | 16.6% | `append.test` append-3.1, `append.test` append-6.1, `append.test` append-10.2 |
-| tclsh raised an error, tclrs did not | 166 | 3.5% | `binary.test` binary-73.29, `binary.test` binary-75.25, `clock-ivm.test` clock-11.1.vm:0 |
-| tclrs was killed or crashed | 20 | 0.4% | `clock-ivm.test` clock-6.0.vm:0, `clock-ivm.test` clock-6.9.vm:0, `clock-ivm.test` clock-6.10.vm:0 |
+| tclrs raised an error, tclsh did not | 1265 | 45.8% | `append.test` append-7.1, `apply.test` apply-2.2, `apply.test` apply-2.3 |
+| both raised an error, messages differ | 745 | 27.0% | `append.test` append-3.1, `append.test` append-6.1, `append.test` append-10.2 |
+| results differ | 624 | 22.6% | `append.test` append-3.4, `append.test` append-3.5, `append.test` append-3.6 |
+| tclsh raised an error, tclrs did not | 101 | 3.7% | `clock-ivm.test` clock-18.1.vm:0, `clock-ivm.test` clock-61.5.vm:0, `clock.test` clock-61.5.vm:1 |
+| tclrs was killed or crashed | 25 | 0.9% | `clock-ivm.test` clock-6.0.vm:0, `clock-ivm.test` clock-6.9.vm:0, `clock-ivm.test` clock-6.10.vm:0 |
 
 Every failing case is written out in full — its program, the tclsh outcome and the tclrs outcome — to `conformance/work/failures.txt` by the same run that produced this table.
 
@@ -117,11 +117,9 @@ Error text with the quoted part elided and tclrs's trailing `(line N)` removed, 
 | clock scan: the free-form parser is not supported yet; use -format | 252 |
 | encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+D800, which a string in this frontend cannot hold | 181 |
 | encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+DC00, which a string in this frontend cannot hold | 116 |
-| unable to convert input string: ambiguous day | 48 |
-| time zone "…" not found: no zone file names it, and a POSIX time zone rule is not supported yet | 36 |
 | encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+DBFF, which a string in this frontend cannot hold | 32 |
 | input string does not match supplied format | 30 |
-| clock: dates before the Gregorian changeover of 1752-09-14 are not supported yet | 26 |
+| clock: dates before the Gregorian changeover of 1752-09-14 are not supported yet | 28 |
 | info frame is not supported yet: it reports on the stack of *commands*, and only the stack of call frames is kept | 26 |
 | key "…" not known in dictionary | 26 |
 | a coroutine of the built-in command "…" is not supported; its body must be a procedure this script defines | 25 |
@@ -129,7 +127,6 @@ Error text with the quoted part elided and tclrs's trailing `(line N)` removed, 
 | array default is not supported yet | 24 |
 | array startsearch is not supported yet | 24 |
 | file attributes is not supported yet: it needs an interface this frontend has not built | 24 |
-| integer value too large to represent | 23 |
 | the namespace "…" of a lambda is not supported yet: this frontend has only "…" | 22 |
 | "…" is not supported yet: this frontend resolves namespaces while compiling, so the name has to be written out | 21 |
 | invalid bareword "…" in expression "…"; should be "…" or "…" or "…" or ... | 21 |
@@ -138,10 +135,13 @@ Error text with the quoted part elided and tclrs's trailing `(line N)` removed, 
 | bad level "…" | 17 |
 | encoding convertfrom: the tcl8 profile decodes this input to the lone surrogate U+DFFF, which a string in this frontend cannot hold | 16 |
 | info object is not supported yet: TclOO is not implemented | 15 |
-| unable to convert input string: invalid day of week | 15 |
 | wrong # args: should be "…" | 15 |
+| killed after 15s without progress | 14 |
 | opening a command pipeline is not implemented in this frontend; open refuses it rather than opening a file named "…" | 14 |
 | encoding: the escape-sequence encoding "…" is not supported yet; it is a state machine rather than a table and is absent from "…" | 13 |
+| this command does not take an array element yet | 12 |
+| unexpected character at index 0: 'U+00D800' | 11 |
+| array for is not supported yet | 10 |
 
 ## Command coverage
 
@@ -164,17 +164,17 @@ Implemented: `after`, `append`, `apply`, `array`, `binary`, `break`, `catch`, `c
 | `autoMkindex.test` | 11 | 10 | 1 | 1 | 0 | 100.0% |
 | `basic.test` | 147 | 132 | 15 | 5 | 10 | 33.3% |
 | `bigdata.test` | 113 | 113 | 0 | 0 | 0 | — |
-| `binary.test` | 750 | 91 | 659 | 610 | 49 | 92.6% |
+| `binary.test` | 750 | 91 | 659 | 621 | 38 | 94.2% |
 | `brodnik.test` | 422 | 422 | 0 | 0 | 0 | — |
 | `chan.test` | 42 | 40 | 2 | 2 | 0 | 100.0% |
 | `chanio.test` | 779 | 439 | 340 | 334 | 6 | 98.2% |
-| `clock-ivm.test` | 8744 | 66 | 8678 | 7478 | 1200 | 86.2% |
+| `clock-ivm.test` | 8744 | 66 | 8678 | 8453 | 225 | 97.4% |
 | `clock-no-tzdata.test` | 0 | 0 | 0 | 0 | 0 | — |
-| `clock.test` | 8744 | 78 | 8666 | 7475 | 1191 | 86.3% |
+| `clock.test` | 8744 | 78 | 8666 | 8445 | 221 | 97.4% |
 | `cmdAH.test` | 17001 | 206 | 16795 | 16271 | 524 | 96.9% |
 | `cmdIL.test` | 168 | 7 | 161 | 155 | 6 | 96.3% |
 | `cmdInfo.test` | 12 | 12 | 0 | 0 | 0 | — |
-| `cmdMZ.test` | 97 | 30 | 67 | 31 | 36 | 46.3% |
+| `cmdMZ.test` | 97 | 30 | 67 | 34 | 33 | 50.7% |
 | `compExpr-old.test` | 184 | 4 | 180 | 133 | 47 | 73.9% |
 | `compExpr.test` | 82 | 7 | 75 | 63 | 12 | 84.0% |
 | `compile.test` | 171 | 123 | 48 | 44 | 4 | 91.7% |
@@ -192,7 +192,7 @@ Implemented: `after`, `append`, `apply`, `array`, `binary`, `break`, `catch`, `c
 | `exec.test` | 145 | 140 | 5 | 0 | 5 | 0.0% |
 | `execute.test` | 157 | 96 | 61 | 51 | 10 | 83.6% |
 | `expr-old.test` | 461 | 31 | 430 | 389 | 41 | 90.5% |
-| `expr.test` | 2168 | 1091 | 1077 | 986 | 91 | 91.6% |
+| `expr.test` | 2168 | 1091 | 1077 | 1007 | 70 | 93.5% |
 | `fCmd.test` | 306 | 221 | 85 | 48 | 37 | 56.5% |
 | `fileName.test` | 306 | 199 | 107 | 78 | 29 | 72.9% |
 | `fileSystem.test` | 140 | 82 | 58 | 42 | 16 | 72.4% |
@@ -229,14 +229,14 @@ Implemented: `after`, `append`, `apply`, `array`, `binary`, `break`, `catch`, `c
 | `listObj.test` | 59 | 17 | 42 | 42 | 0 | 100.0% |
 | `listRep.test` | 231 | 227 | 4 | 4 | 0 | 100.0% |
 | `llength.test` | 6 | 0 | 6 | 6 | 0 | 100.0% |
-| `lmap.test` | 66 | 1 | 65 | 54 | 11 | 83.1% |
+| `lmap.test` | 66 | 1 | 65 | 52 | 13 | 80.0% |
 | `load.test` | 30 | 30 | 0 | 0 | 0 | — |
 | `lpop.test` | 19 | 2 | 17 | 16 | 1 | 94.1% |
 | `lrange.test` | 1766 | 6 | 1760 | 1760 | 0 | 100.0% |
 | `lrepeat.test` | 12 | 1 | 11 | 10 | 1 | 90.9% |
 | `lreplace.test` | 3579 | 0 | 3579 | 3578 | 1 | 100.0% |
 | `lsearch.test` | 165 | 0 | 165 | 162 | 3 | 98.2% |
-| `lseq.test` | 136 | 22 | 114 | 109 | 5 | 95.6% |
+| `lseq.test` | 136 | 22 | 114 | 108 | 6 | 94.7% |
 | `lset.test` | 89 | 89 | 0 | 0 | 0 | — |
 | `lsetComp.test` | 19 | 19 | 0 | 0 | 0 | — |
 | `macOSXFCmd.test` | 14 | 1 | 13 | 0 | 13 | 0.0% |
@@ -342,7 +342,7 @@ The recorder only sees `test` calls made in the interpreter it runs in. These fi
 
 3 files contributed no cases at all: `clock-no-tzdata.test`, `package.test`, `safe-stock86.test`. A file lands here when it is empty, when everything in it sits behind a constraint this configuration does not meet, or when it declares its tests inside a child interpreter.
 
-A stage that goes 15s without producing an outcome is killed and the case it was on is recorded as an abort, so that one pathological body cannot stall the run. Aborts on the tclrs side count as failures rather than skips, and this run had 20 of them; aborts on the reference side are the `tclsh produced no reference outcome` skips above. That timeout is the only bound in the pipeline, and nothing is dropped without landing in one of those two counts.
+A stage that goes 15s without producing an outcome is killed and the case it was on is recorded as an abort, so that one pathological body cannot stall the run. Aborts on the tclrs side count as failures rather than skips, and this run had 25 of them; aborts on the reference side are the `tclsh produced no reference outcome` skips above. That timeout is the only bound in the pipeline, and nothing is dropped without landing in one of those two counts.
 
 Some suite cases depend on the clock, the file system, the environment or the network, so a rerun can move the totals by a few cases. Nothing else in the pipeline is nondeterministic: the case set, the ordering and the comparison are fixed.
 
