@@ -170,6 +170,20 @@ const PROGRAMS: &[&str] = &[
     // The suite case this was found by: `eval continue` in the step of a `for`
     // nested inside another `for`.
     "puts [apply {{} {\n for {set k 0} {$k < 3} {incr k} {\n set j 0\n list a [ for {set i 0} {$i < 5} {incr i;list a [eval continue]} {\n incr j\n }]\n incr i\n }\n list $i $j $k\n }}]",
+    // A loop's *test* is no loop's: `TclCompileWhileCmd` and `TclCompileForCmd`
+    // compile it after the exception ranges close, so a `break` or `continue`
+    // it raises leaves the loop as a return code. `for {} {[break]} {} {}`
+    // ended normally and `for {} {[continue]} {} {}` ran for ever before
+    // (`for-6.17`, `for-6.18`).
+    "puts [list [catch {for {} {[break]} {} {}} e] $e [catch {while {[break]} {}} e] $e]",
+    "puts [list [catch {for {} {[continue]} {} {}} e] $e [catch {while {[continue]} {}} e] $e]",
+    "proc t3 {} {for {} {[break]} {} {}}\nproc t4 {} {while {[continue]} {}}\nputs [list [catch t3 e] $e [catch t4 e] $e]",
+    // With an enclosing loop the code is that loop's; the inner loop's region
+    // must close on the way out, or a later `break` lands back inside it.
+    "foreach i {1 2} {while {[break]} {puts in}\nputs after}\nputs done",
+    "foreach i {1 2} {while {[continue]} {puts in}\nputs after$i}\nputs done",
+    "puts [catch {foreach i {1} {while {[break]} {}}\nputs a\neval break\nputs b}]",
+    "puts [list [catch {while 1 {while {[eval break]} {}\nputs inner}} e] $e]",
 ];
 
 fn tclsh() -> Option<PathBuf> {

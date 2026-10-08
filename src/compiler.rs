@@ -1100,6 +1100,16 @@ pub(crate) struct LoopCtx {
     /// enclosing loop or leaves as `invoked "continue" outside of a loop`.
     /// `break` there is still this loop's.
     pub(crate) in_step: bool,
+    /// Whether the loop's *test* is what is being compiled. Neither code is
+    /// this loop's there: `TclCompileWhileCmd` and `TclCompileForCmd` emit the
+    /// test after the loop's exception ranges have closed
+    /// (`generic/tclCompCmds.c:2634`), so a `break` or `continue` the test
+    /// raises leaves the loop as a return code — to an enclosing loop, to a
+    /// `catch`, or as `invoked "break" outside of a loop` at a procedure
+    /// boundary. Both are compiled as raises there, because a direct jump to an
+    /// enclosing loop would skip this loop's `LOOP_LEAVE` and leave its region
+    /// open behind it.
+    pub(crate) in_test: bool,
 }
 
 /// The local variables of one procedure body.
@@ -2817,7 +2827,8 @@ impl Compiler {
         // raised code the way one written outside any loop does — and the
         // region the loop opened declines it too, or the raise would land back
         // on the step it came from and run for ever.
-        let shut_off = !is_break && ctx.is_some_and(|c| c.in_step);
+        // Nor is either code in a loop's test — see [`LoopCtx::in_test`].
+        let shut_off = ctx.is_some_and(|c| c.in_test || (!is_break && c.in_step));
         if shut_off || ctx.is_none_or(|c| c.catch_depth != self.catch_depth) {
             self.push_empty();
             self.emit(Op::LoadInt(i64::from(code)), 1);
@@ -2928,6 +2939,7 @@ impl Compiler {
             breaks: Vec::new(),
             continues: Vec::new(),
             in_step: false,
+            in_test: false,
         });
         // The step is compiled with the loop still open, but with `continue`
         // shut off inside it — see [`LoopCtx::in_step`]. `break` keeps the
@@ -2949,7 +2961,20 @@ impl Compiler {
         // The body and the step are balanced, so the test is compiled at the
         // same depth the entry jump reached it with.
         debug_assert_eq!(self.depth, entry, "rotated loop body is unbalanced");
-        cond(self)?;
+        // The test is inside the region but is no loop's, so a `break` or a
+        // `continue` in it is raised — see [`LoopCtx::in_test`] — and the
+        // region declines it at run time.
+        self.loops.push(LoopCtx {
+            depth: entry,
+            catch_depth: self.catch_depth,
+            breaks: Vec::new(),
+            continues: Vec::new(),
+            in_step: false,
+            in_test: true,
+        });
+        let tested = cond(self);
+        self.loops.pop();
+        tested?;
         self.emit(Op::JumpIfTrue(top), -1);
 
         let end = self.b.current_pos();

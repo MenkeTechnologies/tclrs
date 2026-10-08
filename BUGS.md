@@ -1884,6 +1884,24 @@ Still open from the same runs:
 - **`lsearch -sorted -real` over a list holding a NaN** finds what a linear scan
   finds; tclsh's binary search meets the NaN and refuses it.
 
+### Fixed from the official suite's failures
+
+Found in `conformance/work/failures.txt`, each re-measured against tclsh 9.0.4
+and pinned by a differential program:
+
+- **A loop's test absorbed a `break` or `continue` it raised.**
+  `catch {for {} {[break]} {} {}}` was 0 where tclsh says 3, and
+  `for {} {[continue]} {} {}` ran for ever: the test sat inside the loop's
+  region and the region sent the code to its own exit or step. tclsh compiles
+  the test after the loop's exception ranges close
+  (`generic/tclCompCmds.c:2634`), so the code leaves the loop — to an enclosing
+  one, a `catch`, or `invoked "break" outside of a loop` at a procedure
+  boundary. The region now declines both codes over the test's op range, and the
+  compiler raises them there instead of jumping straight to an enclosing loop,
+  which had skipped the inner `LOOP_LEAVE` and left its region open
+  (`foreach i {1} {while {[break]} {}}` then re-ran code on a later `break`).
+  `for-6.17`, `for-6.18`.
+
 ## What the differential fuzzer cannot reach
 
 The generator's own blind spots, so a gap in the report is a known gap rather

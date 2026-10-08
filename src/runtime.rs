@@ -1668,11 +1668,18 @@ enum FrameKind {
     ///
     /// A loop with no step — `while`, `foreach` — leaves the range empty, and
     /// then nothing can be inside it.
+    ///
+    /// `step_end`..`test_end` is the loop's *test*, which follows the step and
+    /// runs up to the exit `brk` resumes at. It absorbs neither code: tclsh
+    /// compiles the test after the loop's exception ranges close
+    /// (`generic/tclCompCmds.c:2634`), so `catch {while {[break]} {}}` is 3
+    /// there, not a loop that ended normally.
     Loop {
         brk: usize,
         cont: usize,
         step_start: usize,
         step_end: usize,
+        test_end: usize,
     },
 }
 
@@ -1853,13 +1860,14 @@ impl Hooks {
                     Some(fusevm::Op::Jump(to)) => *to,
                     _ => 0,
                 };
-                let (step_start, step_end) = (target(cont), target(mark));
+                let (step_start, step_end, test_end) = (target(cont), target(mark), target(brk));
                 open.lock().expect("catch lock").push(CatchFrame {
                     kind: FrameKind::Loop {
                         brk,
                         cont,
                         step_start,
                         step_end,
+                        test_end,
                     },
                     stack: vm.stack.len(),
                     frames: vm.frames.len(),
@@ -3152,6 +3160,10 @@ impl Machine {
                 let code = e.visible_code();
                 let resume = match frame.kind {
                     FrameKind::Catch(handler) => Some(handler),
+                    // Neither code from the test, which belongs to no loop.
+                    FrameKind::Loop {
+                        step_end, test_end, ..
+                    } if (step_end..test_end).contains(&raised_at) => None,
                     // A loop takes a `break` or a `continue` and lets every
                     // other code — an error, a `return` — carry on outwards.
                     FrameKind::Loop { brk, .. } if code == TCL_BREAK => Some(brk),
