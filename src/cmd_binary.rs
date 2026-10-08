@@ -959,171 +959,192 @@ fn decode_hex(text: &str, strict: bool) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// base64, with the reference implementation's `-strict` rules: padding is
-/// legal only where a group can actually end, nothing may follow it, and a
-/// group of one leftover character — which encodes no byte at all — is refused.
-/// Without `-strict` every character outside the alphabet is passed over, which
-/// is what RFC 2045 asks a decoder to do.
-fn decode_base64(text: &str, strict: bool) -> Result<Vec<u8>, String> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = Vec::with_capacity(chars.len() / 4 * 3);
-    let mut bits = 0u32;
-    let mut have = 0u32;
-    let mut taken = 0usize;
-    for (at, ch) in chars.iter().enumerate() {
-        let ch = *ch;
-        if ch == '=' {
-            if strict {
-                // A group holds four characters; padding can only stand for
-                // the third or the fourth of them.
-                if taken % 4 < 2 {
-                    return Err(bad_base64(ch, at));
-                }
-                // One optional second `=`, and then the end. tclsh names the
-                // position just past the first padding character when
-                // anything else follows.
-                if at + 1 != chars.len() && at + 2 != chars.len() {
-                    return Err(bad_base64('=', at + 1));
-                }
-            }
-            break;
-        }
-        let value = if ch.is_ascii() {
-            BASE64.iter().position(|b| char::from(*b) == ch)
-        } else {
-            None
-        };
-        let Some(value) = value else {
-            if !strict {
-                continue;
-            }
-            return Err(bad_base64(ch, at));
-        };
-        taken += 1;
-        bits = bits << 6 | value as u32;
-        have += 6;
-        if have >= 8 {
-            have -= 8;
-            out.push((bits >> have & 0xff) as u8);
-        }
+/// The bytes a decoder walks: the string's own bytes when every character
+/// fits in one (`Tcl_GetBytesFromObj` succeeds, a "pure" input), its UTF-8
+/// otherwise. Positions in a refusal are offsets into these bytes.
+fn decoder_input(text: &str) -> (Vec<u8>, bool) {
+    if text.chars().all(|c| u32::from(c) <= 0xff) {
+        (text.chars().map(|c| c as u8).collect(), true)
+    } else {
+        (text.as_bytes().to_vec(), false)
     }
-    if strict && taken % 4 == 1 {
-        // Six bits left over encode nothing, so the last character cannot be
-        // part of any group.
-        let at = chars.len() - 1;
-        return Err(bad_base64(chars[at], at));
-    }
-    Ok(out)
 }
 
-fn bad_base64(ch: char, at: usize) -> String {
+/// `TclIsSpaceProc`: the C `isspace` set.
+fn is_tcl_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+/// The refusal naming the byte just read, at `next - 1`. In an impure input
+/// the byte may lead a multi-byte character, which is the one named.
+fn bad_decode(codec: &str, data: &[u8], pure: bool, next: usize) -> String {
+    let at = next - 1;
+    let ch = if pure {
+        char::from(data[at])
+    } else {
+        std::str::from_utf8(&data[at..])
+            .ok()
+            .or_else(|| {
+                let end = (at + 4).min(data.len());
+                (at + 1..=end).find_map(|e| std::str::from_utf8(&data[at..e]).ok())
+            })
+            .and_then(|s| s.chars().next())
+            .unwrap_or(char::from(data[at]))
+    };
     format!(
-        "invalid base64 character \"{ch}\" (U+{:06X}) at position {at}",
+        "invalid {codec} character \"{ch}\" (U+{:06X}) at position {at}",
         u32::from(ch)
     )
 }
 
-/// uuencode. A line's first character says how many bytes it carries; a line
-/// of zero ends the data.
-///
-/// `-strict` adds the reference implementation's own length check: a line that
-/// a terminator follows must hold the four characters per three bytes the
-/// encoding calls for, and `short uuencode data` is what it says otherwise —
-/// which its *encoder* does not satisfy, so `binary decode uuencode -strict
-/// [binary encode uuencode a]` is that refusal in tclsh 9.0.4 as well.
+/// base64 — `BinaryDecode64`. Four characters make a block of three bytes;
+/// `=` pads only the third and fourth place of the last block. Without
+/// `-strict` anything outside the alphabet is passed over; with it, such a
+/// character, a block cut short, or anything after the padding is refused.
+fn decode_base64(text: &str, strict: bool) -> Result<Vec<u8>, String> {
+    let (data, pure) = decoder_input(text);
+    let bad = |next: usize| bad_decode("base64", &data, pure, next);
+    let mut out = Vec::with_capacity(data.len().div_ceil(4) * 3);
+    let mut cut = 0usize;
+    let mut p = 0usize;
+    while p < data.len() {
+        let mut value: u32 = 0;
+        let mut i = 0;
+        while i < 4 {
+            let c = if p < data.len() {
+                p += 1;
+                data[p - 1]
+            } else if i > 1 {
+                b'='
+            } else {
+                // One character left over encodes no byte at all.
+                if strict {
+                    return Err(bad(p));
+                }
+                cut += 3;
+                break;
+            };
+            let digit = match c {
+                b'A'..=b'Z' => Some(c - b'A'),
+                b'a'..=b'z' => Some(c - b'a' + 26),
+                b'0'..=b'9' => Some(c - b'0' + 52),
+                b'+' => Some(62),
+                b'/' => Some(63),
+                _ => None,
+            };
+            if cut > 0 {
+                // Past the padding only more padding counts.
+                if c == b'=' && i > 1 {
+                    value <<= 6;
+                    cut += 1;
+                } else if strict {
+                    return Err(bad(p));
+                } else {
+                    continue;
+                }
+            } else if let Some(digit) = digit {
+                value = value << 6 | u32::from(digit);
+            } else if c == b'=' && (!strict || i > 1) {
+                value <<= 6;
+                if i > 0 {
+                    cut += 1;
+                }
+            } else if strict {
+                return Err(bad(p));
+            } else {
+                continue;
+            }
+            i += 1;
+        }
+        out.extend_from_slice(&[(value >> 16) as u8, (value >> 8) as u8, value as u8]);
+        // `=` ends the data: with `-strict` nothing may follow it.
+        if cut > 0 && p < data.len() && strict {
+            return Err(bad(p));
+        }
+    }
+    out.truncate(out.len().saturating_sub(cut));
+    Ok(out)
+}
+
+/// uuencode — `BinaryDecodeUu`. A line's first character says how many bytes
+/// it carries; then groups of four characters, each `0x20` plus six bits.
+/// Without `-strict` whitespace is passed over; with it, whitespace inside a
+/// group is refused, a newline inside one is `short uuencode data`, and so is
+/// a line that ends before its count is reached.
 fn decode_uuencode(text: &str, strict: bool) -> Result<Vec<u8>, String> {
+    let (data, pure) = decoder_input(text);
+    let bad = |next: usize| bad_decode("uuencode", &data, pure, next);
+    let short = || "short uuencode data".to_string();
+    let in_alphabet = |c: u8| (32..=96).contains(&c);
+    let six = |c: u8| (i32::from(c) - 0x20) & 0x3f;
     let mut out = Vec::new();
-    let mut rest = text;
-    while !rest.is_empty() {
-        let (line, terminated) = match rest.find('\n') {
-            Some(end) => {
-                let line = &rest[..end];
-                rest = &rest[end + 1..];
-                (line, true)
+    let mut line_len: i32 = -1;
+    let mut p = 0usize;
+    while p < data.len() {
+        let mut d = [0u8; 4];
+        if line_len < 0 {
+            let c = data[p];
+            p += 1;
+            if !in_alphabet(c) {
+                if strict || !is_tcl_space(c) {
+                    return Err(bad(p));
+                }
+                continue;
             }
-            None => {
-                let line = rest;
-                rest = "";
-                (line, false)
-            }
-        };
-        let chars: Vec<char> = line.chars().collect();
-        let Some(first) = chars.first() else {
-            // An empty line is passed over when the decoder is forgiving; with
-            // `-strict` the terminator itself is read as the length character
-            // and refused, which is what tclsh reports for a message that
-            // starts with a blank line.
-            if strict {
-                uu_value('\n', true, 0)?;
-            }
-            continue;
-        };
-        // The length character is never masked, even when the rest of the line
-        // is: `binary decode uuencode abc` names the `a` in tclsh whether or
-        // not `-strict` was given.
-        let want = usize::from(uu_value(*first, true, 0)?);
-        if want == 0 {
-            break;
+            line_len = six(c);
         }
-        // With `-strict` a character outside the alphabet is named before the
-        // line's length is judged, so `binary decode uuencode -strict YWJj`
-        // reports the `j` rather than `short uuencode data`.
-        if strict {
-            for (at, ch) in chars.iter().enumerate().skip(1) {
-                uu_value(*ch, true, at)?;
+        let mut i = 0;
+        while i < 4 {
+            if p < data.len() {
+                let c = data[p];
+                p += 1;
+                d[i] = c;
+                if !in_alphabet(c) {
+                    if strict {
+                        if !is_tcl_space(c) {
+                            return Err(bad(p));
+                        } else if c == b'\n' {
+                            return Err(short());
+                        }
+                    }
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        if line_len > 0 {
+            out.push((six(d[0]) << 2 | six(d[1]) >> 4) as u8);
+            line_len -= 1;
+            if line_len > 0 {
+                out.push((six(d[1]) << 4 | six(d[2]) >> 2) as u8);
+                line_len -= 1;
+                if line_len > 0 {
+                    out.push((six(d[2]) << 6 | six(d[3])) as u8);
+                    line_len -= 1;
+                }
             }
         }
-        // How many characters the declared byte count needs. A line a
-        // terminator follows is held to whole four-character groups; the last
-        // line of a message, which nothing follows, only has to carry the
-        // characters the bytes themselves reach into.
-        let needed = if terminated {
-            want.div_ceil(3) * 4
-        } else {
-            want + want.div_ceil(3)
-        };
-        if strict && chars.len() - 1 < needed {
-            return Err("short uuencode data".to_string());
-        }
-        let mut wrote = 0usize;
-        for (group, chunk) in chars[1..].chunks(4).enumerate() {
-            let mut value = 0u32;
-            for (i, ch) in chunk.iter().enumerate() {
-                value |= u32::from(uu_value(*ch, strict, group * 4 + i + 1)?) << (18 - 6 * i);
-            }
-            for i in 0..3 {
-                if wrote < want {
-                    out.push((value >> (16 - 8 * i) & 0xff) as u8);
-                    wrote += 1;
+        // The line's bytes are all out: skip to the next line.
+        if line_len == 0 && p < data.len() {
+            line_len = -1;
+            while p < data.len() {
+                let c = data[p];
+                p += 1;
+                if c == b'\n' {
+                    break;
+                } else if in_alphabet(c) {
+                    p -= 1;
+                    break;
+                } else if strict || !is_tcl_space(c) {
+                    return Err(bad(p));
                 }
             }
         }
     }
-    Ok(out)
-}
-
-/// One uuencode character's six bits.
-///
-/// `-strict` accepts only the encoding's own alphabet, `0x20`–`0x5f`. Without
-/// it the value is masked to six bits, which is what a decoder that has to
-/// tolerate a re-flowed message does and what tclsh does here: `binary decode
-/// uuencode YWJj` is bytes rather than a refusal, while the same input with
-/// `-strict` names the `j`.
-fn uu_value(ch: char, strict: bool, at: usize) -> Result<u8, String> {
-    match ch {
-        '`' | ' ' => Ok(0),
-        c if ('!'..='_').contains(&c) => Ok(c as u8 - 0x20),
-        c if strict => Err(format!(
-            "invalid uuencode character \"{c}\" (U+{:06X}) at position {at}",
-            u32::from(c)
-        )),
-        c if c.is_whitespace() => Ok(0),
-        c if c.is_ascii() => Ok((c as u8).wrapping_sub(0x20) & 0x3f),
-        c => Err(format!(
-            "invalid uuencode character \"{c}\" (U+{:06X}) at position {at}",
-            u32::from(c)
-        )),
+    if line_len > 0 && strict {
+        return Err(short());
     }
+    Ok(out)
 }
 
 /// The options `binary encode` and `binary decode` take.

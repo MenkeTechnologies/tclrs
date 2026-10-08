@@ -147,6 +147,13 @@ const PROGRAMS: &[&str] = &[
     "puts [hex [binary decode base64 \"  YWJj\"]]",
     "puts [hex [binary decode uuencode [binary encode uuencode {The quick brown fox}]]]",
     "puts [hex [binary decode base64 [binary encode base64 [binary format c* {0 1 2 254 255}]]]]",
+    // `BinaryDecode64` and `BinaryDecodeUu` byte for byte: padding, a block
+    // cut short, what may follow `=`, whitespace inside a group, a newline
+    // inside one, and the byte offset a refusal names — of the UTF-8 when a
+    // character does not fit in a byte.
+    "foreach s {WFk= \"WFk=\\n\" WFk WF W {} WFk=x WF== W=== = a= YWJj {YW Jj} YWJjZA== YWJjZA= YWJjZA Y\\u00e9WJj YW\\u4e2dJj \"YWJj\\n\" { YWJj} {YWJjZA==  } \"YWJjZA==\\n\\n\" YWJ=ZA==} {foreach st {{} -strict} {set r [catch {binary decode base64 {*}$st [subst $s]} m]\nputs [list $st $s $r [expr {$r ? $m : [hex $m]}]]}}",
+    "foreach s {{#04)#z} #04)# \"#04)#\\n\" \"#04)#\\n#04)#\\n\" {#04) #} { #04)#} a ` \"`\\n\" \"#04)#\\n`\\n\" \"#04)#\\r\\n\" \"\\n#04)#\" #\\u00e904)# YWJj} {foreach st {{} -strict} {set r [catch {binary decode uuencode {*}$st [subst $s]} m]\nputs [list $st $s $r [expr {$r ? $m : [hex $m]}]]}}",
+    "set s \">[string repeat 86)C 10]\\n\\t>\\t[string repeat 86)C 10]\\r\"\nputs [hex [binary decode uuencode $s]]\nset s \">[string repeat 86)C 10]\\na[string repeat 86)C 10]\"\nputs [catch {binary decode uuencode -strict $s} m]$m",
 ];
 
 /// Programs tclsh refuses. Only the first line of its message is compared, as
