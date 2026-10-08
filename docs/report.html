@@ -82,7 +82,7 @@
 
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-val accent">17th</div><div class="stat-label">fusevm frontend</div></div>
-        <div class="stat-card"><div class="stat-val">89.4%</div><div class="stat-label">official suite, attempted cases</div></div>
+        <div class="stat-card"><div class="stat-val">90.3%</div><div class="stat-label">official suite, attempted cases</div></div>
         <div class="stat-card"><div class="stat-val">9.0.4</div><div class="stat-label">reference tclsh</div></div>
         <div class="stat-card"><div class="stat-val">MIT</div><div class="stat-label">license · free / OSS</div></div>
       </div>
@@ -116,7 +116,6 @@
         <h2>Value model</h2>
         <p>Tcl's value model needs no object heap on top of fusevm's. Strings, integers, and floats map onto <code>fusevm::Value</code> directly, so a value produced as a number stays a number in a VM slot and only acquires a string representation when something asks for one — which is where the reference implementation spends time in hot loops. Variables are addressed by name through the VM's slot table; there are no call frames yet, because there is no <code>proc</code>.</p>
         <p>Two hooks carry all of the language-specific behavior. The <strong>numeric hook</strong> catches operands the VM cannot compute on natively: an operand that parses as a number is one — with leading and trailing whitespace tolerated and the <code>0x</code> / <code>0o</code> / <code>0b</code> radix prefixes accepted — comparisons fall back to string order when it does not, and arithmetic on a non-number is an error. That is what makes <code>expr {"10" &lt; "9"}</code> false while <code>expr {"abc" &lt; "abd"}</code> is true. The <strong>extension handler</strong> implements the operators whose Tcl meaning differs from the VM's generic one: <code>/</code> and <code>%</code> floor toward negative infinity (<code>-57 / 10</code> is <code>-6</code>, <code>-57 % 10</code> is <code>3</code>), <code>**</code> stays integral for integral operands, and a normalize op converts a VM-native result into its Tcl value — a boolean to <code>1</code> or <code>0</code>, a double to Tcl's double format (the shortest representation that reads back exactly, never looking like an integer, exponential outside the positional range).</p>
-        <p>Tcl promotes an overflowing integer to arbitrary precision. tclrs has no bignum yet, so an operation that overflows <code>i64</code> reports <code>integer value too large to represent</code> rather than wrapping silently.</p>
       </section>
 
       <hr class="section-rule">
@@ -176,7 +175,7 @@
         <table class="file-table">
           <thead><tr><th>Crate</th><th>Role</th><th>Reached by</th></tr></thead>
           <tbody>
-            <tr><td>fusevm</td><td>Language-agnostic bytecode VM, 0.26.0, with <code>jit</code>, <code>jit-disk-cache</code>, <code>aot</code> and <code>ffi</code></td><td>the library</td></tr>
+            <tr><td>fusevm</td><td>Language-agnostic bytecode VM, 0.26.9, with <code>jit</code>, <code>jit-disk-cache</code>, <code>aot</code> and <code>ffi</code></td><td>the library</td></tr>
             <tr><td>lsp-server, lsp-types</td><td>The framing and the schema of <code>--lsp</code>, so a capability this crate does not answer is a compile error rather than a message an editor silently drops</td><td>the library (<code>src/lsp.rs</code>)</td></tr>
             <tr><td>serde, serde_json</td><td>The wire format under both editor servers</td><td>the library (<code>src/lsp.rs</code>, <code>src/dap.rs</code>)</td></tr>
             <tr><td>libc</td><td>Capturing a debugged script's stdout, and <code>TIOCGWINSZ</code> plus local time for the prompt's status bar</td><td>the library and the binary</td></tr>
