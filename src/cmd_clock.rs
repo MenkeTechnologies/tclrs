@@ -33,9 +33,11 @@
 //!   zone file, and a time zone named by abbreviation in `clock scan`.
 //! * `clock scan` without `-format`.
 //!
-//! Not refused but not tclsh's answer either: a `clock scan` whose format
-//! names a weekday and no day of the month reads the weekday as choosing a day
-//! within the base week there, and is ignored here.
+//! A `-format` scan assembles its fields as `ClockScan` and `ClockScanCommit`
+//! do: every field the format does not carry is the base date's, a weekday
+//! with no day of the month or of the year chooses the day within an ISO week,
+//! and `-validate` (on by default) holds the fields to `ClockValidDate`'s
+//! ranges.
 
 use std::sync::Arc;
 
@@ -887,34 +889,117 @@ fn stardate(civil: &Civil) -> String {
 
 // ── scanning ─────────────────────────────────────────────────────────────
 
-/// The fields a `-format` scan fills in, before they are turned into an
-/// instant.
-#[derive(Default)]
+/// The flags a scan token raises — `CLF_*` of `generic/tclDate.h`, under the
+/// same names. Which of them the input carried decides how the fields are
+/// assembled into an instant, exactly as in `ClockScan` and `ClockScanCommit`.
+mod flag {
+    pub const POSIXSEC: u32 = 1 << 1;
+    pub const LOCALSEC: u32 = 1 << 2;
+    pub const JULIANDAY: u32 = 1 << 3;
+    pub const TIME: u32 = 1 << 4;
+    pub const CENTURY: u32 = 1 << 6;
+    pub const DAYOFMONTH: u32 = 1 << 7;
+    pub const DAYOFYEAR: u32 = 1 << 8;
+    pub const MONTH: u32 = 1 << 9;
+    pub const YEAR: u32 = 1 << 10;
+    pub const DAYOFWEEK: u32 = 1 << 11;
+    pub const ISO8601YEAR: u32 = 1 << 12;
+    pub const ISO8601WEEK: u32 = 1 << 13;
+    pub const ISO8601CENTURY: u32 = 1 << 14;
+    pub const DATE: u32 =
+        JULIANDAY | DAYOFMONTH | DAYOFYEAR | MONTH | YEAR | ISO8601YEAR | DAYOFWEEK | ISO8601WEEK;
+}
+
+/// `ClockDefaultCenturySwitch` and `ClockDefaultYearCentury`: a two-digit
+/// year from 38 up is in the 1900s, one below it in the 2000s.
+const YEAR_OF_CENTURY_SWITCH: i64 = 38;
+const CURRENT_YEAR_CENTURY: i64 = 2000;
+
+/// `GREGORIAN_CHANGE_DATE`, as a Julian Day Number.
+const GREGORIAN_CHANGE_JDN: i64 = 2_361_222;
+
+/// The Julian Day Number of 1970-01-01.
+const JDN_OF_EPOCH: i64 = 2_440_588;
+
+/// `MERIDIAN`: whether `%p` said AM or PM, or nothing did.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Meridian {
+    Am,
+    Pm,
+    H24,
+}
+
+/// The fields a `-format` scan fills in — `DateInfo` and its `TclDateFields`.
+/// Every date field starts out as the base date's, which is what a field the
+/// format does not carry is taken from (`ClockParseFmtScnArgs`); which ones the
+/// input did carry is in `flags`.
 struct Scanned {
-    year: Option<i64>,
-    century: Option<i64>,
-    year_in_century: Option<i64>,
-    month: Option<u32>,
-    day: Option<u32>,
-    day_of_year: Option<i64>,
-    hour: Option<u32>,
-    minute: Option<u32>,
-    second: Option<u32>,
-    pm: Option<bool>,
-    hour_is_12: bool,
-    epoch: Option<i64>,
+    flags: u32,
+    year: i64,
+    /// `dateCentury`, which only `%C` sets.
+    century: i64,
+    month: i64,
+    day: i64,
+    day_of_year: i64,
+    iso_year: i64,
+    iso_week: i64,
+    /// 1 for Monday through 7 for Sunday.
+    weekday: i64,
+    julian_day: i64,
+    /// `%EE`: the year is counted before the common era.
+    bce: bool,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    meridian: Meridian,
+    second_of_day: i64,
+    /// Local seconds since the epoch: the base's, or `%Es` and `%Q`'s.
+    local_seconds: i64,
+    /// `%s`, and a Julian day written with a fraction: the instant itself.
+    seconds: i64,
+    /// A zone the input named, which replaces the command's own.
     offset: Option<i32>,
-    /// The weekday the input named, 1 for Monday through 7 for Sunday. tclsh
-    /// checks it against the date rather than ignoring it.
-    weekday: Option<u32>,
-    /// A Julian Day Number the input carried whole — `%J`, and `%EJ` written
-    /// without a fraction. It names a *local* day, so it still crosses the
-    /// zone on the way out.
-    julian_day: Option<i64>,
-    /// `%Es`: seconds since the epoch read as local time.
-    local_seconds: Option<i64>,
-    /// `%EE`: whether the input said the year is before the common era.
-    bce: Option<bool>,
+}
+
+impl Scanned {
+    /// The fields of the base instant in the zone, as `ClockGetDateFields`
+    /// fills them in before the input is read.
+    fn from_base(base_at: i64, zone: &Zone) -> Scanned {
+        let local = base_at + zone.at(base_at).offset as i64;
+        let civil = civil_of(local);
+        let (iso_year, iso_week) = civil.iso_week();
+        Scanned {
+            flags: 0,
+            year: civil.year,
+            century: 0,
+            month: civil.month as i64,
+            day: civil.day as i64,
+            day_of_year: civil.day_of_year(),
+            iso_year,
+            iso_week,
+            weekday: civil.iso_weekday() as i64,
+            julian_day: civil.julian_day(),
+            bce: false,
+            // `ClockScanObjCmd` resets the time of day before scanning.
+            hour: 0,
+            minute: 0,
+            second: 0,
+            meridian: Meridian::H24,
+            second_of_day: 0,
+            local_seconds: local,
+            seconds: base_at,
+            offset: None,
+        }
+    }
+
+    /// The astronomical year — `1 - year` before the common era.
+    fn absolute_year(&self) -> i64 {
+        if self.bce {
+            1 - self.year
+        } else {
+            self.year
+        }
+    }
 }
 
 fn no_match() -> String {
@@ -1024,10 +1109,11 @@ fn scan_time(
     zone: &Zone,
     cat: &Catalog,
     base_at: i64,
+    validate: bool,
 ) -> Result<i64, String> {
     let text: Vec<char> = input.chars().collect();
     let pattern: Vec<char> = localize(format, cat).chars().collect();
-    let mut got = Scanned::default();
+    let mut got = Scanned::from_base(base_at, zone);
     let mut at = 0usize;
     let mut p = 0usize;
     while p < pattern.len() {
@@ -1074,25 +1160,44 @@ fn scan_time(
             }
         }
         let digits = |at: &mut usize, max: usize| take_digits(&text, at, max).ok_or_else(no_match);
-        match token {
+        // `ScnSTokenMap`'s `minSize`: `%Y` and `%G` need all four digits and
+        // `%g` both of its two, so `clock scan 70 -format %Y` does not match.
+        let exactly = |at: &mut usize, size: usize| {
+            let start = *at;
+            let value = take_digits(&text, at, size).ok_or_else(no_match)?;
+            if *at - start < size {
+                return Err(no_match());
+            }
+            Ok(value)
+        };
+        let raised = match token {
             '%' => {
                 if text.get(at) != Some(&'%') {
                     return Err(no_match());
                 }
                 at += 1;
+                0
             }
             'n' | 't' => {
                 if !text.get(at).is_some_and(|c| c.is_whitespace()) {
                     return Err(no_match());
                 }
                 at += 1;
+                0
             }
-            'd' | 'e' => got.day = Some(digits(&mut at, 2)? as u32),
-            'm' | 'N' => got.month = Some(digits(&mut at, 2)? as u32),
+            'd' | 'e' => {
+                got.day = digits(&mut at, 2)?;
+                flag::DAYOFMONTH
+            }
+            'm' | 'N' => {
+                got.month = digits(&mut at, 2)?;
+                flag::MONTH
+            }
             'b' | 'h' | 'B' => {
                 let index = take_prefix(&text, &mut at, &[&cat.months_full, &cat.months_abbrev])
                     .ok_or_else(no_match)?;
-                got.month = Some(index as u32 + 1);
+                got.month = index as i64 + 1;
+                flag::MONTH
             }
             'a' | 'A' => {
                 // The list is Sunday-first and `dayOfWeek` is Monday-first, so
@@ -1100,25 +1205,53 @@ fn scan_time(
                 // it gets and reads a resulting 0 as 7.
                 let index = take_prefix(&text, &mut at, &[&cat.days_full, &cat.days_abbrev])
                     .ok_or_else(no_match)?;
-                got.weekday = Some(if index == 0 { 7 } else { index as u32 });
+                got.weekday = if index == 0 { 7 } else { index as i64 };
+                flag::DAYOFWEEK
             }
-            'y' => got.year_in_century = Some(digits(&mut at, 2)?),
-            'Y' => got.year = Some(digits(&mut at, 4)?),
-            'C' => got.century = Some(digits(&mut at, 2)?),
-            'H' | 'k' => got.hour = Some(digits(&mut at, 2)? as u32),
-            'I' | 'l' => {
-                got.hour = Some(digits(&mut at, 2)? as u32);
-                got.hour_is_12 = true;
+            'y' => {
+                got.year = digits(&mut at, 2)?;
+                flag::YEAR
             }
-            'M' => got.minute = Some(digits(&mut at, 2)? as u32),
-            'S' => got.second = Some(digits(&mut at, 2)? as u32),
-            'j' => got.day_of_year = Some(digits(&mut at, 3)?),
+            'Y' => {
+                got.year = exactly(&mut at, 4)?;
+                flag::YEAR | flag::CENTURY
+            }
+            'C' => {
+                got.century = digits(&mut at, 2)?;
+                flag::CENTURY | flag::ISO8601CENTURY
+            }
+            // `%I` and `%l` are aliases of `%H`: the hour is read on the
+            // 24-hour clock unless a `%p` says otherwise.
+            'H' | 'k' | 'I' | 'l' => {
+                got.hour = digits(&mut at, 2)?;
+                flag::TIME
+            }
+            'M' => {
+                got.minute = digits(&mut at, 2)?;
+                flag::TIME
+            }
+            'S' => {
+                got.second = digits(&mut at, 2)?;
+                flag::TIME
+            }
+            'j' => {
+                got.day_of_year = digits(&mut at, 3)?;
+                flag::DAYOFYEAR
+            }
             'p' | 'P' => {
                 let index = take_prefix(&text, &mut at, &[&[cat.am.clone(), cat.pm.clone()]])
                     .ok_or_else(no_match)?;
-                got.pm = Some(index == 1);
+                got.meridian = if index == 1 {
+                    Meridian::Pm
+                } else {
+                    Meridian::Am
+                };
+                0
             }
-            's' => got.epoch = Some(signed(&text, &mut at)?),
+            's' => {
+                got.seconds = signed(&text, &mut at)?;
+                flag::POSIXSEC
+            }
             'u' | 'w' => {
                 let day = digits(&mut at, 1)?;
                 if day > 7 {
@@ -1126,27 +1259,46 @@ fn scan_time(
                 }
                 // `%w` numbers Sunday 0 and `%u` numbers it 7; both reach
                 // `dayOfWeek` through the same `if (val == 0) val = 7`.
-                got.weekday = Some(if day == 0 { 7 } else { day as u32 });
+                got.weekday = if day == 0 { 7 } else { day };
+                flag::DAYOFWEEK
             }
-            'U' | 'W' | 'V' => {
+            // Parse-only: `%U` and `%W` capture nothing.
+            'U' | 'W' => {
                 digits(&mut at, 2)?;
+                0
+            }
+            'V' => {
+                got.iso_week = digits(&mut at, 2)?;
+                flag::ISO8601WEEK
             }
             'G' => {
-                digits(&mut at, 4)?;
+                got.iso_year = exactly(&mut at, 4)?;
+                flag::ISO8601YEAR | flag::ISO8601CENTURY
             }
             'g' => {
-                digits(&mut at, 2)?;
+                got.iso_year = exactly(&mut at, 2)?;
+                flag::ISO8601YEAR
             }
-            'z' | 'Z' => got.offset = Some(scan_zone(&text, &mut at)?),
+            'z' | 'Z' => {
+                got.offset = Some(scan_zone(&text, &mut at)?);
+                0
+            }
             // A whole Julian Day Number, which names a local day.
-            'J' => got.julian_day = Some(signed(&text, &mut at)?),
-            'Q' => scan_stardate(&text, &mut at, &mut got)?,
+            'J' => {
+                got.julian_day = signed(&text, &mut at)?;
+                flag::JULIANDAY
+            }
+            'Q' => {
+                scan_stardate(&text, &mut at, &mut got)?;
+                flag::LOCALSEC
+            }
             other => {
                 return Err(format!(
                     "clock scan: the format token \"%{other}\" is not supported yet"
                 ))
             }
-        }
+        };
+        got.flags |= raised;
     }
     while at < text.len() && text[at].is_whitespace() {
         at += 1;
@@ -1154,7 +1306,7 @@ fn scan_time(
     if at != text.len() {
         return Err(no_match());
     }
-    assemble(got, zone, base_at)
+    assemble(got, zone, validate)
 }
 
 /// A signed run of digits — `%s`, `%J` and the integer part of a Julian day.
@@ -1191,17 +1343,31 @@ fn scan_modified(
                 .map(|n| n as i64)
                 .ok_or_else(no_match)
         };
-        match token {
-            'd' | 'e' => got.day = Some(numeral(at)? as u32),
-            'm' => got.month = Some(numeral(at)? as u32),
-            'y' => got.year_in_century = Some(numeral(at)?),
-            'H' | 'k' => got.hour = Some(numeral(at)? as u32),
-            'I' | 'l' => {
-                got.hour = Some(numeral(at)? as u32);
-                got.hour_is_12 = true;
+        got.flags |= match token {
+            'd' | 'e' => {
+                got.day = numeral(at)?;
+                flag::DAYOFMONTH
             }
-            'M' => got.minute = Some(numeral(at)? as u32),
-            'S' => got.second = Some(numeral(at)? as u32),
+            'm' => {
+                got.month = numeral(at)?;
+                flag::MONTH
+            }
+            'y' => {
+                got.year = numeral(at)?;
+                flag::YEAR
+            }
+            'H' | 'k' | 'I' | 'l' => {
+                got.hour = numeral(at)?;
+                flag::TIME
+            }
+            'M' => {
+                got.minute = numeral(at)?;
+                flag::TIME
+            }
+            'S' => {
+                got.second = numeral(at)?;
+                flag::TIME
+            }
             // `ClockScnToken_DayOfWeek_Proc` with a locale list: the numeral's
             // index is the weekday, and 0 means Sunday as everywhere else.
             'u' | 'w' => {
@@ -1209,43 +1375,48 @@ fn scan_modified(
                 if day > 7 {
                     return Err("day of week is greater than 7".to_string());
                 }
-                got.weekday = Some(if day == 0 { 7 } else { day as u32 });
+                got.weekday = if day == 0 { 7 } else { day };
+                flag::DAYOFWEEK
             }
             _ => return Ok(false),
-        }
+        };
         return Ok(true);
     }
     // `ScnETokenMapIndex` is `EJjys`.
     match token {
-        'E' => got.bce = Some(!scan_era(text, at, cat).ok_or_else(no_match)?),
-        // The calendar day number and the astronomical one, which starts at
-        // noon. Whole, they name a local day; with a fraction they are the
-        // instant itself and no zone applies.
+        'E' => got.bce = !scan_era(text, at, cat).ok_or_else(no_match)?,
+        // `ClockScnToken_JDN_Proc`: the calendar day number and the
+        // astronomical one, which starts at noon. A whole calendar day names
+        // a local day; anything else is the instant itself, `CLF_POSIXSEC`,
+        // and no zone applies.
         'J' | 'j' => {
             let offset = if token == 'j' { SECONDS_PER_DAY / 2 } else { 0 };
-            let day = signed(text, at)?;
-            let Some(fraction) = scan_day_fraction(text, at) else {
-                if token == 'J' {
-                    got.julian_day = Some(day);
-                    return Ok(true);
-                }
-                got.epoch = Some((day - 2440588) * SECONDS_PER_DAY + offset);
+            let mut day = signed(text, at)?;
+            got.flags |= flag::JULIANDAY;
+            let fraction = scan_day_fraction(text, at);
+            if fraction.is_none() && token == 'J' {
+                got.julian_day = day;
                 return Ok(true);
-            };
-            let mut seconds = offset + fraction;
-            let mut day = day;
+            }
+            let mut seconds = offset + fraction.unwrap_or(0);
             if seconds >= SECONDS_PER_DAY {
-                seconds -= SECONDS_PER_DAY;
+                seconds %= SECONDS_PER_DAY;
                 day += 1;
             }
-            got.epoch = Some((day - 2440588) * SECONDS_PER_DAY + seconds);
+            got.julian_day = day;
+            got.second_of_day = seconds;
+            got.seconds = (day - JDN_OF_EPOCH) * SECONDS_PER_DAY + seconds;
+            got.flags |= flag::POSIXSEC;
         }
         // Parse-only: `ScnETokenMap`'s `%Ey` entry captures nothing, so a
         // matched numeral moves the input on and changes no field.
         'y' => {
             take_prefix(text, at, &[&cat.numerals]).ok_or_else(no_match)?;
         }
-        's' => got.local_seconds = Some(signed(text, at)?),
+        's' => {
+            got.local_seconds = signed(text, at)?;
+            got.flags |= flag::LOCALSEC;
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -1365,7 +1536,11 @@ fn scan_stardate(text: &[char], at: &mut usize, got: &mut Scanned) -> Result<(),
     let scaled = elapsed * length;
     let day_of_year = scaled / 1000 + 1 + i64::from(scaled % 1000 >= 500);
     let day = days_from_civil(year, 1, 1) + day_of_year - 1;
-    got.local_seconds = Some(day * SECONDS_PER_DAY + fraction);
+    got.year = year;
+    got.bce = false;
+    got.day_of_year = day_of_year;
+    got.julian_day = day + JDN_OF_EPOCH;
+    got.local_seconds = day * SECONDS_PER_DAY + fraction;
     Ok(())
 }
 
@@ -1394,129 +1569,270 @@ fn scan_zone(text: &[char], at: &mut usize) -> Result<i32, String> {
     }
 }
 
-/// Turn scanned fields into an instant.
-fn assemble(got: Scanned, zone: &Zone, base_at: i64) -> Result<i64, String> {
-    // `%s` and a Julian day written with a fraction are the instant itself:
-    // `CLF_POSIXSEC`, which no zone and no calendar touches.
-    if let Some(epoch) = got.epoch {
-        return Ok(epoch);
+/// Turn scanned fields into an instant: the tail of `ClockScan` that settles
+/// which fields take precedence, then `ClockScanCommit`, with
+/// `ClockValidDate`'s two stages where tclsh runs them when `-validate` is on.
+fn assemble(mut got: Scanned, zone: &Zone, validate: bool) -> Result<i64, String> {
+    use flag::*;
+    let mut flags = got.flags;
+    let mut assemble_julian = false;
+    let mut assemble_seconds = false;
+    // `%s` takes precedence over every other token.
+    if flags & POSIXSEC == 0 {
+        if flags & DATE != 0 && flags & JULIANDAY == 0 {
+            assemble_seconds = true;
+            assemble_julian = true;
+            // A day of the month or of the year wins over a bare weekday, and
+            // with neither the weekday chooses the day within the ISO week.
+            match flags & (MONTH | DAYOFYEAR | DAYOFMONTH) {
+                f if f == DAYOFYEAR | DAYOFMONTH => {
+                    flags &= !DAYOFMONTH;
+                    if flags & ISO8601YEAR == 0 {
+                        flags &= !ISO8601WEEK;
+                    }
+                }
+                f if f == DAYOFYEAR
+                    || f == MONTH | DAYOFYEAR | DAYOFMONTH
+                    || f == MONTH | DAYOFMONTH
+                    || f == DAYOFMONTH =>
+                {
+                    if flags & ISO8601YEAR == 0 {
+                        flags &= !ISO8601WEEK;
+                    }
+                }
+                0 if flags & DAYOFWEEK != 0 => flags |= ISO8601WEEK,
+                _ => {}
+            }
+            // A year with a month and day, or with a day of the year, wins
+            // over the ISO week unless the ISO year is the one written out.
+            if flags & ISO8601WEEK != 0
+                && (flags & (YEAR | DAYOFYEAR) == YEAR | DAYOFYEAR
+                    || flags & (YEAR | DAYOFMONTH | MONTH) == YEAR | DAYOFMONTH | MONTH)
+            {
+                // A century beside a two-digit ISO year puts the ISO week
+                // down; otherwise only an ISO year written out keeps it.
+                let century_only = flags & ISO8601CENTURY == 0 && flags & CENTURY != 0;
+                if century_only || flags & ISO8601YEAR == 0 {
+                    flags &= !ISO8601WEEK;
+                }
+            }
+            if flags & YEAR != 0 {
+                got.year = widen_year(got.year, flags & CENTURY != 0, got.century);
+            }
+            if flags & (ISO8601WEEK | ISO8601YEAR) != 0 {
+                if flags & (ISO8601YEAR | YEAR) == YEAR {
+                    got.iso_year = got.year;
+                } else {
+                    got.iso_year =
+                        widen_year(got.iso_year, flags & ISO8601CENTURY != 0, got.century);
+                }
+                if flags & (ISO8601YEAR | YEAR) == ISO8601YEAR {
+                    got.year = got.iso_year;
+                }
+            }
+        }
+        // With no time in the input the day starts at midnight.
+        if flags & (TIME | LOCALSEC) == 0 {
+            assemble_seconds = true;
+            got.local_seconds = 0;
+        }
+        if flags & TIME != 0 {
+            assemble_seconds = true;
+            got.second_of_day = to_seconds(got.hour, got.minute, got.second, got.meridian);
+        } else if flags & LOCALSEC == 0 {
+            assemble_seconds = true;
+            got.second_of_day = got.local_seconds % SECONDS_PER_DAY;
+        }
     }
-    // A whole Julian day and `%Es` name a *local* moment, so they cross the
-    // zone but skip the civil date entirely — which is why
-    // `clock scan 0 -format %J -gmt 1` answers -210866803200 rather than being
-    // refused for standing before the Gregorian changeover: no calendar was
-    // consulted to reach it.
-    let direct = got
-        .local_seconds
-        .or_else(|| got.julian_day.map(|day| (day - 2440588) * SECONDS_PER_DAY));
-    if let Some(local) = direct {
-        return Ok(match got.offset {
+    got.flags = flags;
+
+    // ── ClockScanCommit ──
+    let mut stage_one_done = false;
+    if validate && (assemble_seconds || flags & LOCALSEC != 0) {
+        validate_fields(&mut got, &mut assemble_julian)?;
+        stage_one_done = true;
+    }
+    if assemble_julian {
+        assemble_julian_day(&mut got)?;
+    }
+    if flags & JULIANDAY != 0 {
+        let jdn = got.julian_day as f64
+            + (got.second_of_day - SECONDS_PER_DAY / 2) as f64 / SECONDS_PER_DAY as f64;
+        if jdn > MAX_JDN {
+            return Err("requested date too large to represent".to_string());
+        }
+    }
+    // 24:00, and a time past the end of the day, run into the next one.
+    if got.second_of_day >= SECONDS_PER_DAY {
+        got.julian_day += got.second_of_day / SECONDS_PER_DAY;
+        got.second_of_day %= SECONDS_PER_DAY;
+    }
+    if assemble_seconds {
+        got.local_seconds = (got.julian_day - JDN_OF_EPOCH) * SECONDS_PER_DAY + got.second_of_day;
+    }
+    if assemble_seconds || flags & LOCALSEC != 0 {
+        let local = got.local_seconds;
+        got.seconds = match got.offset {
             Some(offset) => local - offset as i64,
             None => local - zone.for_local(local).offset as i64,
-        });
+        };
     }
-    // Fields the format did not carry come from the current day in the target
-    // zone, which is the base tclsh uses when `-base` is absent.
-    let base = civil_of(base_at + zone.at(base_at).offset as i64);
-    let year = match (got.year, got.century, got.year_in_century) {
-        (Some(year), _, _) => year,
-        (None, Some(century), Some(year)) => century * 100 + year,
-        // tclsh's two-digit year rule: 00–68 are 2000s, 69–99 are 1900s.
-        (None, None, Some(year)) => year + if year < 69 { 2000 } else { 1900 },
-        // A century with no year within it changes nothing: `dateCentury` is
-        // only ever read beside `date.year`, so `clock scan 19 -format %C`
-        // answers on the base date (measured).
-        (None, Some(_), None) | (None, None, None) => base.year,
-    };
-    // `%EE` said the year is counted backwards from the common era, and the
-    // two numberings differ by one: there is no year zero, so 1 BCE is the
-    // astronomical year 0.
-    let year = if got.bce == Some(true) {
-        1 - year
+
+    // ── the rest of ClockValidDate ──
+    if validate {
+        if !stage_one_done {
+            validate_fields(&mut got, &mut assemble_julian)?;
+        }
+        if flags & DAYOFWEEK != 0 {
+            let weekday = (got.julian_day - JDN_OF_EPOCH + 3).rem_euclid(7) + 1;
+            if weekday != got.weekday {
+                return Err(invalid_input("invalid day of week"));
+            }
+        }
+    }
+    Ok(got.seconds)
+}
+
+/// `maxJDN`, the largest Julian day `clock scan` accepts.
+const MAX_JDN: f64 = 5_373_484.499_999_994;
+
+/// A year written with fewer than three digits, placed in a century: the
+/// one `%C` gave when it is written, or else the one the century switch picks.
+fn widen_year(year: i64, has_century: bool, century: i64) -> i64 {
+    if year >= 100 {
+        return year;
+    }
+    if has_century {
+        return year + century * 100;
+    }
+    let year = if year >= YEAR_OF_CENTURY_SWITCH {
+        year - 100
     } else {
         year
     };
-    let mut hour = got.hour.unwrap_or(0);
-    // Each field is held to its own range and named in its own refusal, in the
-    // order tclsh checks them — measured: `clock scan {1970 13 32} -format
-    // {%Y %m %d}` reports the month and `{1970 01 32 25}` the day, so a later
-    // field is never reached while an earlier one is out of range. A rolled-over
-    // value is not an answer either interpreter gives.
-    let bad = |what: &str| Err(format!("unable to convert input string: invalid {what}"));
-    if let Some(month) = got.month {
-        if !(1..=12).contains(&month) {
-            return bad("month");
-        }
-    }
-    if let Some(day) = got.day {
-        let month = got.month.unwrap_or(base.month);
-        if day < 1 || day > month_length(year, month) {
-            return bad("day");
-        }
-    }
-    // `%H` reaches 24, which is the midnight ending the day; `%I` stops at 12.
-    let hour_limit = if got.hour_is_12 { 12 } else { 24 };
-    if hour > hour_limit {
-        return bad("time (hour)");
-    }
-    if got.minute.is_some_and(|m| m > 59) {
-        return bad("time (minutes)");
-    }
-    if got.second.is_some_and(|s| s > 59) {
-        return bad("time");
-    }
-    if got.hour_is_12 {
-        hour %= 12;
-        if got.pm == Some(true) {
-            hour += 12;
-        }
-    } else if got.pm == Some(true) && hour < 12 {
-        hour += 12;
-    }
-    let days = match got.day_of_year {
-        Some(day) => {
-            let length = if is_leap(year) { 366 } else { 365 };
-            if day < 1 || day > length {
-                return bad("day of year");
-            }
-            days_from_civil(year, 1, 1) + day - 1
-        }
-        None => {
-            // Every date field the format did not carry comes from the base
-            // day, whether or not it carried another one. Measured against
-            // tclsh on 2026-08-25: `clock scan 1970 -format %Y -gmt 1` is
-            // 1970-08-25, `clock scan {1970 03} -format {%Y %m}` is
-            // 1970-03-25, and `clock scan {1970 07} -format {%Y %d}` is
-            // 1970-08-07. The time is not filled in the same way — a format
-            // with no `%H` starts the day at midnight.
-            let month = got.month.unwrap_or(base.month);
-            let day = got.day.unwrap_or(base.day);
-            days_from_civil(year, month, day)
-        }
+    year + CURRENT_YEAR_CENTURY
+}
+
+/// `TclToSeconds`: a time of day on the 24-hour clock, or on the 12-hour one
+/// when `%p` named a half of the day.
+fn to_seconds(hour: i64, minute: i64, second: i64, meridian: Meridian) -> i64 {
+    let hour = match meridian {
+        Meridian::H24 => hour,
+        Meridian::Am => hour / 24 * 24 + hour % 12,
+        Meridian::Pm => hour / 24 * 24 + hour % 12 + 12,
     };
-    // A weekday in the input is checked against the date, not ignored — but
-    // only once the date stands on its own. With a year and no day tclsh reads
-    // the weekday as *choosing* the day, which needs the base date this
-    // frontend does not carry yet.
-    if let Some(named) = got.weekday {
-        let year_given = got.year.is_some() || got.year_in_century.is_some();
-        let dated_day = year_given && (got.day.is_some() || got.day_of_year.is_some());
-        if dated_day && civil_of(days * 86400).iso_weekday() != named {
-            return Err("unable to convert input string: invalid day of week".to_string());
-        }
-    }
-    let local = days * 86400
-        + hour as i64 * 3600
-        + got.minute.unwrap_or(0) as i64 * 60
-        + got.second.unwrap_or(0) as i64;
-    let seconds = match got.offset {
-        Some(offset) => local - offset as i64,
-        None => local - zone.for_local(local).offset as i64,
+    (hour * 60 + minute) * 60 + second
+}
+
+fn invalid_input(what: &str) -> String {
+    format!("unable to convert input string: {what}")
+}
+
+/// `ClockAssembleJulianDay`: the day from the ISO week, from the month and
+/// day, or from the day of the year, whichever the input settled on.
+fn assemble_julian_day(got: &mut Scanned) -> Result<(), String> {
+    use flag::*;
+    let flags = got.flags;
+    got.julian_day = if flags & ISO8601WEEK != 0 {
+        // January 4 is always in week 1; its Monday starts the week count.
+        let iso_year = if got.bce {
+            1 - got.iso_year
+        } else {
+            got.iso_year
+        };
+        let fourth = days_from_civil(iso_year, 1, 4) + JDN_OF_EPOCH;
+        let first_monday = fourth - (fourth % 7);
+        first_monday + 7 * (got.iso_week - 1) + got.weekday - 1
+    } else if flags & DAYOFYEAR == 0 || flags & (DAYOFMONTH | MONTH) == DAYOFMONTH | MONTH {
+        // `GetJulianDayFromEraYearMonthDay` reduces the month modulo 12 into
+        // the year and adds the day as it is, so neither has to be in range.
+        let months = got.month - 1;
+        let year = got.absolute_year() + months.div_euclid(12);
+        let month = months.rem_euclid(12) as u32 + 1;
+        days_from_civil(year, month, 1) + got.day - 1 + JDN_OF_EPOCH
+    } else {
+        days_from_civil(got.absolute_year(), 1, 1) + got.day_of_year - 1 + JDN_OF_EPOCH
     };
-    if seconds < EARLIEST {
+    // Before the changeover tclsh reckons in the Julian calendar, which this
+    // module does not have.
+    if got.julian_day < GREGORIAN_CHANGE_JDN {
         return Err(too_early());
     }
-    Ok(seconds)
+    Ok(())
+}
+
+/// The first stage of `ClockValidDate`: every field the input carried is held
+/// to its range, in the order tclsh checks them.
+fn validate_fields(got: &mut Scanned, assemble_julian: &mut bool) -> Result<(), String> {
+    use flag::*;
+    let flags = got.flags;
+    if flags & (YEAR | ISO8601YEAR) != 0 {
+        if flags & YEAR == 0 {
+            got.year = got.iso_year;
+        }
+        if flags & (ISO8601YEAR | YEAR) == ISO8601YEAR | YEAR && got.year != got.iso_year {
+            return Err(invalid_input("ambiguous year"));
+        }
+    }
+    if flags & MONTH != 0 && !(1..=12).contains(&got.month) {
+        return Err(invalid_input("invalid month"));
+    }
+    if *assemble_julian {
+        assemble_julian_day(got)?;
+        *assemble_julian = false;
+    }
+    let leap = is_leap(got.absolute_year());
+    if flags & (DAYOFMONTH | DAYOFWEEK) != 0 {
+        if !(1..=31).contains(&got.day) {
+            return Err(invalid_input("invalid day"));
+        }
+        if flags & MONTH != 0
+            && got.day > month_length(got.absolute_year(), got.month as u32) as i64
+        {
+            return Err(invalid_input("invalid day"));
+        }
+    }
+    if flags & DAYOFYEAR != 0 {
+        let length = if leap { 366 } else { 365 };
+        if got.day_of_year < 1 || got.day_of_year > length {
+            return Err(invalid_input("invalid day of year"));
+        }
+    }
+    if flags & (DAYOFYEAR | DAYOFMONTH | MONTH) == DAYOFYEAR | DAYOFMONTH | MONTH {
+        let by_day_of_year =
+            days_from_civil(got.absolute_year(), 1, 1) + got.day_of_year - 1 + JDN_OF_EPOCH;
+        if by_day_of_year != got.julian_day {
+            return Err(invalid_input("ambiguous day"));
+        }
+    }
+    if flags & TIME != 0 {
+        let limit = if got.meridian == Meridian::H24 {
+            23
+        } else {
+            12
+        };
+        if got.hour < 0 || got.hour > limit {
+            // 24:00:00 is the midnight that ends the day, and the weekday the
+            // input named is the next day's.
+            if got.meridian == Meridian::H24 && got.hour == 24 {
+                if got.minute != 0 || got.second != 0 {
+                    return Err(invalid_input("invalid time"));
+                }
+                if flags & DAYOFWEEK != 0 {
+                    got.weekday = got.weekday % 7 + 1;
+                }
+            } else {
+                return Err(invalid_input("invalid time (hour)"));
+            }
+        }
+        if !(0..=59).contains(&got.minute) {
+            return Err(invalid_input("invalid time (minutes)"));
+        }
+        if !(0..=59).contains(&got.second) || got.second_of_day <= -1 {
+            return Err(invalid_input("invalid time"));
+        }
+    }
+    Ok(())
 }
 
 // ── clock add ────────────────────────────────────────────────────────────
@@ -1608,6 +1924,9 @@ struct Options {
     timezone: Option<String>,
     base: Option<i64>,
     locale: Option<String>,
+    /// `-validate`, which only `clock scan` takes: whether the scanned fields
+    /// are held to their ranges. On unless the script turns it off.
+    validate: bool,
 }
 
 impl Options {
@@ -1642,6 +1961,7 @@ fn options(words: &[Value], allowed: &[&str], usage: &str) -> Result<Options, St
         timezone: None,
         base: None,
         locale: None,
+        validate: true,
     };
     let mut i = 0;
     while i < words.len() {
@@ -1665,6 +1985,7 @@ fn options(words: &[Value], allowed: &[&str], usage: &str) -> Result<Options, St
             // and the Gregorian changeover. Every name resolves: one with no
             // catalogue anywhere in its fallback chain is the root locale.
             "-locale" => out.locale = Some(to_tcl_string(value)),
+            "-validate" => out.validate = crate::runtime::tcl_bool(value)?,
             _ => unreachable!("the option table and this match are one list"),
         }
         i += 2;
@@ -1766,7 +2087,14 @@ fn run_scan(words: &[Value]) -> Result<Value, String> {
     };
     let opts = options(
         &words[1..],
-        &["-base", "-format", "-gmt", "-locale", "-timezone"],
+        &[
+            "-base",
+            "-format",
+            "-gmt",
+            "-locale",
+            "-timezone",
+            "-validate",
+        ],
         SCAN_USAGE,
     )?;
     let zone = opts.zone()?;
@@ -1785,6 +2113,7 @@ fn run_scan(words: &[Value]) -> Result<Value, String> {
         &zone,
         &cat,
         base_at,
+        opts.validate,
     )?))
 }
 

@@ -88,6 +88,14 @@ const PROGRAMS: &[&str] = &[
     "puts [catch {clock scan xyz -format %Y -gmt 1} m]\nputs $m",
     "puts [catch {clock scan {2009-02-13} -format {%Y-%m-%d} -gmt 1 -timezone :UTC} m]\nputs $m",
     "puts [catch {clock scan {2009-02-13 extra} -format {%Y-%m-%d} -gmt 1} m]\nputs $m",
+    // How `ClockScan` and `ClockScanCommit` assemble the fields: a Julian day
+    // with a time of day, the ISO week chosen by a weekday, a bare weekday in
+    // the base's week, the century switch at 38, `%I` without `%p` on the
+    // 24-hour clock, a day the month does not hold rolling over when no month
+    // was written, and the validation messages — with `-validate 0` too.
+    "foreach {s f} {{2440588 01:00:01} {%J %H:%M:%S} {1970 W01 Fri} {%G W%V %a} {70 W01 Fri} {%g W%V %a} {W09 Sun} {W%V %a} Mon %a {38 Jan 02} {%y %b %d} {37 Jan 02} {%y %b %d} 13 %I 31 %d {1970 Thu} {%Y %a} {2024 W01 Thu} {%Y W%V %a} 24:00:00 %H:%M:%S} {puts [clock scan $s -format $f -gmt 1 -base 2678400]}",
+    "foreach {s f} {70 %Y {1970 02 31} {%Y %m %d} {1970 060 03 02} {%Y %j %m %d} {1970 13 01} {%Y %m %d} {25:00} %H:%M {13 PM} {%I %p} {1970 2 Fri} {%G %V %a} {2024 W01 Thu 1970} {%G W%V %a %Y} {1970 01 01 Fri} {%Y %m %d %a}} {puts [list [catch {clock scan $s -format $f -gmt 1 -base 2678400} m] $m]}",
+    "puts [clock scan 31 -format %d -gmt 1 -base 2678400 -validate 0]\nputs [clock scan {1970 02 31} -format {%Y %m %d} -gmt 1 -validate 0]",
     // The three units are read from one clock, so they agree with each other
     // however long the program takes to run.
     "set s [clock seconds]\nset ms [clock milliseconds]\nputs [expr {$ms/1000 - $s <= 1}]",
