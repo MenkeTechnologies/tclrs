@@ -152,9 +152,18 @@ approximated, and nothing is silently mis-run.
   outgoing one. Clause errors carry tclsh's messages. Built out of two `catch`
   regions and a dispatch op (`src/control.rs`); `tests/proc_differential.rs`
   runs it against tclsh.
-- **`return -options`.** The dictionary is merged when the command runs, under
-  the `-code`/`-level`/`-errorcode` written beside it (`TclMergeReturnOptions`),
-  so `catch {…} m o; return -options $o $m` re-raises an outcome unchanged.
+- **`return -options`.** Every option the `return` wrote is merged when the
+  command runs, in the order written (`TclMergeReturnOptions`): each `-options`
+  dictionary expands in place, the later of two settings wins, and a bad
+  dictionary, completion code, level or `-errorcode` list is tclsh's error with
+  its `TCL RESULT ILLEGAL_*` code. So `catch {…} m o; return -options $o $m`
+  re-raises an outcome unchanged. Keys other than `-code`, `-level` and
+  `-errorcode` are accepted and dropped: an exception carries no dictionary of
+  its own to keep them in.
+- **A procedure boundary.** A `break` or `continue` that reaches the end of a
+  procedure or lambda body as itself — not carried by a `return` — is `invoked
+  "break" outside of a loop` there (`InterpProcNR2`), so `proc p {} {break};
+  catch p` is 1, while `return -code break` still breaks the caller's loop.
 - **Lists.** List parsing and canonical quoting ported from `TclFindElement` and
   `TclScanElement` / `TclConvertElement` (`src/list.rs`), plus `list`,
   `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`,
