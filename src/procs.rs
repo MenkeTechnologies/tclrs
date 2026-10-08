@@ -959,10 +959,12 @@ impl Compiler {
         // `-errorcode`, kept as the WORD so a computed one
         // (`return -errorcode $c`) is evaluated where it is written.
         let mut errorcode: Option<&Word> = None;
-        // `-options`, likewise a word: the dictionary a `catch` handed back.
-        let mut options: Option<&Word> = None;
-        // The `-code`/`-level` written beside `-options`, which win over it.
-        let mut overrides: Vec<String> = Vec::new();
+        // Whether `-options` was written: the dictionary a `catch` handed
+        // back, a value merged when the command runs.
+        let mut has_options = false;
+        // Every option as written, in order — `-options` merges with the
+        // others by position, the later of any two winning.
+        let mut pairs: Vec<(&Word, &Word)> = Vec::new();
         while let [first, value, tail @ ..] = rest {
             match first.as_literal() {
                 Some("-code") => {
@@ -985,7 +987,6 @@ impl Compiler {
                             }
                         },
                     };
-                    overrides.push(format!("-code {code}"));
                 }
                 Some("-level") => {
                     let text = self.literal_of(value, "return level")?.to_string();
@@ -998,15 +999,15 @@ impl Compiler {
                             )))
                         }
                     };
-                    overrides.push(format!("-level {level}"));
                 }
                 Some("-errorcode") => errorcode = Some(value),
-                Some("-options") => options = Some(value),
+                Some("-options") => has_options = true,
                 Some(other) if other.starts_with('-') => {
                     return self.error(format!("return option \"{other}\" is not supported"))
                 }
                 _ => break,
             }
+            pairs.push((first, value));
             rest = tail;
         }
         let result = match rest {
@@ -1018,8 +1019,8 @@ impl Compiler {
                 )
             }
         };
-        if let Some(dict) = options {
-            return self.return_with_options(dict, &overrides, errorcode, result);
+        if has_options {
+            return self.return_with_options(&pairs, result);
         }
 
         // `TclProcessReturn` with `-level 0` hands back the code itself, and
@@ -1097,33 +1098,29 @@ impl Compiler {
 
     /// `return -options dict ?result?`, with any `-code`, `-level` or
     /// `-errorcode` written beside it. The dictionary is a value — usually the
-    /// one a `catch` filled in — so it is merged when the command runs: the
-    /// defaults (`-code ok -level 1`), then the dictionary, then the options
-    /// written out, the later of any two winning, which is
-    /// `TclMergeReturnOptions` (`generic/tclResult.c:1210-1400`).
+    /// one a `catch` filled in — so every option is handed over as written and
+    /// merged when the command runs: `TclMergeReturnOptions`
+    /// (`generic/tclResult.c`), which expands each `-options` in place and lets
+    /// the later of any two settings win.
     fn return_with_options(
         &mut self,
-        dict: &Word,
-        overrides: &[String],
-        errorcode: Option<&Word>,
+        pairs: &[(&Word, &Word)],
         result: Option<&Word>,
     ) -> Result<(), CompileError> {
-        self.word(dict)?;
-        self.push_str(&overrides.join(" "));
-        if let Some(w) = errorcode {
-            self.word(w)?;
+        for (key, value) in pairs {
+            self.word(key)?;
+            self.word(value)?;
         }
+        let count = u8::try_from(pairs.len() * 2)
+            .map_err(|_| self.err("too many options for one return"))?;
+        self.emit(Op::Extended(ext::LIST, count), 1 - i32::from(count));
         match result {
             Some(w) => self.word(w)?,
             None => self.push_empty(),
         }
         // The op leaves one value: the result, when the merged options are
         // `-code ok -level 0` and the command simply completes.
-        let (operand, delta) = match errorcode {
-            Some(_) => (ext::RAISE_OPTIONS_CODED, -3),
-            None => (ext::RAISE_OPTIONS, -2),
-        };
-        self.emit(Op::Extended(ext::RAISE, operand), delta);
+        self.emit(Op::Extended(ext::RAISE, ext::RAISE_OPTIONS), -1);
         Ok(())
     }
 

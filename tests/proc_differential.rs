@@ -344,6 +344,11 @@ const PROGRAMS: &[&str] = &[
     "proc over {} {return -options {-code error} -code ok fine}\nputs [over]",
     "proc withcode {} {return -options {-code error} -errorcode {X Y} m}\ncatch {withcode} r o\nputs [dict get $o -errorcode]",
     "proc wrap {script} {catch {uplevel 1 $script} m o\nreturn -options $o $m}\nputs [wrap {expr 3}]\ncatch {wrap {error deep}} r o\nputs [list $r [dict get $o -errorcode]]",
+    // `TclMergeReturnOptions`: the later of two settings wins whichever was
+    // written as `-options`, nested `-options` expand in place, and a value
+    // that is not a dictionary, a completion code or a level is the error.
+    "proc p5 {} {return -code error -errorcode {a b} -options {-errorcode c} msg}\nproc p6 {} {return -level 0 -code error -options {-code ok}}\nproc p7 {} {return -options {-options {-code break}} -level 0 -code continue}\nproc p8 {} {return -options {-level 0 -options {-code 3}} y}\nforeach p {p5 p6 p7 p8} {puts [list $p [catch {$p} m o] $m [dict get $o -code] [dict get $o -level]]}",
+    "proc p1 {} {return -options foo}\nproc p9 {} {return -level 0 -code error -options {-code err}}\nproc p12 {} {return -options {-level -1}}\nproc p13 {} {return -options {a b c}}\nproc p14 {} {set o [list -errorcode \"a \\{\"]\nreturn -options $o}\nforeach p {p1 p9 p12 p13 p14} {puts [list $p [catch {$p} m o] $m [dict get $o -errorcode]]}",
     // ── try ──
     "puts [try {expr {1+1}}]\nputs [try {expr {1+1}} on ok {r o} {list ok $r [dict get $o -code]}]\nputs [try {error boom} on error {r o} {list err $r [dict get $o -errorcode]}]",
     "puts [try {expr {1/0}} trap {ARITH DIVZERO} {r} {list trapped $r} on error {r} {list generic $r}]\nputs [try {nosuch} trap {TCL LOOKUP COMMAND nosuch} {r} {list exact $r}]",

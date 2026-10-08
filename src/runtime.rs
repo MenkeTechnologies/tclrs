@@ -156,6 +156,24 @@ impl TclError {
         self
     }
 
+    /// Leave a procedure's body, as `InterpProcNR2` does: a `return` spends a
+    /// level ([`TclError::descend`]), and a `break` or `continue` that reaches
+    /// the boundary as itself — not carried there by a `return` — is an error
+    /// there, so `proc p {} {break}; catch p` is 1.
+    pub(crate) fn leave_procedure(self) -> Self {
+        let word = match (self.level, self.code) {
+            (0, TCL_BREAK) => "break",
+            (0, TCL_CONTINUE) => "continue",
+            _ => return self.descend(),
+        };
+        TclError {
+            msg: format!("invoked \"{word}\" outside of a loop"),
+            code: TCL_ERROR,
+            errorcode: Some("TCL RESULT UNEXPECTED".to_string()),
+            ..self
+        }
+    }
+
     /// Tcl's `-errorcode`-style option dictionary for `catch`'s options
     /// variable. `-code` and `-level` are always present and exact;
     /// `-errorcode` joins them when the error carries one, or when it is an
@@ -244,6 +262,105 @@ impl fmt::Display for TclError {
 }
 
 impl std::error::Error for TclError {}
+
+/// `TclMergeReturnOptions` (`generic/tclResult.c`): the options a `return`
+/// wrote, in order, merged into the exception it raises. Each `-options`
+/// value is expanded in place (`ExpandedOptions`), so a later setting of the
+/// same option wins whichever way either was written; the `-code`, `-level`
+/// and `-errorcode` that result are then checked. A bad value is the error
+/// the `return` itself raises.
+///
+/// Options other than those three are accepted and dropped: an exception here
+/// carries no dictionary of its own to keep them in.
+fn merge_return_options(pairs: &str, msg: String) -> Result<TclError, TclError> {
+    let illegal = |msg: String, what: &str| TclError {
+        errorcode: Some(format!("TCL RESULT {what}")),
+        ..TclError::plain(msg)
+    };
+    fn expand(words: &[String], into: &mut Vec<(String, String)>) -> Result<(), String> {
+        for pair in words.chunks(2) {
+            let [key, value] = pair else { break };
+            if key == "-options" {
+                match crate::list::split(value) {
+                    Ok(nested) if nested.len() % 2 == 0 => expand(&nested, into)?,
+                    _ => {
+                        return Err(format!(
+                            "bad -options value: expected dictionary but got \"{value}\""
+                        ))
+                    }
+                }
+                continue;
+            }
+            match into.iter_mut().find(|(k, _)| k == key) {
+                Some(slot) => slot.1 = value.clone(),
+                None => into.push((key.clone(), value.clone())),
+            }
+        }
+        Ok(())
+    }
+    let words = crate::list::split(pairs).unwrap_or_default();
+    let mut merged = Vec::new();
+    expand(&words, &mut merged).map_err(|m| illegal(m, "ILLEGAL_OPTIONS"))?;
+    let get = |key: &str| {
+        merged
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+    let mut code = TCL_OK;
+    if let Some(value) = get("-code") {
+        code = match value {
+            "ok" => TCL_OK,
+            "error" => TCL_ERROR,
+            "return" => TCL_RETURN,
+            "break" => TCL_BREAK,
+            "continue" => TCL_CONTINUE,
+            other => match parse_number(other.trim()) {
+                Ok(Num::Int(n)) if i32::try_from(n).is_ok() => n as i32,
+                _ => {
+                    return Err(illegal(
+                        format!(
+                            "bad completion code \"{other}\": must be ok, error, return, \
+                             break, continue, or an integer"
+                        ),
+                        "ILLEGAL_CODE",
+                    ))
+                }
+            },
+        };
+    }
+    let mut level = 1;
+    if let Some(value) = get("-level") {
+        level = match parse_number(value.trim()) {
+            Ok(Num::Int(n)) if (0..=i64::from(i32::MAX)).contains(&n) => n as i32,
+            _ => {
+                return Err(illegal(
+                    format!("bad -level value: expected non-negative integer but got \"{value}\""),
+                    "ILLEGAL_LEVEL",
+                ))
+            }
+        };
+    }
+    let errorcode = get("-errorcode").map(str::to_string);
+    if let Some(value) = &errorcode {
+        if crate::list::split(value).is_err() {
+            return Err(illegal(
+                format!("bad -errorcode value: expected a list but got \"{value}\""),
+                "ILLEGAL_ERRORCODE",
+            ));
+        }
+    }
+    // `return -code error` with no `-errorcode` carries `NONE`, as `error`
+    // does.
+    let errorcode = match errorcode {
+        None if code == TCL_ERROR => Some("NONE".to_string()),
+        other => other,
+    };
+    Ok(TclError {
+        errorcode,
+        ..TclError::coded(code, level, msg)
+    })
+}
 
 /// Parse and lower a script, with both failures reported the same way.
 ///
@@ -727,6 +844,7 @@ pub(crate) fn call_in_chunk(
                 Err(e)
             }
         }
+        Err(e) => Err(e.leave_procedure()),
         other => other,
     }
 }
@@ -1889,27 +2007,17 @@ impl Hooks {
                 // `TclError` carrying something other than an error: the code
                 // and the level are the point of it, and `extension` below can
                 // only answer with a message.
-                ext::RAISE if arg == ext::RAISE_OPTIONS || arg == ext::RAISE_OPTIONS_CODED => {
+                ext::RAISE if arg == ext::RAISE_OPTIONS => {
                     let msg = to_tcl_string(&vm.pop());
-                    let errorcode =
-                        (arg == ext::RAISE_OPTIONS_CODED).then(|| to_tcl_string(&vm.pop()));
-                    let overrides = to_tcl_string(&vm.pop());
-                    let options = to_tcl_string(&vm.pop());
-                    let merged = format!("-code 0 -level 1 {options} {overrides}");
-                    let mut e = TclError::from_options(&merged, msg);
-                    if errorcode.is_some() {
-                        e.errorcode = errorcode;
-                    }
-                    if e.code == TCL_ERROR && e.errorcode.is_none() {
-                        e.errorcode = Some("NONE".to_string());
-                    }
-                    // `-code ok -level 0` is no exception at all: the command
-                    // simply has the result as its value.
-                    if e.code == TCL_OK && e.level == 0 {
-                        vm.push(Value::Str(Arc::new(e.msg)));
-                        Ok(())
-                    } else {
-                        Err(e)
+                    let pairs = to_tcl_string(&vm.pop());
+                    match merge_return_options(&pairs, msg) {
+                        // `-code ok -level 0` is no exception at all: the
+                        // command simply has the result as its value.
+                        Ok(e) if e.code == TCL_OK && e.level == 0 => {
+                            vm.push(Value::Str(Arc::new(e.msg)));
+                            Ok(())
+                        }
+                        Ok(e) | Err(e) => Err(e),
                     }
                 }
                 ext::RAISE => {
@@ -2602,7 +2710,12 @@ fn apply_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     vm.globals = seed(&vm.chunk, interp);
     // The synthesized name must not surface in a diagnostic the script can see:
     // tclsh reports a lambda's arity against `apply lambdaExpr`.
-    vm.push(result.map_err(|e| TclError::plain(rename_lambda(&e.msg)))?);
+    // A lambda's body ends at a procedure boundary like any other, so a
+    // `break` or `continue` reaching it as itself is an error there.
+    vm.push(result.map_err(|e| match (e.level, e.code) {
+        (0, TCL_BREAK | TCL_CONTINUE) => e.leave_procedure(),
+        _ => TclError::plain(rename_lambda(&e.msg)),
+    })?);
     Ok(())
 }
 
@@ -3024,8 +3137,16 @@ impl Machine {
                     Some(inner) => inner.return_ip.saturating_sub(1),
                     None => vm.ip,
                 };
-                for _ in 0..depth.saturating_sub(frame.frames) {
-                    e = e.descend();
+                // Innermost first: a procedure activation is where a `break`
+                // or `continue` arriving as itself turns into an error, and
+                // any other frame only spends a level.
+                for crossed in (frame.frames..depth).rev() {
+                    let activation = vm.frames.get(crossed).is_some_and(|f| f.entry_ip.is_some());
+                    e = if activation {
+                        e.leave_procedure()
+                    } else {
+                        e.descend()
+                    };
                 }
                 depth = frame.frames;
                 let code = e.visible_code();
