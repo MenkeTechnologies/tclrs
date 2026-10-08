@@ -4079,6 +4079,14 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let a = vm.pop();
             let x = num_operand(&a, Side::Left, sym_of(id))?;
             let y = num_operand(&b, Side::Right, sym_of(id))?;
+            // An integer to the first power is that integer, and
+            // `ExecuteExtendedBinaryMathOp` answers with the operand itself —
+            // `expr {007 ** 1}` keeps the spelling `007`.
+            if id == ext::POW && matches!(y, Num::Int(1)) && matches!(x, Num::Int(_) | Num::Big(_))
+            {
+                vm.push(a);
+                return Ok(());
+            }
             vm.push(arith(id, x, y)?);
             Ok(())
         }
@@ -4570,7 +4578,7 @@ fn big_arith(id: u16, p: BigInt, q: BigInt) -> Result<Value, String> {
                 // applies, and ±1 and 0 are already answered above.
                 return Ok(Value::Int(0));
             }
-            let exp = u32::try_from(&q).map_err(|_| "exponent too large".to_string())?;
+            let exp = pow_exponent(&q)?;
             // The width of the answer is the base's width times the exponent,
             // and it is knowable before a single digit is computed — which is
             // the only point at which refusing is still cheap.
@@ -4579,6 +4587,24 @@ fn big_arith(id: u16, p: BigInt, q: BigInt) -> Result<Value, String> {
             }
             Ok(from_big(p.pow(exp)))
         }
+    }
+}
+
+/// The widest exponent `**` takes once the base is at least 2 in magnitude:
+/// `ExecuteExtendedBinaryMathOp` accepts one `mp_digit`'s worth, below
+/// 2**28, and calls anything wider "exponent too large" before it looks at
+/// how wide the answer would be.
+const MAX_EXPONENT: i64 = 1 << 28;
+
+fn exponent_too_large() -> String {
+    "exponent too large".to_string()
+}
+
+/// A bignum `**` exponent as a machine one, under [`MAX_EXPONENT`].
+fn pow_exponent(q: &BigInt) -> Result<u32, String> {
+    match i64::try_from(q) {
+        Ok(j) if (0..MAX_EXPONENT).contains(&j) => Ok(j as u32),
+        _ => Err(exponent_too_large()),
     }
 }
 
@@ -4635,7 +4661,10 @@ fn arith(id: u16, x: Num, y: Num) -> Result<Value, String> {
         // not the overflow the product would report. Only |base| >= 2 can reach
         // here now, which is the only base that diagnostic is true of.
         (ext::POW, Num::Int(i), Num::Int(j)) if j >= 0 => {
-            let exp = u32::try_from(j).map_err(|_| "exponent too large".to_string())?;
+            if j >= MAX_EXPONENT {
+                return Err(exponent_too_large());
+            }
+            let exp = j as u32;
             match i.checked_pow(exp) {
                 Some(v) => Ok(Value::Int(v)),
                 // The product left `i64`, which is a promotion and not an

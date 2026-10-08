@@ -2744,3 +2744,16 @@ fn fixed_mod_by_a_larger_bignum_keeps_the_operand() {
         "set a 0x1f\nputs [expr {$a % 99999999999999999999}]",
     ]);
 }
+
+/// `**` as `ExecuteExtendedBinaryMathOp` has it: an integer to the first power
+/// is the operand itself, spelling and all, and once the base is at least 2 in
+/// magnitude an exponent of 2**28 or more is "exponent too large" before the
+/// width of the answer is considered (expr.test expr-23.54 on).
+#[test]
+fn fixed_pow_identity_and_the_exponent_limit() {
+    all_agree(&[
+        "puts [expr {007 ** 1}][expr {0x10 ** 1}][expr {\"07\" ** 1}][expr {99999999999999999999 ** 1}]",
+        "set a 0x1f\nputs [expr {$a ** 1}][expr {1.50 ** 1}][expr {007 ** 0}]",
+        "foreach e {{3**268435456} {2**268435456} {-3**268435456} {99999999999999999999**268435456} {3**99999999999999999999} {0**268435456} {2**-1}} {puts [list $e [catch {expr $e} m] $m]}",
+    ]);
+}
