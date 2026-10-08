@@ -438,7 +438,8 @@ fn convert(src: &str, mode: Mode, quote_hash: bool) -> String {
 
 /// Tcl's integer syntax: optional surrounding whitespace, an optional sign, one
 /// of the radix prefixes `0b 0o 0d 0x`, and digits that may be separated by
-/// underscores. Values beyond `i64` saturate, which is where the reference
+/// runs of underscores — `TclParseNumber` takes a run of any length between two
+/// digits of the radix, so `1__0` is ten, but none at either end. Values beyond `i64` saturate, which is where the reference
 /// implementation switches to arbitrary precision — the two agree for every
 /// index, since both ends are far outside any list.
 pub fn parse_int(text: &str) -> Option<i64> {
@@ -459,16 +460,10 @@ pub fn parse_int(text: &str) -> Option<i64> {
         return None;
     }
     let mut value: i64 = 0;
-    let mut last_was_underscore = false;
     for ch in digits.chars() {
         if ch == '_' {
-            if last_was_underscore {
-                return None;
-            }
-            last_was_underscore = true;
             continue;
         }
-        last_was_underscore = false;
         let digit = ch.to_digit(radix)? as i64;
         value = value
             .checked_mul(radix as i64)

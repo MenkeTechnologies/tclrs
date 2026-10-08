@@ -1914,6 +1914,11 @@ re-measured against tclsh 9.0.4 and pinned by a differential program:
   the script of `eval`, `uplevel` and a non-interactive stdin session, which
   tclrs compiles as a top-level script, so the fold is not applied there.
   Found by the fuzzer (seed 42, case 295).
+- **An index or list-command integer refused a run of underscores.**
+  `list::parse_int` allowed one `_` between digits, where `TclParseNumber`
+  takes a run of any length, so `lindex $l 1__0`, `lrange $l 1__0 end`,
+  `lsort -integer {1__0 3}` and `lrepeat 1__0 x` were refused while `expr` and
+  `string is integer` (`runtime::parse_number`) accepted the same text.
 
 ## What the differential fuzzer cannot reach
 

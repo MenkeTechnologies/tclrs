@@ -69,6 +69,11 @@ const PROGRAMS: &[&str] = &[
     "puts [lindex {a b c} end]",
     "puts [lindex {a b c} end-1]",
     "puts [lindex {a b c} end+1]",
+    // `TclParseNumber` takes a run of underscores of any length between two
+    // digits, in an index and in every integer a list command reads.
+    "puts [list [lindex {a b c d e f g h i j k l} 1__0] [lindex {a b c d e f g h i j k l} end-1__0] [lrange {a b c d e f g h i j k} 1___0 end] [lindex {a b c d} 0b1__1]]",
+    "puts [list [lsort -integer {1__0 3}] [lrepeat 0x0__2 x]]",
+    "puts [list [catch {lindex {a b} _1} m] $m [catch {lindex {a b} 1_} m] $m [catch {lindex {a b} 0x_1} m] $m]",
     "puts <[lindex {a b c} -1]>",
     "puts <[lindex {a b c} 99]>",
     "puts [lindex {a b c}]",
