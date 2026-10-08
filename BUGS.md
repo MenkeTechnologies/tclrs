@@ -1018,10 +1018,6 @@ approximated, and nothing is silently mis-run.
   the AM/PM words and the `%x` / `%X` / `%c` expansions come from `msgcat`;
   only the root catalogue is built in, so `-locale fr` is refused rather than
   answered in English. `%E` and `%O` are refused for the same reason.
-- **A POSIX `TZ` rule string with no zone file.** `-timezone :America/New_York`
-  and `-timezone +0530` both work — the first through the same `TZif` reader
-  tclsh's `LoadZoneinfoFile` implements in Tcl — but `EST5EDT,M3.2.0,M11.1.0`
-  spelled out as a rule is refused when no file of that name exists.
 - **`file attributes`, `link`, `channels`, `system`, `tempfile`, `tempdir`
   and `volumes`.** Each is recognised, so an abbreviation
   resolves as tclsh resolves it, and then refused by name. `glob -types` in its

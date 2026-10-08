@@ -19,18 +19,19 @@
 //!   approximated.
 //! * `add` — every unit tclsh accepts, with the calendar arithmetic for
 //!   months and years and the weekday walk for `weekdays`.
-//! * Time zones — `-gmt`, a fixed numeric offset, and any zone with a `TZif`
+//! * Time zones — `-gmt`, a fixed numeric offset, any zone with a `TZif`
 //!   file, read with the same reader tclsh's `LoadZoneinfoFile` implements in
-//!   Tcl. The default zone comes from `TZ` or `/etc/localtime`, as tclsh's
-//!   does.
+//!   Tcl (the POSIX rule at the end of a version 2 file included), a POSIX
+//!   `TZ` rule string (`ParsePosixTimeZone` / `ProcessPosixTimeZone`), and the
+//!   legacy abbreviations of `LegacyTimeZone`. The default zone comes from
+//!   `TZ` or `/etc/localtime`, as tclsh's does.
 //!
 //! Refused, each with its own message:
 //!
 //! * Any instant before the Gregorian changeover of 1752-09-14, which tclsh
 //!   reckons in the Julian calendar and this module has no calendar for. See
 //!   `EARLIEST`, and note the date is not the locale's.
-//! * A POSIX `TZ` *rule* string (`EST5EDT,M3.2.0,M11.1.0`) with no matching
-//!   zone file, and a time zone named by abbreviation in `clock scan`.
+//! * A time zone named by abbreviation in `clock scan`.
 //! * `clock scan` without `-format`.
 //!
 //! A `-format` scan assembles its fields as `ClockScan` and `ClockScanCommit`
@@ -367,11 +368,29 @@ fn parse_tzif(bytes: &[u8]) -> Option<Zone> {
     if bytes.len() < 44 || &bytes[..4] != b"TZif" {
         return None;
     }
-    if bytes[4] >= b'2' {
+    // `ReadZoneinfoFile` reads the 64-bit block, and the POSIX rule that
+    // follows it, from a version "2" file only; any other version is read
+    // from its 32-bit block alone.
+    if bytes[4] == b'2' {
         let second = block_length(bytes, 4)?;
         let rest = bytes.get(second..)?;
         if rest.len() >= 44 && &rest[..4] == b"TZif" {
-            return read_block(rest, 8);
+            let mut zone = read_block(rest, 8)?;
+            // The rule sits between two newlines after the block, and its
+            // transitions extend the file's past the last one it lists.
+            let footer = rest.get(block_length(rest, 8)? + 1..).unwrap_or_default();
+            let end = footer
+                .iter()
+                .position(|b| *b == b'\n')
+                .unwrap_or(footer.len());
+            let rule = String::from_utf8_lossy(&footer[..end]);
+            if !rule.trim().is_empty() {
+                let (_, rules) = PosixZone::parse(&rule)?.process();
+                let last = zone.transitions.last().map_or(i64::MIN, |(t, _)| *t);
+                zone.transitions
+                    .extend(rules.into_iter().filter(|(t, _)| *t > last));
+            }
+            return Some(zone);
         }
     }
     read_block(bytes, 4)
@@ -455,6 +474,328 @@ fn read_int(body: &[u8], at: &mut usize, width: usize) -> Option<i64> {
     })
 }
 
+// ── POSIX time zone rules ────────────────────────────────────────────────
+
+/// One `start` or `end` rule of a POSIX `TZ` string: `Jn` / `n` (a day of the
+/// year) or `Mm.w.d` (a weekday of a week of a month), and the `/time` after
+/// it. A field the string left out is `None`, as an unmatched group is the
+/// empty string in `ParsePosixTimeZone`'s result.
+#[derive(Default, Clone)]
+struct PosixBound {
+    julian: bool,
+    day_of_year: Option<i64>,
+    month: Option<i64>,
+    week_of_month: Option<i64>,
+    day_of_week: Option<i64>,
+    hours: Option<i64>,
+    minutes: Option<i64>,
+    seconds: Option<i64>,
+}
+
+/// `ParsePosixTimeZone`'s fields (`library/clock.tcl`).
+struct PosixZone {
+    std_name: String,
+    std_negative: bool,
+    std_hms: (i64, Option<i64>, Option<i64>),
+    dst_name: Option<String>,
+    dst_negative: bool,
+    dst_hms: Option<(i64, Option<i64>, Option<i64>)>,
+    start: PosixBound,
+    end: PosixBound,
+}
+
+/// A cursor over a POSIX `TZ` string, one method per piece of the expression
+/// `ParsePosixTimeZone` matches it against. The match ignores case.
+struct PosixCursor<'a> {
+    text: &'a [u8],
+    at: usize,
+}
+
+impl PosixCursor<'_> {
+    fn peek(&self) -> Option<u8> {
+        self.text.get(self.at).copied()
+    }
+
+    fn eat(&mut self, byte: u8) -> bool {
+        let hit = self.peek().is_some_and(|b| b.eq_ignore_ascii_case(&byte));
+        if hit {
+            self.at += 1;
+        }
+        hit
+    }
+
+    /// `[[:alpha:]]+ | <[-+[:alnum:]]+>`, with the brackets kept.
+    fn name(&mut self) -> Option<String> {
+        let start = self.at;
+        if self.eat(b'<') {
+            while self
+                .peek()
+                .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'+')
+            {
+                self.at += 1;
+            }
+            if self.at == start + 1 || !self.eat(b'>') {
+                self.at = start;
+                return None;
+            }
+        } else {
+            while self.peek().is_some_and(|b| b.is_ascii_alphabetic()) {
+                self.at += 1;
+            }
+            if self.at == start {
+                return None;
+            }
+        }
+        Some(String::from_utf8_lossy(&self.text[start..self.at]).into_owned())
+    }
+
+    /// Between `min` and `max` digits.
+    fn digits(&mut self, max: usize) -> Option<i64> {
+        let start = self.at;
+        while self.at - start < max && self.peek().is_some_and(|b| b.is_ascii_digit()) {
+            self.at += 1;
+        }
+        (self.at > start).then(|| {
+            std::str::from_utf8(&self.text[start..self.at])
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(i64::MAX)
+        })
+    }
+
+    /// `h{1,2} (: m{1,2} (: s{1,2})?)?`
+    fn clock(&mut self) -> Option<(i64, Option<i64>, Option<i64>)> {
+        let hours = self.digits(2)?;
+        let mut minutes = None;
+        let mut seconds = None;
+        let back = self.at;
+        if self.eat(b':') {
+            match self.digits(2) {
+                Some(m) => {
+                    minutes = Some(m);
+                    let back = self.at;
+                    if self.eat(b':') {
+                        match self.digits(2) {
+                            Some(s) => seconds = Some(s),
+                            None => self.at = back,
+                        }
+                    }
+                }
+                None => self.at = back,
+            }
+        }
+        Some((hours, minutes, seconds))
+    }
+
+    /// `(J?)(\d+) | M(\d+).(\d+).(\d+)`, then an optional `/time`.
+    fn bound(&mut self) -> Option<PosixBound> {
+        let mut bound = PosixBound::default();
+        if self.eat(b'M') {
+            bound.month = Some(self.digits(usize::MAX)?);
+            if !self.eat(b'.') {
+                return None;
+            }
+            bound.week_of_month = Some(self.digits(usize::MAX)?);
+            if !self.eat(b'.') {
+                return None;
+            }
+            bound.day_of_week = Some(self.digits(usize::MAX)?);
+        } else {
+            bound.julian = self.eat(b'J');
+            bound.day_of_year = Some(self.digits(usize::MAX)?);
+        }
+        let back = self.at;
+        if self.eat(b'/') {
+            match self.clock() {
+                Some((h, m, s)) => {
+                    bound.hours = Some(h);
+                    bound.minutes = m;
+                    bound.seconds = s;
+                }
+                None => self.at = back,
+            }
+        }
+        Some(bound)
+    }
+}
+
+impl PosixZone {
+    /// `ParsePosixTimeZone`: `None` where the expression does not match the
+    /// whole string.
+    fn parse(tz: &str) -> Option<PosixZone> {
+        let mut c = PosixCursor {
+            text: tz.as_bytes(),
+            at: 0,
+        };
+        let std_name = c.name()?;
+        let std_negative = c.peek() == Some(b'-');
+        if matches!(c.peek(), Some(b'-' | b'+')) {
+            c.at += 1;
+        }
+        let std_hms = c.clock()?;
+        let mut zone = PosixZone {
+            std_name,
+            std_negative,
+            std_hms,
+            dst_name: None,
+            dst_negative: false,
+            dst_hms: None,
+            start: PosixBound::default(),
+            end: PosixBound::default(),
+        };
+        if let Some(dst_name) = c.name() {
+            zone.dst_name = Some(dst_name);
+            let back = c.at;
+            let negative = c.peek() == Some(b'-');
+            if matches!(c.peek(), Some(b'-' | b'+')) {
+                c.at += 1;
+            }
+            match c.clock() {
+                Some(hms) => {
+                    zone.dst_negative = negative;
+                    zone.dst_hms = Some(hms);
+                }
+                None => c.at = back,
+            }
+            if c.eat(b',') {
+                zone.start = c.bound()?;
+                if !c.eat(b',') {
+                    return None;
+                }
+                zone.end = c.bound()?;
+            }
+        }
+        (c.at == c.text.len()).then_some(zone)
+    }
+
+    /// `ProcessPosixTimeZone`: the standard state, and the transitions of
+    /// every year from 1916 to 2099 when the zone keeps daylight time.
+    fn process(mut self) -> (State, Vec<(i64, State)>) {
+        let strip = |name: &str| -> String {
+            match name.strip_prefix('<') {
+                Some(inner) => inner[..inner.len().saturating_sub(1)].to_string(),
+                None => name.to_string(),
+            }
+        };
+        let signum = |negative: bool| if negative { 1 } else { -1 };
+        let std_signum = signum(self.std_negative);
+        let (std_hours, std_minutes, std_seconds) = self.std_hms;
+        let std_offset = ((std_hours * 60 + std_minutes.unwrap_or(0)) * 60
+            + std_seconds.unwrap_or(0))
+            * std_signum;
+        let standard = State {
+            offset: std_offset as i32,
+            abbreviation: strip(&self.std_name),
+        };
+        let Some(dst_name) = self.dst_name.as_deref() else {
+            return (standard, Vec::new());
+        };
+        let dst_offset = match self.dst_hms {
+            None => 3600 + std_offset,
+            Some((h, m, s)) => {
+                ((h * 60 + m.unwrap_or(0)) * 60 + s.unwrap_or(0)) * signum(self.dst_negative)
+            }
+        };
+        let daylight = State {
+            offset: dst_offset as i32,
+            abbreviation: strip(dst_name),
+        };
+        // Without rules, the European ones for a zone up to twelve hours
+        // west and the American ones otherwise.
+        let european = (0..=12).contains(&(std_signum * std_hours));
+        if self.start.day_of_year.is_none() && self.start.month.is_none() {
+            self.start = PosixBound {
+                month: Some(3),
+                week_of_month: Some(if european { 5 } else { 2 }),
+                day_of_week: Some(0),
+                hours: Some(match (european, std_hours > 2) {
+                    (true, false) => std_hours + 1,
+                    _ => 2,
+                }),
+                minutes: Some(0),
+                seconds: Some(0),
+                ..PosixBound::default()
+            };
+        }
+        if self.end.day_of_year.is_none() && self.end.month.is_none() {
+            self.end = PosixBound {
+                month: Some(if european { 10 } else { 11 }),
+                week_of_month: Some(if european { 5 } else { 1 }),
+                day_of_week: Some(0),
+                hours: Some(match (european, std_hours > 2) {
+                    (true, true) => 3,
+                    (true, false) => std_hours + 2,
+                    (false, _) => 2,
+                }),
+                minutes: Some(0),
+                seconds: Some(0),
+                ..PosixBound::default()
+            };
+        }
+        let mut transitions = Vec::new();
+        for year in 1916..2100 {
+            let start = posix_dst_time(&self.start, year) - std_offset;
+            let end = posix_dst_time(&self.end, year) - dst_offset;
+            if start < end {
+                transitions.push((start, daylight.clone()));
+                transitions.push((end, standard.clone()));
+            } else {
+                transitions.push((end, standard.clone()));
+                transitions.push((start, daylight.clone()));
+            }
+        }
+        (standard, transitions)
+    }
+}
+
+/// `DeterminePosixDSTTime`: the wall-clock instant a rule names in a year.
+fn posix_dst_time(bound: &PosixBound, year: i64) -> i64 {
+    let julian_day = match bound.day_of_year {
+        Some(day_of_year) => {
+            // `Jn` does not count February 29, so a day past February 28 of
+            // a leap year moves one on. `n` is taken as it stands.
+            let day_of_year = if bound.julian && is_leap(year) && day_of_year > 58 {
+                day_of_year + 1
+            } else {
+                day_of_year
+            };
+            julian_day_of(year, 1, 1) + day_of_year - 1
+        }
+        None => {
+            // `GetJulianDayFromEraYearMonthWeekDay`: count from the zeroth day
+            // of the month, or back from the seventh of the next for the last
+            // week (any week from 5 up).
+            let month = bound.month.unwrap_or(1);
+            let week = match bound.week_of_month.unwrap_or(0) {
+                w if w >= 5 => -1,
+                w => w,
+            };
+            let reference = if week >= 0 {
+                julian_day_of(year, month, 0)
+            } else {
+                julian_day_of(year, month + 1, 7)
+            };
+            let weekday = bound.day_of_week.unwrap_or(0);
+            let k = (weekday + 6).rem_euclid(7);
+            let on_or_before = reference - (reference - k).rem_euclid(7);
+            on_or_before + 7 * week
+        }
+    };
+    let time_of_day = (bound.hours.unwrap_or(2) * 60 + bound.minutes.unwrap_or(0)) * 60
+        + bound.seconds.unwrap_or(0);
+    (julian_day - JDN_OF_EPOCH) * SECONDS_PER_DAY + time_of_day
+}
+
+/// `GetJulianDayFromEraYearMonthDay` in the Gregorian calendar: the month is
+/// reduced modulo 12 into the year and the day is added as it stands, so
+/// neither has to be in range.
+fn julian_day_of(year: i64, month: i64, day: i64) -> i64 {
+    let months = month - 1;
+    let year = year + months.div_euclid(12);
+    let month = months.rem_euclid(12) as u32 + 1;
+    days_from_civil(year, month, 1) + day - 1 + JDN_OF_EPOCH
+}
+
 /// The directories tclsh's `LoadZoneinfoFile` searches, in its order.
 const ZONE_DIRECTORIES: &[&str] = &[
     "/usr/share/zoneinfo",
@@ -478,10 +819,21 @@ fn load_zone(name: &str) -> Result<Zone, String> {
     if let Some(offset) = fixed_offset(name) {
         return Ok(Zone::fixed(offset, name));
     }
-    // A traversal would read a file outside the zone database, which is not
-    // something a zone name may do.
-    if trimmed.starts_with('/') || trimmed.split('/').any(|part| part == "..") {
-        return Err(format!("time zone \"{name}\" not found"));
+    // A name with no colon that reads as a POSIX `TZ` string is one, even
+    // when a zone file has the same name — `SetupTimeZone` tries it first.
+    if !name.starts_with(':') {
+        if let Some(posix) = PosixZone::parse(name) {
+            let (initial, transitions) = posix.process();
+            return Ok(Zone {
+                transitions,
+                initial,
+            });
+        }
+    }
+    // `LoadZoneinfoFile` refuses a name that could leave the zone directory:
+    // an absolute path, a drive or volume prefix, or a `..` component.
+    if unsafe_zone_path(trimmed) {
+        return Err(format!("time zone \":{trimmed}\" not valid"));
     }
     for directory in ZONE_DIRECTORIES {
         let path = std::path::Path::new(directory).join(trimmed);
@@ -491,10 +843,124 @@ fn load_zone(name: &str) -> Result<Zone, String> {
             }
         }
     }
-    Err(format!(
-        "time zone \"{name}\" not found: no zone file names it, and a POSIX time zone rule is not supported yet"
-    ))
+    // A bare name no file has may be one of the legacy abbreviations, each of
+    // which stands for a fixed offset named by its digits.
+    if !name.starts_with(':') {
+        let lower = name.to_lowercase();
+        if let Some((_, offset)) = LEGACY_ZONES.iter().find(|(abbrev, _)| *abbrev == lower) {
+            let seconds = fixed_offset(offset).expect("the legacy table holds offsets");
+            return Ok(Zone::fixed(seconds, offset));
+        }
+    }
+    Err(format!("time zone \":{trimmed}\" not found"))
 }
+
+/// `LoadZoneinfoFile`'s guard, `^[/\\]|^[a-zA-Z]+:|(?:^|[/\\])\.\.`.
+fn unsafe_zone_path(name: &str) -> bool {
+    let drive = name
+        .find(':')
+        .is_some_and(|at| at > 0 && name[..at].bytes().all(|b| b.is_ascii_alphabetic()));
+    name.starts_with(['/', '\\'])
+        || drive
+        || name.starts_with("..")
+        || name.contains("/..")
+        || name.contains("\\..")
+}
+
+/// `LegacyTimeZone` (`library/clock.tcl`): the abbreviations a bare
+/// `-timezone` falls back on when neither a POSIX rule nor a zone file reads
+/// it.
+const LEGACY_ZONES: &[(&str, &str)] = &[
+    ("gmt", "+0000"),
+    ("ut", "+0000"),
+    ("utc", "+0000"),
+    ("bst", "+0100"),
+    ("wet", "+0000"),
+    ("wat", "-0100"),
+    ("at", "-0200"),
+    ("nft", "-0330"),
+    ("nst", "-0330"),
+    ("ndt", "-0230"),
+    ("ast", "-0400"),
+    ("adt", "-0300"),
+    ("est", "-0500"),
+    ("edt", "-0400"),
+    ("cst", "-0600"),
+    ("cdt", "-0500"),
+    ("mst", "-0700"),
+    ("mdt", "-0600"),
+    ("pst", "-0800"),
+    ("pdt", "-0700"),
+    ("yst", "-0900"),
+    ("ydt", "-0800"),
+    ("akst", "-0900"),
+    ("akdt", "-0800"),
+    ("hst", "-1000"),
+    ("hdt", "-0900"),
+    ("cat", "-1000"),
+    ("ahst", "-1000"),
+    ("nt", "-1100"),
+    ("idlw", "-1200"),
+    ("cet", "+0100"),
+    ("cest", "+0200"),
+    ("met", "+0100"),
+    ("mewt", "+0100"),
+    ("mest", "+0200"),
+    ("swt", "+0100"),
+    ("sst", "+0200"),
+    ("fwt", "+0100"),
+    ("fst", "+0200"),
+    ("eet", "+0200"),
+    ("eest", "+0300"),
+    ("bt", "+0300"),
+    ("it", "+0330"),
+    ("zp4", "+0400"),
+    ("zp5", "+0500"),
+    ("ist", "+0530"),
+    ("zp6", "+0600"),
+    ("wast", "+0700"),
+    ("wadt", "+0800"),
+    ("jt", "+0730"),
+    ("cct", "+0800"),
+    ("jst", "+0900"),
+    ("kst", "+0900"),
+    ("cast", "+0930"),
+    ("jdt", "+1000"),
+    ("kdt", "+1000"),
+    ("cadt", "+1030"),
+    ("east", "+1000"),
+    ("eadt", "+1030"),
+    ("gst", "+1000"),
+    ("nzt", "+1200"),
+    ("nzst", "+1200"),
+    ("nzdt", "+1300"),
+    ("idle", "+1200"),
+    ("a", "+0100"),
+    ("b", "+0200"),
+    ("c", "+0300"),
+    ("d", "+0400"),
+    ("e", "+0500"),
+    ("f", "+0600"),
+    ("g", "+0700"),
+    ("h", "+0800"),
+    ("i", "+0900"),
+    ("k", "+1000"),
+    ("l", "+1100"),
+    ("m", "+1200"),
+    ("n", "-0100"),
+    ("o", "-0200"),
+    ("p", "-0300"),
+    ("q", "-0400"),
+    ("r", "-0500"),
+    ("s", "-0600"),
+    ("t", "-0700"),
+    ("u", "-0800"),
+    ("v", "-0900"),
+    ("w", "-1000"),
+    ("x", "-1100"),
+    ("y", "-1200"),
+    ("z", "+0000"),
+];
 
 /// `SetupTimeZone`'s fixed-offset form: `[+-]hh`, `hhmm`, `hh:mm`, `hhmmss` or
 /// `hh:mm:ss` (`library/clock.tcl`).
@@ -1744,12 +2210,7 @@ fn assemble_julian_day(got: &mut Scanned) -> Result<(), String> {
         let first_monday = fourth - (fourth % 7);
         first_monday + 7 * (got.iso_week - 1) + got.weekday - 1
     } else if flags & DAYOFYEAR == 0 || flags & (DAYOFMONTH | MONTH) == DAYOFMONTH | MONTH {
-        // `GetJulianDayFromEraYearMonthDay` reduces the month modulo 12 into
-        // the year and adds the day as it is, so neither has to be in range.
-        let months = got.month - 1;
-        let year = got.absolute_year() + months.div_euclid(12);
-        let month = months.rem_euclid(12) as u32 + 1;
-        days_from_civil(year, month, 1) + got.day - 1 + JDN_OF_EPOCH
+        julian_day_of(got.absolute_year(), got.month, got.day)
     } else {
         days_from_civil(got.absolute_year(), 1, 1) + got.day_of_year - 1 + JDN_OF_EPOCH
     };

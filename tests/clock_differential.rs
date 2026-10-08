@@ -96,6 +96,12 @@ const PROGRAMS: &[&str] = &[
     "foreach {s f} {{2440588 01:00:01} {%J %H:%M:%S} {1970 W01 Fri} {%G W%V %a} {70 W01 Fri} {%g W%V %a} {W09 Sun} {W%V %a} Mon %a {38 Jan 02} {%y %b %d} {37 Jan 02} {%y %b %d} 13 %I 31 %d {1970 Thu} {%Y %a} {2024 W01 Thu} {%Y W%V %a} 24:00:00 %H:%M:%S} {puts [clock scan $s -format $f -gmt 1 -base 2678400]}",
     "foreach {s f} {70 %Y {1970 02 31} {%Y %m %d} {1970 060 03 02} {%Y %j %m %d} {1970 13 01} {%Y %m %d} {25:00} %H:%M {13 PM} {%I %p} {1970 2 Fri} {%G %V %a} {2024 W01 Thu 1970} {%G W%V %a %Y} {1970 01 01 Fri} {%Y %m %d %a}} {puts [list [catch {clock scan $s -format $f -gmt 1 -base 2678400} m] $m]}",
     "puts [clock scan 31 -format %d -gmt 1 -base 2678400 -validate 0]\nputs [clock scan {1970 02 31} -format {%Y %m %d} -gmt 1 -validate 0]",
+    // A POSIX `TZ` string as the zone, with its rules spelled out, left to
+    // the defaults, or written as day numbers; the legacy abbreviations a
+    // bare name falls back on; and the two refusals, each made once because
+    // tclsh remembers a bad zone and words a second refusal differently.
+    "foreach z {{EST5EDT,M3.2.0/2,M11.1.0/2} {<+03>-3} {CET-1CEST,M3.5.0,M10.5.0/3} IST-5:30 {AAA3BBB,J60/2,J300/2} {AAA3BBB,60/2,300} AAA3BBB XYZ-12 cest zp4} {foreach t {1000000000 2000000000 1300000000} {puts [list $z [catch {clock format $t -timezone $z -format {%Y-%m-%d %H:%M:%S %z %Z}} m] $m]}}",
+    "foreach z {nowhere :nowhere ../x :/etc/x C:/x} {puts [list [catch {clock format 0 -timezone $z} m] $m]}",
     // The three units are read from one clock, so they agree with each other
     // however long the program takes to run.
     "set s [clock seconds]\nset ms [clock milliseconds]\nputs [expr {$ms/1000 - $s <= 1}]",
@@ -264,6 +270,10 @@ const ZONE_PROGRAMS: &[&str] = &[
     "puts [clock add 1234567890 1 day -timezone :Europe/Berlin]",
     "puts [clock format 1234567890 -format {%Z %z} -timezone EST5EDT]",
     "puts [clock format 1234567890 -format {%Z %z} -timezone CET]",
+    // Past the last transition a version 2 file lists, its trailing POSIX rule
+    // decides — through 2099, where `ProcessPosixTimeZone` stops.
+    "foreach t {2152162800 2172722399 4102444800 4118083200} {puts [clock format $t -format {%Y-%m-%d %H:%M:%S %z %Z} -timezone :America/Detroit]}",
+    "foreach t {2152162800 2172722399 4102444800} {puts [clock format $t -format {%Y-%m-%d %H:%M:%S %z %Z} -timezone :Australia/Sydney]}",
 ];
 
 fn tclsh() -> Option<PathBuf> {
