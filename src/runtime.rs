@@ -4096,6 +4096,16 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                 BigOperand::Int(i) => Num::Int(i),
                 BigOperand::Big(b) => Num::Big(b),
             };
+            // A nonzero integer modulo a bignum of the same sign is that
+            // integer, and `ExecuteExtendedBinaryMathOp` answers with the left
+            // operand itself — so `expr {007 % 99999999999999999999}` keeps
+            // its spelling, `007`.
+            if let (Num::Int(w1), Num::Big(big2)) = (&x, &y) {
+                if *w1 != 0 && (*w1 > 0) == (big2.sign() != num_bigint::Sign::Minus) {
+                    vm.push(a);
+                    return Ok(());
+                }
+            }
             vm.push(arith(id, x, y)?);
             Ok(())
         }

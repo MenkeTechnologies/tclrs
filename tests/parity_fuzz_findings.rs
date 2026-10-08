@@ -2731,3 +2731,16 @@ fn fixed_catch_usage_format_fields_and_real_nan() {
         "puts [catch {lsearch -real -exact {1 2} nan} m]$m\nputs [catch {lsearch -real -exact {nan 1} 1} m]$m",
     ]);
 }
+
+/// `%` answering with its left operand: a nonzero integer modulo a bignum of
+/// the same sign is that operand itself in `ExecuteExtendedBinaryMathOp`, so
+/// it keeps the spelling it was written in — literal or variable.
+#[test]
+fn fixed_mod_by_a_larger_bignum_keeps_the_operand() {
+    all_agree(&[
+        "puts [expr {007 % 99999999999999999999}]",
+        "puts [expr {0x10 % 99999999999999999999}][expr {-007 % -99999999999999999999}]",
+        "puts [expr {-007 % 99999999999999999999}][expr {000 % 99999999999999999999}]",
+        "set a 0x1f\nputs [expr {$a % 99999999999999999999}]",
+    ]);
+}

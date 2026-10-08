@@ -3595,7 +3595,15 @@ impl Compiler {
                 // provably integers; otherwise they are extension ops that hold
                 // Tcl's operand rule. See [`ext::BIT_AND`].
                 let integral = Self::fits_machine_int(a) && Self::fits_machine_int(b);
-                self.numeric_operand(a)?;
+                // `%` can answer with its left operand itself (an integer
+                // modulo a larger bignum of its sign), so a literal there keeps
+                // the spelling the script wrote: `expr {007 % 99999999999999999999}`
+                // is `007`.
+                if matches!(op, BinOp::Mod) {
+                    self.string_operand(a)?;
+                } else {
+                    self.numeric_operand(a)?;
+                }
                 self.numeric_operand(b)?;
                 let native = match op {
                     BinOp::Add => Some(Op::Add),
