@@ -712,11 +712,10 @@ fn scan(data: &[u8], fmt: &str, vars: usize) -> Result<Scanned, String> {
                         taken = &taken[..taken.len() - 1];
                     }
                 } else if spec.cmd == 'C' {
+                    // C string semantics: everything before the first NUL,
+                    // trailing blanks included (`tclBinary.c`'s `case 'C'`).
                     if let Some(end) = taken.iter().position(|b| *b == 0) {
                         taken = &taken[..end];
-                    }
-                    while taken.last().is_some_and(|b| *b == b' ') {
-                        taken = &taken[..taken.len() - 1];
                     }
                 }
                 values[slot] = Some(from_bytes(taken));

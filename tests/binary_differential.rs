@@ -115,6 +115,8 @@ const PROGRAMS: &[&str] = &[
     "binary scan \\x07\\x87\\x05 b5b* a b\nputs \"$a|$b\"",
     "binary scan \\x70\\x87\\x05 B5B* a b\nputs \"$a|$b\"",
     "binary scan \"abc\\x00efghi\" C* a\nputs <$a>",
+    // `C` stops at the first NUL and keeps the blanks before it.
+    "foreach {s f} {{abc def \\x00  } C* {ab  } C* {ab  \\x00} C3} {binary scan [subst $s] $f a\nputs <$a>}",
     "binary scan \"abc efghi  \\x00\" A* a\nputs <$a>",
     "binary scan \\x05\\x00\\x00\\x00\\x07\\x00\\x00\\x00\\xF0\\xFF\\xFF\\xFF wi* a b\nputs \"$a|$b\"",
     "binary scan \\xCD\\xCC\\xCC\\x3F\\xCD\\xCC\\xCC\\x3F rf a b\nputs \"$a|$b\"",
