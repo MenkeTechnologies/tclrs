@@ -2568,7 +2568,7 @@ fn now(unit: u8, switch: Option<&Value>) -> Result<Value, String> {
 
 fn run_format(words: &[Value]) -> Result<Value, String> {
     // The clock value and then options in pairs, or the usage.
-    if words.len() % 2 == 0 {
+    if words.len().is_multiple_of(2) {
         return Err(FORMAT_USAGE.to_string());
     }
     let opts = options(&words[1..], Operation::Format)?;
@@ -2582,7 +2582,7 @@ fn run_format(words: &[Value]) -> Result<Value, String> {
 }
 
 fn run_scan(words: &[Value]) -> Result<Value, String> {
-    if words.len() % 2 == 0 {
+    if words.len().is_multiple_of(2) {
         return Err(SCAN_USAGE.to_string());
     }
     let opts = options(&words[1..], Operation::Scan)?;
@@ -2610,7 +2610,7 @@ fn run_scan(words: &[Value]) -> Result<Value, String> {
 }
 
 fn run_add(words: &[Value]) -> Result<Value, String> {
-    if words.len() % 2 == 0 {
+    if words.len().is_multiple_of(2) {
         return Err(ADD_USAGE.to_string());
     }
     // Offsets and options share the pairs: an integer where an option name
