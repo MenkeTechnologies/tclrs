@@ -2383,7 +2383,7 @@ struct Options {
     format: Option<String>,
     gmt: Option<bool>,
     timezone: Option<String>,
-    base: Option<i64>,
+    base: Option<Value>,
     locale: Option<String>,
     /// `-validate`, which only `clock scan` takes: whether the scanned fields
     /// are held to their ranges. On unless the script turns it off.
@@ -2413,9 +2413,36 @@ impl Options {
     }
 }
 
-/// Read the trailing `-option value` pairs. `usage` is the wording the command
-/// reports when a value is missing, which differs per subcommand.
-fn options(words: &[Value], allowed: &[&str], usage: &str) -> Result<Options, String> {
+/// Which subcommand is reading its options — `ClockOperation`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Operation {
+    Format,
+    Scan,
+    Add,
+}
+
+/// Every option name `ClockParseFmtScnArgs` looks a word up in, whichever
+/// subcommand is asking; one the subcommand does not take is refused after
+/// it has been recognised.
+const OPTION_NAMES: &[&str] = &[
+    "-base",
+    "-format",
+    "-gmt",
+    "-locale",
+    "-timezone",
+    "-validate",
+];
+
+/// `ClockParseFmtScnArgs`: read the `-option value` pairs that follow the
+/// subcommand's first argument. The caller has already checked that they
+/// come in pairs. `clock add`'s offsets are integers standing where an option
+/// name would, and are stepped over here.
+fn options(words: &[Value], operation: Operation) -> Result<Options, String> {
+    let must_be = match operation {
+        Operation::Format => "-format, -gmt, -locale, or -timezone",
+        Operation::Scan => "-base, -format, -gmt, -locale, -timezone or -validate",
+        Operation::Add => "-gmt, -locale, or -timezone",
+    };
     let mut out = Options {
         format: None,
         gmt: None,
@@ -2424,32 +2451,47 @@ fn options(words: &[Value], allowed: &[&str], usage: &str) -> Result<Options, St
         locale: None,
         validate: true,
     };
-    let mut i = 0;
-    while i < words.len() {
-        let name = to_tcl_string(&words[i]);
-        let Some(option) = resolve(&name, allowed) else {
-            return Err(format!(
-                "bad option \"{name}\": must be {}",
-                listing(allowed)
-            ));
+    // `format` and `add` read their clock value as the base, so a `-base`
+    // there is refused as an option they do not take.
+    let mut seen: Vec<&str> = Vec::new();
+    if operation != Operation::Scan {
+        seen.push("-base");
+    }
+    for pair in words.chunks(2) {
+        let name = to_tcl_string(&pair[0]);
+        if operation == Operation::Add
+            && matches!(crate::runtime::parse_number(name.trim()), Ok(Num::Int(_)))
+        {
+            continue;
+        }
+        let bad = || format!("bad option \"{name}\": must be {must_be}");
+        let Some(option) = resolve(&name, OPTION_NAMES) else {
+            return Err(bad());
         };
-        let Some(value) = words.get(i + 1) else {
-            return Err(usage.to_string());
-        };
+        if seen.contains(&option) {
+            if operation != Operation::Scan && option == "-base" {
+                return Err(bad());
+            }
+            return Err(format!("bad option \"{name}\": doubly present"));
+        }
+        let value = &pair[1];
         match option {
+            "-format" if operation == Operation::Add => return Err(bad()),
             "-format" => out.format = Some(to_tcl_string(value)),
             "-gmt" => out.gmt = Some(crate::runtime::tcl_bool(value)?),
-            "-timezone" => out.timezone = Some(to_tcl_string(value)),
-            "-base" => out.base = Some(seconds_of(value)?),
             // The locale decides the month and day names, the AM/PM and era
             // words, the `%c`/`%x`/`%X` expansions, the digits `%O…` writes
             // and the Gregorian changeover. Every name resolves: one with no
             // catalogue anywhere in its fallback chain is the root locale.
             "-locale" => out.locale = Some(to_tcl_string(value)),
+            "-timezone" => out.timezone = Some(to_tcl_string(value)),
+            // Read once the zone is set up, which is where tclsh reads it.
+            "-base" => out.base = Some(value.clone()),
+            "-validate" if operation != Operation::Scan => return Err(bad()),
             "-validate" => out.validate = crate::runtime::tcl_bool(value)?,
             _ => unreachable!("the option table and this match are one list"),
         }
-        i += 2;
+        seen.push(option);
     }
     Ok(out)
 }
@@ -2480,8 +2522,8 @@ fn current_seconds() -> i64 {
 // ── running ──────────────────────────────────────────────────────────────
 
 const FORMAT_USAGE: &str = "wrong # args: should be \"clock format clockval|now ?-format string? ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE?\"";
-const SCAN_USAGE: &str = "wrong # args: should be \"clock scan string ?-base seconds? ?-format string? ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE?\"";
-const ADD_USAGE: &str = "wrong # args: should be \"clock add clockval ?number units?... ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE?\"";
+const SCAN_USAGE: &str = "wrong # args: should be \"clock scan string ?-base seconds? ?-format string? ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE? ?-validate boolean?\"";
+const ADD_USAGE: &str = "wrong # args: should be \"clock add clockval|now ?number units?...?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE?\"";
 
 pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     if id == ext::NOW {
@@ -2525,16 +2567,13 @@ fn now(unit: u8, switch: Option<&Value>) -> Result<Value, String> {
 }
 
 fn run_format(words: &[Value]) -> Result<Value, String> {
-    let Some(clock) = words.first() else {
+    // The clock value and then options in pairs, or the usage.
+    if words.len() % 2 == 0 {
         return Err(FORMAT_USAGE.to_string());
-    };
-    let seconds = seconds_of(clock)?;
-    let opts = options(
-        &words[1..],
-        &["-format", "-gmt", "-locale", "-timezone"],
-        FORMAT_USAGE,
-    )?;
+    }
+    let opts = options(&words[1..], Operation::Format)?;
     let zone = opts.zone()?;
+    let seconds = seconds_of(&words[0])?;
     let format = opts.format.as_deref().unwrap_or(DEFAULT_FORMAT);
     let cat = opts.catalog()?;
     Ok(Value::Str(Arc::new(format_time(
@@ -2543,33 +2582,25 @@ fn run_format(words: &[Value]) -> Result<Value, String> {
 }
 
 fn run_scan(words: &[Value]) -> Result<Value, String> {
-    let Some(input) = words.first() else {
+    if words.len() % 2 == 0 {
         return Err(SCAN_USAGE.to_string());
-    };
-    let opts = options(
-        &words[1..],
-        &[
-            "-base",
-            "-format",
-            "-gmt",
-            "-locale",
-            "-timezone",
-            "-validate",
-        ],
-        SCAN_USAGE,
-    )?;
+    }
+    let opts = options(&words[1..], Operation::Scan)?;
     let zone = opts.zone()?;
+    // `-base` is the instant the fields the format did not carry are taken
+    // from, which is the current one when the script names none.
+    let base_at = match &opts.base {
+        Some(base) => seconds_of(base)?,
+        None => current_seconds(),
+    };
     let Some(format) = opts.format.as_deref() else {
         return Err(
             "clock scan: the free-form parser is not supported yet; use -format".to_string(),
         );
     };
     let cat = opts.catalog()?;
-    // `-base` is the instant the fields the format did not carry are taken
-    // from, which is the current one when the script names none.
-    let base_at = opts.base.unwrap_or_else(current_seconds);
     Ok(Value::Int(scan_time(
-        &to_tcl_string(input),
+        &to_tcl_string(&words[0]),
         format,
         &zone,
         &cat,
@@ -2579,43 +2610,24 @@ fn run_scan(words: &[Value]) -> Result<Value, String> {
 }
 
 fn run_add(words: &[Value]) -> Result<Value, String> {
-    let Some(clock) = words.first() else {
+    if words.len() % 2 == 0 {
         return Err(ADD_USAGE.to_string());
-    };
-    let mut seconds = seconds_of(clock)?;
-    // The offsets come first and the options after them; the first word that
-    // reads as an option name ends the offset list.
-    let rest = &words[1..];
-    let split = rest
-        .iter()
-        .position(|w| {
-            let text = to_tcl_string(w);
-            text.starts_with('-') && text[1..].starts_with(|c: char| c.is_ascii_alphabetic())
-        })
-        .unwrap_or(rest.len());
-    let (offsets, tail) = rest.split_at(split);
-    let opts = options(tail, &["-base", "-gmt", "-locale", "-timezone"], ADD_USAGE)?;
+    }
+    // Offsets and options share the pairs: an integer where an option name
+    // would stand starts an offset, and every other word is an option.
+    let pairs = &words[1..];
+    let opts = options(pairs, Operation::Add)?;
     let zone = opts.zone()?;
-    let mut i = 0;
-    while i < offsets.len() {
-        let count = match crate::runtime::parse_number(tcl_str(&offsets[i]).trim()) {
-            Ok(Num::Int(n)) => n,
-            _ => {
-                return Err(format!(
-                    "expected integer but got \"{}\"",
-                    to_tcl_string(&offsets[i])
-                ))
-            }
+    let mut seconds = seconds_of(&words[0])?;
+    for pair in pairs.chunks(2) {
+        let Ok(Num::Int(count)) = crate::runtime::parse_number(tcl_str(&pair[0]).trim()) else {
+            continue;
         };
-        let Some(unit) = offsets.get(i + 1) else {
-            return Err(ADD_USAGE.to_string());
-        };
-        let unit = to_tcl_string(unit);
+        let unit = to_tcl_string(&pair[1]);
         let Some(resolved) = resolve(&unit, UNITS) else {
             return Err(bad_unit(&unit));
         };
         seconds = add_units(seconds, count, resolved, &zone)?;
-        i += 2;
     }
     Ok(Value::Int(seconds))
 }

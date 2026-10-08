@@ -88,6 +88,10 @@ const PROGRAMS: &[&str] = &[
     "puts [catch {clock scan xyz -format %Y -gmt 1} m]\nputs $m",
     "puts [catch {clock scan {2009-02-13} -format {%Y-%m-%d} -gmt 1 -timezone :UTC} m]\nputs $m",
     "puts [catch {clock scan {2009-02-13 extra} -format {%Y-%m-%d} -gmt 1} m]\nputs $m",
+    // `ClockParseFmtScnArgs`: the pairs counted before anything is read, an
+    // option given twice, one the subcommand does not take, and scan's own
+    // wording of the list.
+    "foreach c {{clock scan x -foo} {clock scan x -foo 1} {clock scan 1 -gmt 1 -gmt 0 -format %s} {clock scan 1 -format %s -g 1 -gm 1} {clock format 0 -gmt 1 -gmt 0} {clock format 0 -base 1} {clock format 0 -validate 1} {clock format 0 -foo} {clock add 0 1} {clock add 0 1 day -format x} {clock add 0 1 day -base 1} {clock add 0 abc day} {clock format abc -timezone :nowhere}} {puts [list [catch $c m] $m]}",
     // How `ClockScan` and `ClockScanCommit` assemble the fields: a Julian day
     // with a time of day, the ISO week chosen by a weekday, a bare weekday in
     // the base's week, the century switch at 38, `%I` without `%p` on the
