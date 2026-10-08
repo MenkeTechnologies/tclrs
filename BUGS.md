@@ -1936,6 +1936,15 @@ re-measured against tclsh 9.0.4 and pinned by a differential program:
   `2a`), and a leftover word that is itself an operand — a function call, with
   or without space before its `(`, or `Inf`/`NaN` — is `missing operator at
   _@_`, as tclsh lexes it.
+- **A stray `:` or `,` in an expression got the generic diagnostic.**
+  `ParseExpr` reads a `:` that no `?` waits for as an operator and refuses it
+  once it is complete — `unexpected operator ":" without preceding "?"`, after
+  anything wrong with its right operand and after a closing paren or a comma
+  (`generic/tclCompExpr.c:1247`, `:1333`) — and refuses a `,` outside a
+  function's own paren as it arrives (`:1322`). `expr 2:3` was `missing
+  operand at _@_` and `expr {(1,2)}` `unbalanced open paren` here
+  (`expr-old-26.14`, `parseExpr-21.15`, `parseExpr-21.28`). The `-errorcode`
+  of every expression parse error (`TCL PARSE EXPR …`) is still absent.
 
 ## What the differential fuzzer cannot reach
 

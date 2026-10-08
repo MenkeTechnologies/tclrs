@@ -114,6 +114,8 @@ pub fn parse(src: &str) -> Result<Expr, ParseError> {
         open_parens: 0,
         depth: 0,
         operand_start: 0,
+        in_call: false,
+        in_then: false,
     };
     p.skip_space();
     // An expression with no tokens at all is its own diagnostic in tclsh 9.0.4,
@@ -403,7 +405,17 @@ struct ExprParser<'a> {
     /// `eq` and then the number `2` followed by bareword characters, so tclsh
     /// names `2a`, not the whole run `eq2a`.
     operand_start: usize,
+    /// Whether the innermost open paren is a function call's, the one place a
+    /// `,` is an operator (`generic/tclCompExpr.c:1322`).
+    in_call: bool,
+    /// Whether the code being read is the branch of a `?` that a `:` will
+    /// close, where a `:` ends the branch rather than being a stray one. A
+    /// paren starts afresh.
+    in_then: bool,
 }
+
+/// `ParseExpr`'s refusal of a comma outside a function's argument list.
+const STRAY_COMMA: &str = "unexpected \",\" outside function argument list";
 
 impl<'a> ExprParser<'a> {
     fn bytes(&self) -> &'a [u8] {
@@ -501,6 +513,7 @@ impl<'a> ExprParser<'a> {
     fn after_expression(&self) -> ParseError {
         match self.char_here() {
             ')' => self.error("unbalanced close paren"),
+            ',' => self.error(STRAY_COMMA),
             c if is_operator_char(c) => self.error("missing operand at _@_"),
             // A word left over is named, where a second *number* or variable is
             // only a missing operator: `expr {1 x}` is `invalid bareword "x"`
@@ -642,7 +655,10 @@ impl<'a> ExprParser<'a> {
             if self.peek() == Some(b'?') {
                 self.pos += 1;
                 self.skip_space();
-                let then = self.nested(|p| p.parse_binary(0))?;
+                let outer = std::mem::replace(&mut self.in_then, true);
+                let then = self.nested(|p| p.parse_binary(0));
+                self.in_then = outer;
+                let then = then?;
                 self.skip_space();
                 if self.peek() != Some(b':') {
                     return Err(self.error("missing operator \":\" at _@_"));
@@ -652,8 +668,35 @@ impl<'a> ExprParser<'a> {
                 let other = self.nested(|p| p.parse_binary(0))?;
                 lhs = Expr::Ternary(Box::new(lhs), Box::new(then), Box::new(other));
             }
+            self.skip_space();
+            if self.peek() == Some(b':') && !self.in_then {
+                return Err(self.stray_colon());
+            }
         }
         Ok(lhs)
+    }
+
+    /// A `:` that no `?` is waiting for. `ParseExpr` reads it as the operator
+    /// it is, with a right operand, and refuses it only once that operator is
+    /// complete (`generic/tclCompExpr.c:1247` and `:1333`): so whatever is wrong
+    /// with the right operand, a paren closing or a comma arriving is reported
+    /// first, and only then `unexpected operator ":" without preceding "?"` —
+    /// which carries no position marker.
+    fn stray_colon(&mut self) -> ParseError {
+        self.pos += 1;
+        if let Err(e) = self.nested(|p| p.parse_binary(0)) {
+            return e;
+        }
+        self.skip_space();
+        match self.peek() {
+            None if self.open_parens > 0 => self.error("unbalanced open paren"),
+            Some(b')') if self.open_parens == 0 => self.error("unbalanced close paren"),
+            Some(b',') if !self.in_call => self.error(STRAY_COMMA),
+            None | Some(b')' | b',') => {
+                self.error("unexpected operator \":\" without preceding \"?\"")
+            }
+            Some(_) => self.after_expression(),
+        }
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
@@ -681,8 +724,17 @@ impl<'a> ExprParser<'a> {
             Some(b'(') => {
                 self.pos += 1;
                 self.open_parens += 1;
-                let e = self.nested(|p| p.parse_binary(0))?;
+                let outer = (
+                    std::mem::replace(&mut self.in_call, false),
+                    std::mem::replace(&mut self.in_then, false),
+                );
+                let e = self.nested(|p| p.parse_binary(0));
+                (self.in_call, self.in_then) = outer;
+                let e = e?;
                 self.skip_space();
+                if self.peek() == Some(b',') {
+                    return Err(self.error(STRAY_COMMA));
+                }
                 if self.peek() != Some(b')') {
                     return Err(self.error("unbalanced open paren"));
                 }
@@ -999,7 +1051,15 @@ impl<'a> ExprParser<'a> {
             return Err(self.error("missing function argument at _@_"));
         }
         loop {
-            args.push(self.nested(|p| p.parse_binary(0))?);
+            // An argument is read inside the call's own paren: a `,` there is
+            // the separator, and a `?` outside it is not waiting on its `:`.
+            let outer = (
+                std::mem::replace(&mut self.in_call, true),
+                std::mem::replace(&mut self.in_then, false),
+            );
+            let arg = self.nested(|p| p.parse_binary(0));
+            (self.in_call, self.in_then) = outer;
+            args.push(arg?);
             self.skip_space();
             match self.peek() {
                 Some(b',') => {
