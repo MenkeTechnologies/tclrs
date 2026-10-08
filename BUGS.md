@@ -1919,6 +1919,14 @@ re-measured against tclsh 9.0.4 and pinned by a differential program:
   takes a run of any length, so `lindex $l 1__0`, `lrange $l 1__0 end`,
   `lsort -integer {1__0 3}` and `lrepeat 1__0 x` were refused while `expr` and
   `string is integer` (`runtime::parse_number`) accepted the same text.
+- **An `integer±integer` index saturated a bignum operand.**
+  `GetEndOffsetFromObj` hands a sum with a bignum on either side to
+  `Tcl_ExprObj` and truncates only the result, so
+  `lindex {a b c d} 99999999999999999999-99999999999999999998` is `b`; here
+  each operand saturated to `i64::MAX` first and the sum was 0. `list::index`
+  now reads every form through the `GetEndOffsetFromObj` port, and the string
+  commands, which had a second index reader of their own with the same
+  saturation, call it instead.
 
 ## What the differential fuzzer cannot reach
 

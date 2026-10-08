@@ -73,6 +73,10 @@ const PROGRAMS: &[&str] = &[
     // digits, in an index and in every integer a list command reads.
     "puts [list [lindex {a b c d e f g h i j k l} 1__0] [lindex {a b c d e f g h i j k l} end-1__0] [lrange {a b c d e f g h i j k} 1___0 end] [lindex {a b c d} 0b1__1]]",
     "puts [list [lsort -integer {1__0 3}] [lrepeat 0x0__2 x]]",
+    // An `integer±integer` index with a bignum on either side is the exact
+    // sum (`GetEndOffsetFromObj` hands it to `Tcl_ExprObj`), truncated to the
+    // wide range only afterwards — in list and string commands alike.
+    "puts [list [lindex {a b c d} 99999999999999999999-99999999999999999998] [lrange {a b c d} 0x10000000000000000-0xffffffffffffffff end] [string range abcdef 0 99999999999999999999-99999999999999999998] [string index abc 1--9223372036854775808] [lindex {a b c} -99999999999999999999+99999999999999999999]]",
     "puts [list [catch {lindex {a b} _1} m] $m [catch {lindex {a b} 1_} m] $m [catch {lindex {a b} 0x_1} m] $m]",
     "puts <[lindex {a b c} -1]>",
     "puts <[lindex {a b c} 99]>",

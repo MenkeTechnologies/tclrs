@@ -652,14 +652,13 @@ pub(crate) fn index_encode(text: &str, before: i64, after: i64) -> Option<i64> {
 /// index expression whose stored offset is not negative — rather than as one
 /// counted from `end`.
 fn wide_for_index(text: &str, end_value: i64) -> Option<(i64, bool)> {
-    use crate::runtime::{parse_number, Num};
-    match parse_number(trim_space(text)) {
-        Ok(Num::Int(i)) => return Some((if i < 0 { -1 } else { i }, true)),
-        Ok(Num::Big(b)) => {
-            let negative = b.sign() == num_bigint::Sign::Minus;
-            return Some((if negative { i64::MIN } else { i64::MAX }, true));
-        }
-        _ => {}
+    if let Some(value) = exact_int(text) {
+        let wide = i64::try_from(&value).unwrap_or(if value.sign() == num_bigint::Sign::Minus {
+            i64::MIN
+        } else {
+            i64::MAX
+        });
+        return Some((if wide < 0 { -1 } else { wide }, true));
     }
     let offset = end_offset_value(text)?;
     let wide = if offset == i64::MAX {
@@ -674,19 +673,28 @@ fn wide_for_index(text: &str, end_value: i64) -> Option<(i64, bool)> {
     Some((wide, offset >= 0))
 }
 
+/// An integer in Tcl's syntax at its exact value, bignum or not — the
+/// integer-only `TclParseNumber` an index is read with. A double, a NaN or
+/// anything else is `None`.
+fn exact_int(text: &str) -> Option<num_bigint::BigInt> {
+    use crate::runtime::{parse_number, Num};
+    // `parse_int` holds the grammar; `parse_number` supplies the value past
+    // the `i64` range, where `parse_int` saturates.
+    parse_int(text)?;
+    match parse_number(trim_space(text)) {
+        Ok(Num::Int(i)) => Some(i.into()),
+        Ok(Num::Big(b)) => Some(b),
+        _ => None,
+    }
+}
+
 /// The offset `GetEndOffsetFromObj` (`generic/tclUtil.c:3532`) stores for a
 /// non-numeric index: `WIDE_MAX` is `end+1`, `WIDE_MAX - 1` any later
 /// `end+N`, -1 is `end`, `-N - 1` is `end-N`, `WIDE_MIN` is before the start,
 /// and a non-negative value is an `integer±integer` sum.
 fn end_offset_value(text: &str) -> Option<i64> {
-    use crate::runtime::{parse_number, Num};
     use num_bigint::BigInt;
-    // An integer-only parse: a double, a NaN or anything else is no index.
-    let integer = |s: &str| match parse_number(trim_space(s)) {
-        Ok(Num::Int(i)) => Some(BigInt::from(i)),
-        Ok(Num::Big(b)) => Some(b),
-        _ => None,
-    };
+    let integer = exact_int;
     let truncate = |v: &BigInt| {
         i64::try_from(v).unwrap_or(if v.sign() == num_bigint::Sign::Minus {
             i64::MIN
@@ -784,75 +792,16 @@ pub fn index(text: &str, end_value: i64) -> Result<i64, String> {
 
 /// The non-integer index forms: `end`, `end±integer`, and `integer±integer`.
 fn end_offset(text: &str, end_value: i64) -> Result<i64, String> {
-    let bad = || {
-        Err(format!(
-            "bad index \"{text}\": must be integer?[+-]integer? or end?[+-]integer?"
-        ))
-    };
-
     // `offset` uses the reference implementation's encoding: -1 is `end`, -n is
     // `end-(n-1)`, i64::MAX is `end+1`, i64::MAX-1 is any larger `end+n`, and a
-    // non-negative value is a plain index.
-    let offset;
-
-    if !text.starts_with('e') {
-        // A value that is a list of several elements is never an index; that
-        // is what keeps a list of indices distinguishable from one index.
-        if is_multi_element(text) {
-            return bad();
-        }
-        // `integer±integer`. The operator sits immediately after the first
-        // integer, and the second integer runs to the end: `1+2+3` is not an
-        // index, because `2+3` is not an integer.
-        let bytes = text.as_bytes();
-        let at = int_prefix_end(text);
-        if at >= bytes.len() || (bytes[at] != b'+' && bytes[at] != b'-') {
-            return bad();
-        }
-        let (Some(left), Some(right)) = (parse_int(&text[..at]), parse_int(&text[at + 1..])) else {
-            return bad();
-        };
-        let right = if bytes[at] == b'-' {
-            right.saturating_neg()
-        } else {
-            right
-        };
-        let sum = left.saturating_add(right);
-        offset = if sum < 0 { i64::MIN } else { sum };
-    } else {
-        let bytes = text.as_bytes();
-        // `starts_with`, not `&text[..3]`: byte 3 may be inside a character —
-        // `lindex {a b c} e€a` — and slicing there aborts the process where the
-        // reference interpreter reports `bad index`.
-        if bytes.len() < 3 || bytes.len() == 4 || !text.starts_with("end") {
-            return bad();
-        }
-        if bytes.len() == 3 {
-            offset = -1;
-        } else {
-            if bytes[3] != b'-' && bytes[3] != b'+' {
-                return bad();
-            }
-            if is_space(bytes[4]) {
-                return bad();
-            }
-            let Some(value) = parse_int(&text[4..]) else {
-                return bad();
-            };
-            let value = if bytes[3] == b'-' {
-                value.saturating_neg()
-            } else {
-                value
-            };
-            offset = if value == 1 {
-                i64::MAX
-            } else if value > 1 {
-                i64::MAX - 1
-            } else {
-                value - 1
-            };
-        }
-    }
+    // non-negative value is a plain index. An `integer±integer` sum with a
+    // bignum on either side is computed exactly, as `Tcl_ExprObj` computes it
+    // there: `99999999999999999999-99999999999999999998` is 1.
+    let Some(offset) = end_offset_value(text) else {
+        return Err(format!(
+            "bad index \"{text}\": must be integer?[+-]integer? or end?[+-]integer?"
+        ));
+    };
 
     let resolved = if offset == i64::MAX {
         end_value.saturating_add(1)

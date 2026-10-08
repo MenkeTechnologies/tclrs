@@ -909,73 +909,14 @@ fn truth(s: &str) -> bool {
 // ── indices ──────────────────────────────────────────────────────────────
 
 /// A Tcl index: `integer?[+-]integer?` or `end?[+-]integer?`, where `end`
-/// stands for `end_value`. Ported from `GetEndOffsetFromObj` in
-/// `generic/tclUtil.c`; every index that works out negative collapses to -1,
-/// which is what `Tcl_GetIntForIndex` hands its callers.
+/// stands for `end_value`; every index that works out negative collapses to
+/// -1, which is what `Tcl_GetIntForIndex` hands its callers. A string command
+/// reads its indices with the same `TclGetIntForIndexM` a list command does, so
+/// this is [`crate::list::index`] rather than a reading of its own — the copy
+/// that was here saturated an `integer±integer` with a bignum operand where
+/// tclsh computes it exactly.
 fn index_of(spec: &str, end_value: i64) -> Result<i64, String> {
-    let bad = || {
-        Err(format!(
-            "bad index \"{spec}\": must be integer?[+-]integer? or end?[+-]integer?"
-        ))
-    };
-
-    if let Some(v) = parse_int(spec.trim_matches(is_ascii_space)) {
-        return Ok(if v < 0 { -1 } else { v });
-    }
-
-    if let Some(rest) = spec.strip_prefix("end") {
-        if rest.is_empty() {
-            return Ok(end_value);
-        }
-        // Split on the byte, not with `split_at(1)`: the character after `end`
-        // may be multi-byte — `string index abc endé` — and slicing into one
-        // aborts the process where tclsh reports `bad index`.
-        let op = rest.as_bytes()[0];
-        if (op != b'-' && op != b'+') || rest[1..].starts_with(is_ascii_space) {
-            return bad();
-        }
-        let digits = &rest[1..];
-        let Some(mut offset) = parse_int(digits.trim_end_matches(is_ascii_space)) else {
-            return bad();
-        };
-        if op == b'-' {
-            offset = offset.saturating_neg();
-        }
-        // The interpreter distinguishes "end+1" from "end+n" so that commands
-        // like lset can tell an append from an out-of-range write; every caller
-        // here only needs a number past the end.
-        return Ok(match offset {
-            1 => end_value.saturating_add(1),
-            n if n > 1 => i64::MAX - 1,
-            n => end_value.saturating_add(n),
-        });
-    }
-
-    // `M+N`: no whitespace may touch the operator, but the whole may be padded.
-    let body = spec.trim_start_matches(is_ascii_space);
-    let split = body
-        .char_indices()
-        .skip(1)
-        .find(|(_, c)| *c == '+' || *c == '-')
-        .map(|(i, _)| i);
-    let Some(at) = split else { return bad() };
-    let (left, rest) = body.split_at(at);
-    let (op, right) = rest.split_at(1);
-    if right.starts_with(is_ascii_space) {
-        return bad();
-    }
-    let (Some(m), Some(n)) = (
-        parse_int(left),
-        parse_int(right.trim_end_matches(is_ascii_space)),
-    ) else {
-        return bad();
-    };
-    let sum = if op == "-" {
-        m.saturating_sub(n)
-    } else {
-        m.saturating_add(n)
-    };
-    Ok(if sum < 0 { -1 } else { sum })
+    crate::list::index(spec, end_value)
 }
 
 fn is_ascii_space(c: char) -> bool {
