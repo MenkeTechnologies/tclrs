@@ -20,15 +20,12 @@
 //!
 //! Every one of those was found by running these programs against tclsh 9.0.4.
 //!
-//! Two areas are deliberately not compared here, both of them reference
-//! behaviour this frontend does not reproduce; see BUGS.md.
+//! One area is deliberately not compared here, reference behaviour this
+//! frontend does not reproduce; see BUGS.md.
 //!
 //! * A `binary format` field of `X0` followed by any further field **crashes**
 //!   tclsh 9.0.4 with a segmentation fault, so there is no reference outcome to
 //!   compare against.
-//! * `binary decode uuencode` of a line that declares more bytes than its
-//!   characters carry reads past the end of that line in tclsh, and what it
-//!   answers is whatever was in memory.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -152,7 +149,7 @@ const PROGRAMS: &[&str] = &[
     // inside one, and the byte offset a refusal names — of the UTF-8 when a
     // character does not fit in a byte.
     "foreach s {WFk= \"WFk=\\n\" WFk WF W {} WFk=x WF== W=== = a= YWJj {YW Jj} YWJjZA== YWJjZA= YWJjZA Y\\u00e9WJj YW\\u4e2dJj \"YWJj\\n\" { YWJj} {YWJjZA==  } \"YWJjZA==\\n\\n\" YWJ=ZA==} {foreach st {{} -strict} {set r [catch {binary decode base64 {*}$st [subst $s]} m]\nputs [list $st $s $r [expr {$r ? $m : [hex $m]}]]}}",
-    "foreach s {{#04)#z} #04)# \"#04)#\\n\" \"#04)#\\n#04)#\\n\" {#04) #} { #04)#} a ` \"`\\n\" \"#04)#\\n`\\n\" \"#04)#\\r\\n\" \"\\n#04)#\" #\\u00e904)# YWJj} {foreach st {{} -strict} {set r [catch {binary decode uuencode {*}$st [subst $s]} m]\nputs [list $st $s $r [expr {$r ? $m : [hex $m]}]]}}",
+    "foreach s {{#04)#z} #04)# \"#04)#\\n\" \"#04)#\\n#04)#\\n\" {#04) #} { #04)#} a ` \"`\\n\" \"#04)#\\n`\\n\" \"#04)#\\r\\n\" \"\\n#04)#\" #\\u00e904)# YWJj ! 616263 {\"9V(}} {foreach st {{} -strict} {set r [catch {binary decode uuencode {*}$st [subst $s]} m]\nputs [list $st $s $r [expr {$r ? $m : [hex $m]}]]}}",
     "set s \">[string repeat 86)C 10]\\n\\t>\\t[string repeat 86)C 10]\\r\"\nputs [hex [binary decode uuencode $s]]\nset s \">[string repeat 86)C 10]\\na[string repeat 86)C 10]\"\nputs [catch {binary decode uuencode -strict $s} m]$m",
 ];
 
