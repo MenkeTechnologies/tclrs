@@ -1927,6 +1927,15 @@ re-measured against tclsh 9.0.4 and pinned by a differential program:
   now reads every form through the `GetEndOffsetFromObj` port, and the string
   commands, which had a second index reader of their own with the same
   saturation, call it instead.
+- **A letter operator touching a digit was read as part of a bare word.**
+  `ParseLexeme` ends `eq`, `ne`, `in`, `ni`, `lt`, `gt`, `le` and `ge` at the
+  first character that is not a letter, so `expr 1eq4>3` is 1 and
+  `expr {2ne3}` is 1 in tclsh (`expr-old-14.9`…`14.15`); here a digit or `_`
+  after the operator made it a bare word. The word a leftover-text diagnostic
+  names is now taken from where its operand starts (`expr {1 eq2a}` names
+  `2a`), and a leftover word that is itself an operand — a function call, with
+  or without space before its `(`, or `Inf`/`NaN` — is `missing operator at
+  _@_`, as tclsh lexes it.
 
 ## What the differential fuzzer cannot reach
 

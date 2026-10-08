@@ -113,6 +113,7 @@ pub fn parse(src: &str) -> Result<Expr, ParseError> {
         pos: 0,
         open_parens: 0,
         depth: 0,
+        operand_start: 0,
     };
     p.skip_space();
     // An expression with no tokens at all is its own diagnostic in tclsh 9.0.4,
@@ -397,6 +398,11 @@ struct ExprParser<'a> {
     /// How many subexpressions are open at the cursor — the recursion this
     /// parser does, bounded by [`MAX_EXPR_DEPTH`].
     depth: usize,
+    /// Where the operand read last began. A word left over after a complete
+    /// expression is named from there at the earliest: `expr {1 eq2a}` lexes
+    /// `eq` and then the number `2` followed by bareword characters, so tclsh
+    /// names `2a`, not the whole run `eq2a`.
+    operand_start: usize,
 }
 
 impl<'a> ExprParser<'a> {
@@ -516,7 +522,7 @@ impl<'a> ExprParser<'a> {
                 // is the one place the run and the word disagree — measured
                 // across 53 spellings, every other one is the run.
                 let mut lo = self.pos;
-                while lo > 0 && is_word(b[lo - 1]) {
+                while lo > self.operand_start && is_word(b[lo - 1]) {
                     lo -= 1;
                 }
                 if lo > 0 && b[lo - 1] == b'.' {
@@ -531,6 +537,24 @@ impl<'a> ExprParser<'a> {
                 // is the missing operator between them: `expr {1 y}` is
                 // `missing operator at _@_` where `expr {1 x}` names `x`.
                 if crate::runtime::boolean_word(word).is_some() {
+                    return self.error("missing operator at _@_");
+                }
+                // So is a word that is an operand of another kind, lexed from
+                // where it starts (`ParseLexeme`): a bare word followed by `(`
+                // — white space between the two allowed, as
+                // `TclParseAllWhiteSpace` allows it — is a function call, and
+                // `Inf` or `NaN` is a number. `expr {1 int(2)}` and
+                // `expr {1 Inf}` are both `missing operator at _@_` in tclsh.
+                let call = b[end..]
+                    .iter()
+                    .find(|c| !matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c));
+                if lo == self.pos
+                    && (call == Some(&b'(')
+                        || matches!(
+                            crate::runtime::parse_number(word),
+                            Ok(crate::runtime::Num::Float(_))
+                        ))
+                {
                     return self.error("missing operator at _@_");
                 }
                 self.error(&format!("invalid bareword {word:?}"))
@@ -568,7 +592,7 @@ impl<'a> ExprParser<'a> {
         }
         if op.as_bytes()[0].is_ascii_alphabetic() {
             match self.bytes().get(self.pos + op.len()) {
-                Some(b) if b.is_ascii_alphanumeric() || *b == b'_' => return false,
+                Some(b) if b.is_ascii_alphabetic() => return false,
                 _ => {}
             }
         }
@@ -651,6 +675,7 @@ impl<'a> ExprParser<'a> {
 
     fn parse_operand(&mut self) -> Result<Expr, ParseError> {
         self.skip_space();
+        self.operand_start = self.pos;
         match self.peek() {
             None => Err(self.missing_operand()),
             Some(b'(') => {

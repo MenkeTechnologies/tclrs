@@ -87,6 +87,26 @@ const LITERALS: &[&str] = &[
     "1 ni {2}",
     "inf",
     "inf > 1",
+    // A letter operator ends at the first character that is no letter, so a
+    // digit or `_` may touch it (`ParseLexeme`): `1eq4>3` is `1 eq (4>3)`, and
+    // a number running into one is the number and the operator.
+    "1eq4>3",
+    "2ne3",
+    "1e3eq1000",
+    "1 in1",
+    "2ni3",
+    "1lt2",
+    "1 eq_x",
+    "1 eqx",
+    "0x1eq1",
+    // The word left over is lexed from where its operand starts, and an
+    // operand of another kind — a call, an infinity — is a missing operator.
+    "1 eq2a",
+    "1 int(2)",
+    "1 foo (2)",
+    "1 Inf",
+    "1 nan",
+    "1 Infx",
     // ── arithmetic on separated literals, so the value is compared too ──────
     "1_0 + 1",
     "0x1_0 * 2",
