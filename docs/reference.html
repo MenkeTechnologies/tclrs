@@ -163,7 +163,7 @@
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">143/169</div>
+            <div class="stat-val">147/169</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -822,14 +822,13 @@
 
       <section class="tutorial-section" id="ch-array">
         <h2>The <code>array</code> ensemble</h2>
-        <p class="chapter-meta">13 subcommands recognised &middot; 6 implemented &middot; 7 refused</p>
+        <p class="chapter-meta">13 subcommands recognised &middot; 10 implemented &middot; 3 refused</p>
         <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
         <article class="doc-entry" id="doc-array-anymore">
           <h3><a class="doc-anchor" href="#doc-array-anymore">#</a> <code>array anymore</code></h3>
           <pre><code class="lang-tcl">array anymore arrayName searchId
 </code></pre>
           <p>Whether a search opened by <code>array startsearch</code> has elements left to hand out — 1 or 0. The four search-token subcommands need a cursor held across commands and keyed by the token <code>startsearch</code> returned, which is state this frontend does not keep, so all four are refused together.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>array anymore is not supported yet</code></p>
         </article>
         <article class="doc-entry" id="doc-array-default">
           <h3><a class="doc-anchor" href="#doc-array-default">#</a> <code>array default</code></h3>
@@ -843,7 +842,6 @@
           <pre><code class="lang-tcl">array donesearch arrayName searchId
 </code></pre>
           <p>Close a search and release its token, returning the empty string. Refused with the rest of the search-token family.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>array donesearch is not supported yet</code></p>
         </article>
         <article class="doc-entry" id="doc-array-exists">
           <h3><a class="doc-anchor" href="#doc-array-exists">#</a> <code>array exists</code></h3>
@@ -875,7 +873,6 @@
           <pre><code class="lang-tcl">array nextelement arrayName searchId
 </code></pre>
           <p>The next element name a search has to give, or the empty string when it is exhausted. Refused with the rest of the search-token family.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>array nextelement is not supported yet</code></p>
         </article>
         <article class="doc-entry" id="doc-array-set">
           <h3><a class="doc-anchor" href="#doc-array-set">#</a> <code>array set</code></h3>
@@ -894,7 +891,6 @@
           <pre><code class="lang-tcl">array startsearch arrayName
 </code></pre>
           <p>Open a traversal of the array and return a token naming it, such as <code>s-1-a</code>. The token identifies a cursor the interpreter holds until <code>array donesearch</code>, which is the state this frontend does not have.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>array startsearch is not supported yet</code></p>
         </article>
         <article class="doc-entry" id="doc-array-statistics">
           <h3><a class="doc-anchor" href="#doc-array-statistics">#</a> <code>array statistics</code></h3>
@@ -1475,7 +1471,7 @@
         </article>
         <article class="doc-entry" id="doc-clock-scan">
           <h3><a class="doc-anchor" href="#doc-clock-scan">#</a> <code>clock scan</code></h3>
-          <pre><code class="lang-tcl">clock scan string ?-format string? ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE?
+          <pre><code class="lang-tcl">clock scan string ?-base seconds? ?-format string? ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE? ?-validate boolean?
 </code></pre>
           <p>Text as an instant. The -format form only; the free-form parser is refused.</p>
         </article>
