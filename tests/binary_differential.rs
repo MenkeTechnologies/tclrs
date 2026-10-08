@@ -150,6 +150,10 @@ const PROGRAMS: &[&str] = &[
     // character does not fit in a byte.
     "foreach s {WFk= \"WFk=\\n\" WFk WF W {} WFk=x WF== W=== = a= YWJj {YW Jj} YWJjZA== YWJjZA= YWJjZA Y\\u00e9WJj YW\\u4e2dJj \"YWJj\\n\" { YWJj} {YWJjZA==  } \"YWJjZA==\\n\\n\" YWJ=ZA==} {foreach st {{} -strict} {set r [catch {binary decode base64 {*}$st [subst $s]} m]\nputs [list $st $s $r [expr {$r ? $m : [hex $m]}]]}}",
     "foreach s {{#04)#z} #04)# \"#04)#\\n\" \"#04)#\\n#04)#\\n\" {#04) #} { #04)#} a ` \"`\\n\" \"#04)#\\n`\\n\" \"#04)#\\r\\n\" \"\\n#04)#\" #\\u00e904)# YWJj ! 616263 {\"9V(}} {foreach st {{} -strict} {set r [catch {binary decode uuencode {*}$st [subst $s]} m]\nputs [list $st $s $r [expr {$r ? $m : [hex $m]}]]}}",
+    // A NaN keeps its sign and payload both ways: `TclFormatNaN` writes them,
+    // `TclParseNumber` reads `NaN(hex)` with blanks among the digits.
+    "puts [list [binary scan \\xFF\\xFF\\xFF\\xFF f1 a] $a]\nputs [list [binary scan \\xFF\\xFF\\xFF\\xFF\\xFF\\xFF\\xFF\\xFF d a] $a]\nbinary scan [binary format w 0x7ff0123456789aBc] q d\nputs $d\nbinary scan [binary format d -NaN] w w\nputs [format %llx $w]",
+    "foreach s {NaN(3123456789aBc) {NaN( 3123456789aBc)} nan -NaN NaN(1) NaN() NaN(12345678901234) NaN(1)x} {puts [list $s [string is double $s] [catch {binary format q $s} m] [expr {[catch {binary scan [binary format q $s] w w}] ? {} : [format %llx $w]}]]}",
     "set s \">[string repeat 86)C 10]\\n\\t>\\t[string repeat 86)C 10]\\r\"\nputs [hex [binary decode uuencode $s]]\nset s \">[string repeat 86)C 10]\\na[string repeat 86)C 10]\"\nputs [catch {binary decode uuencode -strict $s} m]$m",
 ];
 

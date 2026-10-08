@@ -520,7 +520,12 @@ pub fn parse_double(text: &str) -> Option<f64> {
     if let Some(i) = parse_int(text) {
         return Some(i as f64);
     }
-    trim_space(text).parse::<f64>().ok()
+    let body = trim_space(text);
+    let unsigned = body.strip_prefix(['-', '+']).unwrap_or(body);
+    if let Some(nan) = crate::runtime::parse_nan(unsigned, body.starts_with('-')) {
+        return Some(nan);
+    }
+    body.parse::<f64>().ok()
 }
 
 fn trim_space(text: &str) -> &str {

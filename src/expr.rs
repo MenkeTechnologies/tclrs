@@ -909,7 +909,18 @@ impl<'a> ExprParser<'a> {
         // these three and nothing more (`infinit`, `infx` and `nano` are all
         // `invalid bareword` in tclsh 9.0.4, and so are they here).
         //
-        // Tested before the `(` below, because there is no `inf(...)`.
+        // Tested before the `(` below, because there is no `inf(...)`. A `(`
+        // straight after `nan` may open the payload `TclParseNumber` reads,
+        // `NaN(hexdigits)`, which is then all one literal.
+        if name.eq_ignore_ascii_case("nan") && b.get(end) == Some(&b'(') {
+            if let Some(close) = self.src[end..].find(')').map(|at| end + at) {
+                let spelling = &self.src[start..=close];
+                if let Some(f) = crate::runtime::parse_nan(spelling, false) {
+                    self.pos = close + 1;
+                    return Ok(Expr::Float(f, spelling.into()));
+                }
+            }
+        }
         if let Ok(f) = name.parse::<f64>() {
             self.pos = end;
             // The spelling is carried like every other numeric literal's, so

@@ -1887,7 +1887,9 @@ fn is_double(text: &str) -> bool {
     }
     let body = text.strip_prefix(['-', '+']).unwrap_or(text);
     let folded = body.to_ascii_lowercase();
-    if matches!(folded.as_str(), "inf" | "infinity" | "nan") {
+    if matches!(folded.as_str(), "inf" | "infinity")
+        || crate::runtime::parse_nan(body, false).is_some()
+    {
         return true;
     }
     let (mantissa, exponent) = match folded.split_once('e') {
@@ -2623,6 +2625,11 @@ pub(crate) fn parse_double(text: &str) -> Option<f64> {
         } else {
             value
         });
+    }
+    // A NaN keeps its sign and payload, which no other parser here carries.
+    let unsigned = body.strip_prefix(['-', '+']).unwrap_or(body);
+    if let Some(nan) = crate::runtime::parse_nan(unsigned, body.starts_with('-')) {
+        return Some(nan);
     }
     if !is_double(body) {
         return None;

@@ -135,6 +135,8 @@ const PROGRAMS: &[&str] = &[
     "puts [catch {expr {int(inf)}} m]\nputs $m",
     "puts [catch {expr {round(inf)}} m]\nputs $m",
     "puts [catch {expr {double(nan)}} m]\nputs $m",
+    // `NaN(hex)` is one literal to the lexer, and refused as an operand.
+    "foreach e {{NaN(5) + 1} {NaN (5)} {NaN(5x)} {nan(ff) == 1} {NaN() + 1} {-NaN(5) + 1}} {puts [list $e [catch {expr $e} m] $m]}",
     "puts [catch {expr {abs(nan)}} m]\nputs $m",
     "puts [catch {expr {bool(\"\")}} m]\nputs $m",
     "puts [catch {expr {abs()}} m]\nputs $m",

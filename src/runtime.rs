@@ -3516,6 +3516,9 @@ pub(crate) fn parse_number(text: &str) -> Result<Num, NotNumeric> {
         b'+' => (1, &text[1..]),
         _ => (1, text),
     };
+    if let Some(nan) = parse_nan(body, sign < 0) {
+        return Ok(Num::Float(nan));
+    }
     // Tcl 9's radix prefixes. A leading zero is *not* one of them: `010` is ten,
     // as `0d10` is, which is why there is a `0d` at all.
     //
@@ -3579,6 +3582,48 @@ pub(crate) fn parse_number(text: &str) -> Result<Num, NotNumeric> {
     body.parse::<f64>()
         .map(|f| Num::Float(sign as f64 * f))
         .map_err(|_| NotNumeric::Unparsable)
+}
+
+/// `TclParseNumber`'s NaN states: `NaN` in any case, optionally followed by
+/// `(`, up to thirteen hex digits with blanks allowed among them, and `)`. The
+/// digits are the payload `MakeNaN` puts in the low 51 bits of a quiet NaN.
+/// `None` when the text is not that, which leaves it to the other forms.
+pub(crate) fn parse_nan(body: &str, negative: bool) -> Option<f64> {
+    let head = body.get(..3)?;
+    if !head.eq_ignore_ascii_case("nan") {
+        return None;
+    }
+    let rest = &body[3..];
+    if rest.is_empty() {
+        return Some(make_nan(negative, 0));
+    }
+    let inner = rest.strip_prefix('(')?.strip_suffix(')')?;
+    let mut tags: u64 = 0;
+    let mut digits = 0;
+    for c in inner.chars() {
+        // `TclIsSpaceProcM`: a blank at or below 0x20.
+        if matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r') {
+            continue;
+        }
+        let d = c.to_digit(16)?;
+        if digits == 13 {
+            return None;
+        }
+        digits += 1;
+        tags = tags << 4 | u64::from(d);
+    }
+    (digits > 0).then(|| make_nan(negative, tags))
+}
+
+/// `MakeNaN`: a quiet NaN carrying `tags` in its low 51 bits.
+fn make_nan(negative: bool, tags: u64) -> f64 {
+    const NAN_START: u64 = 0x7ff8;
+    let high = if negative {
+        0x8000 | NAN_START
+    } else {
+        NAN_START
+    };
+    f64::from_bits(tags & ((1 << 51) - 1) | high << 48)
 }
 
 /// A magnitude too wide for an `i64`, given its sign. The one negative value
@@ -5013,7 +5058,16 @@ pub fn to_tcl_string(v: &Value) -> String {
 /// with at least one digit after the point.
 pub fn format_double(f: f64) -> String {
     if f.is_nan() {
-        return "NaN".to_string();
+        // `TclFormatNaN`: the sign, and the payload below the quiet bit in
+        // hex when there is one.
+        let bits = f.to_bits();
+        let sign = if bits >> 63 == 1 { "-" } else { "" };
+        let tags = bits & ((1 << 51) - 1);
+        return if tags == 0 {
+            format!("{sign}NaN")
+        } else {
+            format!("{sign}NaN({tags:x})")
+        };
     }
     if f.is_infinite() {
         return if f > 0.0 { "Inf" } else { "-Inf" }.to_string();
