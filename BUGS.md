@@ -2079,6 +2079,21 @@ A fourth was not in the list above, because nothing had found it yet:
   character, which is what tclsh prints for the same script, measured byte for
   byte.
 
+The official suite's `clock` files found one more:
+
+- **`clock scan -format %s` panicked on a value at the edge of the wide
+  range.** The digit reader accumulated a positive `i64` and negated it, so
+  `clock scan -9223372036854775808 -format %s` was `attempt to add with
+  overflow`, and 19 nines were `attempt to multiply with overflow`.
+  **Fixed** by porting `Clock_str2wideInt` (`tclClockFmt.c:133`) for every
+  wide token (`%s`, `%J`, `%Es`): all the digits are taken, more than 19
+  overflow whatever their value, and an out-of-range run is `integer value too
+  large to represent`; `%EJ`/`%Ej` read the same overflow as no match, as
+  `ClockScnToken_JDN_Proc` does. Found by `clock-6.0`, `clock-6.9`,
+  `clock-6.10` and `clock-6.10d` in both `clock.test` and `clock-ivm.test`.
+  Their `-errorcode` (`CLOCK dateTooLarge`) is still absent: the message is
+  shared with `ARITH IOVERFLOW` (`src/errorcode.rs`).
+
 ## Defects in the reference implementation
 
 - **tclsh 9.0.4 reads one byte past its input to describe a `cesu-8` decoding

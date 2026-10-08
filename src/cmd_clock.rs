@@ -1775,15 +1775,45 @@ fn scan_time(
     assemble(got, zone, validate)
 }
 
-/// A signed run of digits — `%s`, `%J` and the integer part of a Julian day.
-/// The sign is read first because `Clock_str2wideInt` is handed one.
+/// A signed run of digits — `%s`, `%J`, `%Es` and the integer part of a Julian
+/// day. The sign is read first because `Clock_str2wideInt` is handed one, and
+/// every digit is taken: those tokens' `maxSize` is `0xffff`.
+///
+/// A run that does not fit a wide integer is `integer value too large to
+/// represent`, the `overflow` exit of `ClockScan` (`tclClockFmt.c:2692`).
 fn signed(text: &[char], at: &mut usize) -> Result<i64, String> {
     let negative = text.get(*at) == Some(&'-');
     if negative || text.get(*at) == Some(&'+') {
         *at += 1;
     }
-    let value = take_digits(text, at, 19).ok_or_else(no_match)?;
-    Ok(if negative { -value } else { value })
+    let start = *at;
+    while text.get(*at).is_some_and(char::is_ascii_digit) {
+        *at += 1;
+    }
+    if *at == start {
+        return Err(no_match());
+    }
+    str2wide(&text[start..*at], negative).ok_or_else(overflow)
+}
+
+/// `Clock_str2wideInt` (`tclClockFmt.c:133`): more than 19 digits overflow
+/// whatever their value, so a run padded with leading zeroes past 19 does too;
+/// otherwise the value must lie in the wide range, which reaches one further
+/// below zero than above it.
+fn str2wide(digits: &[char], negative: bool) -> Option<i64> {
+    if digits.len() > 19 {
+        return None;
+    }
+    // Accumulated below zero, where the whole range fits.
+    let mut value: i64 = 0;
+    for d in digits {
+        value = value.checked_mul(10)?.checked_sub(d.to_digit(10)? as i64)?;
+    }
+    if negative {
+        Some(value)
+    } else {
+        value.checked_neg()
+    }
 }
 
 /// A token under an `%E` or `%O` modifier — `ScnETokenMap` and
@@ -1857,7 +1887,8 @@ fn scan_modified(
         // and no zone applies.
         'J' | 'j' => {
             let offset = if token == 'j' { SECONDS_PER_DAY / 2 } else { 0 };
-            let mut day = signed(text, at)?;
+            // An overflowing day number is `TCL_RETURN` there, so no match.
+            let mut day = signed(text, at).map_err(|_| no_match())?;
             got.flags |= flag::JULIANDAY;
             let fraction = scan_day_fraction(text, at);
             if fraction.is_none() && token == 'J' {

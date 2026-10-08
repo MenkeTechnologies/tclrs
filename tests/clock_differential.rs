@@ -58,6 +58,11 @@ const PROGRAMS: &[&str] = &[
     "puts [clock scan {2009-044} -format {%Y-%j} -gmt 1]",
     "puts [clock scan {11:31:30 pm 2009-02-13} -format {%I:%M:%S %P %Y-%m-%d} -gmt 1]",
     "puts [clock scan 1234567890 -format %s -gmt 1]",
+    // `Clock_str2wideInt`: `%s`, `%J` and `%Es` take every digit and refuse a
+    // run outside the wide range, the most negative value included as valid;
+    // twenty digits overflow even when they are leading zeroes, and the
+    // Julian-day parser of `%EJ` reads its overflow as no match.
+    "foreach {s f} {-9223372036854775808 %s 9223372036854775807 %s -9223372036854775809 %s 9223372036854775808 %s 9999999999999999999 %s 00000000000000000001 %s 99999999999999999999 %J 99999999999999999999 %Es 99999999999999999999 %EJ - %s} {puts [list [catch {clock scan $s -format $f -gmt 1} m] $m]}",
     "puts [clock scan {09-02-13} -format {%y-%m-%d} -gmt 1]",
     "puts [clock scan {99-02-13} -format {%y-%m-%d} -gmt 1]",
     "puts [clock scan {20090213} -format {%Y%m%d} -gmt 1]",
