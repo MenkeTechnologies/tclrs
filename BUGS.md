@@ -1521,7 +1521,12 @@ tclsh, with the seed and case number of the divergence it was reduced from.
 - **`%` checks its left operand first**, so `expr {1.5 % "a"}` names the float
   rather than the string, which is the order tclsh checks them in.
 - **An exponent past what can be applied** is `exponent too large`, not the
-  overflow the product would have reported.
+  overflow the product would have reported: for a base of at least 2 in
+  magnitude that is any exponent of 2**28 or more, the one `mp_digit` the
+  reference interpreter takes, so `expr {3**268435456}` is that message rather
+  than `integer value too large to represent`. An integer to the first power
+  is the operand itself, spelling included (`expr {007 ** 1}` is `007`), and so
+  is an integer modulo a larger bignum of its sign.
 - **`incr` on a variable that does not exist counts from zero.** `proc p {} {incr
   n; return $n}` was an operand refusal and is 1. `incr` keeps its native
   `Op::Add` — an extension op there costs `bench/counted_loop_proc.tcl` its trace
