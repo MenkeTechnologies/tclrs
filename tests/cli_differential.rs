@@ -86,6 +86,10 @@ const FAILING: &[&str] = &[
     "puts [expr {1/0}]",
     "puts [expr {1 % 0}]",
     "llength {a {b}",
+    // A script file's own commands run uncompiled in tclsh, so the compile-time
+    // fold of `string range` (`TclCompileStringRangeCmd`) does not apply to
+    // them and the bad last index is read; inside a body it would be skipped.
+    "puts [string range abc end+5 bad]",
 ];
 
 /// Whole stdin sessions. The driver reads stdin a command at a time, so a

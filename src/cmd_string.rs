@@ -267,7 +267,7 @@ impl Compiler {
             "length" => self.fixed(ext::LENGTH, rest, 1, 1, sub, "string"),
             "reverse" => self.fixed(ext::REVERSE, rest, 1, 1, sub, "string"),
             "map" | "match" => self.cmd_string_nocase(sub, rest),
-            "range" => self.fixed(ext::RANGE, rest, 3, 3, sub, "string first last"),
+            "range" => self.cmd_string_range(rest),
             "repeat" => self.fixed(ext::REPEAT, rest, 2, 2, sub, "string count"),
             "replace" => self.fixed(ext::REPLACE, rest, 3, 4, sub, "string first last ?string?"),
             "tolower" | "totitle" | "toupper" => {
@@ -290,6 +290,38 @@ impl Compiler {
             "wordstart" => self.fixed(ext::WORDSTART, rest, 2, 2, sub, "string charIndex"),
             other => self.error(format!("\"string {other}\" is not supported yet")),
         }
+    }
+
+    /// `string range`, folded as `TclCompileStringRangeCmd`
+    /// (`generic/tclCompCmdsSZ.c:971`) folds it: when the first index is a
+    /// literal that [`crate::list::index_encode`] places past the end, or the last is
+    /// one it places before the start, the answer is the empty string whatever
+    /// the string is. The string is still evaluated and dropped, but an index
+    /// word after the deciding one is never read — so `string range abc end+5
+    /// bad` is the empty string, not `bad index "bad"`, and a substitution in
+    /// that word never runs. Every other form runs the command, and so does
+    /// every command tclsh would not compile — see
+    /// [`Compiler::tclsh_compiles_here`].
+    fn cmd_string_range(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        use crate::list::{index_encode, INDEX_END, INDEX_NONE, INDEX_START};
+        if self.tclsh_compiles_here() && args.len() == 3 && args.iter().all(|w| !w.expand) {
+            let known = |w: &Word, before, after| {
+                w.as_literal()
+                    .and_then(|text| index_encode(text, before, after))
+            };
+            let empty = match known(&args[1], INDEX_START, INDEX_NONE) {
+                Some(INDEX_NONE) => true,
+                Some(_) => known(&args[2], INDEX_NONE, INDEX_END) == Some(INDEX_NONE),
+                None => false,
+            };
+            if empty {
+                self.word(&args[0])?;
+                self.emit(Op::Pop, -1);
+                self.push_empty();
+                return Ok(());
+            }
+        }
+        self.fixed(ext::RANGE, args, 3, 3, "range", "string first last")
     }
 
     /// A subcommand whose arguments are all values, with an arity range.

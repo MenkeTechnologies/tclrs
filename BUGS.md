@@ -1877,17 +1877,15 @@ Still open from the same runs:
   infinity (`Compiler::may_be_non_finite`) adds the `CANON` op that refuses one.
   Closing it without an extension op per arithmetic op needs a NaN-result trap in
   fusevm itself.
-- **A literal index tclsh folds while compiling.** `string range {} end+5 bad`
-  is the empty string in tclsh, because `TclCompileStringRangeCmd` encodes a
-  literal first index past the end and never reads the second; here the second
-  index is parsed and refused.
+- **A literal index tclsh folds while compiling** — now closed in every context
+  tclsh compiles; see "Fixed from the official suite's failures" below.
 - **`lsearch -sorted -real` over a list holding a NaN** finds what a linear scan
   finds; tclsh's binary search meets the NaN and refuses it.
 
 ### Fixed from the official suite's failures
 
-Found in `conformance/work/failures.txt`, each re-measured against tclsh 9.0.4
-and pinned by a differential program:
+Found in `conformance/work/failures.txt` or by `scripts/fuzz_parity.sh`, each
+re-measured against tclsh 9.0.4 and pinned by a differential program:
 
 - **A loop's test absorbed a `break` or `continue` it raised.**
   `catch {for {} {[break]} {} {}}` was 0 where tclsh says 3, and
@@ -1901,6 +1899,21 @@ and pinned by a differential program:
   which had skipped the inner `LOOP_LEAVE` and left its region open
   (`foreach i {1} {while {[break]} {}}` then re-ran code on a later `break`).
   `for-6.17`, `for-6.18`.
+- **`string range` did not fold a literal index the way tclsh's compiler
+  does.** `TclCompileStringRangeCmd` (`generic/tclCompCmdsSZ.c:971`) encodes a
+  literal first index with `TclIndexEncode` and, when it lies past the end,
+  answers the empty string without reading the last index — so
+  `string range abc end+5 bad` is `{}` in a body, and a substitution in that
+  last word never runs; a literal last index before the start does the same.
+  Ported with `TclIndexEncode`'s 64-bit range rules (`list::index_encode`),
+  which leave `end+1` and the plain indices from 2³¹ up to `WIDE_MAX - 2`
+  unfolded, exactly as tclsh leaves them. The fold applies only where tclsh
+  compiles (`Compiler::tclsh_compiles_here`): a script file's own commands and
+  the substitutions in their words run uncompiled there, so at a file's top
+  level the bad index is still reported. Still divergent: tclsh also compiles
+  the script of `eval`, `uplevel` and a non-interactive stdin session, which
+  tclrs compiles as a top-level script, so the fold is not applied there.
+  Found by the fuzzer (seed 42, case 295).
 
 ## What the differential fuzzer cannot reach
 

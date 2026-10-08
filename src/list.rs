@@ -593,6 +593,186 @@ pub(crate) fn number_error(kind: &str, text: &str) -> String {
     format!("expected {kind} but got \"{}\"", &text[..end])
 }
 
+/// `TCL_INDEX_NONE`, as [`index_encode`] answers it: a position no element has.
+pub(crate) const INDEX_NONE: i64 = -1;
+/// `TCL_INDEX_END`, as [`index_encode`] answers it: the last element.
+pub(crate) const INDEX_END: i64 = -2;
+/// `TCL_INDEX_START`, as [`index_encode`] answers it: the first element.
+pub(crate) const INDEX_START: i64 = 0;
+
+/// `TclIndexEncode` (`generic/tclUtil.c:3832`): the compile-time encoding of a
+/// literal index, which the bytecode compiler uses to fold a command whose
+/// index words are known. `before` and `after` stand for an index before the
+/// first element and one past the last; an index in the encodable range comes
+/// back as itself, and `end-N` as `INDEX_END - N`.
+///
+/// `None` is `TCL_ERROR`: the text is no index at all, or it is one the 64-bit
+/// encoding has no room for — a plain index from 2³¹ up to `WIDE_MAX - 2`, or
+/// `end-N` with `N` from 2³¹ - 1 up to `LIST_MAX`. The compiler then leaves the
+/// command to run, and the index is read again then.
+///
+/// `end+1` is one of those: `GetEndOffsetFromObj` stores it as `WIDE_MAX`, a
+/// non-negative offset, so it is read down the purely numeric path as the
+/// number `2 * INT_MAX + 1`, which is out of range. `end+2` is `WIDE_MAX - 1`
+/// and becomes `after`.
+pub(crate) fn index_encode(text: &str, before: i64, after: i64) -> Option<i64> {
+    const INT_MAX: i64 = i32::MAX as i64;
+    // The "end value" `TclIndexEncode` hands `GetWideForIndex`.
+    const END_VALUE: i64 = 2 * INT_MAX;
+    // `LIST_MAX` on a 64-bit build: `(TCL_SIZE_MAX - offsetof(ListStore,
+    // slots)) / sizeof(Tcl_Obj *)`, the slots following four eight-byte fields
+    // and an `int`, padded to 40 bytes.
+    const LIST_MAX: i64 = (i64::MAX - 40) / 8;
+
+    let (wide, numeric) = wide_for_index(text, END_VALUE)?;
+    let index = if numeric {
+        if wide > INT_MAX && wide < i64::MAX - 1 {
+            return None;
+        }
+        if wide > INT_MAX {
+            after
+        } else if wide < 0 {
+            before
+        } else {
+            wide
+        }
+    } else {
+        if wide > END_VALUE - LIST_MAX && wide <= INT_MAX {
+            return None;
+        }
+        if wide > END_VALUE {
+            after
+        } else if wide <= INT_MAX {
+            before
+        } else {
+            // `(int)wide`: `end` itself is `2 * INT_MAX`, which is -2.
+            i64::from(wide as i32)
+        }
+    };
+    Some(index)
+}
+
+/// `GetWideForIndex` with an `endValue` that is not -1, and whether
+/// `TclIndexEncode` then reads the answer as a plain number — an integer, or an
+/// index expression whose stored offset is not negative — rather than as one
+/// counted from `end`.
+fn wide_for_index(text: &str, end_value: i64) -> Option<(i64, bool)> {
+    use crate::runtime::{parse_number, Num};
+    match parse_number(trim_space(text)) {
+        Ok(Num::Int(i)) => return Some((if i < 0 { -1 } else { i }, true)),
+        Ok(Num::Big(b)) => {
+            let negative = b.sign() == num_bigint::Sign::Minus;
+            return Some((if negative { i64::MIN } else { i64::MAX }, true));
+        }
+        _ => {}
+    }
+    let offset = end_offset_value(text)?;
+    let wide = if offset == i64::MAX {
+        end_value + 1
+    } else if offset == i64::MIN {
+        -1
+    } else if offset < 0 {
+        end_value + offset + 1
+    } else {
+        offset
+    };
+    Some((wide, offset >= 0))
+}
+
+/// The offset `GetEndOffsetFromObj` (`generic/tclUtil.c:3532`) stores for a
+/// non-numeric index: `WIDE_MAX` is `end+1`, `WIDE_MAX - 1` any later
+/// `end+N`, -1 is `end`, `-N - 1` is `end-N`, `WIDE_MIN` is before the start,
+/// and a non-negative value is an `integer±integer` sum.
+fn end_offset_value(text: &str) -> Option<i64> {
+    use crate::runtime::{parse_number, Num};
+    use num_bigint::BigInt;
+    // An integer-only parse: a double, a NaN or anything else is no index.
+    let integer = |s: &str| match parse_number(trim_space(s)) {
+        Ok(Num::Int(i)) => Some(BigInt::from(i)),
+        Ok(Num::Big(b)) => Some(b),
+        _ => None,
+    };
+    let truncate = |v: &BigInt| {
+        i64::try_from(v).unwrap_or(if v.sign() == num_bigint::Sign::Minus {
+            i64::MIN
+        } else {
+            i64::MAX
+        })
+    };
+    let bytes = text.as_bytes();
+    if !text.starts_with('e') {
+        if is_multi_element(text) {
+            return None;
+        }
+        let at = int_prefix_end(text);
+        if at >= bytes.len() || (bytes[at] != b'+' && bytes[at] != b'-') {
+            return None;
+        }
+        let (left, right) = (integer(&text[..at])?, integer(&text[at + 1..])?);
+        let minus = bytes[at] == b'-';
+        let offset = match (i64::try_from(&left), i64::try_from(&right)) {
+            // Both wide: wide arithmetic, saturating at either bound.
+            (Ok(w1), Ok(w2)) if !(minus && w2 == i64::MIN) => {
+                let w2 = if minus { -w2 } else { w2 };
+                w1.saturating_add(w2)
+            }
+            // A bignum on either side, or `- WIDE_MIN`: the exact sum, as
+            // `Tcl_ExprObj` computes it, truncated to the wide range.
+            _ => truncate(&if minus { left - right } else { left + right }),
+        };
+        return Some(if offset == -1 {
+            i64::MIN
+        } else if offset < 0 {
+            i64::MIN + 1
+        } else {
+            offset
+        });
+    }
+    if bytes.len() < 3 || bytes.len() == 4 || !text.starts_with("end") {
+        return None;
+    }
+    if bytes.len() == 3 {
+        return Some(-1);
+    }
+    if (bytes[3] != b'-' && bytes[3] != b'+') || is_space(bytes[4]) {
+        return None;
+    }
+    let minus = bytes[3] == b'-';
+    let value = integer(&text[4..])?;
+    let offset = match i64::try_from(&value) {
+        Ok(v) => {
+            let v = if minus {
+                if v == i64::MIN {
+                    i64::MAX
+                } else {
+                    -v
+                }
+            } else {
+                v
+            };
+            if v == 1 {
+                i64::MAX
+            } else if v > 1 {
+                i64::MAX - 1
+            } else if v != i64::MIN {
+                v - 1
+            } else {
+                v
+            }
+        }
+        // A bignum offset saturates in the direction it points.
+        Err(_) => {
+            let negative = value.sign() == num_bigint::Sign::Minus;
+            if negative == minus {
+                i64::MAX
+            } else {
+                i64::MIN
+            }
+        }
+    };
+    Some(offset)
+}
+
 /// Resolve an index against a list, with `end_value` the index `end` names —
 /// one less than the length for commands that address an element, the length
 /// itself for `linsert`, which can address the position after the last one.

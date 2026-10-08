@@ -1565,6 +1565,19 @@ impl Compiler {
         self.emit(Op::LoadConst(idx), 1);
     }
 
+    /// Whether tclsh would run the command being compiled as bytecode, which is
+    /// where its compile procedures fold literal arguments.
+    ///
+    /// A script file's own commands are not compiled there: `Tcl_FSEvalFileEx`
+    /// evaluates the file's top level command by command, and the command
+    /// substitutions in those commands' words the same way, so a command there
+    /// runs its object command with the words as written. Everything a command
+    /// hands on as a script or an expression — a body, a procedure, a
+    /// condition, a `namespace eval` script — is compiled before it runs.
+    pub(crate) fn tclsh_compiles_here(&self) -> bool {
+        self.body_depth > 0 || self.scope.is_some()
+    }
+
     pub(crate) fn push_empty(&mut self) {
         self.push_value(Value::Str(std::sync::Arc::new(String::new())));
     }
