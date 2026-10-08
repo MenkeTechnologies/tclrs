@@ -72,6 +72,14 @@ const PROGRAMS: &[&str] = &[
     "puts [regexp -start 5 {a} ab]",
     "set m {}\nregexp -start 1 -indices {b} ab m\nputs $m",
     "puts [regsub -start 1 -all {a} aaa X]",
+    // `-start` is an index whose `end` is the string's length. `regexp` clamps
+    // an offset past the end to the end and reports indices from the offset it
+    // was given; `regsub` runs no match from there at all.
+    "unset -nocomplain x\nputs [list [regexp -start end {\\d} 1abc2de3 x] [info exists x]]",
+    "puts [list [regexp -inline -start end-2 {\\w+} abcdef] [regsub -all -start end-1 . abc X] [regsub -start end {$} abc X]]",
+    "puts [list [regexp -start 10 {$} abc] [regexp -inline -indices -start 9 {(b)?$} abc] [regexp -all -inline -indices -start 9 {} abc] [regexp -start 9 {^} abc]]",
+    "puts [list [regsub -start 1 {^$} {} & foo] $foo [regsub -all -start 9 {} abc X]]",
+    "puts [list [catch {regexp -start bad a b} m] $m [catch {regsub -start bad a b c} m] $m]",
     // The rest of the switches.
     "puts [regexp -nocase {ABC} abc]",
     "set m {}\nregexp -nocase -indices {B} ab m\nputs $m",

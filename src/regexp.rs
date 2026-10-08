@@ -619,13 +619,17 @@ fn head(operands: &[Value]) -> Result<(i64, i64, String, String), String> {
         Some(Value::Int(f)) => *f,
         _ => return Err("regexp: switches missing".to_string()),
     };
-    let start = match operands.get(1) {
-        Some(Value::Int(n)) => *n,
-        Some(other) => crate::list::wide(&to_tcl_string(other))?,
-        None => 0,
-    };
     let pattern = to_tcl_string(operands.get(2).unwrap_or(&Value::Undef));
     let subject = to_tcl_string(operands.get(3).unwrap_or(&Value::Undef));
+    // `-start` is an index, read with `end` standing for the string's length
+    // (`TclGetIntForIndexM(interp, startIndex, stringLength, &offset)` in both
+    // `Tcl_RegexpObjCmd` and `Tcl_RegsubObjCmd`), so `-start end` is the
+    // position after the last character.
+    let start = match operands.get(1) {
+        Some(Value::Int(n)) => *n,
+        Some(other) => crate::list::index(&to_tcl_string(other), subject.chars().count() as i64)?,
+        None => 0,
+    };
     Ok((flags, start, pattern, subject))
 }
 
@@ -724,11 +728,17 @@ fn matches(re: &Compiled, subject: &str, from: usize, idx: &CharIndex, stop: Sto
 }
 
 /// One index pair, in Tcl's inclusive form. An unmatched group is `-1 -1`.
-fn indices(span: Option<(usize, usize)>, idx: &CharIndex) -> String {
+///
+/// `shift` is how far a `-start` past the end lay beyond it: the match runs
+/// at the end, but `Tcl_RegexpObjCmd` adds the offset it was given to the
+/// positions `Tcl_RegExpExecObj` reports from its clamped one, so
+/// `regexp -inline -indices -start 9 {$} abc` is `{9 8}`.
+fn indices(span: Option<(usize, usize)>, idx: &CharIndex, shift: i64) -> String {
+    let at = |b: usize| idx.char_at(b) as i64 + shift;
     match span {
-        Some((s, e)) if e > s => format!("{} {}", idx.char_at(s), idx.char_at(e) - 1),
+        Some((s, e)) if e > s => format!("{} {}", at(s), at(e) - 1),
         // An empty match reports its end before its start, as tclsh does.
-        Some((s, _)) => format!("{} {}", idx.char_at(s), idx.char_at(s) as i64 - 1),
+        Some((s, _)) => format!("{} {}", at(s), at(s) - 1),
         None => "-1 -1".to_string(),
     }
 }
@@ -739,12 +749,12 @@ fn run_regexp(vm: &mut VM, operands: &[Value]) -> Result<(), String> {
     let re = compiled(&pattern, flags)?;
     let idx = CharIndex::new(&subject);
 
-    // A negative `-start` is 0, and one past the end matches nothing at all.
+    // A negative `-start` is 0, and one past the end is the end
+    // (`Tcl_RegExpExecObj` clamps it), where a pattern that matches the empty
+    // string still matches — see [`indices`] for what that reports.
     let from_char = start.max(0) as usize;
-    if from_char > idx.chars() {
-        return finish_no_match(vm, flags, places);
-    }
-    let from_byte = idx.byte_at(from_char);
+    let shift = from_char.saturating_sub(idx.chars()) as i64;
+    let from_byte = idx.byte_at(from_char.min(idx.chars()));
 
     // Anchors stay relative to the whole subject — `regexp -start 1 {^b} ab` is
     // 0 in tclsh — so the search runs over the entire string and matches before
@@ -765,7 +775,7 @@ fn run_regexp(vm: &mut VM, operands: &[Value]) -> Result<(), String> {
             for g in 0..caps.len() {
                 let span = caps.get(g).map(|m| (m.start(), m.end()));
                 inline.push(if flags & F_INDICES != 0 {
-                    indices(span, &idx)
+                    indices(span, &idx, shift)
                 } else {
                     span.map(|(s, e)| subject[s..e].to_string())
                         .unwrap_or_default()
@@ -791,7 +801,7 @@ fn run_regexp(vm: &mut VM, operands: &[Value]) -> Result<(), String> {
         };
         let span = caps.get(i).map(|m| (m.start(), m.end()));
         let text = if flags & F_INDICES != 0 {
-            indices(span, &idx)
+            indices(span, &idx, shift)
         } else {
             span.map(|(s, e)| subject[s..e].to_string())
                 .unwrap_or_default()
@@ -819,8 +829,11 @@ fn run_regsub(interp: Option<&Shared>, vm: &mut VM, operands: &[Value]) -> Resul
     let re = compiled(&pattern, flags)?;
     let idx = CharIndex::new(&subject);
 
+    // An offset past the end runs no match at all: the substitution loop is
+    // `for ( ; offset <= wlen; )`, so `regsub -start 1 {^$} {} x v` is 0.
     let from_char = start.max(0) as usize;
-    let from_byte = if from_char > idx.chars() {
+    let past_end = from_char > idx.chars();
+    let from_byte = if past_end {
         subject.len()
     } else {
         idx.byte_at(from_char)
@@ -829,7 +842,9 @@ fn run_regsub(interp: Option<&Shared>, vm: &mut VM, operands: &[Value]) -> Resul
     // `regsub -all` substitutes at the end position too, which `regexp -all`
     // does not count — except for the empty pattern, which stops where
     // `regexp` stops. Both measured; see [`matches`].
-    let found = if flags & F_ALL != 0 {
+    let found = if past_end {
+        Vec::new()
+    } else if flags & F_ALL != 0 {
         matches(
             &re,
             &subject,

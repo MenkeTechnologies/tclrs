@@ -1945,6 +1945,14 @@ re-measured against tclsh 9.0.4 and pinned by a differential program:
   operand at _@_` and `expr {(1,2)}` `unbalanced open paren` here
   (`expr-old-26.14`, `parseExpr-21.15`, `parseExpr-21.28`). The `-errorcode`
   of every expression parse error (`TCL PARSE EXPR …`) is still absent.
+- **`regexp`/`regsub -start` took only an integer.** Both commands read the
+  offset with `TclGetIntForIndexM` and `end` standing for the string's length,
+  so `regexp -start end {\d} 1abc2de3` is 0 and `-start end-2` works
+  (`regexp-15.9`, `15.10`, `16.7`); here it was `expected integer but got
+  "end"`. An offset past the end is clamped to the end for `regexp`
+  (`Tcl_RegExpExecObj`), where an empty-matching pattern still matches and its
+  indices are reported from the offset given (`{9 8}`), while `regsub` runs no
+  match at all (`regsub -start 1 {^$} {} &` is 0, `regexp-16.20`).
 
 ## What the differential fuzzer cannot reach
 
