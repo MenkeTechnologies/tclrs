@@ -932,6 +932,7 @@ fn defers_to_run_time(msg: &str) -> bool {
     msg.starts_with("wrong # args:")
         || msg.starts_with("invalid command name ")
         || msg.starts_with("unknown or ambiguous subcommand ")
+        || msg.starts_with("unknown subcommand ")
         || msg.contains("is not supported yet")
 }
 
@@ -1769,6 +1770,19 @@ impl Compiler {
         Ok(())
     }
 
+    /// Whether `name` is bound to another variable by a compile-time `upvar #0`,
+    /// in a procedure or at the script's top level.
+    fn is_upvar_alias(&self, name: &str) -> bool {
+        match &self.scope {
+            Some(scope) => scope.aliases.contains_key(name),
+            None => {
+                let key = crate::cmd_namespace::global_key(self, name);
+                self.top_aliases
+                    .contains_key(crate::cmd_namespace::store_key(&key))
+            }
+        }
+    }
+
     /// Where a variable lives, for an op that reaches it itself rather than
     /// through `GetVar` / `SetVar` — [`crate::cmd_list`]'s `lappend` is the one
     /// that does, so that it can extend the list in place.
@@ -1838,7 +1852,16 @@ impl Compiler {
                 }
                 self.emit(Op::GetSlot(slot), 1)
             }
-            Place::Global(idx) => self.emit(Op::GetVar(idx), 1),
+            Place::Global(idx) => {
+                // A name bound by `upvar #0` reads the target's variable, and an
+                // unset read is refused under the name the script wrote — the
+                // alias — not the target's: `can't read "z"` after `upvar #0 q z`.
+                if self.is_upvar_alias(name) {
+                    self.slot_reads
+                        .push((self.b.current_pos(), name.to_string()));
+                }
+                self.emit(Op::GetVar(idx), 1)
+            }
             // A link has no native op: the descriptor in the slot has to be
             // followed, which only the frontend can do. See
             // [`crate::cmd_scope::link_get`].
@@ -2309,6 +2332,14 @@ impl Compiler {
             "rename" => self.cmd_rename(args),
             "source" => self.cmd_source(args),
             "tcl_findLibrary" => self.cmd_find_library(args),
+            // A procedure a `proc` away from the script's top level defines, under
+            // a qualified name: it answers once that `proc` has run, so the call
+            // resolves in the run-time table. Ahead of the static arm below,
+            // which would otherwise bind it to a body this chunk never defined.
+            other if self.runtime_ns_key(other).is_some() => {
+                let key = self.runtime_ns_key(other).expect("the arm asked first");
+                self.call_runtime(&key, args)
+            }
             other if self.ns_resolves(other).is_some() => {
                 crate::cmd_namespace::call(self, other, args)
             }
@@ -3757,24 +3788,6 @@ impl Compiler {
 /// A double literal inside an `expr` still becomes `Op::LoadFloat`
 /// ([`Compiler::expr`]), which is the arithmetic fast path this used to be
 /// about; what it costs here is one parse of a literal double at run time.
-/// Whether a word has the shape of an `uplevel` / `upvar` level: `#n`, or a
-/// bare integer. Only the shape — whether the level *exists* is a run-time
-/// question, and answering it here would refuse `uplevel 2 …` while compiling a
-/// procedure that is only ever called two deep.
-pub(crate) fn looks_like_a_level(word: &str) -> bool {
-    match word.strip_prefix('#') {
-        Some(rest) => !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()),
-        // `Tcl_GetIntFromObj`, which is what `TclObjGetFrame` reads a bare level
-        // word with, accepts a sign: `uplevel +1 {…}` is level 1 and
-        // `uplevel -1 {…}` is `bad level "-1"` — a level word that resolves to
-        // nothing, not a script. `1.5` is neither, and runs as a script.
-        None => {
-            let digits = word.strip_prefix(['+', '-']).unwrap_or(word);
-            !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
-        }
-    }
-}
-
 pub(crate) fn literal_value(text: &str) -> Value {
     if let Ok(i) = text.parse::<i64>() {
         if i.to_string() == text {

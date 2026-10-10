@@ -2757,3 +2757,276 @@ fn fixed_pow_identity_and_the_exponent_limit() {
         "foreach e {{3**268435456} {2**268435456} {-3**268435456} {99999999999999999999**268435456} {3**99999999999999999999} {0**268435456} {2**-1}} {puts [list $e [catch {expr $e} m] $m]}",
     ]);
 }
+
+/// A level word is read by `TclObjGetFrame` with the integer grammar of
+/// `Tcl_GetIntFromObj` — whitespace, radix prefixes — and `#` takes the same
+/// grammar after it. A word that reads as a level and names none is `bad level`
+/// with the word *as written*, and is never a script; a word that is no level
+/// is a script at level 1, and at the global level that is `bad level "1"`.
+#[test]
+fn fixed_level_words_use_the_integer_grammar() {
+    let words = [
+        "#x",
+        "#-1",
+        "# 1",
+        "#0x0",
+        " 1",
+        "0x1",
+        "1x",
+        "-1",
+        "9",
+        "99999999999",
+    ];
+    let mut programs = Vec::new();
+    for w in words {
+        programs.push(format!("puts [catch {{uplevel {{{w}}} {{set q}}}} m]$m"));
+        programs.push(format!("puts [catch {{uplevel {{{w}}}}} m]$m"));
+        programs.push(format!(
+            "set q 1\nproc p {{}} {{uplevel {{{w}}} {{set q}}}}\nproc o {{}} {{p}}\nputs [catch o m]$m"
+        ));
+        programs.push(format!("puts [catch {{upvar {{{w}}} q z}} m]$m"));
+        programs.push(format!(
+            "set q 1\nproc p {{}} {{upvar {{{w}}} q z; set z}}\nproc o {{}} {{p}}\nputs [catch o m]$m"
+        ));
+    }
+    let refs: Vec<&str> = programs.iter().map(String::as_str).collect();
+    all_agree(&refs);
+}
+
+/// `upvar` with an empty level word has a level word (and so `bad level ""`);
+/// it is not the absent word that means level 1.
+#[test]
+fn fixed_upvar_empty_level_word_is_a_word() {
+    all_agree(&[
+        "proc p {} {upvar \"\" q z}\nputs [catch p m]$m",
+        "set l {}\nproc p {l} {upvar $l q z}\nputs [catch {p $l} m]$m",
+        "set q 4\nproc p {} {upvar q z; set z}\nputs [p]",
+    ]);
+}
+
+/// An unset variable read through an `upvar #0` alias is refused under the name
+/// the script wrote — the alias — not the global it stands for.
+#[test]
+fn fixed_unset_read_through_an_alias_names_the_alias() {
+    all_agree(&[
+        "proc p {} {upvar #0 q z; set z}\nputs [catch p m]$m",
+        "proc p {} {upvar #0 q z; puts $z}\nputs [catch p m]$m",
+        "proc p {} {upvar #0 q z; expr {$z + 1}}\nputs [catch p m]$m",
+        "proc p {} {upvar #0 q z; catch {set z} m; set m}\nputs [p]",
+        "upvar #0 q z\nputs [catch {set z} m]$m",
+        "set q 5\nproc p {} {upvar #0 q z; set z}\nputs [p]",
+    ]);
+}
+
+/// A formal named twice is accepted: two slots, and the body's name finds the
+/// first, so `proc p {x x} {set x}` answers its first argument.
+#[test]
+fn fixed_a_duplicate_formal_is_accepted() {
+    all_agree(&[
+        "proc p {x x} {set x}\nputs [p 1 2]",
+        "proc p {x {x 5}} {set x}\nputs [p 1]\nputs [p 1 2]",
+        "proc p {x x args} {list $x $args}\nputs [p 1 2 3]",
+        "proc p {x y x} {info args p}\nputs [p 1 2 3]",
+        "proc p {x x} {}\nputs [catch {p 1} m]$m",
+        "puts [apply {{x x} {set x}} 1 2]",
+    ]);
+}
+
+/// A codec that does not exist is a run-time error, so `catch` has it; it was
+/// refused while compiling, which no `catch` can intercept.
+#[test]
+fn fixed_binary_codec_error_is_catchable() {
+    all_agree(&[
+        "puts [catch {binary encode foo x} m]$m",
+        "puts [catch {binary decode foo x} m]$m",
+        "if {0} {binary encode foo x}\nputs ok",
+    ]);
+}
+
+/// A `proc` inside `namespace eval` that is itself away from the script's top
+/// level defines its command when it runs, so a call to the qualified name — or
+/// to an import of it — resolves in the run-time table. It was bound to a body
+/// the chunk never defined: `undefined function`.
+#[test]
+fn fixed_namespaced_proc_defined_in_a_branch() {
+    all_agree(&[
+        "catch {namespace eval a {proc f {} {return hi}}; puts [a::f]}",
+        "if {1} {namespace eval a {proc f {} {return hi}}; puts [a::f]; puts [::a::f]}",
+        "if {1} {namespace eval a {proc f {} {return hi}}}\nputs [a::f]",
+        "if {1} {namespace eval a {variable v 5; proc g {} {variable v; set v}}}\nputs [a::g]",
+        "if {1} {namespace eval a {proc f {} {namespace current}}; puts [a::f]}",
+        "if {1} {namespace eval a {namespace export f; proc f {} {return F}}\nnamespace import a::f; puts [f]}",
+        "if {1} {namespace eval a {namespace export *; proc f {} {return F}; proc g {} {return G}}\nnamespace import a::*; puts [list [f] [g]]}",
+    ]);
+}
+
+/// `rename` checks the destination before it touches the source, so `rename f f`
+/// is `command already exists` and leaves `f` callable; an empty destination
+/// deletes, and its failure says `delete`; a destination in a namespace that
+/// does not exist creates the namespace.
+#[test]
+fn fixed_rename_checks_the_destination_first() {
+    all_agree(&[
+        "proc f {} {return 1}\nputs [catch {rename f f} m]$m\nputs [f]",
+        "puts [catch {rename nosuch {}} m]$m",
+        "puts [catch {rename nosuch foo} m]$m",
+        "proc f {} {return 1}\nproc g {} {return 2}\nputs [catch {rename f g} m]$m\nputs [f][g]",
+        "proc f {} {return 1}\nrename f ::a::g\nputs [a::g][namespace exists a]",
+        "proc f {} {return 1}\nrename f a::b::g\nputs [a::b::g][namespace exists a::b]",
+    ]);
+}
+
+/// `info commands` and `info procs` answer from the live command set: a renamed
+/// or deleted procedure is not listed, a renamed one is listed under its new
+/// name, a procedure whose `proc` has not run is not listed, and inside a
+/// namespace the namespace's own commands are.
+#[test]
+fn fixed_info_commands_follow_rename_and_namespaces() {
+    all_agree(&[
+        "puts [info commands later]\nproc later {} {}\nputs [info commands later][info procs later]",
+        "proc zq {} {}\nrename zq zr\nputs [info procs zq][info procs zr][info commands zq][info commands zr]",
+        "proc zq {} {}\nrename zq {}\nputs [llength [info procs zq]][llength [info commands zq]]",
+        "namespace eval a {proc fa {} {}}\nproc fg {} {}\nputs [info procs fa][info procs fg]\nputs [info commands ::a::*]",
+        "namespace eval a {proc fa {} {}}\nproc fg {} {}\nnamespace eval a {puts [lsort [info procs f*]]; puts [info commands fa]; puts [info commands fg]}",
+        "namespace eval a {proc fa {} {}}\nputs [info commands a::*][info procs a::*]\nputs [llength [info commands a::fa]]",
+        "proc zq {} {}\nrename zq zr\nputs [info commands zr*][info commands zq*]\nputs [zr]",
+    ]);
+}
+
+/// `namespace inscope` of a namespace that is not there words its error as
+/// every other unresolved namespace reference: `namespace "::a" not found`.
+#[test]
+fn fixed_namespace_inscope_missing_namespace() {
+    all_agree(&[
+        "puts [catch {namespace inscope ::a {set x 1}} m]$m",
+        "puts [catch {namespace inscope a {set x 1}} m]$m",
+        "namespace eval a {}\nputs [namespace inscope ::a {namespace current}]",
+    ]);
+}
+
+/// `lset`, `lpop`, `ledit` and `lappend` take the variable's value out of its
+/// place so they can rewrite it unshared. One that is then refused — a bad
+/// index, an index out of range, a value that is not a list — has changed
+/// nothing, and the variable has to keep its value; it was left unset.
+#[test]
+fn fixed_a_refused_in_place_list_edit_keeps_the_variable() {
+    all_agree(&[
+        "set l {1 2 3}\ncatch {ledit l 1.5 1 c}\nputs [info exists l]$l",
+        "set l {1 2 3}\ncatch {lset l 7 c}\nputs [info exists l]$l",
+        "set l {a {b c}}\ncatch {lset l 1 foo x}\nputs [info exists l]$l",
+        "set l {1 2 3}\ncatch {lpop l foo}\nputs [info exists l]$l",
+        "set l {{1 2} 3}\ncatch {lpop l 0 5}\nputs [info exists l]$l",
+        "set l \"a \\{\"\ncatch {lappend l x}\nputs [info exists l]$l",
+        "set l \"a \\{\"\ncatch {lset l 0 x}\nputs [info exists l]$l",
+        "array set A {k {1 2 3}}\ncatch {lset A(k) 9 x}\nputs [info exists A(k)]$A(k)",
+        "array set A {k {1 2 3}}\ncatch {lpop A(k) foo}\nputs [info exists A(k)]$A(k)",
+        "proc p {} {set l {1 2 3}; catch {lset l 9 x}; set l}\nputs [p]",
+        "proc p {} {set l {1 2 3}; catch {ledit l foo 1}; set l}\nputs [p]",
+    ]);
+}
+
+/// An `lseq` argument that is neither a number nor a keyword is an expression
+/// (`SequenceIdentifyArgument` hands it to `Tcl_ExprObj`), evaluated in the
+/// frame the command was written in, and its failure is the expression's own:
+/// a bare word is the bareword refusal, `[nosuch]` is `invalid command name`.
+#[test]
+fn fixed_lseq_arguments_are_index_expressions() {
+    all_agree(&[
+        "puts [lseq 1+1 5]\nputs [lseq {2*3}]\nputs [lseq 1 {2+3}]",
+        "set a 3\nputs [lseq $a-1 6]\nputs [lseq {$a - 1} 6]",
+        "set a 3\nproc p {} {global a; lseq {$a - 1} 6}\nputs [p]",
+        "proc p {n} {lseq 1 {$n + 5} {$n}}\nputs [p 2]",
+        "puts [lseq {[expr 4]} count 3]\nputs [lseq {max(1,3)}]",
+        "puts [lseq {1 + 1} to {2 + 4} by {1 + 1}]",
+        "puts [catch {lseq abc} m]$m\nputs [catch {lseq 1 to abc} m]$m",
+        "puts [catch {lseq a count 3} m]$m\nputs [catch {lseq {[nosuch]}} m]$m",
+        "puts [catch {lseq {$nosuch}} m]$m\nputs [catch {lseq 1 {10/0}} m]$m",
+        "puts [catch {lseq {\"abc\"}} m]$m\nputs [catch {lseq {1+}} m]$m",
+        "puts [catch {lseq 1 {}} m]$m\nputs [catch {lseq {1 2}} m]$m",
+    ]);
+}
+
+/// `lrepeat` words a non-integer count with the integer reader's own wording (a
+/// multi-element value is "a list"), names the count it read in `bad count`, and
+/// refuses a result past the list limit instead of aborting on the allocation.
+#[test]
+fn fixed_lrepeat_count_and_limit() {
+    all_agree(&[
+        "puts [catch {lrepeat {3 4} x} m]$m",
+        "puts [catch {lrepeat abc x} m]$m\nputs [catch {lrepeat 1.5 x} m]$m",
+        "puts [catch {lrepeat -0x1 x} m]$m\nputs [catch {lrepeat -1 x} m]$m",
+        "puts [catch {lrepeat 99999999999999999999 x} m]$m",
+        "puts [catch {lrepeat 1152921504606846971 x} m]$m",
+        "puts [catch {lrepeat 1152921504606846970 x y} m]$m",
+        "puts [lrepeat 0x2 x]\nputs [lrepeat 2 {a b} c]\nputs [llength [lrepeat 0 x]]",
+    ]);
+}
+
+/// `binary scan` reads its format a field at a time: a field whose data has run
+/// out ends the scan before any later specifier is examined, and a bad
+/// specifier, a missing `@` count or too few variables is refused where the
+/// format reaches it — after the fields before it were already stored.
+#[test]
+fn fixed_binary_scan_reads_the_format_lazily() {
+    all_agree(&[
+        "puts [binary scan {} {hello world} v]",
+        "puts [binary scan a a1q v w]\nputs [binary scan {} a q]",
+        "catch {binary scan abcd a1a1 v}\nputs [info exists v]",
+        "catch {binary scan abcd a1a1a1 v w}\nputs [list [info exists v] [info exists w]]",
+        "puts [catch {binary scan abcd a1z v} m]$m\nputs [info exists v]$v",
+        "puts [catch {binary scan abcd a1@ v} m]$m\nputs [info exists v]$v",
+        "puts [catch {binary scan {} z} m]$m\nputs [catch {binary scan {} @} m]$m",
+        "puts [binary scan abc {a2 x1 a1} v w]$v$w",
+    ]);
+}
+
+/// `lset` at any depth of its index path may name the element one past the end:
+/// that element does not exist yet, so the rest of the path builds it from the
+/// empty list. What a path that then fails leaves in the variable is not
+/// asserted: tclsh keeps the elements it appended before the failure when the
+/// list was unshared and drops them when it was not, and which it is depends on
+/// the object's reference count rather than on the script.
+#[test]
+fn fixed_lset_appends_at_any_depth() {
+    all_agree(&[
+        "set l {a b}\ncatch {lset l 2 0 x} m\nputs [list $m $l]",
+        "set l {a b}\ncatch {lset l 2 1 x} m\nputs [list $m ]",
+        "set l {a b}\ncatch {lset l 2 0 0 x} m\nputs [list $m $l]",
+        "set l {a b}\ncatch {lset l end+1 0 x} m\nputs [list $m $l]",
+        "set l {a {b c}}\ncatch {lset l {2 0} x} m\nputs [list $m $l]",
+        "set l {}\ncatch {lset l 0 0 x} m\nputs [list $m $l]",
+        "set l {}\ncatch {lset l 0 1 x} m\nputs [list $m ]",
+        "set l {a b c}\ncatch {lset l 3 0 1 x} m\nputs [list $m ]",
+        "set b {x y z}\ncatch {lset b {3 4} v} m\nputs [list $m ]",
+    ]);
+}
+
+/// A lambda's namespace that does not exist is `namespace "::x" not found`, the
+/// word resolved against the global namespace.
+#[test]
+fn fixed_apply_missing_namespace() {
+    all_agree(&[
+        "puts [catch {apply {{x} {set x} ::nosuch} 1} m]$m",
+        "puts [catch {apply {{x} {set x} nosuch} 1} m]$m",
+        "puts [catch {apply {{x} {set x} a::b} 1} m]$m",
+        "puts [apply {{x} {set x} ::} 1]",
+    ]);
+}
+
+/// A search that restarts mid-subject runs on the rest of it, so `\A` matches
+/// there again: `regsub -all {\Aa} aab X` is `XXb`, and `regexp -all {\A} abc`
+/// counts three. `^` is refused at the restart (`TCL_REG_NOTBOL`) and keeps
+/// matching only once.
+#[test]
+fn fixed_start_anchor_matches_at_every_restart() {
+    all_agree(&[
+        "puts [regsub -all {\\Aa} aab X]\nputs [regsub -all {\\Aa} aaab X]",
+        "puts [regexp -all {\\Aa} aab]\nputs [regexp -all -inline {\\Aa} aab]",
+        "puts [regexp -all -inline -indices {\\Aa} aab]\nputs [regexp -all {\\A} abc]",
+        "puts [regsub -all {\\A} abc X]\nputs [regsub -all {\\Aab} ababab X]",
+        "puts [regsub -all {\\Aa|b} aab X]\nputs [regsub -all {(?i)\\AA} aab X]",
+        "puts [regsub -all {^a} aab X]\nputs [regexp -all {^a} aab]",
+        "puts [regsub -all -start 1 {\\Aa} aab X]\nputs [regexp -all -inline -start 1 {\\Aa} aab]",
+        "puts [regsub -all {\\A\\s*} {  a  b} X]\nputs [regexp -all -inline {\\A\\w+} {ab cd}]",
+    ]);
+}

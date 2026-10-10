@@ -333,7 +333,7 @@ fn resolve_var(c: &Compiler, name: &str) -> String {
 /// `TclGetNamespaceFromObj`'s refusal (`generic/tclNamesp.c`): the name as the
 /// script wrote it, and — for a relative one — the namespace it was looked up
 /// from, with the `TCL LOOKUP NAMESPACE` errorcode.
-fn namespace_not_found(written: &str, here: &str) -> TclError {
+pub(crate) fn namespace_not_found(written: &str, here: &str) -> TclError {
     let msg = if written.starts_with("::") {
         format!("namespace \"{written}\" not found")
     } else {
@@ -411,6 +411,7 @@ impl Registry {
         if !ns.is_empty() {
             self.ensure(&ns);
         }
+        self.gone.remove(fqn);
         self.commands.insert(
             fqn.to_string(),
             Entry {
@@ -421,6 +422,14 @@ impl Registry {
 
     pub fn command(&self, fqn: &str) -> Option<&Entry> {
         self.commands.get(fqn)
+    }
+
+    /// Every command the registry holds and `rename` or `namespace delete` has not
+    /// taken away, fully qualified.
+    fn live_commands(&self) -> impl Iterator<Item = &String> {
+        self.commands
+            .keys()
+            .filter(|name| !self.gone.contains(*name))
     }
 
     /// Every command in `ns`, fully qualified and sorted.
@@ -906,8 +915,10 @@ impl Compiler {
             // procedure under the new name; BUGS.md records that.
             let from = store_key(&resolve(&self.ns.current, name)).to_string();
             if let Some(to) = new.as_literal().filter(|t| !t.is_empty()) {
-                if self.procs.contains_key(&from) {
-                    let to = store_key(&resolve(&self.ns.current, to)).to_string();
+                let to = store_key(&resolve(&self.ns.current, to)).to_string();
+                // Onto a name that is already a procedure the `rename` is
+                // refused when it runs, and nothing becomes a second name.
+                if self.procs.contains_key(&from) && !self.procs.contains_key(&to) {
                     self.ns.imports.insert(to, from);
                 }
             }
@@ -1022,6 +1033,14 @@ impl Compiler {
         }
     }
 
+    /// The key of the run-time procedure `name` reaches from the namespace being
+    /// compiled, when a `proc` outside the script's top level defines it.
+    pub(crate) fn runtime_ns_key(&self, name: &str) -> Option<String> {
+        let scoped = store_key(&resolve(&self.ns.current, name)).to_string();
+        let target = self.ns.imports.get(&scoped).cloned().unwrap_or(scoped);
+        self.runtime.contains(&target).then_some(target)
+    }
+
     /// Whether this module claims the command name `name`, and under what
     /// qualified name.
     ///
@@ -1120,7 +1139,7 @@ pub fn prescan(procs: &mut HashMap<String, crate::procs::Signature>, script: &Sc
             continue;
         };
         let fqn = store_key(&resolve(ns, name)).to_string();
-        if let Ok(sig) = crate::procs::parse_signature(&fqn, spec) {
+        if let Ok(sig) = crate::procs::parse_signature(spec) {
             procs.insert(fqn, sig);
         }
     }
@@ -1223,6 +1242,43 @@ impl Registry {
     }
 }
 
+/// The names `info commands` (`builtins`) or `info procs` reports from the
+/// namespace `here`.
+///
+/// Built from the registry rather than from the chunk's own procedures, because
+/// the registry is what a `rename`, a `namespace delete` and a definition that
+/// has not run yet all update: `info commands` after `rename f g` lists `g` and
+/// not `f`, and before a `proc` runs it does not list it at all. A qualified
+/// pattern is matched against fully qualified names, which are returned as they
+/// are; anything else answers the bare names of `here` and — for `commands` —
+/// of the global namespace, the two places a command name resolves.
+pub(crate) fn visible_commands(
+    reg: &Registry,
+    here: &str,
+    builtins: bool,
+    qualified: bool,
+) -> Vec<String> {
+    let mut fqns: Vec<String> = reg.live_commands().cloned().collect();
+    if builtins {
+        fqns.extend(
+            crate::names::commands()
+                .into_iter()
+                .map(|name| format!("::{name}"))
+                .filter(|fqn| !reg.gone.contains(fqn)),
+        );
+    }
+    if qualified {
+        return fqns;
+    }
+    fqns.into_iter()
+        .filter(|fqn| {
+            let parent = parent_of(fqn);
+            parent == here || (builtins && parent == "::")
+        })
+        .map(|fqn| tail(&fqn).to_string())
+        .collect()
+}
+
 /// `rename oldName newName`, when it runs.
 ///
 /// The registry records that the old name is gone and that the new one names what
@@ -1239,31 +1295,45 @@ fn rename(
     args: &[String],
 ) -> Result<String, TclError> {
     let old = resolve(here, &args[0]);
-    let Some(entry) = state.ns.commands.remove(&old) else {
+    // `TclRenameCommand` (`generic/tclBasic.c`): the old command is found first,
+    // an empty new name deletes it, and the destination is checked *before* the
+    // old entry is touched — so `rename f f` is `command already exists` and
+    // leaves `f` where it was. The destination's namespace is created when it
+    // is unknown, as `Tcl_CreateObjCommand` would.
+    if !state.ns.commands.contains_key(&old) {
+        let verb = if args[1].is_empty() {
+            "delete"
+        } else {
+            "rename"
+        };
         return Err(TclError::plain(format!(
-            "can't rename \"{}\": command doesn't exist",
+            "can't {verb} \"{}\": command doesn't exist",
             args[0]
         )));
-    };
+    }
+    let new = (!args[1].is_empty()).then(|| resolve(here, &args[1]));
+    if let Some(new) = &new {
+        if state.ns.commands.contains_key(new) {
+            return Err(TclError::plain(format!(
+                "can't rename to \"{}\": command already exists",
+                args[1]
+            )));
+        }
+        let ns = parent_of(new);
+        if !ns.is_empty() {
+            state.ns.ensure(&ns);
+        }
+    }
+    let entry = state
+        .ns
+        .commands
+        .remove(&old)
+        .expect("the old command was found above");
     let defined = state.commands.remove(store_key(&old));
     state.ns.gone.insert(old);
-    if args[1].is_empty() {
+    let Some(new) = new else {
         return Ok(String::new());
-    }
-    let new = resolve(here, &args[1]);
-    if state.ns.commands.contains_key(&new) {
-        return Err(TclError::plain(format!(
-            "can't rename to \"{}\": command already exists",
-            args[1]
-        )));
-    }
-    let ns = parent_of(&new);
-    if !ns.is_empty() && !state.ns.exists(&ns) {
-        return Err(TclError::plain(format!(
-            "can't rename to \"{}\": unknown namespace",
-            args[1]
-        )));
-    }
+    };
     state.ns.gone.remove(&new);
     if let Some(defined) = defined {
         state.commands.insert(store_key(&new).to_string(), defined);
@@ -1614,9 +1684,7 @@ fn inscope(
 ) -> Result<String, TclError> {
     let ns = resolve(here, &args[0]);
     if !interp.lock().expect("interpreter lock").ns.exists(&ns) {
-        return Err(TclError::plain(format!(
-            "unknown namespace \"{ns}\" in inscope namespace command"
-        )));
+        return Err(namespace_not_found(&args[0], here));
     }
     let mut script = args[1].clone();
     for extra in &args[2..] {

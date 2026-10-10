@@ -328,6 +328,8 @@ pub(crate) struct Compiled {
     re: Regex,
     /// See [`crate::are::Translated::left_context`].
     left_context: bool,
+    /// See [`crate::are::Translated::start_anchor`].
+    start_anchor: bool,
 }
 
 fn compiled(are: &str, flags: i64) -> Result<Arc<Compiled>, String> {
@@ -354,6 +356,7 @@ fn compiled(are: &str, flags: i64) -> Result<Arc<Compiled>, String> {
         let re = Arc::new(Compiled {
             re,
             left_context: translated.left_context,
+            start_anchor: translated.start_anchor,
         });
         let mut cache = cache.borrow_mut();
         if cache.len() >= CACHE_CAPACITY {
@@ -455,8 +458,9 @@ impl Caps {
 ///
 /// `regex` looks at the real character before `pos`, which only matters for
 /// a pattern with such a constraint; every other pattern is searched in place.
-/// The one case not reproduced is `\A` at a `NOTBOL` position, which matches
-/// in tclsh and not here.
+/// `\A` at a `NOTBOL` position matches, as it does in tclsh, for a pattern that
+/// has no `^` ([`crate::are::Translated::start_anchor`]); one that has both is
+/// searched in place, and its `\A` does not match there.
 fn exec(re: &Compiled, subject: &str, pos: usize) -> Option<Caps> {
     if pos == 0 || pos > subject.len() || !re.left_context {
         return re
@@ -465,9 +469,10 @@ fn exec(re: &Compiled, subject: &str, pos: usize) -> Option<Caps> {
             .map(|c| Caps::from(&c, 0, 0));
     }
     let prev = subject[..pos].chars().next_back()?;
-    if prev == '\n' {
-        // Not `NOTBOL`: the rest of the subject is searched as a string of its
-        // own, whose start is a line start.
+    if prev == '\n' || re.start_anchor {
+        // The rest of the subject is searched as a string of its own, whose start
+        // is a line start: not `NOTBOL` after a newline, and a pattern whose
+        // only start constraint is `\A` has nothing else to get wrong.
         return re
             .re
             .captures(&subject[pos..])

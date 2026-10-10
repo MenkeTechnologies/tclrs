@@ -271,6 +271,10 @@ struct Lexer {
     /// Whether the pattern looks behind the place a search starts: see
     /// [`Translated::left_context`].
     left: bool,
+    /// Whether the pattern holds a `\A` and whether it holds a `^` anchor, which
+    /// together decide [`Translated::start_anchor`].
+    anchor_a: bool,
+    caret: bool,
 }
 
 impl Lexer {
@@ -657,6 +661,7 @@ impl Lexer {
                 }
                 '^' | '$' => {
                     self.left |= c == '^' && !self.f.nlanch;
+                    self.caret |= c == '^';
                     self.out.push(c);
                     Last::Nothing
                 }
@@ -735,6 +740,7 @@ impl Lexer {
                     }
                     Escape::Constraint(k) => {
                         self.left |= k != 'Z';
+                        self.anchor_a |= k == 'A';
                         self.out.push_str(match k {
                             'A' => "\\A",
                             'Z' => "\\z",
@@ -797,6 +803,12 @@ pub(crate) struct Translated {
     /// (`Tcl_RegExpExecObj`), so such a constraint sees no character there,
     /// where `regex`'s `captures_at` sees the real one.
     pub left_context: bool,
+    /// The pattern has a `\A` and no `^`. A search that restarts mid-subject
+    /// (`regexp -all`, `regsub -all`, `-start`) is run by tclsh on the rest of
+    /// the subject with `TCL_REG_NOTBOL`: `^` is then refused at the restart,
+    /// but `\A` still matches there. With no `^` to wrongly accept, searching the
+    /// rest of the subject as a string of its own is exactly that.
+    pub start_anchor: bool,
 }
 
 pub(crate) fn translate(are: &str, flags: Flags) -> Result<Translated, String> {
@@ -886,6 +898,7 @@ pub(crate) fn translate(are: &str, flags: Flags) -> Result<Translated, String> {
         return Ok(Translated {
             pattern: out,
             left_context: false,
+            start_anchor: false,
         });
     }
     let mut lx = Lexer {
@@ -897,11 +910,14 @@ pub(crate) fn translate(are: &str, flags: Flags) -> Result<Translated, String> {
         closed: Vec::new(),
         out,
         left: false,
+        anchor_a: false,
+        caret: false,
     };
     lx.regex()?;
     Ok(Translated {
         pattern: lx.out,
         left_context: lx.left,
+        start_anchor: lx.anchor_a && !lx.caret,
     })
 }
 

@@ -123,7 +123,7 @@ impl Signature {
 
 /// Parse a `proc` argument specifier: a list whose elements are either a
 /// parameter name or a two-element `{name default}` list.
-pub fn parse_signature(proc_name: &str, spec: &str) -> Result<Signature, String> {
+pub fn parse_signature(spec: &str) -> Result<Signature, String> {
     let mut params: Vec<Param> = Vec::new();
     for element in list::split(spec)? {
         let fields = list::split(&element)?;
@@ -149,12 +149,6 @@ pub fn parse_signature(proc_name: &str, spec: &str) -> Result<Signature, String>
         if param.name.ends_with(')') && param.name.contains('(') {
             return Err(format!(
                 "formal parameter \"{}\" is an array element",
-                param.name
-            ));
-        }
-        if params.iter().any(|p| p.name == param.name) {
-            return Err(format!(
-                "procedure \"{proc_name}\" has argument \"{}\" defined twice",
                 param.name
             ));
         }
@@ -199,7 +193,7 @@ pub fn prescan(procs: &mut HashMap<String, Signature>, script: &Script) {
         else {
             continue;
         };
-        if let Ok(mut sig) = parse_signature(name, spec) {
+        if let Ok(mut sig) = parse_signature(spec) {
             // The body's source text, which `info body` answers with.
             sig.body = Some(body.to_string());
             procs.insert(name.to_string(), sig);
@@ -267,7 +261,7 @@ pub(crate) fn define_op(interp: &Shared, vm: &mut VM) -> Result<(), TclError> {
             )))
         }
     };
-    let sig = parse_signature(&name, &spec).map_err(TclError::plain)?;
+    let sig = parse_signature(&spec).map_err(TclError::plain)?;
     let mut state = interp.lock().expect("interpreter lock");
     let chunk = running_chunk(&state, vm);
     let defined = RuntimeProc { chunk, entry, sig };
@@ -716,7 +710,7 @@ impl Compiler {
         // Asked for before anything is recorded, so a computed body hands the
         // whole definition to run time with no name claimed for this chunk.
         self.literal_bodies([body_w])?;
-        let mut sig = match parse_signature(&name, &spec) {
+        let mut sig = match parse_signature(&spec) {
             Ok(sig) => sig,
             Err(msg) => return self.error(msg),
         };
@@ -1161,8 +1155,10 @@ fn slot_names_of(scope: &crate::compiler::Scope) -> Vec<String> {
 
 pub(crate) fn scope_for(sig: &Signature) -> Scope {
     let mut scope = Scope::default();
+    // A formal named twice is two slots and the body's name finds the first:
+    // `proc p {x x} {set x}` answers its first argument.
     for (i, p) in sig.params.iter().enumerate() {
-        scope.locals.insert(p.name.clone(), i as u16);
+        scope.locals.entry(p.name.clone()).or_insert(i as u16);
     }
     scope.next_slot = sig.params.len() as u16;
     scope

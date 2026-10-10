@@ -522,7 +522,6 @@ fn unsupported_procedure_constructs_are_refused() {
             "proc set {a b} {}",
             "redefining the built-in command \"set\"",
         ),
-        ("proc f {a a} {}", "defined twice"),
         (
             "proc f {{a b c}} {}",
             "too many fields in argument specifier",

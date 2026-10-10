@@ -464,9 +464,10 @@ impl Compiler {
                 for (other, local) in &bound {
                     self.emit(Op::LoadInt(NO_SLOT), 1);
                     self.push_str(local);
+                    self.emit(Op::LoadInt(1), 1);
                     self.push_str("#0");
                     self.push_str(other);
-                    self.emit(Op::Extended(ext::UPVAR, 4), -3);
+                    self.emit(Op::Extended(ext::UPVAR, 5), -4);
                     self.emit(Op::Pop, -1);
                 }
                 self.push_empty();
@@ -501,25 +502,26 @@ impl Compiler {
             locals.push((slot, local));
         }
 
-        // `[slot, local]` per pair, then the level, then the `other` words. The
+        // `[slot, local]` per pair, then `hasLevel` and the level, then the `other`
+        // words. The
         // slots and names go first so the handler can pop the computed words off
         // the top of the stack.
         for (slot, local) in &locals {
             self.emit(Op::LoadInt(*slot), 1);
             self.push_str(local);
         }
+        // `hasLevel` travels beside the level word, because a level word the
+        // script computed as the empty string is a word (and `bad level ""`),
+        // not an absent one.
+        self.emit(Op::LoadInt(i64::from(level.is_some())), 1);
         match level {
             Some(w) => self.word(w)?,
-            // The absent level word is the default 1, and is pushed as the empty
-            // string so the handler can tell "no level given" from a level the
-            // script computed — which is the `hasLevel` flag `Tcl_UpvarObjCmd`
-            // carries alongside the value.
             None => self.push_empty(),
         }
         for pair in pairs.chunks(2) {
             self.word(&pair[0])?;
         }
-        let pushed = locals.len() * 3 + 1;
+        let pushed = locals.len() * 3 + 2;
         let count = u8::try_from(pushed)
             .map_err(|_| self.err("too many arguments for \"upvar\"".to_string()))?;
         self.emit(Op::Extended(ext::UPVAR, count), 1 - pushed as i32);
@@ -593,40 +595,67 @@ impl Compiler {
     }
 }
 
-/// What a level word names, if it names one at all.
+/// What a level word is to `TclObjGetFrame` (`generic/tclProc.c:772-862`), when
+/// it is one at all.
 ///
-/// `TclObjGetFrame` (`generic/tclProc.c:772-862`): `#N` is an absolute level and
-/// a bare integer is a number of levels *up* from the current one. Anything else
-/// is not a level, which is what makes `uplevel {set x 1}` a script and not a
-/// level followed by nothing.
+/// Both forms are read with the integer grammar of `Tcl_GetIntFromObj` — signs,
+/// surrounding whitespace, the radix prefixes and `_` separators — so `uplevel
+/// 0x1 …` and `uplevel { 1} …` are level 1 and `#0x0` is the global level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Level {
-    Absolute(i64),
+pub(crate) enum Level {
+    /// `N`: this many levels outwards from the running one.
     Up(i64),
+    /// `#N`: that absolute level.
+    Absolute(i64),
+    /// Spelled as a level and naming none: negative, past `int`, or a `#` with
+    /// no integer behind it. `TclObjGetFrame` answers `-1` for these, and they
+    /// are never a script.
+    Invalid,
 }
 
-fn parse_level(text: &str) -> Option<Level> {
-    if let Some(digits) = text.strip_prefix('#') {
-        return digits.parse::<i64>().ok().map(Level::Absolute);
+/// `None` when the word is not a level, which is `TclObjGetFrame`'s result `0`.
+pub(crate) fn parse_level(text: &str) -> Option<Level> {
+    let in_range = |n: i64| (0..=i64::from(i32::MAX)).contains(&n);
+    if let Some(n) = crate::list::parse_int(text) {
+        return Some(if in_range(n) {
+            Level::Up(n)
+        } else {
+            Level::Invalid
+        });
     }
-    text.parse::<i64>().ok().map(Level::Up)
+    let digits = text.strip_prefix('#')?;
+    Some(match crate::list::parse_int(digits) {
+        Some(n) if in_range(n) => Level::Absolute(n),
+        _ => Level::Invalid,
+    })
 }
 
-/// The absolute level a level word names, given the level the command is running
-/// at. `None` when the word is not a level at all, which is the `-1` result
-/// `TclObjGetFrame` returns.
-fn absolute_level(text: &str, current: i64) -> Option<i64> {
-    match parse_level(text)? {
-        Level::Absolute(n) if n < 0 => None,
-        Level::Absolute(n) => Some(n),
-        Level::Up(n) => Some(current - n),
+/// The absolute level a level word names from the level the command runs at,
+/// and whether the word was a level (`false`: it is not one and the default
+/// level 1 applies). `word` is `None` when the command has no level word.
+///
+/// The `bad level` text is the word as written — not the number it read as — and
+/// at the script's own level, where "1" cannot exist, it is `"1"` for a word
+/// that is no level at all (`TclObjGetFrame`'s `name = "1"; goto badLevel`).
+pub(crate) fn resolve_level(word: Option<&str>, current: i64) -> Result<(i64, bool), TclError> {
+    let bad = |name: &str| TclError::plain(format!("bad level \"{name}\""));
+    let written = word.unwrap_or("1");
+    let (target, is_level) = match word.and_then(parse_level) {
+        Some(Level::Up(n)) => (current - n, true),
+        Some(Level::Absolute(n)) => (n, true),
+        Some(Level::Invalid) => return Err(bad(written)),
+        None if current == 0 => return Err(bad("1")),
+        None => (current - 1, false),
+    };
+    if target < 0 || target > current {
+        return Err(bad(written));
     }
+    Ok((target, is_level))
 }
-
 // ── running ──────────────────────────────────────────────────────────────
 
-/// `upvar` ([`ext::UPVAR`]) with a target the script computed: `[slot …,
-/// level, other …]`, the inline operand counting the stack values.
+/// `upvar` ([`ext::UPVAR`]) with a target the script computed: `[slot, local …,
+/// hasLevel, level, other …]`, the inline operand counting the stack values.
 ///
 /// The level is resolved against the call stack exactly as `uplevel`'s is, and
 /// then each `other` name is resolved *in that level* — a `::`-qualified name in
@@ -635,10 +664,11 @@ fn absolute_level(text: &str, current: i64) -> Option<i64> {
 /// not, and an `a(i)` spelling as one element of an array. The result is a
 /// [`Link`] stored in the local's slot.
 pub(crate) fn upvar_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
-    let pairs = (usize::from(argc) - 1) / 3;
+    let pairs = (usize::from(argc) - 2) / 3;
     let mut others: Vec<String> = (0..pairs).map(|_| to_tcl_string(&vm.pop())).collect();
     others.reverse();
     let level_word = to_tcl_string(&vm.pop());
+    let has_level = pop_int(vm) != 0;
     let mut locals: Vec<(i64, String)> = (0..pairs)
         .map(|_| {
             let local = to_tcl_string(&vm.pop());
@@ -648,24 +678,12 @@ pub(crate) fn upvar_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), Tcl
     locals.reverse();
 
     let current = crate::runtime::current_level(vm);
-    // An absent level word is the default 1 and cannot be a bad level; a word
-    // the script wrote and that names no level is `bad level "…"`, which is the
-    // message `Tcl_UpvarObjCmd` synthesises for `result == 0 && hasLevel`.
-    let target = if level_word.is_empty() {
-        current - 1
-    } else {
-        match absolute_level(&level_word, current) {
-            Some(n) => n,
-            None => return Err(TclError::plain(format!("bad level \"{level_word}\""))),
-        }
-    };
-    if target < 0 || target > current {
-        let named = if level_word.is_empty() {
-            "1".to_string()
-        } else {
-            level_word
-        };
-        return Err(TclError::plain(format!("bad level \"{named}\"")));
+    // `Tcl_UpvarObjCmd` (`generic/tclVar.c:5176-5230`): a command with no level
+    // word takes level 1, and a word that is no level is `bad level "<word>"`,
+    // the message it synthesises for `result == 0 && hasLevel`.
+    let (target, is_level) = resolve_level(has_level.then_some(level_word.as_str()), current)?;
+    if has_level && !is_level {
+        return Err(TclError::plain(format!("bad level \"{level_word}\"")));
     }
     // An alias outside a procedure is made in the interpreter's variable table,
     // so the running chunk's values have to be there first: `set x 5; upvar 0 x
@@ -1428,24 +1446,44 @@ mod tests {
         assert_eq!(parse_level("#0"), Some(Level::Absolute(0)));
         assert_eq!(parse_level("#3"), Some(Level::Absolute(3)));
         assert_eq!(parse_level("1"), Some(Level::Up(1)));
-        assert_eq!(parse_level("-1"), Some(Level::Up(-1)));
+        // The integer grammar is `Tcl_GetIntFromObj`'s: radix prefixes and
+        // surrounding whitespace read as the number they spell.
+        assert_eq!(parse_level("0x1"), Some(Level::Up(1)));
+        assert_eq!(parse_level(" 1"), Some(Level::Up(1)));
+        assert_eq!(parse_level("#0x0"), Some(Level::Absolute(0)));
+        assert_eq!(parse_level("#00"), Some(Level::Absolute(0)));
+        // Spelled as a level and naming none: never a script.
+        assert_eq!(parse_level("-1"), Some(Level::Invalid));
+        assert_eq!(parse_level("#-1"), Some(Level::Invalid));
+        assert_eq!(parse_level("#"), Some(Level::Invalid));
+        assert_eq!(parse_level("#x"), Some(Level::Invalid));
+        assert_eq!(parse_level("99999999999"), Some(Level::Invalid));
         // A script is not a level, however it is spelled.
         assert_eq!(parse_level("set x 1"), None);
-        assert_eq!(parse_level("#"), None);
+        assert_eq!(parse_level("1.5"), None);
+        assert_eq!(parse_level("1x"), None);
         assert_eq!(parse_level(""), None);
     }
 
-    /// `TclObjGetFrame`'s two forms, resolved against the same current level.
+    /// `TclObjGetFrame`'s two forms, resolved against the same current level, and
+    /// the word each failure names.
     #[test]
     fn a_level_word_resolves_to_an_absolute_level() {
-        assert_eq!(absolute_level("#0", 3), Some(0));
-        assert_eq!(absolute_level("#2", 3), Some(2));
-        assert_eq!(absolute_level("1", 3), Some(2));
-        assert_eq!(absolute_level("0", 3), Some(3));
-        assert_eq!(absolute_level("3", 3), Some(0));
-        // `#-1` is refused by `TclObjGetFrame` before any frame is looked for.
-        assert_eq!(absolute_level("#-1", 3), None);
-        assert_eq!(absolute_level("nope", 3), None);
+        let target = |w: &str, cur| resolve_level(Some(w), cur).ok();
+        assert_eq!(target("#0", 3), Some((0, true)));
+        assert_eq!(target("#2", 3), Some((2, true)));
+        assert_eq!(target("1", 3), Some((2, true)));
+        assert_eq!(target("0", 3), Some((3, true)));
+        assert_eq!(target("3", 3), Some((0, true)));
+        assert_eq!(target("set x", 3), Some((2, false)));
+        assert_eq!(resolve_level(None, 1).ok(), Some((0, false)));
+        let message = |w: Option<&str>, cur| resolve_level(w, cur).unwrap_err().to_string();
+        assert!(message(Some("#-1"), 3).contains("bad level \"#-1\""));
+        assert!(message(Some("0x9"), 3).contains("bad level \"0x9\""));
+        assert!(message(Some("#4"), 3).contains("bad level \"#4\""));
+        // At the script's own level a non-level word is `"1"`, not the word.
+        assert!(message(Some("nope"), 0).contains("bad level \"1\""));
+        assert!(message(None, 0).contains("bad level \"1\""));
     }
 
     #[test]
@@ -1515,7 +1553,7 @@ mod tests {
     /// in and therefore the one a lambda body is now lowered in.
     #[test]
     fn a_lambda_scope_matches_the_prologue_it_is_emitted_with() {
-        let sig = crate::procs::parse_signature("l", "a {b 2} args").expect("a valid signature");
+        let sig = crate::procs::parse_signature("a {b 2} args").expect("a valid signature");
         let scope = crate::procs::scope_for(&sig);
         assert_eq!(scope.locals.get("a"), Some(&0));
         assert_eq!(scope.locals.get("b"), Some(&1));
@@ -1527,7 +1565,7 @@ mod tests {
     #[test]
     fn a_lambda_uses_the_procedure_signature_parser() {
         let sig: crate::procs::Signature =
-            crate::procs::parse_signature("l", "x").expect("a valid signature");
+            crate::procs::parse_signature("x").expect("a valid signature");
         assert_eq!(sig.params.len(), 1);
         let first = &sig.params[0];
         assert_eq!(first.name, "x");

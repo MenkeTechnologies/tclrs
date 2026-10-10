@@ -289,8 +289,9 @@ approximated, and nothing is silently mis-run.
     rest of the subject (`Tcl_RegExpExecObj`), `NOTBOL` unless a newline
     precedes it, so a word boundary sees no character behind the restart and
     `^` holds there only after a newline: `regsub -all {\y} "ab cd" |` is
-    `|a|b |c|d`. The one case not reproduced is `\A` at a `NOTBOL` restart,
-    which matches in tclsh (`regsub -all {\A} abc X` is `XaXbXcX`) and not here.
+    `|a|b |c|d`. `\A` matches at a restart, as in tclsh (`regsub -all {\A} abc X`
+    is `XaXbXcX`), for a pattern with no `^`; one holding both (`\Aa|^b`) is
+    searched in place and its `\A` does not match at a restart.
   * **The empty-match loop** is Tcl's, where `regexp -all {x*} ab` counts 2 but
     `regsub -all {x*} ab -` substitutes 3 times, and the literally empty pattern
     — not `(?:)` or `a{0}` — stops where `regexp` stops.
@@ -732,19 +733,23 @@ approximated, and nothing is silently mis-run.
   state tclrs is permanently in — `auto_path` does not exist, and `info procs`
   does not list the `auto_*` procedures that a bare `info procs` in tclsh does.
   `info globals` likewise omits the `tcl_*` variables `init.tcl` sets.
-- **`info args`, `info body` and `info procs` answer for a procedure declared
-  later in the script.** A whole script is compiled before any of it runs, and
-  the signature table is filled on that pass, so `info args later` before `proc
-  later {q r} {}` returns `q r` where tclsh raises `"later" isn't a procedure`.
-  The same ordering is what lets a procedure call one defined below it, which
-  tclsh also allows; only the introspection disagrees.
-- **`info body` and `info procs` for a procedure a nested script defined.**
+- **`info args` and `info body` answer for a procedure declared later in the
+  script.** A whole script is compiled before any of it runs, and the signature
+  table is filled on that pass, so `info args later` before `proc later {q r}
+  {}` returns `q r` where tclsh raises `"later" isn't a procedure`. The same
+  ordering is what lets a procedure call one defined below it, which tclsh also
+  allows; only the introspection disagrees. `info commands` and `info procs` do
+  not: they answer from the namespace registry, which a `proc` updates when it
+  runs, so a procedure is listed only once defined, a renamed one under its new
+  name, a deleted one not at all, and inside a `namespace eval` the namespace's
+  own commands are listed.
+- **`info body` for a procedure a nested script defined.**
   A procedure defined by `eval {proc p …}`, by a `source`d file, or by
   `proc p {} $b` (which runs as a command of its own chunk) binds `p` in the
   shared run-time table when it runs, and calls from any chunk reach it through
   the chunk it was compiled into (`crate::procs::enter_elsewhere`); but
-  `info body p` answers `"p" isn't a procedure` and `info procs` does not list
-  it, because both read the signatures of the running chunk. A `proc` inside a `namespace eval` block is in
+  `info body p` answers `"p" isn't a procedure`, because it reads the signatures
+  of the running chunk. A `proc` inside a `namespace eval` block is in
   a similar position: its signature is prescanned and its body text is not.
 - **An `upvar` to a variable the procedure running there never names.** An
   `upvar` link is the *address* of one frame slot, and another frame's slots are
@@ -1155,7 +1160,21 @@ the measurement behind it.
   interpreter's own variables. Both implementations answer the same question
   about the script's own names, which is what `tests/event_differential.rs`
   compares.
-- **`info script` answers the empty string unless a host sets it.** The library's
+- **Names tclsh has that tclrs does not.** `namespace children` at the global
+  level also lists `::zlib`, `::oo` and `::tcl`; `info commands` lists the
+  commands in "Commands tclrs does not have" below; `namespace ensemble exists
+  string` is `0` and `namespace ensemble configure string` is `"string" is not
+  an ensemble command`, because the built-in ensembles are lowered by the
+  compiler and are not in the registry `namespace ensemble` reads; and `info
+  locals` in a procedure with a formal named twice lists the name once where
+  tclsh lists it twice.
+- **`-errorinfo`, `-errorline`, `-errorstack` and `$::errorInfo` / `$::errorCode`.**
+  `catch {error x} m o` carries `-code`, `-level` and `-errorcode` only; the
+  rest of tclsh's error dictionary is a trace of the *commands* that were
+  executing, which this frontend does not record, and `return -errorinfo` is
+  refused. Needs a per-command record in the VM.
+- **`info script` answers the empty string unless a host sets it.**
+ The library's
   entry point is handed a string, not a file, which is the case tclsh answers
   the empty string for (`tclsh -c`). `crate::cmd_info::set_script` is how a host
   says which file a script came from.
@@ -1846,8 +1865,8 @@ byte-verified against tclsh 9.0.4 and pinned in `tests/parity_fuzz_findings.rs`:
   `if {1 ? NaN : 1} {}` already was here. A test containing a binary operator
   (`1+1 ? NaN : 1`) is still not folded and keeps the boolean rule's message.
 - **A procedure called at the top level before its `proc` ran was found.** It is
-  `invalid command name` now. `info commands` and `info procs` still list such a
-  name early, per the entry above about `info args`.
+  `invalid command name` now, and `info commands` and `info procs` do not list it
+  until its `proc` has run.
 - **`incr` checked a literal increment before the variable's value.**
   `set s 2h; incr s end` names `2h` in tclsh, since `TclIncrObj` parses the value
   first; scalar and element `incr` both do so now.
@@ -1881,6 +1900,58 @@ Still open from the same runs:
   tclsh compiles; see "Fixed from the official suite's failures" below.
 - **`lsearch -sorted -real` over a list holding a NaN** finds what a linear scan
   finds; tclsh's binary search meets the NaN and refuses it.
+
+### Fixed by the second generator campaign
+
+Found by `misc_stmt`'s pools and by running the `eval` fuzz target's command
+skeletons through both interpreters with a hostile payload pool; each
+re-measured against tclsh 9.0.3 (the nearest release installed) and pinned by a
+differential program in `tests/parity_fuzz_findings.rs`.
+
+- **A refused `lset`, `lpop`, `ledit` or `lappend` unset the variable.** Each
+  takes the value out of its variable to rewrite it unshared, and a refusal —
+  a bad index, an index out of range, a value that is not a list — returned
+  without putting it back, so `catch {lset l 7 x}; set l` was `can't read "l"`.
+- **A level word was read by shape, not by the integer grammar.** `uplevel
+  0x1 …`, `uplevel { 1} …` and `upvar #0x0 …` name levels in tclsh
+  (`TclObjGetFrame`); a word that reads as a level and names none is `bad level
+  "<word as written>"` and is never a script, and `upvar` with an empty level
+  word has a level word. One classifier (`cmd_scope::parse_level`) now serves
+  `uplevel` and `upvar`.
+- **An unset read through an `upvar #0` alias named the target.** `upvar #0 q z;
+  set z` is `can't read "z"`, not `"q"`.
+- **A formal named twice was refused.** tclsh accepts it: two slots, and the
+  body's name finds the first.
+- **`binary encode foo x` could not be caught.** It was refused while
+  compiling.
+- **A `proc` in a `namespace eval` away from the top level could not be
+  called.** The call was bound to a body the chunk never defined
+  (`undefined function: a::f`), and so was a call through an import of it.
+- **`rename` checked the destination after removing the source,** so `rename f
+  f` removed `f`; a missing source says `delete` for an empty destination; and a
+  destination in an unknown namespace creates the namespace. A `rename` onto an
+  existing procedure no longer makes a compile-time second name for the source.
+- **`namespace inscope` of a missing namespace** is `namespace "::a" not found`.
+- **`lseq` took only numbers.** An argument that is not a number or a keyword is
+  an expression, evaluated in the frame the command was written in
+  (`SequenceIdentifyArgument`), so `lseq 1+1 5` and `lseq {$n - 1} 0` work and
+  a bad one carries the expression's own refusal.
+- **`lrepeat` aborted on a count past the list limit** (`capacity overflow`) and
+  quoted the count as written in `bad count`; both answer as `Tcl_LrepeatObjCmd`
+  does. An empty value list with a huge count is the empty list at once.
+- **`binary scan` validated the whole format before reading any of it.** tclsh
+  reads a field at a time, so a field whose data has run out ends the scan
+  before a later bad specifier is seen, and an error part-way leaves the
+  fields before it stored.
+- **`lset` refused an index one past the end except at the last position.** At
+  any depth of the path it names an element that does not exist yet, built from
+  the empty list.
+- **`\A` did not match where a `-all` or `-start` search restarted.** tclsh runs
+  each restart on the rest of the subject, so `\A` matches there again:
+  `regsub -all {\Aa} aab X` is `XXb`. A pattern that also holds a `^` is still
+  searched in place, and its `\A` does not match at a restart.
+- **`apply` with a lambda namespace that does not exist** is `namespace "::x"
+  not found` rather than the refusal for a namespace this frontend has none of.
 
 ### Fixed from the official suite's failures
 
@@ -2017,19 +2088,21 @@ than an unexamined one. Measured against the 2000-program run above.
   second half of the same record, carried by the chunk itself and read by
   `VM::slot_names_at`, which is what the projection uses. See the refusal list
   above.
-- **Commands tclrs does not have.** `interp`, `binary`, `trace`, `socket` and
-  `exec` are outside the command set entirely, so a generated use of one is
-  `invalid command name` and says nothing about parity. `{*}` expansion,
-  `namespace`, `rename`, `source`, `encoding` and file I/O were on this list
-  until each landed; the generator should reach them now. `uplevel`,
-  `upvar`, `variable` and `apply` were on this list until `src/cmd_scope.rs`
-  landed; what they now refuse is the entry above, and what they answer is
-  `tests/event_differential.rs`. They are deliberately not generated, and belong
-  in the generator on the day the commands exist. `regexp`, `regsub`,
-  `lassign`, `lset`, `lpop`,
-  `ledit`, `lrepeat`, `lremove`, `lseq` and `lmap` exist now and are not
-  generated yet, so the run above says nothing about them either; what does is
-  `tests/list_commands_differential.rs`.
+- **Commands tclrs does not have.** `interp`, `trace`, `socket`, `exec`,
+  `exit`, `time`, `timerate`, `chan`, `const`, `tailcall`, `fcopy`, `fileevent`,
+  `fblocked` and `zlib` are outside the command set entirely, so a generated use
+  of one is `invalid command name` and says nothing about parity. `{*}`
+  expansion, `namespace`, `rename`, `source`, `encoding`, `binary` and file I/O
+  were on this list until each landed.
+- **What the generator reaches of the commands that exist.** `regexp`,
+  `regsub`, `scan`, `subst`, `try`, `throw`, `apply`, `uplevel`, `upvar`,
+  `binary`, `lassign`, `lmap`, `lpop`, `lremove`, `lrepeat`, `lseq`, `lset`,
+  `ledit`, `rename` and the `namespace` name queries are drawn from option and
+  argument pools by `misc_stmt` in `scripts/fuzz/gen.tcl`, each statement under
+  a `catch` that prints the code and message so a refusal does not end the case.
+  The pools leave out what tclrs documents as unimplemented — look-around and
+  back-references in a pattern, `info level N`, `namespace path` — because each
+  would spend most of a run re-finding the same refusal.
 - **`array` on a procedure local, `unset` of one, and `eval` inside a procedure
   body** are generated, at `RARE_SHAPE_RATE` — so are the `dict` subcommands
   outside the implemented set. All three were refusals when the rate was named

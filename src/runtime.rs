@@ -1805,6 +1805,10 @@ impl Hooks {
                 // here is not a script's variable and must not be reported as
                 // one.
                 Some(name) if !name.starts_with('\u{0}') => {
+                    // A read the compiler recorded under another spelling is
+                    // an `upvar` alias, and is refused as the script wrote it.
+                    let name =
+                        slot_read_name(read.chunk, read.ip).unwrap_or_else(|| name.to_string());
                     Err(format!("can't read \"{name}\": no such variable"))
                 }
                 // fusevm builds this read's `UndefRead` with `name: None` for a
@@ -1978,6 +1982,9 @@ impl Hooks {
                 // interpreter once per compared pair — and whether a given call
                 // says `-command` is only known when it runs.
                 ext::LSORT => crate::cmd_list::lsort_op(&interp, vm, arg).map_err(TclError::plain),
+                // `lseq` evaluates an argument that is no number as an expression,
+                // in the frame it was written in.
+                ext::LSEQ => crate::cmd_list::lseq_op(&interp, vm, arg),
                 // `regsub` for the same reason: `-command` calls back into the
                 // interpreter once per match, and whether a given call says
                 // `-command` is only known when it runs.
@@ -2197,6 +2204,8 @@ fn ffi_op(vm: &mut VM, argc: u8) -> Result<(), String> {
 /// answered from [`State::globals`], which the extension handler reaches and a
 /// bare `&mut VM` does not.
 fn info_names_op(interp: &Shared, vm: &mut VM, which: u8) -> Result<(), TclError> {
+    // The namespace the command was compiled in, for the kinds that pushed it.
+    let mut here = String::from("::");
     // `info locals` and in-body `info vars` push a candidate list and a place per
     // candidate ahead of the pattern; every other kind pushes the pattern and a
     // flag saying whether the command gave one. The kind says which shape is on
@@ -2210,20 +2219,24 @@ fn info_names_op(interp: &Shared, vm: &mut VM, which: u8) -> Result<(), TclError
     } else {
         let given = matches!(vm.pop(), Value::Int(1));
         let pattern = to_tcl_string(&vm.pop());
+        here = to_tcl_string(&vm.pop());
         (given.then_some(pattern), None)
     };
 
     let mut names: Vec<String> = match which {
-        // commands: every command name the frontend answers to, plus this
-        // chunk's procedures. `crate::names::commands` is the same assembly the
-        // REPL's completer uses, built from the modules' own tables — a command
-        // module added to the tree is listed here without a second list to keep.
-        crate::cmd_info::COMMANDS => crate::names::commands()
-            .into_iter()
-            .map(|s| s.to_string())
-            .chain(chunk_procs(vm))
-            .collect(),
-        crate::cmd_info::PROCS => chunk_procs(vm).collect(),
+        // commands and procs: the built-in vocabulary (`crate::names::commands`,
+        // the same assembly the REPL's completer uses) and the procedures the
+        // namespace registry holds, as the current namespace sees them.
+        crate::cmd_info::COMMANDS | crate::cmd_info::PROCS => {
+            let qualified = filter.as_deref().is_some_and(|p| p.contains("::"));
+            let state = interp.lock().expect("interpreter lock");
+            crate::cmd_namespace::visible_commands(
+                &state.ns,
+                &here,
+                which == crate::cmd_info::COMMANDS,
+                qualified,
+            )
+        }
         // `info locals` from a script that is not a body: the frame it is
         // running in is a run-time fact, so the names come from the projection.
         // Through `global_names_of` for the same reason `info vars` goes through
@@ -2389,41 +2402,37 @@ fn uplevel_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     }
     args.reverse();
     let declared = args.remove(0);
-    // A level word is `#n` or a bare unsigned integer, and nothing else: `uplevel
-    // 1.5 …` runs `1.5 …` as a script in tclsh, and `uplevel 5 {…}` five levels
-    // deeper than the stack goes is `bad level "5"` rather than a script called
-    // `5`. So the *shape* selects the word and resolving it is allowed to fail.
-    let takes_level = args.len() > 1 && crate::compiler::looks_like_a_level(&args[0]);
-    if args.len() == 1 && crate::compiler::looks_like_a_level(&args[0]) {
+    // `TclNRUplevelObjCmd` hands the first word to `TclObjGetFrame` whatever the
+    // argument count: a word that reads as a level is one and a script must
+    // follow it, so `uplevel 1` is `wrong # args` and `uplevel 5 {…}` past the
+    // stack is `bad level "5"`.
+    let current = current_level(vm);
+    let (target, is_level) =
+        crate::cmd_scope::resolve_level(args.first().map(String::as_str), current)?;
+    if is_level {
+        args.remove(0);
+    }
+    if args.is_empty() {
         return Err(TclError::plain(
             "wrong # args: should be \"uplevel ?level? command ?arg ...?\"".to_string(),
         ));
     }
-    let level = if takes_level {
-        args.remove(0)
-    } else {
-        "1".to_string()
-    };
     let src = script_of(args);
 
-    // The levels this context has: one per active procedure call, which is what
-    // Tcl counts. The global level is not one of them — it is what `#0` names,
-    // and what a relative level reaches by counting past the outermost call.
+    // `#0` is the global level, which is not a procedure activation.
+    if target == 0 {
+        flush(&vm.chunk, interp, &vm.globals);
+        let result = run_source(interp, &src);
+        vm.globals = seed(&vm.chunk, interp);
+        vm.push(result?);
+        return Ok(());
+    }
     let ups = levels(vm);
-    let up = match parse_level(&level, ups.len()) {
-        Some(Level::Global) => {
-            flush(&vm.chunk, interp, &vm.globals);
-            let result = run_source(interp, &src);
-            vm.globals = seed(&vm.chunk, interp);
-            vm.push(result?);
-            return Ok(());
-        }
-        // A level counted in calls, resolved to the frame that call pushed.
-        Some(Level::Up(out)) => match ups.get(out) {
-            Some(&up) => up,
-            None => return Err(TclError::plain(format!("bad level \"{level}\""))),
-        },
-        None => return Err(TclError::plain(format!("bad level \"{level}\""))),
+    let Some(&up) = usize::try_from(current - target)
+        .ok()
+        .and_then(|out| ups.get(out))
+    else {
+        return Err(TclError::plain(format!("bad level \"{target}\"")));
     };
     run_in_frame(interp, vm, &src, up, &declared)
 }
@@ -2443,37 +2452,6 @@ pub(crate) fn levels(vm: &VM) -> Vec<usize> {
     (0..n)
         .filter(|&up| vm.frames[n - 1 - up].entry_ip.is_some())
         .collect()
-}
-
-/// Which level a `level` word names.
-enum Level {
-    /// `#0`, or a relative level that reaches past the outermost call.
-    Global,
-    /// This many calls outwards from the running one.
-    Up(usize),
-}
-
-/// Read `uplevel`'s level word the way `Tcl_GetFrame` reads it: `#n` counts from
-/// the global level inwards, a bare number counts outwards from here, and
-/// anything else is not a level at all.
-fn parse_level(word: &str, depth: usize) -> Option<Level> {
-    if let Some(abs) = word.strip_prefix('#') {
-        let abs: usize = abs.parse().ok()?;
-        // `#0` is the global level; `#1` is the outermost frame, and so on.
-        if abs == 0 {
-            return Some(Level::Global);
-        }
-        return depth.checked_sub(abs).map(Level::Up);
-    }
-    let rel: usize = word.parse().ok()?;
-    if rel > depth {
-        return None;
-    }
-    if rel == depth {
-        Some(Level::Global)
-    } else {
-        Some(Level::Up(rel))
-    }
 }
 
 /// One argument is the script; several are concatenated as `concat` does, which
@@ -2691,9 +2669,20 @@ fn apply_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
         // any other is refused rather than silently ignored.
         [params, body, ns] if ns == "::" || ns.is_empty() => (params, body),
         [_, _, ns] => {
+            // A namespace that does not exist is refused as tclsh refuses it,
+            // resolved against the global one (`TclGetNamespaceFromObj`).
+            let absolute = crate::cmd_namespace::resolve("::", ns);
+            if !interp
+                .lock()
+                .expect("interpreter lock")
+                .ns
+                .exists(&absolute)
+            {
+                return Err(crate::cmd_namespace::namespace_not_found(&absolute, "::"));
+            }
             return Err(TclError::plain(format!(
                 "the namespace \"{ns}\" of a lambda is not supported yet: this frontend has only \"::\""
-            )))
+            )));
         }
         _ => return Err(TclError::plain(bad_lambda(&lambda))),
     };
@@ -5130,23 +5119,6 @@ pub(crate) fn proc_params(vm: &VM, name: &str) -> Option<ProcParams> {
         .expect("proc table lock")
         .as_ref()
         .and_then(|t| t.get(&(id, name.to_string())).cloned())
-}
-
-/// The procedures the running chunk defines.
-fn chunk_procs(vm: &VM) -> impl Iterator<Item = String> + '_ {
-    let id = chunk_identity(&vm.chunk);
-    let names: Vec<String> = PROC_TABLE
-        .lock()
-        .expect("proc table lock")
-        .as_ref()
-        .map(|t| {
-            t.keys()
-                .filter(|(chunk, _)| *chunk == id)
-                .map(|(_, name)| name.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-    names.into_iter()
 }
 
 /// The file `info script` reports — what the binary was asked to run, empty when

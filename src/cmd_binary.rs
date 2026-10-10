@@ -659,42 +659,47 @@ fn cut(text: &str) -> &str {
 
 // ── binary scan ──────────────────────────────────────────────────────────
 
-/// What one scan produced: a slot per field that consumes a variable, unfilled
-/// where the data ran out.
+/// What one scan produced: the value of each field that was read, in the order
+/// of the variables they go to, and the refusal that ended the scan when it did
+/// not simply run out of data. The fields read before a refusal are still set —
+/// `BinaryScanCmd` assigns as it goes — so the two travel together.
 struct Scanned {
-    values: Vec<Option<String>>,
+    values: Vec<String>,
+    error: Option<String>,
 }
 
 /// `binary scan value formatString ?varName ...?`.
-fn scan(data: &[u8], fmt: &str, vars: usize) -> Result<Scanned, String> {
+fn scan(data: &[u8], fmt: &str, vars: usize) -> Scanned {
     let f: Vec<char> = fmt.chars().collect();
-
-    // The argument check runs over the whole format first, as
-    // `ValidateFormat`'s does: too few variables is an error before any of the
-    // data is read, and a bad type character is one too.
-    let mut wanted = 0usize;
-    let mut i = 0usize;
-    while let Some(spec) = next_spec(&f, &mut i) {
-        match spec.cmd {
-            'a' | 'A' | 'C' | 'b' | 'B' | 'h' | 'H' => wanted += 1,
-            'x' | 'X' | '@' => {
-                if spec.cmd == '@' && spec.count == Count::One {
-                    return Err("missing count for \"@\" field specifier".to_string());
-                }
-            }
-            cmd if item_size(cmd).is_some() => wanted += 1,
-            _ => return Err(bad_field(&spec)),
-        }
-    }
-    if wanted > vars {
-        return Err("not enough arguments for all format specifiers".to_string());
-    }
-
-    let mut values = vec![None; wanted];
-    let mut slot = 0usize;
+    let mut values: Vec<String> = Vec::new();
+    let mut error = None;
     let mut at = 0usize;
     let mut i = 0usize;
+    // One field at a time, as `BinaryScanCmd` reads them: a bad type character,
+    // a missing count or too few variables is refused where the format reaches
+    // it, and a field whose data has run out ends the scan before any later
+    // one is looked at.
     while let Some(spec) = next_spec(&f, &mut i) {
+        let consumes = match spec.cmd {
+            'a' | 'A' | 'C' | 'b' | 'B' | 'h' | 'H' => true,
+            'x' | 'X' => false,
+            '@' => {
+                if spec.count == Count::One {
+                    error = Some("missing count for \"@\" field specifier".to_string());
+                    break;
+                }
+                false
+            }
+            cmd if item_size(cmd).is_some() => true,
+            _ => {
+                error = Some(bad_field(&spec));
+                break;
+            }
+        };
+        if consumes && values.len() >= vars {
+            error = Some("not enough arguments for all format specifiers".to_string());
+            break;
+        }
         let left = data.len() - at.min(data.len());
         match spec.cmd {
             'a' | 'A' | 'C' => {
@@ -718,8 +723,7 @@ fn scan(data: &[u8], fmt: &str, vars: usize) -> Result<Scanned, String> {
                         taken = &taken[..end];
                     }
                 }
-                values[slot] = Some(from_bytes(taken));
-                slot += 1;
+                values.push(from_bytes(taken));
                 at += count;
             }
             'b' | 'B' => {
@@ -741,8 +745,7 @@ fn scan(data: &[u8], fmt: &str, vars: usize) -> Result<Scanned, String> {
                     };
                     text.push(if taken == 1 { '1' } else { '0' });
                 }
-                values[slot] = Some(text);
-                slot += 1;
+                values.push(text);
                 at += count.div_ceil(8);
             }
             'h' | 'H' => {
@@ -763,8 +766,7 @@ fn scan(data: &[u8], fmt: &str, vars: usize) -> Result<Scanned, String> {
                     let digit = if high { byte >> 4 } else { byte & 0xf };
                     text.push(char::from_digit(u32::from(digit), 16).expect("a nibble"));
                 }
-                values[slot] = Some(text);
-                slot += 1;
+                values.push(text);
                 at += count.div_ceil(2);
             }
             'x' => {
@@ -806,13 +808,12 @@ fn scan(data: &[u8], fmt: &str, vars: usize) -> Result<Scanned, String> {
                     let from = at + item * size;
                     items.push(read_number(&data[from..from + size], cmd, spec.unsigned));
                 }
-                values[slot] = Some(list::join(&items));
-                slot += 1;
+                values.push(list::join(&items));
                 at += count * size;
             }
         }
     }
-    Ok(Scanned { values })
+    Scanned { values, error }
 }
 
 /// One number read out of `slot`, whose length is the field's item size.
@@ -1295,15 +1296,18 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let fmt = to_tcl_string(&vm.pop());
             let data = as_bytes(&to_tcl_string(&vm.pop()))?;
 
-            let scanned = scan(&data, &fmt, count)?;
+            let scanned = scan(&data, &fmt, count);
             let mut assigned = 0i64;
             // The first variable that refuses ends the command, the ones
             // before it keeping their values: `BinaryScanCmd` returns at the
             // first failed `Tcl_ObjSetVar2`.
             for ((place, name), value) in places.into_iter().zip(scanned.values) {
-                let Some(value) = value else { continue };
                 assigned += 1;
                 set_scalar(vm, place, &name, Value::Str(Arc::new(value)))?;
+            }
+            // A refused format is reported after the fields before it were set.
+            if let Some(msg) = scanned.error {
+                return Err(msg);
             }
             vm.push(Value::Int(assigned));
             Ok(())

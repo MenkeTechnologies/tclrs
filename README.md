@@ -840,7 +840,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | `namespace eval` inside a procedure body, where an unqualified name in its body would take a frame slot rather than the namespace's variable | `"namespace eval" inside a procedure is not supported yet: an unqualified name in its body would take a frame slot rather than the namespace's variable` |
 | `info` subcommands that need machinery this frontend has none of: `frame`, `errorstack`, `cmdcount`, `cmdtype`, `class`, `object`, `consts`, `constant`, `loaded`; and `info level N`, which needs a record of the command that entered a level | `info frame is not supported yet` |
 | `info library` — a raise rather than a refusal, carrying tclsh's own message for an interpreter with no script library, which this one permanently is | `no library has been specified for Tcl` |
-| A lambda naming a namespace other than `::`, written out or computed | `the namespace "::ns" of a lambda is not supported yet: this frontend has only "::"` |
+| A lambda naming an existing namespace other than `::`, written out or computed (one that does not exist is tclsh's `namespace "::ns" not found`) | `the namespace "::ns" of a lambda is not supported yet: this frontend has only "::"` |
 | `vwait` on more than one variable, and its `-timeout` / `-readable` / `-writable` / `-all` options | `"vwait" takes at most one variable name in this phase` |
 | `open \|command` — the pipeline form | `opening a command pipeline is not implemented in this frontend; …` |
 | A channel encoding `encoding names` does not list; `fconfigure -blocking 0`; `fconfigure -eofchar` and `-profile` when set; half-closing a read-write channel | `unknown encoding "iso2022-jp"` |
@@ -1711,10 +1711,19 @@ middle rather than trading a comparison for a skip. Whether it should rise, now
 that these cost a comparison nothing, is an open question and a change of its
 own: raising it moves what every seed generates.
 
-The generator has not caught up in the other direction either — it
-under-measures the constructs it still draws at the rare rate, and `uplevel` and
-`apply` are not generated at all. What covers those meanwhile is
-`tests/frame_differential.rs`.
+The commands that sit outside those statement generators — `regexp`, `regsub`,
+`scan`, `subst`, `try`, `throw`, `apply`, `uplevel`, `upvar`, `binary`,
+`lassign`, `lmap`, `lpop`, `lremove`, `lrepeat`, `lseq`, `lset`, `ledit`,
+`rename` and the `namespace` name queries — are drawn from option and argument
+pools by `misc_stmt`: a regular expression from a pool of awkward patterns
+under a randomly chosen option set, a `scan` format against a pool of inputs, a
+`try` body against a random set of handlers, a level word from the whole range
+of spellings `uplevel` and `upvar` read. Each statement runs under a `catch`
+that prints the code and the message, so a refusal does not end the case before
+the commands after it are compared.
+
+The generator under-measures the constructs it still draws at the rare rate.
+What also covers the frame commands is `tests/frame_differential.rs`.
 
 ```sh
 bash scripts/fuzz_parity.sh -M -n 500 -m       # mutate instead of generate
@@ -1779,6 +1788,12 @@ generated script terminates and a libfuzzer timeout is a real finding.
 
 `tests/fuzz_smoke.rs` replays every target's seed corpus and a hostile-input list
 under stable, so `cargo test` keeps the scaffolding honest without nightly.
+
+The `eval` and `vm` skeletons include the pattern, scan, substitution, in-place
+list, exception, lambda, frame and binary commands, so the payload a fuzzer
+mutates reaches them too. To compare those skeletons against `tclsh` without
+nightly, wrap each in `catch` with a `puts` of the result and run the file under
+both interpreters, as `scripts/fuzz_parity.sh -c` does for any corpus file.
 
 ---
 

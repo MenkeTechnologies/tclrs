@@ -494,13 +494,13 @@ fn unreachable_scopes_are_refused() {
         // The namespace is what is left: a lambda's third element names the
         // namespace its body runs in, and this frontend has one.
         (
-            "puts [apply {{x} {expr {$x}} ::ns} 1]",
+            "namespace eval ns {}\nputs [apply {{x} {expr {$x}} ::ns} 1]",
             "the namespace \"::ns\" of a lambda is not supported yet",
         ),
         // Computed as well as written out, since neither can reach a second
         // namespace.
         (
-            "set L {{x} {expr {$x}} ::ns}\nputs [apply $L 1]",
+            "namespace eval ns {}\nset L {{x} {expr {$x}} ::ns}\nputs [apply $L 1]",
             "the namespace \"::ns\" of a lambda is not supported yet",
         ),
         // A coroutine cannot suspend out of a script run in another frame: the

@@ -405,6 +405,10 @@ impl Compiler {
 
     /// `info commands|procs|globals|vars ?pattern?`.
     fn info_names(&mut self, args: &[Word], which: u8, usage: &str) -> Result<(), CompileError> {
+        // The namespace being compiled goes first: `info commands` and `info procs`
+        // answer for the current namespace, which only the compiler knows.
+        let here = self.ns.current.clone();
+        self.push_str(&here);
         match args {
             [] => {
                 self.push_empty();
@@ -416,7 +420,7 @@ impl Compiler {
             }
             _ => return self.error(format!("wrong # args: should be \"{usage}\"")),
         }
-        self.emit(Op::Extended(ext::NAMES, which), -1);
+        self.emit(Op::Extended(ext::NAMES, which), -2);
         Ok(())
     }
 

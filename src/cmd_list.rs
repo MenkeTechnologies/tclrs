@@ -74,7 +74,7 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
         // `lseq`'s own argument grammar decides how many arguments are too
         // many, and it reports that at run time as tclsh does, so the bounds
         // here are open rather than a second, earlier answer to the question.
-        "lseq" => (ext::LSEQ, "lseq n ??op? n ??by? n??", 0, usize::MAX),
+        "lseq" => return lseq_compile(c, args),
         "lappend" => return lappend(c, args),
         "lassign" => return lassign(c, args),
         "lset" => return lset(c, args),
@@ -544,7 +544,9 @@ fn dispatch(id: u16, args: &[String]) -> Result<String, String> {
         ext::CONCAT => Ok(concat(args)),
         ext::LREPEAT => lrepeat(&args[0], &args[1..]),
         ext::LREMOVE => lremove(&args[0], &args[1..]),
-        ext::LSEQ => lseq(args),
+        // The pure path has no frame to evaluate an expression in; `lseq`
+        // itself is lowered to its own op ([`lseq_op`]).
+        ext::LSEQ => lseq(args, &mut |text| Err(list::number_error("number", text))),
         other => Err(format!("unknown list op {other}")),
     }
 }
@@ -553,11 +555,35 @@ fn dispatch(id: u16, args: &[String]) -> Result<String, String> {
 /// an empty list rather than an error; only a negative count is refused, and in
 /// its own wording rather than the integer parser's.
 fn lrepeat(count: &str, values: &[String]) -> Result<String, String> {
-    let n = list::wide(count).map_err(|_| format!("expected integer but got \"{count}\""))?;
+    /// The most elements a list may hold, as `lrepeat` reports it (measured on
+    /// tclsh 9.0.3, 64-bit: `Tcl_LrepeatObjCmd`'s `LIST_MAX`).
+    const LIST_MAX: i64 = 1_152_921_504_606_846_970;
+    let n = list::wide(count)?;
+    // The count in the message is the integer read, not the word written:
+    // `lrepeat -0x1 x` is `bad count "-1"`.
     if n < 0 {
-        return Err(format!("bad count \"{count}\": must be integer >= 0"));
+        return Err(format!("bad count \"{n}\": must be integer >= 0"));
     }
-    let mut out = Vec::with_capacity(values.len() * n.max(0) as usize);
+    if n != 0 && values.len() as i64 > LIST_MAX / n {
+        return Err(format!(
+            "max length of a Tcl list ({LIST_MAX} elements) exceeded"
+        ));
+    }
+    // No values is an empty list however large the count: nothing to repeat.
+    if values.is_empty() {
+        return Ok(String::new());
+    }
+    // The elements are reserved up front, as `Tcl_NewListObj` allocates the whole
+    // store, and a store that cannot be had is that command's own refusal — its
+    // size is the elements' pointers plus the 40-byte store header.
+    let total = values.len() as i64 * n;
+    let mut out: Vec<String> = Vec::new();
+    if out.try_reserve_exact(total as usize).is_err() {
+        return Err(format!(
+            "list creation failed: unable to alloc {} bytes",
+            total * 8 + 40
+        ));
+    }
     for _ in 0..n {
         out.extend(values.iter().cloned());
     }
@@ -586,6 +612,61 @@ fn lremove(value: &str, indices: &[String]) -> Result<String, String> {
     Ok(list::join(&kept))
 }
 
+/// `lseq`, lowered to `[declared, arg …]`.
+///
+/// An argument that is neither a number nor a keyword is an expression
+/// (`SequenceIdentifyArgument`), evaluated in the frame the command was written
+/// in, so the op needs what `subst` needs: the names the enclosing body linked
+/// with `global`.
+fn lseq_compile(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
+    let count = u8::try_from(args.len() + 1).map_err(|_| CompileError {
+        msg: "too many arguments for \"lseq\"".to_string(),
+        line: c.line,
+    })?;
+    let declared = c.declared_globals().unwrap_or_default();
+    c.push_str(&declared);
+    for arg in args {
+        c.word(arg)?;
+    }
+    c.emit(Op::Extended(ext::LSEQ, count), 1 - i32::from(count));
+    Ok(())
+}
+
+/// The `lseq` op.
+pub(crate) fn lseq_op(
+    interp: &Shared,
+    vm: &mut VM,
+    argc: u8,
+) -> Result<(), crate::runtime::TclError> {
+    let mut args: Vec<String> = (0..argc).map(|_| to_tcl_string(&vm.pop())).collect();
+    args.reverse();
+    let declared = args.remove(0);
+    // The frame the command was written in, found as `eval` and `subst` find it.
+    let up = crate::runtime::levels(vm).first().copied().unwrap_or(0);
+    // An expression's own failure keeps its error code and trace: the closure
+    // hands the string to `lseq` and keeps the error itself here.
+    let mut failure = None;
+    let result = lseq(&args, &mut |text| {
+        let script = list::join(&["expr".to_string(), text.to_string()]);
+        crate::runtime::in_frame(interp, vm, up, &declared, |interp| {
+            crate::runtime::run_source(interp, &script)
+        })
+        .map(|value| to_tcl_string(&value))
+        .map_err(|e| {
+            let msg = e.msg.clone();
+            failure = Some(e);
+            msg
+        })
+    });
+    match result {
+        Ok(series) => {
+            vm.push(Value::Str(Arc::new(series)));
+            Ok(())
+        }
+        Err(msg) => Err(failure.unwrap_or_else(|| crate::runtime::TclError::plain(msg))),
+    }
+}
+
 /// One `lseq` operand: its value and the text it was written as.
 type SeqOperand<'a> = (Num, &'a str);
 
@@ -600,13 +681,16 @@ type SeqOperand<'a> = (Num, &'a str);
 /// makes the series one of doubles, rounded to the most decimal places any of
 /// its operands was written with, so `lseq 4 10 0.1` is `4.0 4.1 …` and not
 /// the accumulated error of repeated addition.
-fn lseq(args: &[String]) -> Result<String, String> {
+fn lseq(
+    args: &[String],
+    expr: &mut dyn FnMut(&str) -> Result<String, String>,
+) -> Result<String, String> {
     const USAGE: &str = "wrong # args: should be \"lseq n ??op? n ??by? n??\"";
     if args.len() > 5 {
         return Err(USAGE.to_string());
     }
 
-    let mut numbers: Vec<Option<(Num, &str)>> = Vec::with_capacity(5);
+    let mut numbers: Vec<Option<(Num, String)>> = Vec::with_capacity(5);
     let mut ops: Vec<usize> = Vec::with_capacity(5);
     let mut arg_key = 0u32;
     let mut allowed = SEQ_NUMERIC;
@@ -615,7 +699,7 @@ fn lseq(args: &[String]) -> Result<String, String> {
     for (i, arg) in args.iter().enumerate() {
         arg_key *= 10;
         let last = if i + 1 == args.len() { SEQ_LAST } else { 0 };
-        match seq_identify(arg, allowed | last)? {
+        match seq_identify(arg, allowed | last, expr)? {
             None => {
                 // Neither a number nor a keyword where only a keyword fits:
                 // the keyword lookup's own refusal.
@@ -624,7 +708,7 @@ fn lseq(args: &[String]) -> Result<String, String> {
                     Ok(_) => USAGE.to_string(),
                 });
             }
-            Some(SeqArg::Number(n)) => {
+            Some(SeqArg::Number(n, text)) => {
                 rem_nums -= 1;
                 arg_key += SEQ_NUMERIC;
                 allowed = SEQ_KEYWORD;
@@ -636,7 +720,7 @@ fn lseq(args: &[String]) -> Result<String, String> {
                 if matches!(n, Num::Float(_)) {
                     use_doubles += 1;
                 }
-                numbers.push(Some((n, arg.as_str())));
+                numbers.push(Some((n, text)));
                 ops.push(usize::MAX);
             }
             Some(SeqArg::Keyword(op)) => {
@@ -650,7 +734,10 @@ fn lseq(args: &[String]) -> Result<String, String> {
 
     let zero = (Num::Int(0), "0");
     let one = (Num::Int(1), "1");
-    let num = |k: usize| numbers[k].clone().expect("a numeric argument");
+    let num = |k: usize| -> SeqOperand {
+        let (n, text) = numbers[k].as_ref().expect("a numeric argument");
+        (n.clone(), text.as_str())
+    };
     let (dots, to, count, by) = (0, 1, 2, 3);
     let (start, end, step, mut count_of): (
         SeqOperand,
@@ -711,7 +798,9 @@ const SEQ_KEYWORD: u32 = 2;
 const SEQ_LAST: u32 = 4;
 
 enum SeqArg {
-    Number(Num),
+    /// The value, and the text it is known by: what was written, or what the
+    /// expression it was evaluated from answered.
+    Number(Num, String),
     Keyword(usize),
 }
 
@@ -719,10 +808,14 @@ enum SeqArg {
 /// keyword when keywords are — a keyword in the last position is missing its
 /// value — else `None`, or the number parser's refusal when a number would
 /// have fitted.
-fn seq_identify(arg: &str, allowed: u32) -> Result<Option<SeqArg>, String> {
+fn seq_identify(
+    arg: &str,
+    allowed: u32,
+    expr: &mut dyn FnMut(&str) -> Result<String, String>,
+) -> Result<Option<SeqArg>, String> {
     if allowed & SEQ_NUMERIC != 0 {
         if let Some(n) = seq_number(arg) {
-            return Ok(Some(SeqArg::Number(n)));
+            return Ok(Some(SeqArg::Number(n, arg.to_string())));
         }
     }
     let keyword = if allowed & SEQ_KEYWORD != 0 {
@@ -739,7 +832,14 @@ fn seq_identify(arg: &str, allowed: u32) -> Result<Option<SeqArg>, String> {
     if allowed & SEQ_NUMERIC == 0 {
         return Ok(None);
     }
-    Err(list::number_error("number", arg))
+    // Neither a number nor a keyword: an index expression, which
+    // `SequenceIdentifyArgument` hands to `Tcl_ExprObj` and then reads the
+    // result of as a number.
+    let text = expr(arg)?;
+    match seq_number(&text) {
+        Some(n) => Ok(Some(SeqArg::Number(n, text))),
+        None => Err(list::number_error("number", &text)),
+    }
 }
 
 /// `Tcl_GetNumberFromObj`: an integer of any width or a double, NaN included.
@@ -1021,7 +1121,17 @@ fn lappend_at(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     let place = place_of(vm, id == ext::LAPPEND_SLOT)?;
 
     let current = take_var(vm, place);
-    let extended = extend(current, &values)?;
+    let extended = match extend(current, &values) {
+        Ok(extended) => extended,
+        // The value was taken to be extended in place, and a malformed list is
+        // refused without having changed — so it goes back.
+        Err((original, msg)) => {
+            if let Some(cell) = var_cell(vm, place) {
+                *cell = original;
+            }
+            return Err(msg);
+        }
+    };
     if let Some(cell) = var_cell(vm, place) {
         *cell = Value::Str(Arc::clone(&extended));
     }
@@ -1033,14 +1143,20 @@ fn lappend_at(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
 /// The variable's new value. A list this module built and has not lost sight of
 /// is extended in place; anything else is re-derived through [`lappend_value`],
 /// which is also what refuses a value that is not a well-formed list.
-fn extend(current: Value, values: &[String]) -> Result<Arc<String>, String> {
+fn extend(current: Value, values: &[String]) -> Result<Arc<String>, (Value, String)> {
     if let Value::Str(list) = current {
         if forget(&list) {
             return Ok(append_canonical(list, values));
         }
-        return Ok(Arc::new(lappend_value(&list, values)?));
+        return match lappend_value(&list, values) {
+            Ok(text) => Ok(Arc::new(text)),
+            Err(msg) => Err((Value::Str(list), msg)),
+        };
     }
-    Ok(Arc::new(lappend_value(&to_tcl_string(&current), values)?))
+    match lappend_value(&to_tcl_string(&current), values) {
+        Ok(text) => Ok(Arc::new(text)),
+        Err(msg) => Err((current, msg)),
+    }
 }
 
 fn append_canonical(mut list: Arc<String>, values: &[String]) -> Arc<String> {
@@ -2233,24 +2349,32 @@ fn list_var_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     }
     let text = to_tcl_string(&current);
 
-    let (stored, yielded) = match id {
-        ext::LSET => {
-            let Some((value, indices)) = rest.split_last() else {
-                return Err(
-                    "wrong # args: should be \"lset listVar ?index? ?index ...? value\""
-                        .to_string(),
-                );
-            };
-            let new = lset_value(&text, indices, value)?;
-            (new.clone(), new)
-        }
-        ext::LPOP => {
-            let (new, popped) = lpop_value(&text, &rest)?;
-            (new, popped)
-        }
-        _ => {
-            let new = ledit_value(&text, &rest[0], &rest[1], &rest[2..])?;
-            (new.clone(), new)
+    let rewritten = match id {
+        ext::LSET => match rest.split_last() {
+            Some((value, indices)) => {
+                lset_value(&text, indices, value).map(|new| (new.clone(), new))
+            }
+            None => Err(
+                "wrong # args: should be \"lset listVar ?index? ?index ...? value\"".to_string(),
+            ),
+        },
+        ext::LPOP => lpop_value(&text, &rest),
+        _ => ledit_value(&text, &rest[0], &rest[1], &rest[2..]).map(|new| (new.clone(), new)),
+    };
+    // The variable was taken out of its place so the rewrite could own the
+    // string; a rewrite that is refused has changed nothing, so the value goes
+    // back — `catch {lset l 7 x}` leaves `l` as it was.
+    let (stored, yielded) = match rewritten {
+        Ok(done) => done,
+        Err(msg) => {
+            if is_elem {
+                if let Some(map) = crate::assoc::elements_of(vm, place) {
+                    map.insert(index, current);
+                }
+            } else if let Some(cell) = var_cell(vm, place) {
+                *cell = current;
+            }
+            return Err(msg);
         }
     };
 
@@ -2312,11 +2436,12 @@ fn lset_path(value: &str, path: &[String], replacement: &str) -> Result<String, 
         return Err(format!("index \"{first}\" out of range"));
     }
     if at == items.len() as i64 {
-        // Growing is by one element only, and only at the end.
-        if !rest.is_empty() {
-            return Err(format!("index \"{first}\" out of range"));
-        }
-        items.push(replacement.to_string());
+        // Growing is by one element only, and only at the end — at any depth
+        // of the path: an index one past the end names an element that does not
+        // exist yet, which the rest of the path then builds from the empty list
+        // (`TclLsetFlat`).
+        let element = lset_path("", rest, replacement)?;
+        items.push(element);
         return Ok(list::join(&items));
     }
     let at = at as usize;
