@@ -11,7 +11,7 @@
 //! quantifiers of single characters runs on `regex`, in linear time. Anything
 //! with a back-reference or look-ahead, or a shape where leftmost-first and
 //! leftmost-longest could differ (an alternation, a non-greedy quantifier, a
-//! quantified group), runs on the backtracking matcher in [`crate::are_bt`],
+//! quantified group), runs on the backtracking matcher in `crate::are_bt`,
 //! which selects the match the way `re_syntax(n)` and `regexec.c` do. What is
 //! still refused — the BRE syntax and `regexp -about` — is listed in
 //! `BUGS.md` and reported by name at the point of use.
