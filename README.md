@@ -79,9 +79,10 @@ to `fusevm` bytecode, the same bytecode the other fusevm language frontends emit
   fusevm's Cranelift tiers, and `tclrs --tiers` reports which of them a given
   script actually reaches. A hot loop **inside a procedure** reaches a compiled
   trace: 3,000,000 iterations of `while {$i < $n} {incr i}` in 6.6 ms against
-  243.7 ms interpreted. The same loop at a script's **top level** reaches
-  nothing, because a top-level variable is a VM global. Both halves are measured,
-  and both are named precisely: see [JIT Compilation](#0x08-jit-compilation).
+  243.7 ms interpreted. A counted `while` / `for` loop at a script's **top
+  level** reaches a compiled trace too (a top-level variable is a VM global that
+  the trace promotes to a register); `foreach` and `dict for` reach no tier. Each
+  case is measured and named precisely: see [JIT Compilation](#0x08-jit-compilation).
 - **Differentially tested** — every program in the suite is executed by both
   `tclsh` and tclrs and the output compared byte for byte. No expected output in
   this repository is written by hand.
