@@ -1356,7 +1356,12 @@ proc call_stmt {} {
 set POOL_REGEX [list a b "a+" "a*" "a|b" "(a)(b)?" "\[ab\]+" "^a" "b\$" "." \
     ".*" "\\d+" "\\w+" "\\s" "x*" "(?i)A" "a{2}" "\[^a\]" "\\ya" "\\Aa" \
     "(a|b)*c" "" "é" "\\m\\w" "(" "\[" "*" "a**" "(?:a)" "\\u00e9" "a?" \
-    "\[\[:alpha:\]\]" "x{0}" "\\B"]
+    "\[\[:alpha:\]\]" "x{0}" "\\B" \
+    "(a)\\1" "(a*)\\1" "(.)\\1" "(a|b)\\1" "(?:(a)|b)\\1" "(a)?\\1?b" "(a)|b\\1" \
+    "(?i)(a)\\1" "(a){0}" "(a)(?=\\1)" "a(?=b)" "a(?!b)" "(?=a)" "(?=(a))(a)" \
+    "(?=a((b)))(a)(b)" "(?=a)*b" "(?<=a)b" "a|ab" "x*|y" "(a|ab)(c|bcd)?" \
+    "a*(ab)?" "(a+)+" "(a+){1,2}" "(a*)+" "(a*)*" "(a+?)+b" "(a+){2,}?b" \
+    "a+?b*" "\\Aa|^b" "((a)|b)+" "(a|b+){1,3}" "\\yab|b\\y" "(?:a|b){2,3}c"]
 
 set POOL_SUBJECT [list banana aab abab xaaay "" a "a b c" "hello world" \
     "line1\nline2" "ab\ncd" "é1é" "日本" "a1b22c333" "AaBb" "  pad  "]
@@ -1427,7 +1432,8 @@ proc misc_stmt {} {
         if {[rchance 50]} {
             if {[rchance 25]} {
                 append opts " -inline"
-            } elseif {[rchance 15]} {
+            }
+            if {[rchance 15]} {
                 append opts " -indices"
             }
             return "puts \[catch \{regexp$opts -- $re $subj\} m\]\$m"
