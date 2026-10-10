@@ -54,8 +54,8 @@ variable substitution
 including array elements, backslash substitution, and comments at a command's
 first word. Rule 5,
 .RB \(dq {*} \(dq
-argument expansion, is read and recorded on the word, but a command carrying one
-is refused when it is lowered rather than approximated.
+argument expansion, is lowered whole: the flagged words are spliced by list
+rules when the command runs, which is the only moment the argument count exists.
 .PP
 A braced word is literal by construction, and tclrs uses that: an
 .BR if ", " while ", " for " or " foreach
@@ -100,14 +100,12 @@ build also pumps the ported notifier, where Tk's window and file events arrive.
 .B Scope
 .BR uplevel ", " upvar ", " apply .
 .B uplevel
-resolves its level when the command runs and serves a target that is the global
-level;
+and
 .B upvar
-binds
-.B #0
-while the script is read; a written-out lambda is compiled as an anonymous
-procedure with its own frame slots. A level that is another procedure's
-activation is refused rather than served against the wrong variables.
+resolve their level when the command runs; a target that is a procedure's
+activation is served through the slot-name table the compiler publishes for
+each body. A written-out lambda is compiled as an anonymous procedure with its
+own frame slots.
 .TP
 .B Introspection
 .BR info .
@@ -153,8 +151,9 @@ ensemble (over a value).
 .TP
 .B Regular expressions
 .BR regexp ", " regsub .
-The engine is a finite automaton, so back-references and look-ahead are refused
-by name rather than approximated;
+The engine is a finite automaton, so back-references, look-ahead and the
+.B (?b)
+BRE syntax are refused by name rather than approximated;
 .B switch \-regexp
 and
 .B lsearch \-regexp
@@ -283,10 +282,13 @@ or
 .SH COMPILATION
 .TP
 .B JIT
-Every VM arms fusevm's three tiers. Every counted loop reaches a compiled trace,
-whether its counter is a procedure's frame slot or a script's top-level VM
-global \(em fusevm promotes the globals a trace references to registers at entry
-and spills them at every exit. What a loop still fails on is an extension op in
+Every VM arms fusevm's three tiers. A counted
+.B while
+or
+.B for
+loop reaches a compiled trace, whether its counter is a procedure's frame slot
+or a script's top-level VM global \(em fusevm promotes the globals a trace
+references to registers at entry and spills them at every exit. What a loop still fails on is an extension op in
 its body, which is why
 .B foreach
 and
@@ -309,25 +311,23 @@ A construct that is not built yet is refused by name \(em
 .B is not supported yet
 \(em rather than silently misread. That includes
 .BR "string wordend" / wordstart
-past ASCII, the
-.B array
-search-token subcommands,
-several
-.B dict
-subcommands,
-.BR "info body" / locals / level / frame ,
-.B switch \-matchvar
+past ASCII,
+.B array startsearch
+on an array,
+.BR "dict info" ,
+.BR "info frame" ,
+.B "info level N"
 and
-.B return \-code
-other than
-.B ok
-or
-.BR error .
-Whole commands that are not built \(em
-.BR upvar ", " namespace ", " open
-and the rest of channel IO, and every
-.B expr
-math function \(em are refused by name as well.
+.BR "info loaded" ,
+.B "open |command"
+and sockets,
+.B "fconfigure \-blocking 0" ,
+.B regexp \-about
+and
+.BR "return \-errorinfo" .
+The complete list, with the reason for each, is in
+.B BUGS.md
+in the source tree.
 .SH TESTING
 Every program in the differential suites is executed by both
 .BR tclsh (1)

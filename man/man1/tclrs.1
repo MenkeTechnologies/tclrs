@@ -29,9 +29,10 @@ The reference implementation is
 9.0.4. It is the specification: behavior is ported from it, and the test suite
 runs every program through both and compares the output byte for byte.
 .PP
-Every VM tclrs builds arms fusevm's three-tier Cranelift JIT. A hot loop inside
-a procedure reaches a compiled trace; a loop at a script's top level does not,
-because a top-level variable is a VM global.
+Every VM tclrs builds arms fusevm's three-tier Cranelift JIT. A counted
+\fBwhile\fR or \fBfor\fR loop reaches a compiled trace whether its counter is a
+procedure's local or a script's top-level variable; \fBforeach\fR and
+\fBdict for\fR reach no tier.
 .B \-\-tiers
 reports which tiers a given script actually reached.
 .SH OPTIONS
