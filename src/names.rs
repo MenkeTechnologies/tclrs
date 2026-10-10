@@ -36,6 +36,7 @@ const TABLES: &[&[&str]] = &[
     cmd_file::COMMANDS,
     crate::cmd_encoding::COMMANDS,
     crate::cmd_process::COMMANDS,
+    crate::cmd_trace::COMMANDS,
 ];
 
 /// Every command name the compiler accepts. Sorted and free of duplicates,
@@ -466,6 +467,11 @@ pub const CORPUS: &[Entry] = &[
         name: "time",
         synopsis: "time command ?count?",
         summary: "Run the command `count` times at the calling level and report the mean in microseconds per iteration.",
+    },
+    Entry {
+        name: "trace",
+        synopsis: "trace option ?arg ...?",
+        summary: "`add`, `remove` and `info` for the three kinds of trace. A variable trace fires on a read, write or unset of a global written out in the script (or a computed name), with `name1 name2 op` appended to the command prefix; an unset also ends its traces. A command trace fires on `rename` and delete with the fully qualified old and new names; an execution trace fires `enter` and `leave` around a command. Not modelled: `array` traces, traces on a procedure's locals or through an `upvar` alias, `enterstep` and `leavestep`.",
     },
     Entry {
         name: "try",

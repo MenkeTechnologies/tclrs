@@ -610,6 +610,38 @@ pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(
         return Ok(());
     };
     let name = to_tcl_string(first);
+    // An execution trace on the command makes the call synchronous: the callee
+    // runs to its end here, and `leave` is told what it did.
+    let enters = crate::cmd_trace::execution_scripts(interp, &name, "enter");
+    let leaves = crate::cmd_trace::execution_scripts(interp, &name, "leave");
+    if !enters.is_empty() || !leaves.is_empty() {
+        let line_text = list::join(&words.iter().map(to_tcl_string).collect::<Vec<_>>());
+        crate::cmd_trace::run_scripts(interp, vm, &enters, &[line_text.clone(), "enter".into()])
+            .map_err(|e| here(e.msg))?;
+        let defined = defined_proc(interp, &name);
+        let outcome = match &defined {
+            Some(p) => enter_elsewhere(interp, vm, &name, p, args),
+            None if crate::names::is_command(&name) => {
+                as_script(interp, vm, &words, Some(&declared)).map_err(|e| here(e.msg))
+            }
+            None => dispatch(interp, vm, &name, args, line, None),
+        };
+        let (code, result) = match &outcome {
+            Ok(()) => (
+                "0".to_string(),
+                vm.stack.last().map(to_tcl_string).unwrap_or_default(),
+            ),
+            Err(e) => (e.code.to_string(), e.msg.clone()),
+        };
+        crate::cmd_trace::run_scripts(
+            interp,
+            vm,
+            &leaves,
+            &[line_text, code, result, "leave".into()],
+        )
+        .map_err(|e| here(e.msg))?;
+        return outcome;
+    }
     // A procedure of this interpreter wins over the compiled command of the same
     // name, which cannot happen — `proc` refuses a built-in name — but the order
     // is the one tclsh resolves in, and one lookup answers both questions: which

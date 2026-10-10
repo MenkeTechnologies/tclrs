@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. Every one of the 346 names the current tclrs build implements: 88 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. Every one of the 347 names the current tclrs build implements: 89 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -126,15 +126,15 @@
 
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>LANGUAGE REFERENCE</h2>
-      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 88 commands,
+      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 89 commands,
       169 ensemble subcommands, the <code>expr</code> ladder, the
       <code>string is</code> classes and the <code>format</code> conversions &mdash; each with the
       signature the compiler reports and a description written from what the code does.
-      346 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
+      347 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
       <section class="tutorial-section">
         <h2>Chapters</h2>
         <ul class="chapter-index">
-          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">88</span></li>
+          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">89</span></li>
           <li><a href="#ch-string">The <code>string</code> ensemble</a> <span class="chapter-count">23</span></li>
           <li><a href="#ch-array">The <code>array</code> ensemble</a> <span class="chapter-count">13</span></li>
           <li><a href="#ch-dict">The <code>dict</code> ensemble</a> <span class="chapter-count">22</span></li>
@@ -147,7 +147,7 @@
 
       <section class="tutorial-section" id="ch-commands">
         <h2>Commands</h2>
-        <p class="chapter-meta">88 entries</p>
+        <p class="chapter-meta">89 entries</p>
         <p>Every command the current build compiles. A name absent from this
         chapter is <code>invalid command name "&hellip;"</code> at <em>compile</em>
         time, not a runtime lookup that fails &mdash; resolving the name while
@@ -159,7 +159,7 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">88</div>
+            <div class="stat-val">89</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
@@ -643,6 +643,12 @@
           <pre><code class="lang-tcl">time command ?count?
 </code></pre>
           <p>Run the command <code>count</code> times at the calling level and report the mean in microseconds per iteration.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-trace">
+          <h3><a class="doc-anchor" href="#doc-cmd-trace">#</a> <code>trace</code></h3>
+          <pre><code class="lang-tcl">trace option ?arg ...?
+</code></pre>
+          <p><code>add</code>, <code>remove</code> and <code>info</code> for the three kinds of trace. A variable trace fires on a read, write or unset of a global written out in the script (or a computed name), with <code>name1 name2 op</code> appended to the command prefix; an unset also ends its traces. A command trace fires on <code>rename</code> and delete with the fully qualified old and new names; an execution trace fires <code>enter</code> and <code>leave</code> around a command. Not modelled: <code>array</code> traces, traces on a procedure's locals or through an <code>upvar</code> alias, <code>enterstep</code> and <code>leavestep</code>.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-try">
           <h3><a class="doc-anchor" href="#doc-cmd-try">#</a> <code>try</code></h3>

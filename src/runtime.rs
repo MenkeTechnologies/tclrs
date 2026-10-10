@@ -533,6 +533,8 @@ pub(crate) struct State {
     /// table keeps them under. Compiling a later script is told which of them it
     /// mentions, so its writes to them are refusals.
     pub(crate) consts: HashSet<String>,
+    /// The variable, command and execution traces ([`crate::cmd_trace`]).
+    pub(crate) traces: crate::cmd_trace::Traces,
     /// The variables, keyed by name. This is the authority, not the VM's slot
     /// vector — see `seed`. A namespace variable is one of these under its
     /// qualified name; `crate::cmd_namespace::store_key` is the spelling.
@@ -648,6 +650,7 @@ impl Interp {
         Interp {
             shared: Arc::new(Mutex::new(State {
                 consts: HashSet::new(),
+                traces: crate::cmd_trace::Traces::default(),
                 globals: crate::cmd_info::startup_globals(),
                 commands: HashMap::new(),
                 ns: crate::cmd_namespace::Registry::default(),
@@ -840,6 +843,23 @@ fn live_arrays(state: &State, src: &str) -> Vec<String> {
                 .iter()
                 .filter(|name| src.contains(name.as_str()))
                 .map(|name| format!("{}{name}", crate::compiler::CONST_MARK)),
+        )
+        // And the names traces hold, which are lowered through the ops that fire.
+        .chain(
+            state
+                .traces
+                .variable_names()
+                .into_iter()
+                .filter(|name| src.contains(name.as_str()))
+                .map(|name| format!("{}{name}", crate::compiler::TRACE_MARK)),
+        )
+        .chain(
+            state
+                .traces
+                .execution_names()
+                .into_iter()
+                .filter(|name| src.contains(name.trim_start_matches("::")))
+                .map(|name| format!("{}{name}", crate::compiler::EXEC_MARK)),
         )
         .collect();
     names.sort_unstable();
@@ -2111,6 +2131,7 @@ impl Hooks {
                 id if crate::cmd_process::is_op(id) => {
                     crate::cmd_process::run(&interp, vm, id, arg, &out)
                 }
+                id if crate::cmd_trace::is_op(id) => crate::cmd_trace::run(&interp, vm, arg),
                 // The channel ops write through the running interpreter's own
                 // output, so that `puts stdout x` reaches wherever `puts x`
                 // does — including an `Output::Capture`. That sink is only in

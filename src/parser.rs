@@ -104,8 +104,8 @@ impl Word {
 /// equal and a script is the same script wherever it was written.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Span {
-    pub start: usize,
-    pub end: usize,
+    pub start: u32,
+    pub end: u32,
 }
 
 impl PartialEq for Span {
@@ -120,7 +120,7 @@ impl Eq for Span {}
 /// one, so a [`Span`] can be turned back into the command it names. Empty for a
 /// script no caller read spans from. Like [`Span`] it is not part of equality.
 #[derive(Debug, Clone, Default)]
-pub struct Source(pub Option<std::sync::Arc<str>>);
+pub struct Source(pub Option<std::sync::Arc<String>>);
 
 impl PartialEq for Source {
     fn eq(&self, _: &Source) -> bool {
@@ -132,7 +132,7 @@ impl Eq for Source {}
 
 /// A line number that is not part of equality; see [`Word::pos`].
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Pos(pub usize);
+pub struct Pos(pub u32);
 
 impl PartialEq for Pos {
     fn eq(&self, _: &Pos) -> bool {
@@ -145,7 +145,7 @@ impl Eq for Pos {}
 /// The line of its container a script's first line is, when the script is a body
 /// compiled inline; not part of equality.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Base(pub Option<usize>);
+pub struct Base(pub Option<u32>);
 
 impl PartialEq for Base {
     fn eq(&self, _: &Base) -> bool {
@@ -176,7 +176,7 @@ pub struct Script {
 impl Script {
     /// Record the text this script, and every script nested in it, was parsed
     /// from.
-    fn attach(&mut self, text: &std::sync::Arc<str>) {
+    fn attach(&mut self, text: &std::sync::Arc<String>) {
         self.source = Source(Some(std::sync::Arc::clone(text)));
         for command in &mut self.commands {
             for word in &mut command.words {
@@ -189,7 +189,7 @@ impl Script {
 }
 
 impl Part {
-    fn attach(&mut self, text: &std::sync::Arc<str>) {
+    fn attach(&mut self, text: &std::sync::Arc<String>) {
         match self {
             Part::Script(script) => script.attach(text),
             Part::Elem { index, .. } => {
@@ -265,7 +265,7 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
     if p.pos < p.src.len() {
         return Err(p.error("extra characters after close-bracket"));
     }
-    script.attach(&std::sync::Arc::from(src));
+    script.attach(&std::sync::Arc::new(src.to_string()));
     Ok(script)
 }
 
@@ -363,7 +363,7 @@ pub(crate) fn command_at(src: &str, at: usize) -> Result<(Script, usize), ParseE
         return Err(p.error("missing close-bracket"));
     }
     p.pos += 1;
-    script.attach(&std::sync::Arc::from(src));
+    script.attach(&std::sync::Arc::new(src.to_string()));
     Ok((script, p.pos))
 }
 
@@ -661,9 +661,10 @@ impl<'a> Parser<'a> {
             let mut words = Vec::new();
             loop {
                 let at = self.line;
-                let mut word = self.parse_word(nested)?;
-                word.pos = Pos(at);
-                words.push(word);
+                words.push(self.parse_word(nested)?);
+                if let Some(word) = words.last_mut() {
+                    word.pos = Pos(u32::try_from(at).unwrap_or(u32::MAX));
+                }
                 if !self.skip_word_gap() || self.at_command_end(nested) {
                     break;
                 }
@@ -672,8 +673,8 @@ impl<'a> Parser<'a> {
                 words,
                 line,
                 span: Span {
-                    start,
-                    end: self.pos,
+                    start: u32::try_from(start).unwrap_or(u32::MAX),
+                    end: u32::try_from(self.pos).unwrap_or(u32::MAX),
                 },
             });
         }

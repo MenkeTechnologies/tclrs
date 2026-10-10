@@ -536,13 +536,20 @@ approximated, and nothing is silently mis-run.
 
 ## Not implemented
 
-- **The `trace` command.** `trace add|remove|info variable|command|execution`
-  is `invalid command name "trace"` — the whole command, not a subcommand of it.
-  A variable trace has to fire on every read, write and unset of a traced name,
-  which means the variable path checks a trace table on operations that are
-  currently a hash lookup and nothing else; the frontend has no such table and
-  no hook to consult one from. `tests/*_differential.rs` reference it nowhere,
-  so nothing regressed when it was left out — it was never there.
+- **`trace` fires where the compiler can route the access.** The registry is
+  exact — `add`, `remove` and `info` answer as tclsh does, newest first, with
+  its error messages — and what fires is a variable written out in the script as
+  `trace add variable NAME`, or one the interpreter holds a trace on when a
+  later script is compiled, because an access to a traced global is lowered
+  through the computed-name ops, which resolve the variable when they run and
+  fire the traces. So a trace added through a *computed* variable name does not
+  fire for accesses compiled before it ran, and not modelled at all are the
+  `array` operation (`array set` and `array names` on a traced array),
+  traces on a procedure's own locals or on a name reached through `upvar`,
+  a loop variable (`foreach`, `lmap`), and `enterstep` / `leavestep`. An
+  execution trace makes the command's call synchronous so `leave` can be told
+  what it returned. Command traces fire for `rename` and its delete form, and
+  not for a procedure that is redefined or deleted with its namespace.
 - **TclOO.** `oo::class`, `oo::object`, `oo::define` and the rest are
   `invalid command name`, so `oo::class create C {...}` cannot run and neither
   can anything built on it. This is an object system, not a command: method
@@ -810,7 +817,7 @@ approximated, and nothing is silently mis-run.
   a compile-time binding (`Compiler::top_aliases`) and is coherent everywhere —
   at the global frame that covers the relative level `0` as well as `#0`, so
   `set x 5; upvar 0 x y` at a script's top level makes `y` and `x` one variable.
-- **Every command outside those above.** `interp`, `socket`, `trace`,
+- **Every command outside those above.** `interp`, `socket`,
   … An unknown command name is `invalid command name
   "…"`, raised when the command runs — `puts [catch {nosuchcmd} m]` is `1` —
   because the compiler lowers that refusal as code rather than deciding it (see
@@ -2140,7 +2147,7 @@ than an unexamined one. Measured against the 2000-program run above.
   second half of the same record, carried by the chunk itself and read by
   `VM::slot_names_at`, which is what the projection uses. See the refusal list
   above.
-- **Commands tclrs does not have.** `interp`, `trace`, `socket`,
+- **Commands tclrs does not have.** `interp`, `socket`,
   `timerate`, `chan`, `fcopy`, `fileevent`,
   `fblocked` and `zlib` are outside the command set entirely, so a generated use
   of one is `invalid command name` and says nothing about parity. `{*}`

@@ -1235,6 +1235,9 @@ pub(crate) fn extension(
     // makes, and it is why this goes through the interpreter rather than the VM.
     let result =
         crate::runtime::with_written_back(interp, vm, |interp| run(interp, &sub, &here, &args))?;
+    // A `rename` or a delete leaves the callbacks of the traces on the command
+    // here, to run now that the registry is free.
+    crate::cmd_trace::run_events(interp, vm)?;
     vm.push(Value::Str(std::sync::Arc::new(result)));
     Ok(())
 }
@@ -1369,7 +1372,16 @@ fn run(
     // registry, so it is answered while both halves of the interpreter are
     // reachable rather than through the registry alone.
     if sub == "\u{0}rename" {
-        return rename(&mut state, here, args);
+        let (old, new) = (resolve(here, &args[0]), args[1].clone());
+        let done = rename(&mut state, here, args)?;
+        let op = if new.is_empty() { "delete" } else { "rename" };
+        let new = if new.is_empty() {
+            new
+        } else {
+            resolve(here, &new)
+        };
+        crate::cmd_trace::queue_command_events(&mut state.traces, &old, &new, op);
+        return Ok(done);
     }
     let reg = &mut state.ns;
     match sub {

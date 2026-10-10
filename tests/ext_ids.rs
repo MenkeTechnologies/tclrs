@@ -168,6 +168,11 @@ fn blocks() -> Vec<Block> {
                 ("CONSTS", tclrs::cmd_info::ext::CONSTS),
             ],
         ),
+        (
+            "TRACE",
+            tclrs::cmd_trace::ext::BASE,
+            vec![("TRACE", tclrs::cmd_trace::ext::TRACE)],
+        ),
         ("PKG", ext::PKG_BASE, vec![("PACKAGE", ext::PACKAGE)]),
         // The math block is indexed by position in `expr_math`'s own table
         // rather than named here, so the block check below is the whole of

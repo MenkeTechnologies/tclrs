@@ -111,7 +111,7 @@ fn lappend(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     // read-extend-store shape with the computed-name ops standing in for the
     // read and the store. The read tolerates absence: `lappend` on a variable
     // that does not exist creates it, exactly as it does for a literal name.
-    if crate::assoc::target_of(name).is_none() {
+    if c.plain_target(name).is_none() {
         let count = arg_count(c, values.len() + 1)?;
         c.dyn_read_modify(name, crate::compiler::Absent::Empty)?;
         for value in values {

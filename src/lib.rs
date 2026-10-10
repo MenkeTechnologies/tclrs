@@ -47,6 +47,7 @@ pub mod cmd_source;
 pub mod cmd_string;
 /// `subst` — the substitution rules applied to a value.
 pub mod cmd_subst;
+pub mod cmd_trace;
 pub mod compiler;
 pub mod control;
 pub mod coro;

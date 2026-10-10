@@ -30,6 +30,10 @@ use crate::procs::Signature;
 
 /// The prefix that marks a name in the array set as a global constant instead.
 pub(crate) const CONST_MARK: char = '\u{1}';
+/// The same, for a global variable that holds a trace.
+pub(crate) const TRACE_MARK: char = '\u{2}';
+/// The same, for a command that holds an execution trace.
+pub(crate) const EXEC_MARK: char = '\u{3}';
 
 /// Extension opcode ids owned by this frontend.
 pub mod ext {
@@ -758,6 +762,10 @@ pub mod ext {
     /// One past the process block.
     pub const PROCESS_END: u16 = PROCESS_BASE + BLOCK;
     // ── end of the process block ─────────────────────────────────────────
+    /// `trace` ([`crate::cmd_trace`]).
+    pub const TRACE_BASE: u16 = SUBSYSTEM_BASE + 11 * BLOCK;
+    /// One past the trace block.
+    pub const TRACE_END: u16 = TRACE_BASE + BLOCK;
 }
 
 /// Wide extension opcode ids, whose payload is a `usize` rather than a byte.
@@ -1206,6 +1214,8 @@ pub(crate) enum Absent {
     Zero = 1,
     /// `""` — `append` and `lappend`.
     Empty = 2,
+    /// The same, for `append`, which tclsh does not fire a read trace for.
+    Quiet = 3,
 }
 
 /// Where a variable lives once the script is lowered: a frame slot inside a
@@ -1313,6 +1323,13 @@ pub(crate) struct Compiler {
     /// ([`crate::runtime::State::consts`]) and the ones a `const` earlier in this
     /// script made. A write to one is lowered as the refusal it is.
     pub(crate) consts: HashSet<String>,
+    /// Global variables a trace is held on, from the interpreter and from the
+    /// `trace add variable` commands of this script.
+    pub(crate) traced: HashSet<String>,
+    /// What this pass found `trace add` written for, marked as the seeds are.
+    pub(crate) noted_traces: HashSet<String>,
+    /// Commands an execution trace is held on, the same way.
+    pub(crate) exec_traced: HashSet<String>,
     /// The verb a refused write names: `set`, `incr` or `unset`.
     pub(crate) write_verb: &'static str,
     /// Names a write has been lowered for so far. A `const` after one of them
@@ -1426,6 +1443,20 @@ impl Compiler {
             .into_iter()
             .map(|name| name[CONST_MARK.len_utf8()..].to_string())
             .collect();
+        let (traced, arrays): (ArrayNames, ArrayNames) = arrays
+            .into_iter()
+            .partition(|name| name.starts_with(TRACE_MARK));
+        let traced = traced
+            .into_iter()
+            .map(|name| name[TRACE_MARK.len_utf8()..].to_string())
+            .collect();
+        let (exec_traced, arrays): (ArrayNames, ArrayNames) = arrays
+            .into_iter()
+            .partition(|name| name.starts_with(EXEC_MARK));
+        let exec_traced = exec_traced
+            .into_iter()
+            .map(|name| name[EXEC_MARK.len_utf8()..].to_string())
+            .collect();
         let mut c = Compiler {
             b: ChunkBuilder::new(),
             tolerant_reads: Vec::new(),
@@ -1437,6 +1468,9 @@ impl Compiler {
             command_line: 1,
             command_mark: 0,
             consts,
+            traced,
+            noted_traces: HashSet::new(),
+            exec_traced,
             write_verb: "set",
             written: HashSet::new(),
             arrays,
@@ -1469,6 +1503,11 @@ impl Compiler {
         crate::cmd_namespace::prescan_script(&mut c.procs, script, "::");
         crate::coro::prescan(&mut c.coros, script);
         c.script_value(script)?;
+        // What this script traced rides in the set the second pass is seeded
+        // from, marked, so a name traced *below* a read of it is lowered as
+        // traced there too.
+        let marked: Vec<String> = c.noted_traces.iter().cloned().collect();
+        c.seen_arrays.extend(marked);
         Ok(c)
     }
 
@@ -1963,6 +2002,55 @@ impl Compiler {
         }
     }
 
+    /// A `trace add variable name` was written: `name` is traced, wherever in
+    /// the script it is accessed.
+    pub(crate) fn note_traced_variable(&mut self, name: &str) {
+        let base = name.split('(').next().unwrap_or(name);
+        let key = match self.scope {
+            None => crate::cmd_namespace::resolve(&self.ns.current, base),
+            Some(_) => base.to_string(),
+        };
+        let key = crate::cmd_namespace::store_key(&key).to_string();
+        self.noted_traces.insert(format!("{TRACE_MARK}{key}"));
+        self.traced.insert(key);
+    }
+
+    /// A `trace add execution name` was written.
+    pub(crate) fn note_traced_command(&mut self, name: &str) {
+        let key = format!("::{}", name.trim_start_matches("::"));
+        self.noted_traces.insert(format!("{EXEC_MARK}{key}"));
+        self.exec_traced.insert(key);
+    }
+
+    /// Whether the variable written `name` (`a` or `a(i)`) is one a trace is
+    /// held on, as the code being lowered reaches it.
+    pub(crate) fn is_traced(&self, name: &str) -> bool {
+        if self.traced.is_empty() {
+            return false;
+        }
+        let base = name.split('(').next().unwrap_or(name);
+        let key = match self.scope.as_ref() {
+            None => crate::cmd_namespace::resolve(&self.ns.current, base),
+            Some(scope) if base.starts_with("::") || scope.globals.contains(base) => {
+                base.to_string()
+            }
+            Some(_) => return false,
+        };
+        self.traced.contains(crate::cmd_namespace::store_key(&key))
+    }
+
+    /// [`assoc::target_of`], except that a traced variable answers `None`: every
+    /// access to it is then lowered as one to a computed name, which is the path
+    /// that fires its traces.
+    pub(crate) fn plain_target(&self, word: &Word) -> Option<Target> {
+        let target = assoc::target_of(word)?;
+        let name = match &target {
+            Target::Scalar(n) => n,
+            Target::Elem { name, .. } => name,
+        };
+        (!self.is_traced(name)).then_some(target)
+    }
+
     /// Record that `name` is a constant from here on.
     pub(crate) fn mark_const(&mut self, name: &str) {
         match self.scope.as_mut() {
@@ -2068,8 +2156,11 @@ impl Compiler {
             self.push_empty();
             return Ok(());
         }
-        self.emap
-            .enter_script(script.source.0.as_ref(), script.base.0, script.abs.0);
+        self.emap.enter_script(
+            script.source.0.as_ref(),
+            script.base.0.map(|b| b as usize),
+            script.abs.0.map(|b| b as usize),
+        );
         let mut outcome = Ok(());
         for (i, cmd) in script.commands.iter().enumerate() {
             if i > 0 {
@@ -2086,8 +2177,11 @@ impl Compiler {
 
     /// Emit a script for its effect, leaving the stack as it was found.
     pub(crate) fn script_effect(&mut self, script: &Script) -> Result<(), CompileError> {
-        self.emap
-            .enter_script(script.source.0.as_ref(), script.base.0, script.abs.0);
+        self.emap.enter_script(
+            script.source.0.as_ref(),
+            script.base.0.map(|b| b as usize),
+            script.abs.0.map(|b| b as usize),
+        );
         let mut outcome = Ok(());
         for cmd in &script.commands {
             outcome = self.command(cmd);
@@ -2165,9 +2259,25 @@ impl Compiler {
                 self.push_value(literal_value(text));
                 Ok(())
             }
+            Part::Var(name) if self.is_traced(name) => {
+                self.push_declared();
+                self.push_str(name);
+                self.emit(Op::Extended(ext::DYN_GET, Absent::Refuse as u8), -1);
+                Ok(())
+            }
             Part::Var(name) => {
                 self.scalar_get(name);
                 Ok(())
+            }
+            Part::Elem { name, index } if self.is_traced(name) => {
+                let mut parts = vec![Part::Lit(format!("{name}("))];
+                parts.extend(index.iter().cloned());
+                parts.push(Part::Lit(")".to_string()));
+                let word = Word {
+                    parts,
+                    ..Word::default()
+                };
+                self.dyn_get(&word, Absent::Refuse)
             }
             Part::Elem { name, index } => self.elem_get(name, index),
             Part::Script(script) => self.subst_value(script),
@@ -2306,8 +2416,12 @@ impl Compiler {
                 crate::errinfo::BodyKind::of(name, sub)
             });
         let start = self.b.current_pos();
-        self.emap
-            .begin(start, cmd.line, (cmd.span.start, cmd.span.end), kind);
+        self.emap.begin(
+            start,
+            cmd.line,
+            (cmd.span.start as usize, cmd.span.end as usize),
+            kind,
+        );
         let outcome = self.command_inner(cmd);
         self.emap.finish(self.b.current_pos());
         outcome
@@ -2399,6 +2513,21 @@ impl Compiler {
 
     /// Lower one command, given its name and arguments.
     fn dispatch(&mut self, name: &str, args: &[Word]) -> Result<(), CompileError> {
+        // A command an execution trace is held on is called through the run-time
+        // dispatch, which is where the `enter` and `leave` callbacks run.
+        if !self.exec_traced.is_empty()
+            && self
+                .exec_traced
+                .contains(&format!("::{}", name.trim_start_matches("::")))
+        {
+            let mut words = vec![Word {
+                parts: vec![Part::Lit(name.to_string())],
+                braced: true,
+                ..Word::default()
+            }];
+            words.extend(args.iter().cloned());
+            return self.call_expanded(&words);
+        }
         match name {
             "set" => self.cmd_set(args),
             "eval" => self.cmd_eval(args),
@@ -2536,6 +2665,7 @@ impl Compiler {
             other if crate::cmd_process::COMMANDS.contains(&other) => {
                 crate::cmd_process::compile(self, other, args)
             }
+            "trace" => crate::cmd_trace::compile(self, args),
             // A name no module claims: it is looked up in the interpreter's
             // run-time command table when the command runs, because that is the
             // only moment it can be known.
@@ -2604,7 +2734,7 @@ impl Compiler {
             // the name and the whole resolution belong to run time. Tcl reads
             // every variable that way; this compiler resolves the literal case
             // ahead of time and falls back here for the rest.
-            1 | 2 if assoc::target_of(&args[0]).is_none() => {
+            1 | 2 if self.plain_target(&args[0]).is_none() => {
                 if args.len() == 1 {
                     return self.dyn_get(&args[0], Absent::Refuse);
                 }
@@ -2805,7 +2935,7 @@ impl Compiler {
         // `incr $v` resolves its variable when it runs, for the reason `set $v`
         // does. The read tolerates absence there too — `incr` on a variable
         // that does not exist creates it at zero.
-        let Some(target) = assoc::target_of(name) else {
+        let Some(target) = self.plain_target(name) else {
             self.dyn_read_modify(name, Absent::Zero)?;
             match by {
                 Some(w) => self.word(w)?,
@@ -3282,11 +3412,11 @@ impl Compiler {
         let text = self.literal_of(word, "script body")?.to_string();
         // The body's lines count from the container it ends up in, which is
         // where tclsh reports them; see `crate::errinfo::Builder::body_base`.
-        let (base, abs) = self.emap.body_base(word.pos.0);
+        let (base, abs) = self.emap.body_base(word.pos.0 as usize);
         match crate::parser::parse(&text) {
             Ok(mut script) => {
-                script.base = crate::parser::Base(Some(base));
-                script.abs = crate::parser::Base(Some(abs));
+                script.base = crate::parser::Base(Some(base as u32));
+                script.abs = crate::parser::Base(Some(abs as u32));
                 Ok(script)
             }
             Err(e) => Err(self.deferrable_err(e.msg)),

@@ -836,7 +836,7 @@ impl Compiler {
         }
 
         for word in &args[i..] {
-            let Some(target) = target_of(word) else {
+            let Some(target) = self.plain_target(word) else {
                 // `unset $n` resolves its variable when it runs. An `a(i)`
                 // spelling the name happens to carry is an element there too,
                 // which is what the op's own split makes of it.

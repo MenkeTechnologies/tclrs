@@ -135,7 +135,7 @@ pub(crate) struct CmdRec {
 #[derive(Debug, Default)]
 pub(crate) struct CmdMap {
     pub recs: Vec<CmdRec>,
-    pub sources: Vec<Arc<str>>,
+    pub sources: Vec<Arc<String>>,
 }
 
 impl CmdMap {
@@ -608,7 +608,7 @@ pub(crate) fn inner_of(text: &str, msg: &str, errorcode: Option<&str>) -> String
 #[derive(Debug, Default)]
 pub(crate) struct Builder {
     pub recs: Vec<CmdRec>,
-    pub sources: Vec<Arc<str>>,
+    pub sources: Vec<Arc<String>>,
     /// The commands being lowered, innermost last.
     open: Vec<usize>,
     /// The containers whose body is being lowered, innermost last.
@@ -623,7 +623,7 @@ impl Builder {
     /// A script is about to be lowered.
     pub(crate) fn enter_script(
         &mut self,
-        text: Option<&Arc<str>>,
+        text: Option<&Arc<String>>,
         base: Option<usize>,
         abs: Option<usize>,
     ) {

@@ -1050,6 +1050,11 @@ pub(crate) fn dynamic_link(
 pub(crate) fn dyn_get_op(interp: &Shared, vm: &mut VM, absent: u8) -> Result<(), TclError> {
     let name = to_tcl_string(&vm.pop());
     let declared = to_tcl_string(&vm.pop());
+    // `append` reads without a read trace; every other reader fires one first,
+    // and the trace may set the variable the read then finds.
+    if absent != 3 && is_global_access(interp, vm, &name, &declared) {
+        crate::cmd_trace::fire_variable(interp, vm, &name, "read")?;
+    }
     let link = dynamic_link(interp, vm, &name, &declared)?;
     // What an unset variable answers is the reading command's business: `incr`
     // creates a counter at zero and `append`/`lappend` create the variable by
@@ -1061,6 +1066,7 @@ pub(crate) fn dyn_get_op(interp: &Shared, vm: &mut VM, absent: u8) -> Result<(),
             "can't read \"{name}\": no such variable"
         ))),
     };
+    let absent = if absent == 3 { 2 } else { absent };
     // The base cell, read without the element applied — the three ways a read
     // can fail are told apart by what it holds, and `read_link` collapses all
     // three into `None`. The same three [`ext::ELEM_GET`] tells apart for a name
@@ -1153,7 +1159,28 @@ pub(crate) fn dyn_set_op(interp: &Shared, vm: &mut VM) -> Result<(), TclError> {
         )));
     };
     *cell = value;
+    if is_global_access(interp, vm, &name, &declared) {
+        crate::cmd_trace::fire_variable(interp, vm, &name, "write")?;
+    }
     Ok(())
+}
+
+/// Whether the variable a computed name spells is a global: written with its
+/// `::`, declared global in the body, or reached from a script that runs at the
+/// global level. Only a global holds traces.
+fn is_global_access(interp: &Shared, vm: &VM, name: &str, declared: &str) -> bool {
+    if interp
+        .lock()
+        .expect("interpreter lock")
+        .traces
+        .vars
+        .is_empty()
+    {
+        return false;
+    }
+    name.starts_with("::")
+        || crate::list::split(declared).is_ok_and(|d| d.contains(&name.to_string()))
+        || crate::runtime::current_level(vm) == 0
 }
 
 /// [`ext::DYN_UNSET`]: `[declared, name]` → nothing.
@@ -1213,6 +1240,10 @@ pub(crate) fn dyn_unset_op(interp: &Shared, vm: &mut VM, complain: bool) -> Resu
         return Err(TclError::plain(format!(
             "can't unset \"{name}\": no such variable"
         )));
+    }
+    if existed && is_global_access(interp, vm, &name, &declared) {
+        crate::cmd_trace::fire_variable(interp, vm, &name, "unset")?;
+        crate::cmd_trace::forget_variable(interp, &name);
     }
     Ok(())
 }

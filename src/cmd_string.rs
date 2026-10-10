@@ -506,8 +506,8 @@ impl Compiler {
         // operand it reports a bad value under, once under the value it
         // concatenates onto — so the name word is compiled once and duplicated;
         // see [`Compiler::dyn_read_modify`].
-        if crate::assoc::target_of(target).is_none() {
-            self.dyn_read_modify(target, crate::compiler::Absent::Empty)?;
+        if self.plain_target(target).is_none() {
+            self.dyn_read_modify(target, crate::compiler::Absent::Quiet)?;
             // `[name, value]` → `[name, name, value]`: the op wants the name
             // under the value as its diagnostic operand, and `dyn_write_back`
             // wants the one at the bottom.
