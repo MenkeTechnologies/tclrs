@@ -1221,7 +1221,7 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "frame",
         synopsis: "info frame ?number?",
-        summary: "The depth of the call stack, or a dictionary describing one frame — its type, the file and line it came from, and the command being run. Refused: this frontend does not expose the running call frame.",
+        summary: "The number of the current frame — one for the script, one more per procedure activation and per nested script — or a dictionary describing frame `number` (zero and below counting back from the current one): its type, line, file, the command being run, the procedure and its level. Answered from the command record the compiler keeps, so a frame belonging to a script further out than the one asking is described by its level alone.",
     },
     Entry {
         name: "functions",
@@ -1241,7 +1241,7 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "level",
         synopsis: "info level ?number?",
-        summary: "How deep the current procedure call is — 0 at a script's own level, one more per activation. Only a call is counted, not the frames the VM pushes for a scope or after a JIT side exit. The form taking a level number is refused: a call site pushes the actual arguments and nothing naming the command, so there is no record of what entered a level.",
+        summary: "How deep the current procedure call is — 0 at a script's own level, one more per activation. Only a call is counted, not the frames the VM pushes for a scope or after a JIT side exit. The form taking a level number answers the words of the command that entered it: its source words when every one was written out, and otherwise the procedure's name with its formals as they stand now.",
     },
     Entry {
         name: "library",

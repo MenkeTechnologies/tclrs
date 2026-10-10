@@ -73,6 +73,9 @@ pub mod ext {
     /// but the list lives in [`crate::expr_math`] and is read from there rather
     /// than copied, so it cannot fall behind that table.
     pub const FUNCTIONS: u16 = BASE + 9;
+    /// `info frame ?number?`: `[number]` when `arg` is 1. Dispatched from
+    /// [`crate::runtime`], which can see how many scripts are running.
+    pub const FRAME: u16 = BASE + 10;
 }
 
 /// Which set of names [`ext::NAMES`] reports.
@@ -198,6 +201,7 @@ impl Compiler {
             }
             "locals" => self.info_names(rest, FRAME_LOCALS, "info locals ?pattern?"),
             "level" => self.info_level(rest),
+            "frame" => self.info_frame(rest),
             "functions" => self.info_about_list(rest, ext::FUNCTIONS, "info functions ?pattern?"),
             "tclversion" => self.info_literal(rest, TCL_VERSION, "info tclversion"),
             "patchlevel" => self.info_literal(rest, TCL_PATCHLEVEL, "info patchlevel"),
@@ -307,6 +311,22 @@ impl Compiler {
                 self.emit(Op::Extended(ext::LEVEL, 1), 0);
             }
             _ => return self.error("wrong # args: should be \"info level ?number?\""),
+        }
+        Ok(())
+    }
+
+    /// `info frame ?number?` — the number of the current frame, or what is known
+    /// about frame `number`.
+    fn info_frame(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        match args {
+            [] => {
+                self.emit(Op::Extended(ext::FRAME, 0), 1);
+            }
+            [number] => {
+                self.word(number)?;
+                self.emit(Op::Extended(ext::FRAME, 1), 0);
+            }
+            _ => return self.error("wrong # args: should be \"info frame ?number?\""),
         }
         Ok(())
     }
@@ -473,9 +493,6 @@ fn resolve(given: &str) -> Result<&'static str, String> {
 /// message says what is missing rather than that something is.
 fn why_refused(sub: &str) -> &'static str {
     match sub {
-        "frame" => {
-            "it reports on the stack of *commands*, and only the stack of call frames is kept"
-        }
         "class" | "object" => "TclOO is not implemented",
         "constant" | "consts" => "constant variables are not implemented",
         "loaded" => "loadable extensions are not implemented",
@@ -548,11 +565,10 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             if level < 1 || level > current {
                 return Err(bad());
             }
-            Err(
-                "\"info level\" with a level number is not supported: no record of the \
-                 command that entered a level is kept"
-                    .to_string(),
-            )
+            vm.push(Value::Str(Arc::new(crate::list::join(&level_words(
+                vm, level,
+            )))));
+            Ok(())
         }
         ext::FUNCTIONS => {
             let pattern = to_tcl_string(&vm.pop());
@@ -797,4 +813,86 @@ fn user_name() -> String {
             .to_string_lossy()
             .into_owned()
     }
+}
+
+/// The words of the command that entered Tcl level `level` (1 is the outermost
+/// procedure call), as `info level N` answers them.
+///
+/// The words come from the call's own source text when every one of them was
+/// written out, which is what the command was; a call that substituted
+/// something is rebuilt from the procedure's name and its formals as they stand
+/// now, which differs from tclsh when the body assigned to a formal or a
+/// default stood in for an argument.
+fn level_words(vm: &VM, level: i64) -> Vec<String> {
+    let activations: Vec<usize> = vm
+        .frames
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.entry_ip.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    let Some(&at) = usize::try_from(level - 1)
+        .ok()
+        .and_then(|n| activations.get(n))
+    else {
+        return Vec::new();
+    };
+    let frame = &vm.frames[at];
+    // The call op of the caller, which the frame remembers the way back to.
+    if frame.return_ip < vm.chunk.ops.len() {
+        if let Some((text, _, _)) = crate::errinfo::command_at(&vm.chunk, frame.return_ip - 1) {
+            if let Ok(script) = crate::parser::parse(&text) {
+                let literal: Option<Vec<String>> = script
+                    .commands
+                    .first()
+                    .map(|c| {
+                        c.words
+                            .iter()
+                            .map(|w| (!w.expand).then(|| w.as_literal().map(str::to_string)))
+                            .map(Option::flatten)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(words) = literal {
+                    return lambda_call(words);
+                }
+            }
+        }
+    }
+    // Rebuilt: the name and the formals' present values.
+    let Some(entry) = frame.entry_ip else {
+        return Vec::new();
+    };
+    let name = vm
+        .chunk
+        .sub_entries
+        .iter()
+        .find(|(_, ip)| *ip == entry)
+        .and_then(|(idx, _)| vm.chunk.names.get(usize::from(*idx)).cloned())
+        .unwrap_or_default();
+    let mut words = vec![name.clone()];
+    if let Some(params) = crate::runtime::proc_params(vm, &name) {
+        let last = params.params.len().saturating_sub(1);
+        for (i, (param, _)) in params.params.iter().enumerate() {
+            let value = frame.slots.get(i).map(to_tcl_string).unwrap_or_default();
+            if i == last && param == "args" {
+                words.extend(crate::list::split(&value).unwrap_or_default());
+            } else {
+                words.push(value);
+            }
+        }
+    }
+    lambda_call(words)
+}
+
+/// A lambda runs as a procedure of a script this crate writes, under a name no
+/// script can spell; the command that called it was `apply term arg …`.
+fn lambda_call(mut words: Vec<String>) -> Vec<String> {
+    if words.first().is_some_and(|w| w.starts_with('\u{0}')) {
+        words[0] = "apply".to_string();
+        if let Some(term) = crate::errinfo::current_lambda() {
+            words.insert(1, term);
+        }
+    }
+    words
 }

@@ -2084,6 +2084,9 @@ impl Hooks {
                 // happens to mention them, so a chunk-only answer omits exactly
                 // the variables every script starts with.
                 crate::cmd_info::ext::NAMES => info_names_op(&interp, vm, arg),
+                // `info frame` counts the scripts that are running as well as the
+                // procedure activations, and only the interpreter knows the first.
+                crate::cmd_info::ext::FRAME => info_frame_op(&interp, vm, arg),
                 // ── end of the frame ops ─────────────────────────────────
                 // `exit`, `time` and `exec` need the interpreter's output sink
                 // and, for `time`, its frame projection.
@@ -2284,13 +2287,94 @@ fn ffi_op(vm: &mut VM, argc: u8) -> Result<(), String> {
     Ok(())
 }
 
-/// The `eval` command: concatenate the arguments and run the result as a
-/// script, against the state of the interpreter that reached this op.
+/// `info frame ?number?`: the number of the current frame, or a dictionary about
+/// frame `number`.
 ///
-/// The running chunk's slots are written back before the nested script runs and
-/// re-read after it, so the two see one set of variables in both directions —
-/// including when the nested script fails, since what it did set before failing
-/// is set.
+/// A frame is a procedure activation or a script being evaluated — the file, an
+/// `eval`, an `uplevel`, a `source` — so the count is the activations of this VM
+/// plus the scripts running ([`State::running`]). The dictionary can be built for
+/// the frames of the VM that asked: a frame of a script further out belongs to a
+/// machine that is suspended in the Rust stack above this one, and is answered
+/// with only what is known without it.
+fn info_frame_op(interp: &Shared, vm: &mut VM, arg: u8) -> Result<(), TclError> {
+    let scripts = interp.lock().expect("interpreter lock").running.len() as i64;
+    let activations = current_level(vm);
+    let count = scripts + activations;
+    if arg == 0 {
+        vm.push(Value::Int(count));
+        return Ok(());
+    }
+    let written = to_tcl_string(&vm.pop());
+    let given = list::wide(&written).map_err(TclError::plain)?;
+    let absolute = if given <= 0 { count + given } else { given };
+    if absolute < 1 || absolute > count {
+        return Err(TclError::plain(format!("bad level \"{written}\"")));
+    }
+    let level = count - absolute;
+
+    // The activations of this VM, outermost first, and which of them this frame
+    // is: the base script of a one-machine run is frame 1.
+    let calls: Vec<usize> = vm
+        .frames
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.entry_ip.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    let single = scripts == 1;
+    let procedure = |k: usize| -> Option<String> {
+        let entry = vm.frames.get(*calls.get(k)?)?.entry_ip?;
+        let (idx, _) = vm.chunk.sub_entries.iter().find(|(_, ip)| *ip == entry)?;
+        let name = vm.chunk.names.get(usize::from(*idx))?;
+        Some(format!("::{}", name.trim_start_matches("::")))
+    };
+    // Where the frame stood: the op it was executing.
+    let ip = if absolute == count {
+        Some(vm.ip.saturating_sub(1))
+    } else if single {
+        let inner = usize::try_from(absolute - 1)
+            .ok()
+            .and_then(|k| calls.get(k));
+        inner.and_then(|&f| vm.frames[f].return_ip.checked_sub(1))
+    } else {
+        None
+    };
+    let found = ip.and_then(|ip| crate::errinfo::command_at(&vm.chunk, ip));
+    // The file as tclsh names it: absolute.
+    let script = std::fs::canonicalize(current_script())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| current_script());
+    let mut items: Vec<String> = Vec::new();
+    let mut put = |key: &str, value: String| {
+        items.push(key.to_string());
+        items.push(value);
+    };
+    put(
+        "type",
+        if script.is_empty() { "eval" } else { "source" }.to_string(),
+    );
+    if let Some((_, _, line)) = &found {
+        put("line", line.to_string());
+    }
+    if !script.is_empty() {
+        put("file", script);
+    }
+    if let Some((text, _, _)) = &found {
+        put("cmd", text.trim_end().to_string());
+    }
+    let proc_at = if single && absolute >= 2 {
+        procedure(usize::try_from(absolute - 2).unwrap_or(0))
+    } else {
+        None
+    };
+    if let Some(name) = proc_at {
+        put("proc", name);
+    }
+    put("level", level.to_string());
+    vm.push(Value::Str(Arc::new(list::join(&items))));
+    Ok(())
+}
+
 /// `info commands` / `procs` / `globals` / `vars`.
 ///
 /// Lives here rather than in `cmd_info` because two of the four can only be
@@ -2436,6 +2520,13 @@ pub(crate) fn at_global<T, E>(
     result
 }
 
+/// The `eval` command: concatenate the arguments and run the result as a
+/// script, against the state of the interpreter that reached this op.
+///
+/// The running chunk's slots are written back before the nested script runs and
+/// re-read after it, so the two see one set of variables in both directions —
+/// including when the nested script fails, since what it did set before failing
+/// is set.
 fn eval_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     let mut args = Vec::with_capacity(argc as usize);
     for _ in 0..argc {

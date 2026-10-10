@@ -163,7 +163,7 @@
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">147/169</div>
+            <div class="stat-val">148/169</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -1072,7 +1072,7 @@
 
       <section class="tutorial-section" id="ch-info">
         <h2>The <code>info</code> ensemble</h2>
-        <p class="chapter-meta">29 subcommands recognised &middot; 20 implemented &middot; 9 refused</p>
+        <p class="chapter-meta">29 subcommands recognised &middot; 21 implemented &middot; 8 refused</p>
         <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
         <article class="doc-entry" id="doc-info-args">
           <h3><a class="doc-anchor" href="#doc-info-args">#</a> <code>info args</code></h3>
@@ -1162,8 +1162,7 @@
           <h3><a class="doc-anchor" href="#doc-info-frame">#</a> <code>info frame</code></h3>
           <pre><code class="lang-tcl">info frame ?number?
 </code></pre>
-          <p>The depth of the call stack, or a dictionary describing one frame — its type, the file and line it came from, and the command being run. Refused: this frontend does not expose the running call frame.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info frame is not supported yet: it reports on the stack of *commands*, and only the stack of call frames is kept</code></p>
+          <p>The number of the current frame — one for the script, one more per procedure activation and per nested script — or a dictionary describing frame <code>number</code> (zero and below counting back from the current one): its type, line, file, the command being run, the procedure and its level. Answered from the command record the compiler keeps, so a frame belonging to a script further out than the one asking is described by its level alone.</p>
         </article>
         <article class="doc-entry" id="doc-info-functions">
           <h3><a class="doc-anchor" href="#doc-info-functions">#</a> <code>info functions</code></h3>
@@ -1187,7 +1186,7 @@
           <h3><a class="doc-anchor" href="#doc-info-level">#</a> <code>info level</code></h3>
           <pre><code class="lang-tcl">info level ?number?
 </code></pre>
-          <p>How deep the current procedure call is — 0 at a script's own level, one more per activation. Only a call is counted, not the frames the VM pushes for a scope or after a JIT side exit. The form taking a level number is refused: a call site pushes the actual arguments and nothing naming the command, so there is no record of what entered a level.</p>
+          <p>How deep the current procedure call is — 0 at a script's own level, one more per activation. Only a call is counted, not the frames the VM pushes for a scope or after a JIT side exit. The form taking a level number answers the words of the command that entered it: its source words when every one was written out, and otherwise the procedure's name with its formals as they stand now.</p>
         </article>
         <article class="doc-entry" id="doc-info-library">
           <h3><a class="doc-anchor" href="#doc-info-library">#</a> <code>info library</code></h3>

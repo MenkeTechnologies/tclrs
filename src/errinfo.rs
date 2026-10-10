@@ -117,6 +117,9 @@ pub(crate) struct CmdRec {
     /// The 1-based line the command began on, within the text it was parsed
     /// from — a procedure's body counts from its own first line.
     pub line: usize,
+    /// The same line counted from the outermost script it was written in: the
+    /// number `info frame` reports.
+    pub abs_line: usize,
     /// Index of the text in [`CmdMap::sources`] and the command's byte range
     /// in it.
     pub src: usize,
@@ -611,14 +614,19 @@ pub(crate) struct Builder {
     /// The containers whose body is being lowered, innermost last.
     bodies: Vec<(usize, BodyKind)>,
     /// The text of the script being lowered, innermost last.
-    texts: Vec<(Option<usize>, usize)>,
+    texts: Vec<(Option<usize>, usize, usize)>,
     /// Which clause of the `try` being lowered the next body is.
     pub pending_try: Option<BodyKind>,
 }
 
 impl Builder {
     /// A script is about to be lowered.
-    pub(crate) fn enter_script(&mut self, text: Option<&Arc<str>>, base: Option<usize>) {
+    pub(crate) fn enter_script(
+        &mut self,
+        text: Option<&Arc<str>>,
+        base: Option<usize>,
+        abs: Option<usize>,
+    ) {
         let at = text.map(
             |t| match self.sources.iter().position(|s| Arc::ptr_eq(s, t)) {
                 Some(i) => i,
@@ -629,7 +637,8 @@ impl Builder {
             },
         );
         let base = base.unwrap_or_else(|| self.texts.last().map_or(0, |t| t.1));
-        self.texts.push((at, base));
+        let abs = abs.unwrap_or_else(|| self.texts.last().map_or(0, |t| t.2));
+        self.texts.push((at, base, abs));
     }
 
     pub(crate) fn leave_script(&mut self) {
@@ -644,7 +653,7 @@ impl Builder {
         span: (usize, usize),
         kind: Option<BodyKind>,
     ) {
-        let Some((Some(src), base)) = self.texts.last().copied() else {
+        let Some((Some(src), base, abs)) = self.texts.last().copied() else {
             self.open.push(usize::MAX);
             return;
         };
@@ -652,6 +661,7 @@ impl Builder {
             start,
             end: usize::MAX,
             line: base + line,
+            abs_line: abs + line,
             src,
             span,
             kind,
@@ -672,17 +682,16 @@ impl Builder {
     /// The line of the enclosing container a body whose word began on `word_line`
     /// of the script being lowered starts at: the container's own first line when
     /// the command owning the body makes one of it.
-    pub(crate) fn body_base(&self, word_line: usize) -> usize {
+    pub(crate) fn body_base(&self, word_line: usize) -> (usize, usize) {
         let opens = self
             .open
             .last()
             .and_then(|&at| self.recs.get(at))
             .is_some_and(|r| r.kind.is_some_and(|k| k != BodyKind::Try));
-        if opens {
-            0
-        } else {
-            self.texts.last().map_or(0, |t| t.1) + word_line.saturating_sub(1)
-        }
+        let (base, abs) = self.texts.last().map_or((0, 0), |t| (t.1, t.2));
+        let at = word_line.saturating_sub(1);
+        // Absolute lines count straight through every body.
+        (if opens { 0 } else { base + at }, abs + at)
     }
 
     /// A body of the command being lowered is about to be. Answers whether it
@@ -773,4 +782,17 @@ pub(crate) fn parsed_expression(msg: &str) -> Option<String> {
     // others end with it.
     let end = rest.find("\";\n").or_else(|| rest.rfind('"'))?;
     Some(rest[..end].replace("_@_", ""))
+}
+
+/// The command containing the op at `ip`: its source text, its line in its
+/// container, and its line counted from the outermost script.
+pub(crate) fn command_at(chunk: &Chunk, ip: usize) -> Option<(String, usize, usize)> {
+    let map = lookup(chunk)?;
+    let rec = &map.recs[map.innermost(ip)?];
+    Some((map.text(rec).to_string(), rec.line, rec.abs_line))
+}
+
+/// The lambda term of the `apply` that is running innermost.
+pub(crate) fn current_lambda() -> Option<String> {
+    LAMBDAS.with(|l| l.borrow().last().cloned())
 }

@@ -395,7 +395,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Namespaces | `namespace` — `eval`, `current`, `qualifiers`, `tail`, `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`, `import`, `forget`, `origin`, `which`, `upvar`, `ensemble exists` / `create` / `configure`, and calls through the ensemble command (`-map`, `-subcommands`, `-prefixes`); `variable`; `rename` |
 | The event loop | `after` — `ms`, `ms script`, `idle script`, `cancel`, `info`; `update`, `update idletasks`; `vwait` |
 | Scope | `uplevel`, `upvar`, `apply` |
-| Introspection | `info` — `args`, `body`, `commands`, `complete`, `coroutine`, `default`, `exists`, `functions`, `globals`, `hostname`, `level`, `library`, `locals`, `nameofexecutable`, `patchlevel`, `procs`, `script`, `sharedlibextension`, `tclversion`, `vars` |
+| Introspection | `info` — `args`, `body`, `commands`, `complete`, `coroutine`, `default`, `exists`, `functions`, `frame`, `globals`, `hostname`, `level`, `library`, `locals`, `nameofexecutable`, `patchlevel`, `procs`, `script`, `sharedlibextension`, `tclversion`, `vars` |
 | Packages | `package` — `files`, `forget`, `ifneeded`, `names`, `prefer`, `present`, `provide`, `require`, `unknown`, `vcompare`, `versions`, `vsatisfies` |
 | Run-time evaluation | `eval`, `subst`, `source`, `tcl_findLibrary` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat`, `lassign`, `lset`, `lpop`, `ledit`, `lrepeat`, `lremove`, `lseq`, `lmap` |
@@ -839,7 +839,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | An ensemble with `-parameters` or `-unknown`; `variable` naming a qualified name inside a procedure | `bad variable name "a::b": can't create a local variable with a namespace separator` |
 | `source -encoding` for anything but UTF-8 | `"source -encoding" is only supported for utf-8: this frontend reads a script as UTF-8` |
 | `namespace eval` inside a procedure body, where an unqualified name in its body would take a frame slot rather than the namespace's variable | `"namespace eval" inside a procedure is not supported yet: an unqualified name in its body would take a frame slot rather than the namespace's variable` |
-| `info` subcommands that need machinery this frontend has none of: `frame`, `cmdcount`, `cmdtype`, `class`, `object`, `consts`, `constant`, `loaded`; and `info level N`, which needs a record of the command that entered a level | `info frame is not supported yet` |
+| `info` subcommands that need machinery this frontend has none of: `cmdcount`, `cmdtype`, `class`, `object`, `consts`, `constant`, `loaded` | `info cmdcount is not supported yet` |
 | `info library` — a raise rather than a refusal, carrying tclsh's own message for an interpreter with no script library, which this one permanently is | `no library has been specified for Tcl` |
 | A lambda naming an existing namespace other than `::`, written out or computed (one that does not exist is tclsh's `namespace "::ns" not found`) | `the namespace "::ns" of a lambda is not supported yet: this frontend has only "::"` |
 | `vwait` on more than one variable, and its `-timeout` / `-readable` / `-writable` / `-all` options | `"vwait" takes at most one variable name in this phase` |

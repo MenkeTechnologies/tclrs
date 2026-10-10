@@ -1965,7 +1965,7 @@ impl Compiler {
             return Ok(());
         }
         self.emap
-            .enter_script(script.source.0.as_ref(), script.base.0);
+            .enter_script(script.source.0.as_ref(), script.base.0, script.abs.0);
         let mut outcome = Ok(());
         for (i, cmd) in script.commands.iter().enumerate() {
             if i > 0 {
@@ -1983,7 +1983,7 @@ impl Compiler {
     /// Emit a script for its effect, leaving the stack as it was found.
     pub(crate) fn script_effect(&mut self, script: &Script) -> Result<(), CompileError> {
         self.emap
-            .enter_script(script.source.0.as_ref(), script.base.0);
+            .enter_script(script.source.0.as_ref(), script.base.0, script.abs.0);
         let mut outcome = Ok(());
         for cmd in &script.commands {
             outcome = self.command(cmd);
@@ -3176,10 +3176,11 @@ impl Compiler {
         let text = self.literal_of(word, "script body")?.to_string();
         // The body's lines count from the container it ends up in, which is
         // where tclsh reports them; see `crate::errinfo::Builder::body_base`.
-        let base = self.emap.body_base(word.pos.0);
+        let (base, abs) = self.emap.body_base(word.pos.0);
         match crate::parser::parse(&text) {
             Ok(mut script) => {
                 script.base = crate::parser::Base(Some(base));
+                script.abs = crate::parser::Base(Some(abs));
                 Ok(script)
             }
             Err(e) => Err(self.deferrable_err(e.msg)),

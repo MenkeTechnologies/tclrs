@@ -163,6 +163,7 @@ fn blocks() -> Vec<Block> {
                 ("LEVEL", tclrs::cmd_info::ext::LEVEL),
                 ("BODY", tclrs::cmd_info::ext::BODY),
                 ("FUNCTIONS", tclrs::cmd_info::ext::FUNCTIONS),
+                ("FRAME", tclrs::cmd_info::ext::FRAME),
             ],
         ),
         ("PKG", ext::PKG_BASE, vec![("PACKAGE", ext::PACKAGE)]),

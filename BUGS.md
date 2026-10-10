@@ -735,14 +735,22 @@ approximated, and nothing is silently mis-run.
   is the one with a sub-table entry, even when a conditional definition of the
   same name ran later and every ordinary call site would reach the newer one.
 - **The `info` subcommands that name machinery this frontend has none of.**
-  `frame`, `errorstack` and `cmdcount` need a record of each active *command*,
-  where only the stack of call frames is kept; `class`, `object`, `consts`,
-  `constant` and `cmdtype` need an object system. Each is `info frame is not
-  supported yet` rather than mis-answered. `info level N` is refused separately:
-  the *value* of a level is the command and arguments that entered it, and
-  `Op::Call` pushes the actual arguments and nothing that names the command.
-  The refusal is for a level that exists: a non-integer or a level outside the
-  stack is tclsh's own error (`expected integer but got`, `bad level "N"`).
+  `errorstack` and `cmdcount` need a record this frontend keeps only per
+  error; `class`, `object`, `consts`, `constant` and `cmdtype` need an object
+  system. Each is `info cmdcount is not supported yet` and the like rather than
+  mis-answered.
+- **`info level N` and `info frame N` read the command record.** The words of
+  the call that entered a level are its source words when the call wrote every
+  one out, because `Op::Call` pushes the actual arguments and nothing that
+  names the command; a call that substituted something, or reached the
+  procedure from another chunk, is rebuilt from the procedure's name and its
+  formals as they stand — which differs from tclsh when the body assigned to a
+  formal or a default stood in for an argument. `info frame` counts the
+  scripts running and the activations of the machine that asks; a frame
+  belonging to a script further out is described by its `level` alone, since
+  that script's machine is suspended in the host stack above this one, and the
+  `line` of a frame is the command's line in the outermost script it was
+  written in.
   `info level` with no argument counts only the procedure activations of the
   machine it runs on: inside a script `eval` or `uplevel` runs in a procedure it
   answers 0 where tclsh answers 1, and in a procedure whose body was compiled
@@ -867,7 +875,7 @@ approximated, and nothing is silently mis-run.
   subcommands outside the
   implemented set; `format` conversions outside the
   implemented set; `regexp -about`;
-  `info frame`. They go through the reference option parser first,
+  `info cmdcount`. They go through the reference option parser first,
   so abbreviation and ambiguity behave as tclsh does, and are then refused.
   `lsort -command`, `dict map` and `dict filter … script` were on this list until
   the change that added `subst`, `dict update` until the change that built the
@@ -2132,7 +2140,8 @@ than an unexamined one. Measured against the 2000-program run above.
   `ledit`, `rename` and the `namespace` name queries are drawn from option and
   argument pools by `misc_stmt` in `scripts/fuzz/gen.tcl`, each statement under
   a `catch` that prints the code and message so a refusal does not end the case.
-  The pools leave out what tclrs documents as unimplemented — `info level N`, `namespace path` — because each
+  The pools leave out what tclrs documents as unimplemented — `namespace path` —
+  because each
   would spend most of a run re-finding the same refusal.
 - **`array` on a procedure local, `unset` of one, and `eval` inside a procedure
   body** are generated, at `RARE_SHAPE_RATE` — so are the `dict` subcommands

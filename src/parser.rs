@@ -169,6 +169,8 @@ pub struct Script {
     pub commands: Vec<Command>,
     pub source: Source,
     pub base: Base,
+    /// The line of the outermost script this one's first line is.
+    pub abs: Base,
 }
 
 impl Script {
@@ -679,6 +681,7 @@ impl<'a> Parser<'a> {
             commands,
             source: Source::default(),
             base: Base::default(),
+            abs: Base::default(),
         })
     }
 

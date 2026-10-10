@@ -515,11 +515,7 @@ fn unreachable_scopes_are_refused() {
             "yield inside a script run by \"eval\", \"uplevel\" or \"apply\" is not supported",
         ),
         // The `info` subcommands that need machinery this frontend has none of.
-        ("puts [info frame]", "info frame is not supported yet"),
-        (
-            "proc p {} {info level 1}\nputs [p]",
-            "\"info level\" with a level number is not supported",
-        ),
+        ("puts [info cmdcount]", "info cmdcount is not supported yet"),
         // `info library` compiles and runs, then raises tclsh's own message for an
         // interpreter whose `tcl_library` is gone — which this one permanently is,
         // because nothing here reads an `init.tcl`. A raise rather than a
