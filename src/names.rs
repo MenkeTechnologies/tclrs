@@ -35,6 +35,7 @@ const TABLES: &[&[&str]] = &[
     cmd_clock::COMMANDS,
     cmd_file::COMMANDS,
     crate::cmd_encoding::COMMANDS,
+    crate::cmd_process::COMMANDS,
 ];
 
 /// Every command name the compiler accepts. Sorted and free of duplicates,
@@ -165,6 +166,16 @@ pub const CORPUS: &[Entry] = &[
         name: "eval",
         synopsis: "eval arg ?arg ...?",
         summary: "Concatenate the arguments and run the result as a script against the interpreter's own variables. The chunk is cached by source text.",
+    },
+    Entry {
+        name: "exec",
+        synopsis: "exec ?-ignorestderr? ?-keepnewline? ?--? arg ?arg ...?",
+        summary: "Run a pipeline of child processes, with `|`, `|&`, `<`, `<<`, `<@`, `>`, `>>`, `>@`, `>&`, `2>`, `2>@1` redirections and a trailing `&`; yields the last process's standard output, and raises the error text a child wrote to standard error or its abnormal exit status.",
+    },
+    Entry {
+        name: "exit",
+        synopsis: "exit ?returnCode?",
+        summary: "Flush the interpreter's output and every open channel, then end the process with the status. Nothing a script has pending runs.",
     },
     Entry {
         name: "expr",
@@ -440,6 +451,11 @@ pub const CORPUS: &[Entry] = &[
         name: "throw",
         synopsis: "throw type message",
         summary: "Raise `message` as an error, the type having been checked to be a list of at least one element. The type becomes the error's `-errorcode`, which `catch` reports and `try`'s `trap` clauses match.",
+    },
+    Entry {
+        name: "time",
+        synopsis: "time command ?count?",
+        summary: "Run the command `count` times at the calling level and report the mean in microseconds per iteration.",
     },
     Entry {
         name: "try",

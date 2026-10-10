@@ -314,7 +314,7 @@ pub(crate) fn call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclE
 /// `line` is the call site's, for the failures that would otherwise have no
 /// place: `invalid command name`, `wrong # args`. A failure raised *inside* a
 /// procedure's body carries its own and keeps it.
-fn invoke(
+pub(crate) fn invoke(
     interp: &Shared,
     vm: &mut VM,
     name: &str,
@@ -330,7 +330,7 @@ fn invoke(
 /// The lock is taken and released here rather than held across the call, because
 /// entering the body runs arbitrary Tcl — which may define another procedure or
 /// `eval` a script, and both of those want this same lock.
-fn defined_proc(interp: &Shared, name: &str) -> Option<RuntimeProc> {
+pub(crate) fn defined_proc(interp: &Shared, name: &str) -> Option<RuntimeProc> {
     let state = interp.lock().expect("interpreter lock");
     state.commands.get(table_key(name)).cloned()
 }

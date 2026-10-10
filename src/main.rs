@@ -90,12 +90,12 @@ fn main() -> ExitCode {
     match tk_session() {
         false => std::thread::Builder::new()
             .stack_size(tclrs::runtime::RECOMMENDED_STACK)
-            .spawn(drive)
+            .spawn(session)
             .expect("spawn interpreter thread")
             .join()
             .unwrap_or(ExitCode::FAILURE),
         #[cfg(feature = "tk")]
-        true => main_thread::run(drive),
+        true => main_thread::run(session),
         #[cfg(not(feature = "tk"))]
         true => unreachable!("--tk is not a recognized option in this build"),
     }
@@ -146,6 +146,17 @@ enum Source {
     Command(String),
     /// Standard input.
     Stdin,
+}
+
+/// One run of the driver, then what the process owes its channels.
+///
+/// A channel a script opened and never closed still holds buffered output;
+/// `Tcl_Finalize` hands it to the device when the process ends, and so does
+/// this, on the thread whose channel table holds it.
+fn session() -> ExitCode {
+    let status = drive();
+    tclrs::cmd_channel::flush_all();
+    status
 }
 
 fn drive() -> ExitCode {
@@ -222,7 +233,7 @@ fn drive() -> ExitCode {
         if status == ExitCode::SUCCESS {
             tk_main_loop();
         }
-        return status;
+        return leave(&mut interp, status);
     }
 
     let (src, file) = match &source {
@@ -257,7 +268,7 @@ fn drive() -> ExitCode {
             if status == ExitCode::SUCCESS {
                 tk_main_loop();
             }
-            status
+            leave(&mut interp, status)
         }
         Action::Aot(out) => report(tclrs::aot::compile_executable(&src, &out)),
         Action::AotObject(out) => report(tclrs::aot::compile_object(&src, &out)),
@@ -348,6 +359,16 @@ fn tk_main_loop() {
 
 #[cfg(not(feature = "tk"))]
 fn tk_main_loop() {}
+
+/// What `Tcl_Main` does when its script is done: invoke the `exit` command with
+/// the status, rather than ending the process itself, so a script that replaced
+/// `exit` has its own run (`generic/tclMain.c`). The builtin ends the process; a
+/// replacement that returns leaves the status as it was.
+fn leave(interp: &mut Interp, status: ExitCode) -> ExitCode {
+    let code = if status == ExitCode::SUCCESS { 0 } else { 1 };
+    let _ = interp.eval(&format!("exit {code}"));
+    status
+}
 
 /// A whole script, evaluated as one. Its first failure ends it.
 fn run_source(interp: &mut Interp, src: &str, file: Option<&str>) -> ExitCode {

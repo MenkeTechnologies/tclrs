@@ -787,7 +787,7 @@ approximated, and nothing is silently mis-run.
   a compile-time binding (`Compiler::top_aliases`) and is coherent everywhere —
   at the global frame that covers the relative level `0` as well as `#0`, so
   `set x 5; upvar 0 x y` at a script's top level makes `y` and `x` one variable.
-- **Every command outside those above.** `interp`, `socket`, `exec`, `trace`,
+- **Every command outside those above.** `interp`, `socket`, `trace`,
   … An unknown command name is `invalid command name
   "…"`, raised when the command runs — `puts [catch {nosuchcmd} m]` is `1` —
   because the compiler lowers that refusal as code rather than deciding it (see
@@ -2100,8 +2100,8 @@ than an unexamined one. Measured against the 2000-program run above.
   second half of the same record, carried by the chunk itself and read by
   `VM::slot_names_at`, which is what the projection uses. See the refusal list
   above.
-- **Commands tclrs does not have.** `interp`, `trace`, `socket`, `exec`,
-  `exit`, `time`, `timerate`, `chan`, `const`, `tailcall`, `fcopy`, `fileevent`,
+- **Commands tclrs does not have.** `interp`, `trace`, `socket`,
+  `timerate`, `chan`, `const`, `tailcall`, `fcopy`, `fileevent`,
   `fblocked` and `zlib` are outside the command set entirely, so a generated use
   of one is `invalid command name` and says nothing about parity. `{*}`
   expansion, `namespace`, `rename`, `source`, `encoding`, `binary` and file I/O

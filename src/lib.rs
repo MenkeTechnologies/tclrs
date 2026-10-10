@@ -38,6 +38,7 @@ pub mod cmd_info;
 pub mod cmd_list;
 pub mod cmd_namespace;
 pub mod cmd_package;
+pub mod cmd_process;
 /// `scan` — `format` read backwards.
 pub mod cmd_scan;
 /// `uplevel`, `upvar`, `variable` and `apply` — reaching another scope.

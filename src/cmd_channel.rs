@@ -950,7 +950,7 @@ fn encode(e: Encoding, text: &str) -> Result<Vec<u8>, String> {
 ///
 /// `sink` is the running interpreter's output, and is used for the standard
 /// output channel only — see [`StdDevice`].
-fn write_id(id: usize, text: &str, sink: Option<&Output>) -> Result<(), String> {
+pub(crate) fn write_id(id: usize, text: &str, sink: Option<&Output>) -> Result<(), String> {
     let to_sink = with_table(|t| {
         t.channels
             .get(&id)
@@ -980,6 +980,15 @@ fn write_id(id: usize, text: &str, sink: Option<&Output>) -> Result<(), String> 
         flush_id(id, sink)?;
     }
     Ok(())
+}
+
+/// Hand every channel's buffered output to its device, as `Tcl_Finalize` does
+/// when the process ends.
+pub fn flush_all() {
+    let ids: Vec<usize> = with_table(|t| t.channels.keys().copied().collect());
+    for id in ids {
+        let _ = flush_id(id, None);
+    }
 }
 
 /// `Tcl_Flush` (`generic/tclIO.c:6920`): hand everything buffered to the device.
@@ -1618,7 +1627,7 @@ fn assign(vm: &mut VM, name: &str, encoded: &Value, value: &str) -> Result<(), S
 
 /// A channel that must be readable, in `Tcl_ReadChars`'s wording for one that
 /// is not (`generic/tclIO.c`'s `CheckChannelErrors`).
-fn resolve_readable(name: &str) -> Result<usize, String> {
+pub(crate) fn resolve_readable(name: &str) -> Result<usize, String> {
     let id = resolve(name)?;
     if !with_channel(id, |c| Ok(c.readable()))? {
         return Err(format!("channel \"{name}\" wasn't opened for reading"));
@@ -1627,7 +1636,7 @@ fn resolve_readable(name: &str) -> Result<usize, String> {
 }
 
 /// The same for the write side.
-fn resolve_writable(name: &str) -> Result<usize, String> {
+pub(crate) fn resolve_writable(name: &str) -> Result<usize, String> {
     let id = resolve(name)?;
     if !with_channel(id, |c| Ok(c.writable()))? {
         return Err(format!("channel \"{name}\" wasn't opened for writing"));

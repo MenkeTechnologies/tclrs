@@ -747,6 +747,14 @@ pub mod ext {
     /// One past the `binary` block.
     pub const BINARY_END: u16 = BINARY_BASE + BLOCK;
     // ── end of the binary block ──────────────────────────────────────────
+    // ── the process block ────────────────────────────────────────────────
+    /// `exit`, `time` and `exec` ([`crate::cmd_process`]). Bounded like the
+    /// blocks below it, and dispatched from the extension closure because
+    /// `exit` flushes the interpreter's own output and `time` runs a script.
+    pub const PROCESS_BASE: u16 = SUBSYSTEM_BASE + 10 * BLOCK;
+    /// One past the process block.
+    pub const PROCESS_END: u16 = PROCESS_BASE + BLOCK;
+    // ── end of the process block ─────────────────────────────────────────
 }
 
 /// Wide extension opcode ids, whose payload is a `usize` rather than a byte.
@@ -2370,6 +2378,12 @@ impl Compiler {
             // a script's own definition is never shadowed by a library it
             // loaded.
             other if crate::rust_ffi::is_exported(other) => self.call_ffi(other, args),
+            // `exit`, `time` and `exec`: ahead of the list tail but behind every
+            // procedure arm, so a script's own definition of one of these names
+            // replaces it as it does in tclsh.
+            other if crate::cmd_process::COMMANDS.contains(&other) => {
+                crate::cmd_process::compile(self, other, args)
+            }
             // A name no module claims: it is looked up in the interpreter's
             // run-time command table when the command runs, because that is the
             // only moment it can be known.

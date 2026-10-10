@@ -190,6 +190,15 @@ fn blocks() -> Vec<Block> {
             ],
         ),
         (
+            "PROCESS",
+            ext::PROCESS_BASE,
+            vec![
+                ("EXIT", tclrs::cmd_process::ext::EXIT),
+                ("TIME", tclrs::cmd_process::ext::TIME),
+                ("EXEC", tclrs::cmd_process::ext::EXEC),
+            ],
+        ),
+        (
             "ENCODING",
             ext::ENCODING_BASE,
             vec![

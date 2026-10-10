@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. Every one of the 341 names the current tclrs build implements: 83 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. Every one of the 344 names the current tclrs build implements: 86 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -126,15 +126,15 @@
 
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>LANGUAGE REFERENCE</h2>
-      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 83 commands,
+      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 86 commands,
       169 ensemble subcommands, the <code>expr</code> ladder, the
       <code>string is</code> classes and the <code>format</code> conversions &mdash; each with the
       signature the compiler reports and a description written from what the code does.
-      341 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
+      344 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
       <section class="tutorial-section">
         <h2>Chapters</h2>
         <ul class="chapter-index">
-          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">83</span></li>
+          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">86</span></li>
           <li><a href="#ch-string">The <code>string</code> ensemble</a> <span class="chapter-count">23</span></li>
           <li><a href="#ch-array">The <code>array</code> ensemble</a> <span class="chapter-count">13</span></li>
           <li><a href="#ch-dict">The <code>dict</code> ensemble</a> <span class="chapter-count">22</span></li>
@@ -147,7 +147,7 @@
 
       <section class="tutorial-section" id="ch-commands">
         <h2>Commands</h2>
-        <p class="chapter-meta">83 entries</p>
+        <p class="chapter-meta">86 entries</p>
         <p>Every command the current build compiles. A name absent from this
         chapter is <code>invalid command name "&hellip;"</code> at <em>compile</em>
         time, not a runtime lookup that fails &mdash; resolving the name while
@@ -159,7 +159,7 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">83</div>
+            <div class="stat-val">86</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
@@ -283,6 +283,18 @@
           <pre><code class="lang-tcl">eval arg ?arg ...?
 </code></pre>
           <p>Concatenate the arguments and run the result as a script against the interpreter's own variables. The chunk is cached by source text.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-exec">
+          <h3><a class="doc-anchor" href="#doc-cmd-exec">#</a> <code>exec</code></h3>
+          <pre><code class="lang-tcl">exec ?-ignorestderr? ?-keepnewline? ?--? arg ?arg ...?
+</code></pre>
+          <p>Run a pipeline of child processes, with <code>|</code>, <code>|&amp;</code>, <code>&lt;</code>, <code>&lt;&lt;</code>, <code>&lt;@</code>, <code>&gt;</code>, <code>&gt;&gt;</code>, <code>&gt;@</code>, <code>&gt;&amp;</code>, <code>2&gt;</code>, <code>2&gt;@1</code> redirections and a trailing <code>&amp;</code>; yields the last process's standard output, and raises the error text a child wrote to standard error or its abnormal exit status.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-exit">
+          <h3><a class="doc-anchor" href="#doc-cmd-exit">#</a> <code>exit</code></h3>
+          <pre><code class="lang-tcl">exit ?returnCode?
+</code></pre>
+          <p>Flush the interpreter's output and every open channel, then end the process with the status. Nothing a script has pending runs.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-expr">
           <h3><a class="doc-anchor" href="#doc-cmd-expr">#</a> <code>expr</code></h3>
@@ -613,6 +625,12 @@
           <pre><code class="lang-tcl">throw type message
 </code></pre>
           <p>Raise <code>message</code> as an error, the type having been checked to be a list of at least one element. The type becomes the error's <code>-errorcode</code>, which <code>catch</code> reports and <code>try</code>'s <code>trap</code> clauses match.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-time">
+          <h3><a class="doc-anchor" href="#doc-cmd-time">#</a> <code>time</code></h3>
+          <pre><code class="lang-tcl">time command ?count?
+</code></pre>
+          <p>Run the command <code>count</code> times at the calling level and report the mean in microseconds per iteration.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-try">
           <h3><a class="doc-anchor" href="#doc-cmd-try">#</a> <code>try</code></h3>

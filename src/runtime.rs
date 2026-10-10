@@ -1998,6 +1998,11 @@ impl Hooks {
                 // the variables every script starts with.
                 crate::cmd_info::ext::NAMES => info_names_op(&interp, vm, arg),
                 // ── end of the frame ops ─────────────────────────────────
+                // `exit`, `time` and `exec` need the interpreter's output sink
+                // and, for `time`, its frame projection.
+                id if crate::cmd_process::is_op(id) => {
+                    crate::cmd_process::run(&interp, vm, id, arg, &out)
+                }
                 // The channel ops write through the running interpreter's own
                 // output, so that `puts stdout x` reaches wherever `puts x`
                 // does — including an `Output::Capture`. That sink is only in
