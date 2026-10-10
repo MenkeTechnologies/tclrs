@@ -290,19 +290,31 @@ approximated, and nothing is silently mis-run.
     precedes it, so a word boundary sees no character behind the restart and
     `^` holds there only after a newline: `regsub -all {\y} "ab cd" |` is
     `|a|b |c|d`. `\A` matches at a restart, as in tclsh (`regsub -all {\A} abc X`
-    is `XaXbXcX`), for a pattern with no `^`; one holding both (`\Aa|^b`) is
-    searched in place and its `\A` does not match at a restart.
+    is `XaXbXcX`); a pattern holding both `\A` and `^` (`\Aa|^b`) runs on the
+    backtracking matcher, which reads the restart exactly so.
   * **The empty-match loop** is Tcl's, where `regexp -all {x*} ab` counts 2 but
     `regsub -all {x*} ab -` substitutes 3 times, and the literally empty pattern
     — not `(?:)` or `a{0}` — stops where `regexp` stops.
 
-  Three constructs are **refused by name** rather than approximated:
-  back-references (`(a+)\1`) and look-ahead (`(?= )` and `(?! )`), which a
-  finite-automaton matcher cannot express at any price, and the BRE syntax
-  `(?b)` selects, a separate grammar (`brenext`). `(?e)` is POSIX ERE, which is
-  the same lexer with the ARE extensions off, and is supported. A
-  back-reference to a group that is not closed yet is tclsh's `invalid
-  backreference number`, not the refusal. Word boundaries and the classes are
+  Two things are **refused by name** rather than approximated: the BRE syntax
+  `(?b)` selects, a separate grammar (`brenext`), and `regexp -about`. `(?e)` is
+  POSIX ERE, which is the same lexer with the ARE extensions off, and is
+  supported.
+
+  **Back-references and look-ahead** run on a backtracking matcher
+  (`src/are_bt.rs`), which is also what runs any pattern where the `regex`
+  crate's leftmost-first answer could differ from an ARE's longest one — an
+  alternation, a non-greedy quantifier, a quantified group. It follows
+  `re_syntax(n)` for the overall match and `regexec.c`'s dissection for the
+  sub-matches: the last copy of a repeated group is the one captured, a
+  back-reference to a group that did not take part fails even when quantified
+  `{0,1}`, groups written directly inside a look-ahead do not capture while
+  nested ones are numbered and never set, a back-reference written directly in
+  a look-ahead is `invalid backreference number`, and so is one to a group
+  taken back by `{0}`. Look-behind is not an ARE construct in 9.0 (`(?<=` is
+  `invalid quantifier operand`). A pattern whose back-reference search exhausts
+  its step budget is `regular expression is too complex` rather than a hang.
+  Word boundaries and the classes are
   as exact as Tcl's tables make them; the boundaries use `regex`'s Unicode
   word characters, which agree with Tcl's `[[:alnum:]_]` over ASCII.
 - **`expr`.** The whole operator set of `expr(n)` with `expr(n)` precedence,
@@ -2100,8 +2112,7 @@ than an unexamined one. Measured against the 2000-program run above.
   `ledit`, `rename` and the `namespace` name queries are drawn from option and
   argument pools by `misc_stmt` in `scripts/fuzz/gen.tcl`, each statement under
   a `catch` that prints the code and message so a refusal does not end the case.
-  The pools leave out what tclrs documents as unimplemented — look-around and
-  back-references in a pattern, `info level N`, `namespace path` — because each
+  The pools leave out what tclrs documents as unimplemented — `info level N`, `namespace path` — because each
   would spend most of a run re-finding the same refusal.
 - **`array` on a procedure local, `unset` of one, and `eval` inside a procedure
   body** are generated, at `RARE_SHAPE_RATE` — so are the `dict` subcommands

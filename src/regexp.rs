@@ -1,18 +1,20 @@
 //! `regexp` and `regsub`: Tcl's Advanced Regular Expressions, over the `regex`
 //! crate.
 //!
-//! Tcl 9 matches with Henry Spencer's ARE engine, which is a backtracking
-//! matcher and therefore able to express two things a finite-automaton matcher
-//! cannot: back-references (`(a+)\1`) and look-ahead (`a(?=b)`). Both work in
-//! tclsh 9.0.4 — measured, not assumed — and neither is expressible in the
-//! `regex` crate at any price, because that crate's guarantee is linear time
-//! and those constructs are what costs it.
+//! Tcl 9 matches with Henry Spencer's ARE engine, which backtracks and so can
+//! express two things a finite-automaton matcher cannot — back-references
+//! (`(a+)\1`) and look-ahead (`a(?=b)`) — and which picks the *longest* match
+//! where the `regex` crate picks the first (`a|ab` over `ab`).
 //!
-//! So `crate::are` translates the ARE syntax it *can* express and **refuses**
-//! the rest with a Tcl-shaped error, which is this crate's convention
-//! everywhere else: a refusal a script can catch beats a match that is quietly
-//! wrong. What is refused is listed in `BUGS.md` and reported by name at the
-//! point of use.
+//! So `crate::are` translates the ARE syntax into a pattern and a verdict on
+//! which engine may run it. A pattern of literals, classes and greedy
+//! quantifiers of single characters runs on `regex`, in linear time. Anything
+//! with a back-reference or look-ahead, or a shape where leftmost-first and
+//! leftmost-longest could differ (an alternation, a non-greedy quantifier, a
+//! quantified group), runs on the backtracking matcher in [`crate::are_bt`],
+//! which selects the match the way `re_syntax(n)` and `regexec.c` do. What is
+//! still refused — the BRE syntax and `regexp -about` — is listed in
+//! `BUGS.md` and reported by name at the point of use.
 //!
 //! ## What the translation has to correct
 //!
@@ -323,13 +325,23 @@ fn regerror(detail: &str) -> &str {
     }
 }
 
+/// The engine a pattern runs on: the `regex` crate where its leftmost-first
+/// match is what an ARE prescribes, [`crate::are_bt`] where it is not or where
+/// the crate has no syntax for the construct.
+enum Matcher {
+    Linear(Regex),
+    Backtracking(crate::are_bt::Engine),
+}
+
 /// A compiled pattern and what [`exec`] needs to know about it.
 pub(crate) struct Compiled {
-    re: Regex,
+    re: Matcher,
     /// See [`crate::are::Translated::left_context`].
     left_context: bool,
     /// See [`crate::are::Translated::start_anchor`].
     start_anchor: bool,
+    /// See [`crate::are::Translated::groups`].
+    groups: usize,
 }
 
 fn compiled(are: &str, flags: i64) -> Result<Arc<Compiled>, String> {
@@ -338,25 +350,34 @@ fn compiled(are: &str, flags: i64) -> Result<Arc<Compiled>, String> {
         return Ok(re);
     }
     let translated = translate(are, flags)?;
+    let backtracking = translated.engine || crate::are_bt::needs_engine(&translated.pattern);
     CACHE.with(|cache| {
-        let re = Regex::new(&translated.pattern).map_err(|e| {
-            // The interpreter's wording, with the engine's own complaint as the
-            // detail — reworded from a multi-line report to one line.
-            let detail = e.to_string();
-            let first = detail
-                .lines()
-                .find(|l| l.trim_start().starts_with("error:"))
-                .map(|l| l.trim_start().trim_start_matches("error:").trim())
-                .unwrap_or("syntax error");
-            format!(
-                "cannot compile regular expression pattern: {}",
-                regerror(first)
-            )
-        })?;
+        let re = if backtracking {
+            Matcher::Backtracking(crate::are_bt::Engine::new(
+                &translated.pattern,
+                translated.icase,
+            )?)
+        } else {
+            Matcher::Linear(Regex::new(&translated.pattern).map_err(|e| {
+                // The interpreter's wording, with the engine's own complaint as the
+                // detail — reworded from a multi-line report to one line.
+                let detail = e.to_string();
+                let first = detail
+                    .lines()
+                    .find(|l| l.trim_start().starts_with("error:"))
+                    .map(|l| l.trim_start().trim_start_matches("error:").trim())
+                    .unwrap_or("syntax error");
+                format!(
+                    "cannot compile regular expression pattern: {}",
+                    regerror(first)
+                )
+            })?)
+        };
         let re = Arc::new(Compiled {
             re,
             left_context: translated.left_context,
             start_anchor: translated.start_anchor,
+            groups: translated.groups,
         });
         let mut cache = cache.borrow_mut();
         if cache.len() >= CACHE_CAPACITY {
@@ -461,37 +482,106 @@ impl Caps {
 /// `\A` at a `NOTBOL` position matches, as it does in tclsh, for a pattern that
 /// has no `^` ([`crate::are::Translated::start_anchor`]); one that has both is
 /// searched in place, and its `\A` does not match there.
-fn exec(re: &Compiled, subject: &str, pos: usize) -> Option<Caps> {
+fn exec(re: &Compiled, subject: &str, pos: usize) -> Result<Option<Caps>, String> {
+    match &re.re {
+        Matcher::Linear(rx) => Ok(exec_linear(re, rx, subject, pos).map(|mut caps| {
+            caps.0.resize(re.groups + 1, None);
+            caps
+        })),
+        Matcher::Backtracking(engine) => exec_backtracking(engine, subject, pos),
+    }
+}
+
+/// [`exec`] on the `regex` crate.
+fn exec_linear(re: &Compiled, rx: &Regex, subject: &str, pos: usize) -> Option<Caps> {
     if pos == 0 || pos > subject.len() || !re.left_context {
-        return re
-            .re
-            .captures_at(subject, pos)
-            .map(|c| Caps::from(&c, 0, 0));
+        return rx.captures_at(subject, pos).map(|c| Caps::from(&c, 0, 0));
     }
     let prev = subject[..pos].chars().next_back()?;
     if prev == '\n' || re.start_anchor {
         // The rest of the subject is searched as a string of its own, whose start
         // is a line start: not `NOTBOL` after a newline, and a pattern whose
         // only start constraint is `\A` has nothing else to get wrong.
-        return re
-            .re
-            .captures(&subject[pos..])
-            .map(|c| Caps::from(&c, pos, 0));
+        return rx.captures(&subject[pos..]).map(|c| Caps::from(&c, pos, 0));
     }
     // `NOTBOL`: one character of left context that is neither a newline nor a
     // word character. The real one serves when it already is; otherwise a
     // space stands in for it.
     if prev.is_ascii() && !(prev.is_ascii_alphanumeric() || prev == '_') {
         let from = pos - 1;
-        return re
-            .re
+        return rx
             .captures_at(&subject[from..], 1)
             .map(|c| Caps::from(&c, from, 0));
     }
     let mut hay = String::with_capacity(subject.len() - pos + 1);
     hay.push(' ');
     hay.push_str(&subject[pos..]);
-    re.re.captures_at(&hay, 1).map(|c| Caps::from(&c, pos, 1))
+    rx.captures_at(&hay, 1).map(|c| Caps::from(&c, pos, 1))
+}
+
+thread_local! {
+    /// The subject the backtracking engine last ran over, decoded: a `-all` loop
+    /// searches one subject many times, and decoding it per search would make
+    /// the loop quadratic before the engine did anything.
+    static DECODED: RefCell<Option<Decoded>> = const { RefCell::new(None) };
+}
+
+struct Decoded {
+    subject: String,
+    chars: Vec<char>,
+    /// `bytes[i]` is where character `i` starts; the last entry is the length.
+    bytes: Vec<usize>,
+}
+
+/// [`exec`] on [`crate::are_bt`], which works in characters.
+///
+/// Like tclsh it is handed the subject *from* `pos`, as a string of its own,
+/// with `NOTBOL` unless `pos` is 0 or follows a newline — so a look-around or a
+/// back-reference sees nothing before the offset.
+fn exec_backtracking(
+    engine: &crate::are_bt::Engine,
+    subject: &str,
+    pos: usize,
+) -> Result<Option<Caps>, String> {
+    if pos > subject.len() {
+        return Ok(None);
+    }
+    DECODED.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if !matches!(slot.as_ref(), Some(d) if d.subject == subject) {
+            let bytes: Vec<usize> = subject
+                .char_indices()
+                .map(|(b, _)| b)
+                .chain(std::iter::once(subject.len()))
+                .collect();
+            *slot = Some(Decoded {
+                subject: subject.to_string(),
+                chars: subject.chars().collect(),
+                bytes,
+            });
+        }
+        let Some(d) = slot.as_ref() else {
+            return Ok(None);
+        };
+        let Ok(first) = d.bytes.binary_search(&pos) else {
+            return Ok(None);
+        };
+        let notbol = first > 0 && d.chars[first - 1] != '\n';
+        let spans = engine.exec(&d.chars[first..], notbol)?;
+        Ok(spans.map(|groups| {
+            Caps(
+                groups
+                    .into_iter()
+                    .map(|g| {
+                        g.map(|(a, b)| Span {
+                            start: d.bytes[first + a],
+                            end: d.bytes[first + b],
+                        })
+                    })
+                    .collect(),
+            )
+        }))
+    })
 }
 
 /// Whether `pattern` matches anywhere in `subject`, for the commands that take
@@ -502,7 +592,11 @@ fn exec(re: &Compiled, subject: &str, pos: usize) -> Option<Caps> {
 /// `regexp`'s, so a construct refused there is refused here with one wording.
 pub(crate) fn matches_anywhere(pattern: &str, subject: &str, nocase: bool) -> Result<bool, String> {
     let flags = if nocase { F_NOCASE } else { 0 };
-    Ok(compiled(pattern, flags)?.re.is_match(subject))
+    let re = compiled(pattern, flags)?;
+    match &re.re {
+        Matcher::Linear(rx) => Ok(rx.is_match(subject)),
+        Matcher::Backtracking(engine) => Ok(exec_backtracking(engine, subject, 0)?.is_some()),
+    }
 }
 
 /// Execute one of this module's ops.
@@ -541,7 +635,7 @@ fn run_switch_vars(vm: &mut VM, operands: &[Value]) -> Result<(), String> {
         _ => 0,
     };
     let re = compiled(&pattern, if nocase { F_NOCASE } else { 0 })?;
-    let Some(caps) = exec(&re, &subject, 0) else {
+    let Some(caps) = exec(&re, &subject, 0)? else {
         vm.push(Value::Str(Arc::new("0".to_string())));
         return Ok(());
     };
@@ -695,7 +789,13 @@ enum Stop {
 /// counted by `regexp`. The third line is the exception that is not a rule: an
 /// empty *pattern* — the literal `{}`, not `(?:)` or `a{0}`, which both behave
 /// like `x*` — stops where `regexp` stops.
-fn matches(re: &Compiled, subject: &str, from: usize, idx: &CharIndex, stop: Stop) -> Vec<Caps> {
+fn matches(
+    re: &Compiled,
+    subject: &str,
+    from: usize,
+    idx: &CharIndex,
+    stop: Stop,
+) -> Result<Vec<Caps>, String> {
     let len = subject.len();
     let mut found = Vec::new();
     let mut pos = from;
@@ -703,9 +803,9 @@ fn matches(re: &Compiled, subject: &str, from: usize, idx: &CharIndex, stop: Sto
     // there is none: `regsub -all {} ""` substitutes zero times, while
     // `regexp -all {} ""` still counts one match.
     if stop == Stop::EachCharacter && len == 0 {
-        return found;
+        return Ok(found);
     }
-    while let Some(caps) = exec(re, subject, pos) {
+    while let Some(caps) = exec(re, subject, pos)? {
         let whole = caps.get(0).expect("group 0 always participates");
         let (s, e) = (whole.start(), whole.end());
         found.push(caps);
@@ -729,7 +829,7 @@ fn matches(re: &Compiled, subject: &str, from: usize, idx: &CharIndex, stop: Sto
             _ => {}
         }
     }
-    found
+    Ok(found)
 }
 
 /// One index pair, in Tcl's inclusive form. An unmatched group is `-1 -1`.
@@ -768,9 +868,9 @@ fn run_regexp(vm: &mut VM, operands: &[Value]) -> Result<(), String> {
     // only matters when every match is.
     let all = flags & F_ALL != 0;
     let found = if all {
-        matches(&re, &subject, from_byte, &idx, Stop::BeforeEnd)
+        matches(&re, &subject, from_byte, &idx, Stop::BeforeEnd)?
     } else {
-        exec(&re, &subject, from_byte).into_iter().collect()
+        exec(&re, &subject, from_byte)?.into_iter().collect()
     };
 
     let count = found.len() as i64;
@@ -860,9 +960,9 @@ fn run_regsub(interp: Option<&Shared>, vm: &mut VM, operands: &[Value]) -> Resul
             } else {
                 Stop::PastEnd
             },
-        )
+        )?
     } else {
-        exec(&re, &subject, from_byte).into_iter().collect()
+        exec(&re, &subject, from_byte)?.into_iter().collect()
     };
 
     // Under `-command` every replacement is the result of a call, and the calls

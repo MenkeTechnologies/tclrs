@@ -20,6 +20,7 @@
 pub mod aot;
 pub mod aot_runtime;
 mod are;
+mod are_bt;
 pub mod assoc;
 pub mod cache;
 pub mod clock_locale;

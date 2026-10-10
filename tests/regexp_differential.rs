@@ -520,6 +520,40 @@ fn search_restarts_match_tclsh() {
     compare_all(RESTARTS, "restart");
 }
 
+/// The constructs only the backtracking engine matches, and the places its
+/// answer differs from a leftmost-first one: back-references, look-ahead, and
+/// the longest-match and sub-match selection rules of `re_syntax(n)`.
+const BACKTRACKING: &[&str] = &[
+    "puts [regexp -inline {(a+)\\1} aaaa]",
+    "puts [regexp -inline -indices {(a*)\\1} aaaaa]",
+    "puts [regexp -inline -nocase {(a)\\1} aA]",
+    "puts [regexp -all -inline {(\\w)\\1} aabbccd]",
+    "puts [regsub -all {(.)\\1} aabbcd {<\\1>}]",
+    "puts [regexp -inline {a(?=b)} ab]",
+    "puts [regexp -inline -indices {a(?!b)} abac]",
+    "puts [regexp -all -inline -indices {(?=a)} aaa]",
+    "puts [regsub -all {a(?=b)} abab X]",
+    "puts [regexp -inline {(?=(a))(a)} a]",
+    "puts [regexp -inline -indices {(?=a((b)))(a)(b)} ab]",
+    "puts [regexp -inline {a|ab} ab]",
+    "puts [regexp -all -inline {a|ab} abab]",
+    "puts [regexp -inline {a*(ab)?} aab]",
+    "puts [regexp -inline {(a|ab)(c|bcd)(d*)} abcd]",
+    "puts [regexp -inline -indices {(a+)+} aaa]",
+    "puts [regexp -inline -indices {(a*)+} aa]",
+    "puts [regexp -inline -indices {(a+){2,}?b} aaaab]",
+    "puts [regexp -all {\\Aa|^b} aab]",
+    "puts [regsub -all {\\Aa|^b} bbb X]",
+    "puts [catch {regexp {(a)(?=\\1)} aa} m]\nputs $m",
+    "puts [catch {regexp {(?=a)*b} b} m]\nputs $m",
+    "puts [catch {regexp {(a){0}\\1} a} m]\nputs $m",
+];
+
+#[test]
+fn backtracking_constructs_match_tclsh() {
+    compare_all(BACKTRACKING, "backtracking");
+}
+
 /// Where an empty match leaves the cursor, and whether the end of the subject
 /// is a position that matches.
 ///
@@ -564,15 +598,11 @@ fn character_offsets_match_tclsh() {
 /// What this frontend will not approximate must say so, and must say it at the
 /// point of use rather than matching something wrong.
 ///
-/// These are the constructs a finite-automaton engine cannot express. tclsh
-/// accepts all of them, so there is no reference wording to copy — what is
-/// pinned here is that the refusal happens and names the construct.
+/// tclsh accepts all of these, so there is no reference wording to copy — what
+/// is pinned here is that the refusal happens and names the construct.
 #[test]
 fn unsupported_are_constructs_are_refused() {
     for (program, expected) in [
-        ("puts [regexp {(a+)\\1} aaaa]", "back-reference"),
-        ("puts [regexp {a(?=b)} ab]", "look-ahead"),
-        ("puts [regexp {a(?!b)} ac]", "look-ahead"),
         // `(?b)` selects POSIX BRE, a grammar of its own (`brenext`).
         ("puts [regexp {(?b)a\\{2\\}} aa]", "BRE syntax"),
         // Not a construct but an option, and refused for a related reason: its

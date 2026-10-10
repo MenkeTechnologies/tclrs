@@ -22,9 +22,11 @@
 //!   `REG_NLSTOP`'s definition and not what `(?-s)` does.
 //!
 //! `(?e)` selects POSIX ERE, which is this grammar with the ARE extensions
-//! off (`REG_ADVF`). Constructs a finite-automaton matcher cannot express are
-//! refused by name: back-references and look-ahead. So is the BRE syntax
-//! `(?b)` selects, a separate grammar (`brenext`) this module does not carry.
+//! off (`REG_ADVF`). Back-references and look-ahead, which a finite-automaton
+//! matcher cannot express, are written into the pattern as `\k{N}`, `(?=` and
+//! `(?!` and flagged for the backtracking matcher in [`crate::are_bt`]. The BRE
+//! syntax `(?b)` selects, a separate grammar (`brenext`) this module does not
+//! carry, is refused by name.
 
 use crate::regc_locale as loc;
 
@@ -59,10 +61,6 @@ const DUPMAX: u32 = 255;
 
 fn reg(msg: &str) -> String {
     format!("cannot compile regular expression pattern: {msg}")
-}
-
-fn refusal(what: &str) -> String {
-    format!("{what} is not supported yet: the regular expression engine here matches in linear time, which back-references and look-around cannot")
 }
 
 /// A `regex` literal for one character, safe inside and outside a class.
@@ -271,6 +269,13 @@ struct Lexer {
     /// Whether the pattern looks behind the place a search starts: see
     /// [`Translated::left_context`].
     left: bool,
+    /// Whether the pattern holds a back-reference or look-ahead, which only the
+    /// backtracking engine ([`crate::are_bt`]) can match.
+    engine: bool,
+    /// The number of the capturing group the atom just read is, which a `{0}`
+    /// quantifier then takes back: `regcomp` frees the atom, so a back-reference
+    /// to it is `REG_ESUBREG`. Groups nested inside it stay referable.
+    atom_group: Option<u32>,
     /// Whether the pattern holds a `\A` and whether it holds a `^` anchor, which
     /// together decide [`Translated::start_anchor`].
     anchor_a: bool,
@@ -575,7 +580,9 @@ impl Lexer {
                     return Ok(false);
                 }
                 let m = self.bound_number()?;
+                let mut comma = false;
                 let n = if self.bound_token()? == Some(',') {
+                    comma = true;
                     self.i += 1;
                     if self.bound_token()?.is_some_and(|c| c.is_ascii_digit()) {
                         Some(self.bound_number()?)
@@ -588,12 +595,16 @@ impl Lexer {
                 if n.is_some_and(|n| m > n) {
                     return Err(reg(BADBR));
                 }
+                if n == Some(0) {
+                    let taken = self.atom_group;
+                    self.closed.retain(|g| Some(*g) != taken);
+                }
                 if self.bound_token()? != Some('}') {
                     return Err(reg(BADBR));
                 }
                 self.i += 1;
                 match n {
-                    Some(n) if n == m => self.out.push_str(&format!("{{{m}}}")),
+                    Some(n) if n == m && !comma => self.out.push_str(&format!("{{{m}}}")),
                     Some(n) => self.out.push_str(&format!("{{{m},{n}}}")),
                     None => self.out.push_str(&format!("{{{m},}}")),
                 }
@@ -640,8 +651,9 @@ impl Lexer {
     /// The pattern body, in ARE context.
     fn regex(&mut self) -> Result<(), String> {
         let mut last = Last::Nothing;
-        // The capturing number of each open group, `None` for a non-capturing one.
-        let mut open: Vec<Option<u32>> = Vec::new();
+        // Each open group: its capturing number, `None` for a non-capturing one,
+        // and whether it is a look-ahead (which a quantifier may not follow).
+        let mut open: Vec<(Option<u32>, bool)> = Vec::new();
         loop {
             if last == Last::Atom && self.quantifier()? {
                 last = Last::Nothing;
@@ -652,6 +664,7 @@ impl Lexer {
                 break;
             };
             self.i += 1;
+            self.atom_group = None;
             last = match c {
                 '*' | '+' | '?' => return Err(reg(BADRPT)),
                 '{' if self.bound_follows() => return Err(reg(BADRPT)),
@@ -676,7 +689,7 @@ impl Lexer {
                         self.i += 1;
                         match k {
                             Some(':') => {
-                                open.push(None);
+                                open.push((None, false));
                                 self.out.push_str("(?:");
                             }
                             Some('#') => {
@@ -689,12 +702,24 @@ impl Lexer {
                                 // A comment is no token: the previous one stands.
                                 continue;
                             }
-                            Some('=' | '!') => return Err(refusal("look-ahead ((?= ) or (?! ))")),
+                            Some(k @ ('=' | '!')) => {
+                                self.engine = true;
+                                open.push((None, true));
+                                self.out.push_str(if k == '=' { "(?=" } else { "(?!" });
+                            }
                             _ => return Err(reg(BADRPT)),
                         }
+                    } else if open.last().is_some_and(|g| g.1) {
+                        // `regcomp` hands a look-ahead's own parse the look-ahead's token
+                        // type, and a parenthesis reads that type, not its own, to decide
+                        // whether it captures: so the groups written directly inside a
+                        // look-ahead do not, while a group nested in one of them does,
+                        // and is numbered though it can never take part in a match.
+                        open.push((None, false));
+                        self.out.push_str("(?:");
                     } else {
                         self.nsub += 1;
-                        open.push(Some(self.nsub));
+                        open.push((Some(self.nsub), false));
                         self.out.push('(');
                     }
                     Last::Nothing
@@ -709,11 +734,18 @@ impl Lexer {
                         }
                         return Err(reg(EPAREN));
                     };
+                    let (group, look) = group;
+                    self.atom_group = group;
                     if let Some(n) = group {
                         self.closed.push(n);
                     }
                     self.out.push(')');
-                    Last::Atom
+                    if look {
+                        // A constraint, not an atom: a quantifier after it is `REG_BADRPT`.
+                        Last::Nothing
+                    } else {
+                        Last::Atom
+                    }
                 }
                 '[' => {
                     let rest: String = self.s[self.i..].iter().take(6).collect();
@@ -755,7 +787,16 @@ impl Lexer {
                         if !self.closed.contains(&n) {
                             return Err(reg(ESUBREG));
                         }
-                        return Err(refusal("a back-reference (\\1 … \\9)"));
+                        // "Lookahead constraints may not contain back references": read
+                        // as `regcomp` reads it, which looks at the token type of the
+                        // parse the atom is in, so only a back-reference written directly
+                        // inside the look-ahead is refused, at the back-reference.
+                        if open.last().is_some_and(|g| g.1) {
+                            return Err(reg(ESUBREG));
+                        }
+                        self.engine = true;
+                        self.out.push_str(&format!("\\k{{{n}}}"));
+                        Last::Atom
                     }
                 },
                 other => {
@@ -809,6 +850,16 @@ pub(crate) struct Translated {
     /// but `\A` still matches there. With no `^` to wrongly accept, searching the
     /// rest of the subject as a string of its own is exactly that.
     pub start_anchor: bool,
+    /// The pattern holds a back-reference or a look-ahead, which the `regex`
+    /// crate cannot express: the pattern string is then not a `regex` pattern
+    /// at all but input to [`crate::are_bt`], and holds `\k{N}`, `(?=` and `(?!`
+    /// where `regex` would refuse.
+    pub engine: bool,
+    /// `REG_ICASE` after embedded options, which a back-reference compares by.
+    pub icase: bool,
+    /// How many capturing groups the pattern has. The `regex` crate drops a
+    /// group it can prove never takes part (`(x){0}`), which Tcl still counts.
+    pub groups: usize,
 }
 
 pub(crate) fn translate(are: &str, flags: Flags) -> Result<Translated, String> {
@@ -899,6 +950,9 @@ pub(crate) fn translate(are: &str, flags: Flags) -> Result<Translated, String> {
             pattern: out,
             left_context: false,
             start_anchor: false,
+            engine: false,
+            icase: f.icase,
+            groups: 0,
         });
     }
     let mut lx = Lexer {
@@ -910,6 +964,8 @@ pub(crate) fn translate(are: &str, flags: Flags) -> Result<Translated, String> {
         closed: Vec::new(),
         out,
         left: false,
+        engine: false,
+        atom_group: None,
         anchor_a: false,
         caret: false,
     };
@@ -918,6 +974,9 @@ pub(crate) fn translate(are: &str, flags: Flags) -> Result<Translated, String> {
         pattern: lx.out,
         left_context: lx.left,
         start_anchor: lx.anchor_a && !lx.caret,
+        engine: lx.engine,
+        icase: f.icase,
+        groups: lx.nsub as usize,
     })
 }
 

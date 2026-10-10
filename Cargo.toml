@@ -135,11 +135,10 @@ lsp-types = "0.97"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # `regexp` and `regsub`. Tcl matches with Henry Spencer's ARE engine, which
-# backtracks; this one is a finite automaton and cannot express the two
-# constructs that need backtracking — back-references and look-ahead — so
-# `src/regexp.rs` refuses those by name rather than approximating them. The
-# alternative was porting Spencer's matcher, which is the kind of code that is
-# wrong in ways a test suite does not reach.
+# backtracks and picks the longest match; this one is a finite automaton that
+# picks the first. `src/regexp.rs` runs a pattern on it only where the two
+# agree, and hands back-references, look-ahead and every shape where they could
+# differ to the backtracking matcher in `src/are_bt.rs`.
 regex = "1.13.1"
 # Tcl defines its character classes over Unicode general categories (the
 # ALPHA_BITS / PUNCT_BITS / GRAPH_BITS unions in tclUtf.c), not over the derived

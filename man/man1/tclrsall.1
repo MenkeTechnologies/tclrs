@@ -151,9 +151,13 @@ ensemble (over a value).
 .TP
 .B Regular expressions
 .BR regexp ", " regsub .
-The engine is a finite automaton, so back-references, look-ahead and the
+Patterns whose answer the
+.B regex
+crate gives correctly run on it; back-references, look-ahead and patterns whose longest-match or sub-match choice could differ run on a backtracking matcher. The
 .B (?b)
-BRE syntax are refused by name rather than approximated;
+BRE syntax and
+.B regexp \-about
+are refused by name rather than approximated;
 .B switch \-regexp
 and
 .B lsearch \-regexp
