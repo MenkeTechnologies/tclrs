@@ -1185,6 +1185,17 @@ the measurement behind it.
   rest of tclsh's error dictionary is a trace of the *commands* that were
   executing, which this frontend does not record, and `return -errorinfo` is
   refused. Needs a per-command record in the VM.
+- **`tailcall` inside `catch` or `try` runs the call at once.** tclsh answers
+  the region with code `return` and carries the tail call out to the end of the
+  procedure, where it replaces the activation; here the callee runs where the
+  `tailcall` is written and its value is returned from the procedure through
+  the region as a `return` would be.
+- **Unbounded procedure recursion.** tclsh stops a runaway recursion at 1000
+  nested levels with `too many nested evaluations (infinite loop?)`. A call to
+  a procedure of the running chunk is an `Op::Call`, which pushes a frame and
+  runs no extension op, so there is no place the count could be taken without
+  giving up the JIT's whole-chunk eligibility for every recursive procedure; the
+  recursion runs until memory ends.
 - **`info script` answers the empty string unless a host sets it.**
  The library's
   entry point is handed a string, not a file, which is the case tclsh answers
@@ -2101,7 +2112,7 @@ than an unexamined one. Measured against the 2000-program run above.
   `VM::slot_names_at`, which is what the projection uses. See the refusal list
   above.
 - **Commands tclrs does not have.** `interp`, `trace`, `socket`,
-  `timerate`, `chan`, `const`, `tailcall`, `fcopy`, `fileevent`,
+  `timerate`, `chan`, `const`, `fcopy`, `fileevent`,
   `fblocked` and `zlib` are outside the command set entirely, so a generated use
   of one is `invalid command name` and says nothing about parity. `{*}`
   expansion, `namespace`, `rename`, `source`, `encoding`, `binary` and file I/O

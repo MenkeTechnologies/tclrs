@@ -40,10 +40,17 @@ pub mod ext {
     pub const TIME: u16 = BASE + 1;
     /// `[arg …]` → what the pipeline wrote to standard output.
     pub const EXEC: u16 = BASE + 2;
+    /// `[name, arg …]` → the command's value, having replaced the running
+    /// procedure activation with the call where the callee is a procedure of
+    /// the same chunk.
+    pub const TAILCALL: u16 = BASE + 3;
+    /// [`TAILCALL`] from inside a `catch` or `try` region: the call is made from
+    /// the activation, which stays.
+    pub const TAILCALL_CALL: u16 = BASE + 4;
 }
 
 /// The command names this module claims.
-pub const COMMANDS: &[&str] = &["exec", "exit", "time"];
+pub const COMMANDS: &[&str] = &["exec", "exit", "tailcall", "time"];
 
 /// Set in `time`'s inline operand when the command was written inside a
 /// procedure body, so the script runs against that body's frame.
@@ -88,6 +95,7 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
             c.emit(Op::Extended(ext::TIME, operand), 1 - pushed);
             Ok(())
         }
+        "tailcall" => compile_tailcall(c, args),
         _ => {
             let Ok(argc) = u8::try_from(args.len()) else {
                 return c.error("too many arguments for \"exec\"");
@@ -133,6 +141,8 @@ pub(crate) fn run(
             terminate(out, code)
         }
         ext::TIME => time_op(interp, vm, arg),
+        ext::TAILCALL => crate::procs::tailcall_op(interp, vm, arg, true),
+        ext::TAILCALL_CALL => crate::procs::tailcall_op(interp, vm, arg, false),
         _ => {
             let mut words = Vec::with_capacity(arg as usize);
             for _ in 0..arg {
@@ -155,6 +165,7 @@ fn overridden(interp: &Shared, vm: &mut VM, id: u16, arg: u8) -> Option<Result<(
     let name = match id {
         ext::EXIT => "exit",
         ext::TIME => "time",
+        ext::TAILCALL | ext::TAILCALL_CALL => "tailcall",
         _ => "exec",
     };
     crate::procs::defined_proc(interp, name)?;
@@ -837,4 +848,57 @@ fn write_channel(name: &str, text: &str, out: &Output) -> Result<(), TclError> {
             crate::cmd_channel::write_id(id, text, Some(out)).map_err(TclError::plain)
         }
     }
+}
+
+// ── tailcall ─────────────────────────────────────────────────────────────
+
+/// `tailcall command ?arg …?` (`TclNRTailcallObjCmd`).
+///
+/// Only a procedure body (or a lambda's, which is compiled as one) has an
+/// activation to replace. Elsewhere it raises when it runs, as tclsh does.
+fn compile_tailcall(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
+    if c.scope.is_none() {
+        return Err(c.deferrable_err("tailcall can only be called from a proc, lambda or method"));
+    }
+    // No command: nothing to call, and the procedure carries on.
+    if args.is_empty() {
+        c.push_empty();
+        return Ok(());
+    }
+    let Ok(argc) = u8::try_from(args.len() + 1) else {
+        return c.error("too many arguments for \"tailcall\"");
+    };
+    // The body's `global` declarations ride in front, for a builtin that has to
+    // run against the activation (`TAILCALL_CALL`).
+    let declared = c.declared_globals().unwrap_or_default();
+    c.push_str(&declared);
+    // The name is resolved where the call is written, so an unqualified name
+    // inside a namespace reaches that namespace's procedure.
+    match args[0].as_literal().and_then(|n| c.ns_resolves(n)) {
+        Some(key) => c.push_str(&key),
+        None => c.word(&args[0])?,
+    }
+    for w in &args[1..] {
+        c.word(w)?;
+    }
+    // Inside a `catch` or `try` the unwind has to go through the region's
+    // handler, which a replaced frame would skip: the call is made from the
+    // activation and its value raised as the activation's `return`.
+    if c.catch_depth > 0 {
+        c.emit(Op::Extended(ext::TAILCALL_CALL, argc), 1 - i32::from(argc));
+        c.emit(Op::LoadInt(0), 1);
+        c.emit(Op::LoadInt(1), 1);
+        c.emit(Op::Extended(crate::compiler::ext::RAISE, 0), -3);
+        c.push_empty();
+        return Ok(());
+    }
+    // Every loop this call leaves has a region open at run time, and its
+    // `LOOP_LEAVE` is never reached — the same bookkeeping `return` does.
+    for _ in 0..c.loops.len() {
+        c.emit(Op::Extended(crate::compiler::ext::LOOP_LEAVE, 0), 0);
+    }
+    c.emit(Op::Extended(ext::TAILCALL, argc), 1 - i32::from(argc));
+    c.emit(Op::ReturnValue, -1);
+    c.push_empty();
+    Ok(())
 }

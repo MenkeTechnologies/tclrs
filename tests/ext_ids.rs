@@ -196,6 +196,8 @@ fn blocks() -> Vec<Block> {
                 ("EXIT", tclrs::cmd_process::ext::EXIT),
                 ("TIME", tclrs::cmd_process::ext::TIME),
                 ("EXEC", tclrs::cmd_process::ext::EXEC),
+                ("TAILCALL", tclrs::cmd_process::ext::TAILCALL),
+                ("TAILCALL_CALL", tclrs::cmd_process::ext::TAILCALL_CALL),
             ],
         ),
         (

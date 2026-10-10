@@ -438,6 +438,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "Run the body of the first pattern that matches, `-exact`, `-glob` or `-regexp`. With `-regexp`, `-matchvar` and `-indexvar` name variables the matched text and its index pairs are written to.",
     },
     Entry {
+        name: "tailcall",
+        synopsis: "tailcall command ?arg ...?",
+        summary: "Replace the running procedure or lambda activation with a call to the command, which runs at the caller's level and whose value is the procedure's. A procedure of the same chunk is entered with the activation's own return address, so a tail-recursive loop uses constant space.",
+    },
+    Entry {
         name: "tcl_findLibrary",
         synopsis: "tcl_findLibrary basename version patch initScript enVarName varName",
         summary: "Tcl's own library-directory search, ported from `library/auto.tcl`: find the initialisation script, set the library variable and source it.",

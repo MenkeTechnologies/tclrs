@@ -1163,3 +1163,51 @@ pub(crate) fn scope_for(sig: &Signature) -> Scope {
     scope.next_slot = sig.params.len() as u16;
     scope
 }
+
+/// [`crate::cmd_process::ext::TAILCALL`]: `[declared, name, arg …]`, the command's
+/// words as they were substituted, led by the body's `global` declarations.
+///
+/// The running activation is replaced by the call: its frame and everything it
+/// left on the stack are dropped, the callee is entered with the activation's own
+/// return address — so a tail-recursive loop runs in constant space — and a
+/// builtin or a command of another chunk runs at the caller's level, which is
+/// where `TclNRTailcallObjCmd` evaluates it (`tailcall set x 5` sets the
+/// caller's `x`). `replace` is false inside a `catch` or `try` region of the
+/// body, whose handler the dropped frame would skip: the call is then made from
+/// the activation.
+pub(crate) fn tailcall_op(
+    interp: &Shared,
+    vm: &mut VM,
+    argc: u8,
+    replace: bool,
+) -> Result<(), TclError> {
+    let mut words = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        words.push(vm.pop());
+    }
+    words.reverse();
+    let declared = to_tcl_string(&words[0]);
+    let words = &words[1..];
+    let name = to_tcl_string(&words[0]);
+    let args = &words[1..];
+    let defined = defined_proc(interp, &name);
+    let mut declared = Some(declared.as_str());
+    if replace && vm.frames.last().is_some_and(|f| f.entry_ip.is_some()) {
+        let frame = vm.frames.pop().expect("an activation frame");
+        vm.stack.truncate(frame.stack_base);
+        vm.ip = frame.return_ip;
+        if let Some(p) = &defined {
+            if chunk_key(&p.chunk) == chunk_key(&vm.chunk) {
+                return enter(vm, &name, p, args).map_err(TclError::plain);
+            }
+        }
+        // The caller's own declarations are not known here; its variables are
+        // reached through its frame, and a `global` it made is not visible to a
+        // builtin tail-called from the callee.
+        declared = Some("");
+    }
+    if defined.is_none() && crate::names::is_command(&name) {
+        return as_script(interp, vm, words, declared);
+    }
+    dispatch(interp, vm, &name, args, 0, defined)
+}
