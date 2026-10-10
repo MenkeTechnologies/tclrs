@@ -17,9 +17,8 @@
 
 **Tcl in Rust** — a Tcl frontend that parses Tcl source and lowers it to
 [`fusevm`](https://github.com/MenkeTechnologies/fusevm) bytecode, the shared
-execution engine behind `zshrs`, `stryke`, `awkrs`, `vimlrs`, `elisprs`,
-`rubylang`, `pythonrs`, `phplang`, `node-js`, `rlang`, `go-rs`, and the JVM
-frontends. No bespoke VM. No interpreter loop and no code generator in this
+execution engine behind the other fusevm language frontends and hosts. No
+bespoke VM. No interpreter loop and no code generator in this
 crate — those belong to the VM.
 
 The reference implementation is **tclsh 9.0.4**. It is the specification:
@@ -53,7 +52,7 @@ Tcl 9 evaluates through a bytecode engine wrapped around a dual-representation
 object model, re-deriving string representations as values cross command
 boundaries. tclrs takes a different path: it parses a script once — resolving
 every substitution the grammar permits at parse time — and lowers each command
-to `fusevm` bytecode, the same bytecode sixteen other language frontends emit.
+to `fusevm` bytecode, the same bytecode the other fusevm language frontends emit.
 
 - **Compiled, not re-parsed** — a braced body is fully known at parse time, so
   `if` / `while` / `for` bodies and braced `expr` expressions compile once into
@@ -112,7 +111,7 @@ Requires a stable Rust toolchain, and a C compiler for `--aot` to link with. A
 script containing a [`rust { ... }`](#inline-rust) block needs `rustc` at *run*
 time as well, since the block is compiled when the script is.
 
-`cargo build` produces three artifacts: the `tclrs` binary, the `tclrs` rlib,
+`cargo build` produces the `tclrs` and `gen-docs` binaries, the `tclrs` rlib,
 and `libtclrs.a` — the staticlib an ahead-of-time object links against.
 
 The differential tests invoke `tclsh` (or `tclsh9.0` / `tclsh8.6`) from `PATH`
@@ -184,7 +183,7 @@ A terminal gets a [`reedline`](https://crates.io/crates/reedline) line editor.
 A pipe does not: `tclrs < script` is still the silent loop, byte for byte.
 
 ```text
-─( 14:52:07 )──< command 3 >──────────────────────{ tclrs 0.3.0 }─
+─( 14:52:07 )──< command 3 >──────────────────────{ tclrs 0.4.12 }─
 tclrs❯ proc double {x} {
 ····❯   expr {$x * 2}
 ····❯ }
@@ -392,13 +391,13 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Procedures | `proc`, `return` (with `-code` — `ok`, `error`, `return`, `break`, `continue` or any integer — and `-level`), `apply` |
 | Errors | `catch` (with a result variable and an options variable), `try` (`on`, `trap`, `finally`), `error`, `throw`, `return -options`; `-errorcode` for the errors builtins raise, where tclsh's message template determines it; Tcl return codes across every boundary — a `break` or `continue` out of an `eval`, `uplevel` or `source` script reaches the loop, and one out of a procedure reaches its caller |
 | Coroutines | `coroutine`, `yield`, `yieldto`, `info coroutine` |
-| Namespaces | `namespace` — `eval`, `current`, `qualifiers`, `tail`, `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`, `import`, `forget`, `origin`, `which`, `ensemble exists` / `create` / `configure`, and calls through the ensemble command (`-map`, `-subcommands`, `-prefixes`); `variable`; `rename` |
+| Namespaces | `namespace` — `eval`, `current`, `qualifiers`, `tail`, `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`, `import`, `forget`, `origin`, `which`, `upvar`, `ensemble exists` / `create` / `configure`, and calls through the ensemble command (`-map`, `-subcommands`, `-prefixes`); `variable`; `rename` |
 | The event loop | `after` — `ms`, `ms script`, `idle script`, `cancel`, `info`; `update`, `update idletasks`; `vwait` |
 | Scope | `uplevel`, `upvar`, `apply` |
 | Introspection | `info` — `args`, `body`, `commands`, `complete`, `coroutine`, `default`, `exists`, `functions`, `globals`, `hostname`, `level`, `library`, `locals`, `nameofexecutable`, `patchlevel`, `procs`, `script`, `sharedlibextension`, `tclversion`, `vars` |
 | Packages | `package` — `files`, `forget`, `ifneeded`, `names`, `prefer`, `present`, `provide`, `require`, `unknown`, `vcompare`, `versions`, `vsatisfies` |
 | Run-time evaluation | `eval`, `subst`, `source`, `tcl_findLibrary` |
-| Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat` |
+| Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat`, `lassign`, `lset`, `lpop`, `ledit`, `lrepeat`, `lremove`, `lseq`, `lmap` |
 | Associative data | `array` — `exists`, `get`, `names` (`-exact`, `-glob`, `-regexp`), `set`, `size`, `unset`; `parray` (the library procedure, with an optional pattern); `dict` — `append`, `create`, `exists`, `filter` (`key`, `value` and `script`), `for`, `get`, `getdef`, `getwithdefault`, `incr`, `keys`, `lappend`, `map`, `merge`, `remove`, `replace`, `set`, `size`, `unset`, `update`, `values`, `with` |
 | Regular expressions | `regexp`, `regsub` — with `-nocase`, `-all`, `-inline`, `-indices`, `-line`, `-lineanchor`, `-linestop`, `-expanded`, `-start`, `regsub -command` and `--`; `switch -regexp` (with `-matchvar` and `-indexvar`), `lsearch -regexp` and `array names -regexp` take one too |
 | Strings | `format`, `scan`, and the `string` ensemble — `cat`, `compare`, `equal`, `first`, `last`, `index`, `insert`, `is`, `length`, `map`, `match`, `range`, `repeat`, `replace`, `reverse`, `tolower`, `totitle`, `toupper`, `trim`, `trimleft`, `trimright`, `wordend`, `wordstart` |
@@ -407,7 +406,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Time | `clock` — `seconds`, `milliseconds`, `microseconds`, `clicks`, `format`, `scan` (with `-format`), `add`; `-gmt`, `-timezone` (a numeric offset or any zone with a `TZif` file) and the root locale |
 | Encodings | `encoding` — `convertfrom`, `convertto` (with `-profile tcl8` / `strict` / `replace` and `-failindex`), `dirs`, `names`, `profiles`, `system`, `user`; see [Encodings](#encodings) for which |
 | Binary data | `binary` — `format` and `scan` over every field type (`a`, `A`, `C`, `b`, `B`, `h`, `H`, `c`, `s`, `S`, `t`, `i`, `I`, `n`, `w`, `W`, `m`, `f`, `r`, `R`, `d`, `q`, `Q`, `x`, `X`, `@`) with the `u` flag and `*` counts; `encode` and `decode` for `base64`, `hex` and `uuencode`, with `-maxlen`, `-wrapchar` and `-strict` |
-| Filesystem | `file` — `atime`, `copy`, `delete`, `dirname`, `executable`, `exists`, `extension`, `home`, `isdirectory`, `isfile`, `join`, `mkdir`, `mtime`, `nativename`, `normalize`, `owned`, `pathtype`, `readable`, `readlink`, `rename`, `rootname`, `separator`, `size`, `split`, `tail`, `tildeexpand`, `type`, `writable`; `glob` with `-directory`, `-join`, `-nocomplain`, `-path`, `-tails` and `-types`; `pwd`; `cd` |
+| Filesystem | `file` — `atime`, `copy`, `delete`, `dirname`, `executable`, `exists`, `extension`, `home`, `isdirectory`, `isfile`, `join`, `mkdir`, `mtime`, `nativename`, `normalize`, `owned`, `pathtype`, `readable`, `readlink`, `rename`, `rootname`, `separator`, `size`, `split`, `stat`, `lstat`, `tail`, `tildeexpand`, `type`, `writable`; `glob` with `-directory`, `-join`, `-nocomplain`, `-path`, `-tails` and `-types`; `pwd`; `cd` |
 
 Command substitution works on any of them.
 
@@ -825,7 +824,6 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | A `clock` instant before the Gregorian changeover, where the calendar depends on the locale | `clock: dates before the Gregorian changeover of 1752-09-14 are not supported yet` |
 | `file attributes`, `link`, `channels`, `system`, `tempfile`, `tempdir`, `volumes` | `file link is not supported yet: it needs an interface this frontend has not built` |
 | A computed `coroutine`, `yield` or `yieldto` word, and a computed name after `global` or `variable` — the commands whose effect a script run as a list cannot have on the enclosing frame. Every other built-in whose subcommand, body, condition or variable list is computed runs as the list its substituted words make | `coroutine name must be a literal in this phase` |
-| An array variable in a `foreach` variable list | `array variables are not supported yet` |
 | `array startsearch` on an array (so no search is ever active for `anymore`, `nextelement` or `donesearch`) | `array startsearch is not supported yet` |
 | `dict info`, which reports the hash-table statistics of the *object* rather than of the value — two dictionaries with the same string answer differently when one of them shrank, and a third answer again once a list holds one, so it needs a dict that retains its table *and* a count of what holds it, [see BUGS.md](BUGS.md); `dict update` or `dict with` on an array element; `dict update`'s variable names when they are not literal | `dict info is not supported yet` |
 | `string wordend` / `wordstart` past ASCII | `string wordend/wordstart: characters beyond ASCII need Unicode category tables, which are not built yet` |
@@ -1246,7 +1244,7 @@ and globals to registers, runs string / list / hash ops through a boxed shim,
 and turns anything it has no lowering for into a **deopt point** that hands the
 rest of the run to the interpreter. Every operation this frontend implements as
 an extension op is such a point: `/`, `%`, `**`, `in` / `ni`, `puts`, the
-always-string comparisons, `eval`, all thirteen list commands, `foreach`, every
+always-string comparisons, `eval`, every list command, `foreach`, every
 `array` and `dict` operation, and the whole `string` ensemble.
 
 `expr` is deliberately not on that list. Every `expr` used to end in an op that
@@ -1569,18 +1567,13 @@ After it, 29229 of 48324 passed — 60.5% — with 21100 skipped and 2686 of tho
 for a missing command. So the denominator grew by 16,800 *and* the share rose
 20.1 points; `encoding` no longer appears in the blocking table at all.
 
-Merging the published line's `info`, `uplevel` and `apply` in moved it again, and
-in both directions at once: 29335 of 48201 pass now — 60.9%, 106 more cases and
-229 fewer failures — while the skip column grew by 123, to 21223. That is the
-same effect read from the other end. A case is attributed to the *first* command
-tclrs refused, so a body that used to fail on `info body` or on a computed
-`uplevel` level now runs further into itself and reaches whatever it needs next:
-`oo::class` went from blocking 171 cases to 259, `trace` from 259 to 264. No new
-command appeared in the blocking table; the largest entry is still `binary`, at
-690 cases. The skip breakdown is 2809 / 13663 / 4751 / 0 (missing command, unmet
-constraint, a command plain tclsh has not got, no reference outcome) — the two
-middle rows are properties of the suite and this machine, and neither has ever
-moved.
+Merging `info`, `uplevel` and `apply` in moved it again, and in both directions
+at once: 29335 of 48201 passed at that point — 60.9%, 106 more cases and 229
+fewer failures — while the skip column grew by 123. That is the same effect read
+from the other end. A case is attributed to the *first* command tclrs refused, so
+a body that used to fail on `info body` or on a computed `uplevel` level ran
+further into itself and reached whatever it needed next. The current
+per-command blocking table is in [`conformance/REPORT.md`](conformance/REPORT.md).
 
 ### The Tk suite
 
