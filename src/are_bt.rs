@@ -881,6 +881,13 @@ enum Visited {
 }
 
 impl Visited {
+    fn sparse(width: usize) -> Visited {
+        Visited::Sparse {
+            seen: HashSet::new(),
+            width,
+        }
+    }
+
     fn new(insts: usize, width: usize) -> Visited {
         if insts.saturating_mul(width) <= DENSE_BITS {
             Visited::Dense {
@@ -1150,10 +1157,11 @@ impl Engine {
         from: usize,
         caps: &[usize],
     ) -> Result<Vec<usize>, Overflow> {
-        let n = s.text.len();
-        let mut seen = vec![false; n + 1];
+        // Sparse: a sub-program is asked about at many positions of a subject,
+        // and a table the size of the subject per question makes that quadratic.
+        let mut seen: Vec<usize> = Vec::new();
         let mut scratch = caps.to_vec();
-        let mut visited = (!self.backref).then(|| Visited::new(prog.len(), n + 1));
+        let mut visited = (!self.backref).then(|| Visited::sparse(s.text.len() + 1));
         self.explore(
             prog,
             s,
@@ -1161,15 +1169,13 @@ impl Engine {
             &mut scratch,
             visited.as_mut(),
             &mut |end, _| {
-                seen[end] = true;
+                seen.push(end);
                 false
             },
         )?;
-        Ok(seen
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &b)| b.then_some(i))
-            .collect())
+        seen.sort_unstable();
+        seen.dedup();
+        Ok(seen)
     }
 
     /// The match of `text` an ARE prescribes: leftmost, then by preference.
@@ -1183,10 +1189,10 @@ impl Engine {
         let mut visited = (!self.backref).then(|| Visited::new(self.root.len(), n + 1));
         for start in 0..=n {
             let mut caps = vec![NONE; self.slots];
-            let mut reached = vec![false; n + 1];
+            let mut reached: Vec<usize> = Vec::new();
             let overall = self.overall;
             let mut note = |end: usize, _: &[usize]| {
-                reached[end] = true;
+                reached.push(end);
                 overall == Pref::None
             };
             self.explore(
@@ -1203,7 +1209,9 @@ impl Engine {
             // takes the first that dissects, which with a back-reference is not
             // always the first that matches: a dissection never reconsiders the
             // choice it made inside a part once the rest has failed.
-            let mut ends: Vec<usize> = (0..=n).filter(|e| reached[*e]).collect();
+            let mut ends = reached;
+            ends.sort_unstable();
+            ends.dedup();
             if overall != Pref::Shortest {
                 ends.reverse();
             }
