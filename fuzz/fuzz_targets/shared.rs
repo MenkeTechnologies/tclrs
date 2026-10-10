@@ -237,6 +237,56 @@ const SKELETONS: &[&str] = &[
     "eval {set a @}",
     "eval {p1 @}",
     "info coroutine",
+    // Pattern matching, scanning and substitution: the payload is a regular
+    // expression, a scan format or a template, which is where a hostile string
+    // reaches a hand-written matcher.
+    "regexp @ @",
+    "regexp -inline -all @ @",
+    "regexp -indices @ @ m",
+    "regsub @ @ @",
+    "regsub -all -nocase @ @ @",
+    "regsub -line -all @ @ @",
+    "scan @ @",
+    "scan @ @ a b",
+    "subst @",
+    "subst -nocommands -novariables @",
+    "eval {subst -nobackslashes @}",
+    // The list commands that rewrite a variable in place, and the generators.
+    "lassign @ x y",
+    "lmap x @ {string length $x}",
+    "lseq @ @",
+    "lseq @ to @ by @",
+    "lseq @ count @",
+    "lrepeat @ @",
+    "lset b @ @",
+    "lpop b @",
+    "lremove $b @ @",
+    "ledit b @ @ @",
+    // Exceptions, lambdas and frames.
+    "try {error @} on error {m o} {set a $m} finally {set i 0}",
+    "try {throw @ @} trap {} {m} {set a $m}",
+    "try {return -code @ x} on error {m} {set a $m}",
+    "throw @ @",
+    "apply {{x} {string length $x}} @",
+    "apply @ @",
+    "apply {{x args} {list $x $args}} @ @ @",
+    "uplevel @ {set a 1}",
+    "uplevel #0 @",
+    "upvar @ a z",
+    "eval {proc p2 {} {uplevel @ {set a 1}}; p2}",
+    // Binary data.
+    "binary format @ @",
+    "binary format @ @ @",
+    "binary scan @ @ v",
+    "binary encode hex @",
+    "binary decode hex @",
+    "binary encode base64 -maxlen @ @",
+    "binary decode base64 @",
+    // Namespace name arithmetic and queries.
+    "namespace qualifiers @",
+    "namespace tail @",
+    "namespace exists @",
+    "namespace parent @",
 ];
 
 /// The fuzzer's bytes as one Tcl word.

@@ -46,10 +46,14 @@
 # * **The corners are generated, not avoided** — at `RARE_SHAPE_RATE`. See the
 #   comment there.
 #
-# Out of reach, and correctly so: `{*}` expansion, `regexp`, `upvar`,
-# `namespace` and file I/O are outside tclrs's command set entirely, so
-# generating them would produce nothing but `invalid command name` and would say
-# nothing about parity. They belong here on the day the commands exist.
+# `misc_stmt` reaches the commands the statement generators above do not:
+# `regexp`, `regsub`, `scan`, `subst`, `try`, `throw`, `apply`, `uplevel`,
+# `upvar`, `binary`, the list commands that rewrite a variable, and `rename`.
+#
+# Out of reach, and correctly so: `interp`, `trace`, `exec`, `socket` and file
+# I/O are outside tclrs's command set entirely, so generating them would
+# produce nothing but `invalid command name` and would say nothing about
+# parity. They belong here on the day the commands exist.
 
 # ── PRNG ────────────────────────────────────────────────────────────────────
 
@@ -763,11 +767,14 @@ proc leaf_stmt {ctx} {
         }
         return "return [word 1]"
     }
-    if {$r < 94} {
+    if {$r < 92} {
         return "error [value]"
     }
-    if {$r < 99} {
+    if {$r < 94} {
         return "puts \[string index [value] [rpick $POOL_INDEX]\]"
+    }
+    if {$r < 99} {
+        return [misc_stmt]
     }
     # Raw text with no guarantee of being well formed at all: the parser's own
     # divergences are as much a parity surface as the commands'. Both engines
@@ -1331,6 +1338,199 @@ proc call_stmt {} {
         lappend args [word 1]
     }
     return "puts \[$name [join $args { }]\]"
+}
+
+# ── commands the statement generators above did not reach ───────────────────
+#
+# `regexp`, `regsub`, `scan`, `subst`, `try`, `throw`, `apply`, `uplevel`,
+# `upvar`, `binary`, `lassign`, `lmap`, `lpop`, `lremove`, `lrepeat`, `lseq`,
+# `lset`, `ledit`, `rename` and `namespace` all exist and each has a
+# differential test of its own, but a hand-written test pins the arguments its
+# author thought of. These are drawn from pools instead, so an option
+# combination or an argument shape nobody wrote down is still reached.
+#
+# Every statement is one line, and a statement that can fail is wrapped in a
+# `catch` that prints the code and the message, so one refusal does not end the
+# case before the commands after it are compared.
+
+set POOL_REGEX [list a b "a+" "a*" "a|b" "(a)(b)?" "\[ab\]+" "^a" "b\$" "." \
+    ".*" "\\d+" "\\w+" "\\s" "x*" "(?i)A" "a{2}" "\[^a\]" "\\ya" "\\Aa" \
+    "(a|b)*c" "" "é" "\\m\\w" "(" "\[" "*" "a**" "(?:a)" "\\u00e9" "a?" \
+    "\[\[:alpha:\]\]" "x{0}" "\\B"]
+
+set POOL_SUBJECT [list banana aab abab xaaay "" a "a b c" "hello world" \
+    "line1\nline2" "ab\ncd" "é1é" "日本" "a1b22c333" "AaBb" "  pad  "]
+
+set POOL_REPL [list X "" & "\\0" "\\1" "<&>" "\\\\" "\\&" "\[\\1\]" "\\2\\1" \
+    "é" "a\\"]
+
+set POOL_SCANFMT [list %d %s %f %c %x %o %i %u "%\[a-c\]" "%\[^a\]" %3s %*d \
+    "%d%s" "%d,%d" "%2d%2d" %n %e %ld %hd %b %% x%d "%d %d %d" %c%c %5c \
+    "%\[a-c" "%1\$s" "%2\$s %1\$s" %z "% d" "%-5d"]
+
+set POOL_SCANSTR [list "12 abc" "0x1f" "017" "1.5e3" "abc" "" "42" "-7 +8" \
+    "1,2" "a-b" "  9" "3.14 x" "99999999999999999999" "é" "1010" "ff" "x 5"]
+
+set POOL_SUBST [list "a\\tb" "\\x41\\u00e9" "\\101" "\[expr \{1+1\}\]" \
+    "\[string length abc\]" "\\\\" "\\\$" "\\\[" "a\\\nb" "\$" "\[" "\\u" \
+    "\\x" "\\400" "\[break\]" "\[continue\]" "\[return r\]" "\[error e\]" \
+    "no subst" "\\8" "\\U0001F600" "\[list a b\]" ""]
+
+set POOL_TRY_BODY [list "error boom" "set x 1" "throw \{A B\} msg" \
+    "return -code 7 v" "break" "continue" "return -code error -errorcode \{X Y\} z" \
+    "expr \{1/0\}" "nosuchcmd" "return 5" "return -code ok v" "error e \{\} \{A B C\}" \
+    "string foo" "lindex" "return -code return v" "return -level 0 v"]
+
+set POOL_TRY_HANDLER [list "on error \{m o\} \{list e \$m \[dict get \$o -code\]\}" \
+    "on ok \{m o\} \{list k \$m\}" "trap A \{m o\} \{list ta \$m\}" \
+    "trap \{A B\} \{m\} \{list tab \$m\}" "trap \{\} \{m\} \{list t \$m\}" \
+    "on return \{m\} \{list r \$m\}" "on break \{\} \{list b\}" \
+    "on continue \{\} \{list c\}" "on 7 \{m\} \{list s \$m\}" \
+    "on 1 \{m\} \{list one \$m\}" "on error \{m\} -" "on error \{m\} \{error h\}" \
+    "on bogus \{m\} \{list\}" "trap X \{m\} \{list x \$m\}"]
+
+set POOL_LAMBDA [list "\{\{x\} \{expr \{\$x*2\}\}\} 21" \
+    "\{\{x \{y 3\}\} \{list \$x \$y\}\} 1" "\{\{args\} \{llength \$args\}\} a b c" \
+    "\{\{x\} \{return -code error \$x\}\} e" "\{\{a b\} \{string cat \$a \$b\}\} 1" \
+    "\{x\} 1" "\{\{x x\} \{set x\}\} 1 2" "\{\{\{x 1 2\}\} \{\}\}" \
+    "\{\{x\} \{set x\} ::\} 1" "\{\{x\} \{set x\} ::nosuch\} 1" "\{\{\} \{\}\} extra" \
+    "\{\{a args\} \{list \$a \$args\}\} 1" "\{\{x\} \{error \$x\}\} bad" \
+    "\{\{\{\}\} \{\}\}" "\{\{x y\} \{expr \{\$x + \$y\}\}\} 1 2" "\{\{x\} \{return \$x\}\} \{a b\}"]
+
+set POOL_LEVEL [list 0 1 2 3 #0 #1 #2 #-1 # #x 1x " 1" 0x1 -1 +1 "" 1_0 \
+    99999999999 #0x0 #00 1.5 "# 1" 9]
+
+set POOL_BINFMT [list a3 A5 a* A* c c* s S i I w W n t h4 H4 H* b8 B8 b* x2 \
+    f d "a2x1a1" "c2s" "a0" "c*s*" "@3" u "s1" "H3"]
+
+set POOL_NS [list a b a::b ::a ::a::b "" :: a::::b a:: ::a:: x::y::z]
+
+proc misc_stmt {} {
+    global POOL_REGEX POOL_SUBJECT POOL_REPL POOL_SCANFMT POOL_SCANSTR
+    global POOL_SUBST POOL_TRY_BODY POOL_TRY_HANDLER POOL_LAMBDA POOL_LEVEL
+    global POOL_BINFMT POOL_NS POOL_INDEX POOL_INT POOL_SMALL INPROC PROCS
+    global POOL_AWKWARD
+    set r [rint 100]
+    if {$r < 14} {
+        # regexp / regsub with an option set drawn per flag.
+        set opts ""
+        foreach flag [list -all -nocase -line -lineanchor -linestop -expanded] {
+            if {[rchance 15]} {
+                append opts " $flag"
+            }
+        }
+        if {[rchance 15]} {
+            append opts " -start [rpick $POOL_INDEX]"
+        }
+        set re [Q [rpick $POOL_REGEX]]
+        set subj [Q [rpick $POOL_SUBJECT]]
+        if {[rchance 50]} {
+            if {[rchance 25]} {
+                append opts " -inline"
+            } elseif {[rchance 15]} {
+                append opts " -indices"
+            }
+            return "puts \[catch \{regexp$opts -- $re $subj\} m\]\$m"
+        }
+        return "puts \[catch \{regsub$opts -- $re $subj [Q [rpick $POOL_REPL]]\} m\]\$m"
+    }
+    if {$r < 24} {
+        set fmt [Q [rpick $POOL_SCANFMT]]
+        set str [Q [rpick $POOL_SCANSTR]]
+        if {$INPROC || [rchance 40]} {
+            return "puts \[catch \{scan $str $fmt\} m\]\$m"
+        }
+        set a [fresh sa]
+        set b [fresh sb]
+        return "puts \[catch \{scan $str $fmt $a $b\} m\]\$m; puts \[list \[info exists $a\] \[info exists $b\]\]"
+    }
+    if {$r < 32} {
+        set opts ""
+        foreach flag [list -nobackslashes -nocommands -novariables] {
+            if {[rchance 20]} {
+                append opts " $flag"
+            }
+        }
+        return "puts \[catch \{subst$opts \{[rpick $POOL_SUBST]\}\} m\]\$m"
+    }
+    if {$r < 46} {
+        set body [rpick $POOL_TRY_BODY]
+        set s "try \{$body\}"
+        set n [rint 3]
+        for {set i 0} {$i < $n} {incr i} {
+            append s " [rpick $POOL_TRY_HANDLER]"
+        }
+        if {[rchance 30]} {
+            append s " finally \{puts F\}"
+        }
+        return "puts \[catch \{$s\} m\]\$m"
+    }
+    if {$r < 50} {
+        return "puts \[catch \{throw [rpick [list A "\{A B\}" "" "\{\}" "a\\ b"]] [value]\} m\]\$m"
+    }
+    if {$r < 58} {
+        return "puts \[catch \{apply [rpick $POOL_LAMBDA]\} m\]\$m"
+    }
+    if {$r < 66} {
+        set lvl [Q [rpick $POOL_LEVEL]]
+        set script [rpick [list "set zq 1" "info level" "list" "set zq"]]
+        if {[rchance 50]} {
+            return "puts \[catch \{uplevel $lvl \{$script\}\} m\]\$m"
+        }
+        return "puts \[catch \{upvar $lvl zq zz\} m\]\$m"
+    }
+    if {$r < 74} {
+        set f [rpick $POOL_BINFMT]
+        set v [rpick [list 65 "1 2 3" -1 256 abc 1.5 "" "a b" 70000 0x41]]
+        if {[rchance 50]} {
+            return "puts \[catch \{binary format $f [Q $v]\} m\]\$m"
+        }
+        return "puts \[catch \{binary scan [Q [rpick $POOL_SUBJECT]] $f bv\} m\]\$m"
+    }
+    if {$r < 84} {
+        # The list commands the list generator does not draw.
+        set l [rlistvar]
+        set i [rpick $POOL_INDEX]
+        set j [rpick $POOL_INDEX]
+        switch -- [rint 8] {
+            0 { return "puts \[catch \{lassign $l a1 a2\} m\]\$m" }
+            1 { return "puts \[catch \{lmap e $l \{string length \$e\}\} m\]\$m" }
+            2 { return "puts \[catch \{lremove $l $i $j\} m\]\$m" }
+            3 { return "puts \[catch \{lrepeat [rpick $POOL_SMALL] $l [value]\} m\]\$m" }
+            4 { return "puts \[catch \{lseq [rpick $POOL_SMALL] [rpick [list to count by .. 10]] [rpick $POOL_SMALL]\} m\]\$m" }
+            5 { return "set ls $l; puts \[catch \{lset ls $i [value]\} m\]\$m; puts \$ls" }
+            6 { return "set ls $l; puts \[catch \{ledit ls $i $j [value]\} m\]\$m; puts \$ls" }
+            default { return "set ls $l; puts \[catch \{lpop ls $i\} m\]\$m; puts \$ls" }
+        }
+    }
+    if {$r < 90 || $INPROC} {
+        # `info` queries on what the case defined.
+        if {[llength $PROCS] > 0 && [rchance 70]} {
+            set p [lindex [rpick $PROCS] 0]
+            return "puts \[catch \{info [rpick [list args body procs commands]] $p\} m\]\$m"
+        }
+        return "puts \[catch \{info [rpick [list args body default level]] [Q [rpick $POOL_AWKWARD]]\} m\]\$m"
+    }
+    if {$r < 95} {
+        set n [Q [rpick $POOL_NS]]
+        return "puts \[catch \{namespace [rpick [list qualifiers tail exists parent]] $n\} m\]\$m"
+    }
+    # `rename` on a procedure of its own, so what is renamed is certain to exist
+    # and no other statement's call is rebound. The three outcomes after it are
+    # the new name, the old one, and a name that is taken.
+    set p [fresh rn]
+    set q [fresh rm]
+    set shape [rint 4]
+    if {$shape == 0} {
+        return "proc $p \{\} \{return $p\}; rename $p $q; puts \[$q\]; puts \[catch \{rename $p $q\} m\]\$m"
+    }
+    if {$shape == 1} {
+        return "proc $p \{\} \{return $p\}; puts \[catch \{rename $p $p\} m\]\$m; puts \[$p\]"
+    }
+    if {$shape == 2} {
+        return "proc $p \{\} \{return $p\}; rename $p \{\}; puts \[catch \{$p\} m\]\$m; puts \[info commands $p\]"
+    }
+    return "proc $p \{\} \{return $p\}; rename $p ::${q}ns::$p; puts \[::${q}ns::$p\]; puts \[namespace exists ${q}ns\]"
 }
 
 # ── whole cases ─────────────────────────────────────────────────────────────
