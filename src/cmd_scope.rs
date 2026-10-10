@@ -1124,6 +1124,22 @@ pub(crate) fn dyn_set_op(interp: &Shared, vm: &mut VM) -> Result<(), TclError> {
     let declared = to_tcl_string(&vm.pop());
     let value = vm.pop();
     let link = dynamic_link(interp, vm, &name, &declared)?;
+    // A global constant: the one place a computed name can find out that the
+    // variable it spells was made one.
+    let global = name.starts_with("::")
+        || crate::list::split(&declared).is_ok_and(|d| d.contains(&name))
+        || crate::runtime::current_level(vm) == 0;
+    if global
+        && interp
+            .lock()
+            .expect("interpreter lock")
+            .consts
+            .contains(crate::cmd_namespace::store_key(&name))
+    {
+        return Err(TclError::plain(format!(
+            "can't set \"{name}\": variable is a constant"
+        )));
+    }
     if link.elem.is_none() {
         if let Some(Value::Hash(_)) = read_link(vm, &link) {
             return Err(TclError::plain(format!(

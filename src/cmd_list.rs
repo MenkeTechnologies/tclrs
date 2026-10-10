@@ -135,6 +135,11 @@ fn lappend(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     }
     let name = c.var_name_of(name)?;
     let count = arg_count(c, values.len() + 1)?;
+    if c.is_const(&name) {
+        c.refuse_const(&name);
+        c.push_empty();
+        return Ok(());
+    }
 
     if c.is_array(&name) {
         c.scalar_get_for_update(&name, crate::compiler::Absent::Empty);
@@ -210,6 +215,10 @@ fn lassign(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
 fn var_target(c: &mut Compiler, target: &Target) -> Result<usize, CompileError> {
     match target {
         Target::Scalar(name) => {
+            // A constant refuses before the op reads or writes it.
+            if c.is_const(name) {
+                c.refuse_const(name);
+            }
             c.push_str(name);
             let place = c.var_place(name);
             c.push_value(Value::Int(i64::from(place.in_frame())));

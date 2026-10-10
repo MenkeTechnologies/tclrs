@@ -1202,6 +1202,18 @@ the measurement behind it.
   compiler and are not in the registry `namespace ensemble` reads; and `info
   locals` in a procedure with a formal named twice lists the name once where
   tclsh lists it twice.
+- **A write to a constant is refused only where the compiler sees it.** `const`
+  makes `set`, `incr`, `append`, `lappend`, `lset` and `unset`, a loop
+  variable and a computed name's `set` refuse, for the constants the script
+  declared and the global ones the interpreter already holds. A variable written
+  through a place at run time — `scan`, `regexp` and `gets` into a constant, a
+  write through an `upvar` alias — is not refused. A `const` that follows a
+  write to the same name in the same script is taken to fail (the variable
+  exists) and makes nothing constant; one that fails for a reason the compiler
+  cannot see, or that follows a write in a branch that did not run, still marks
+  the name from there on. `lappend` on a constant also leaves the list as it
+  was where tclsh, which edits the shared object before it notices, leaves the
+  appended element in it.
 - **`tailcall` inside `catch` or `try` runs the call at once.** tclsh answers
   the region with code `return` and carries the tail call out to the end of the
   procedure, where it replaces the activation; here the callee runs where the
@@ -2129,7 +2141,7 @@ than an unexamined one. Measured against the 2000-program run above.
   `VM::slot_names_at`, which is what the projection uses. See the refusal list
   above.
 - **Commands tclrs does not have.** `interp`, `trace`, `socket`,
-  `timerate`, `chan`, `const`, `fcopy`, `fileevent`,
+  `timerate`, `chan`, `fcopy`, `fileevent`,
   `fblocked` and `zlib` are outside the command set entirely, so a generated use
   of one is `invalid command name` and says nothing about parity. `{*}`
   expansion, `namespace`, `rename`, `source`, `encoding`, `binary` and file I/O

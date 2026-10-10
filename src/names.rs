@@ -133,6 +133,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "Trim each argument of surrounding whitespace and join them with single spaces into one list.",
     },
     Entry {
+        name: "const",
+        synopsis: "const varName value",
+        summary: "Create the variable with the value and make every write to it an error: `set`, `incr`, `append`, `lappend`, `lset`, a loop variable and `unset` (`unset -nocomplain` leaves it alone). A constant declared again keeps its value; a variable that already exists cannot become one. A write is refused where the compiler can see it or, for a global, where the name is computed; `scan`, `regexp` and `gets` into a constant are not yet.",
+    },
+    Entry {
         name: "continue",
         synopsis: "continue",
         summary: "Begin the innermost loop's next iteration; in a `for`, its step still runs first.",
@@ -1191,12 +1196,12 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "constant",
         synopsis: "info constant varName",
-        summary: "Whether a variable was made read-only by Tcl 9's `const`. Refused: constant variables are not implemented, so no variable can answer 1 and answering 0 for all of them would be a claim rather than a report.",
+        summary: "1 when the variable was made read-only by `const`: what the compiler saw the script make constant, and the global constants the interpreter holds.",
     },
     Entry {
         name: "consts",
         synopsis: "info consts ?pattern?",
-        summary: "The constant variable names matching the pattern. Refused for the same reason as `info constant`.",
+        summary: "The constant variable names matching the pattern: the current procedure's, or the global ones at a script's own level.",
     },
     Entry {
         name: "coroutine",

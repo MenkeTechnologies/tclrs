@@ -76,6 +76,12 @@ pub mod ext {
     /// `info frame ?number?`: `[number]` when `arg` is 1. Dispatched from
     /// [`crate::runtime`], which can see how many scripts are running.
     pub const FRAME: u16 = BASE + 10;
+    /// `[name, known, registry]` → whether `name` is a constant: `known` when the
+    /// compiler saw the `const`, `registry` when the interpreter's global
+    /// constants are to be asked as well.
+    pub const CONSTANT: u16 = BASE + 11;
+    /// `[pattern, locals, registry]` → the constants' names matching `pattern`.
+    pub const CONSTS: u16 = BASE + 12;
 }
 
 /// Which set of names [`ext::NAMES`] reports.
@@ -202,6 +208,45 @@ impl Compiler {
             "locals" => self.info_names(rest, FRAME_LOCALS, "info locals ?pattern?"),
             "level" => self.info_level(rest),
             "frame" => self.info_frame(rest),
+            "constant" => match rest {
+                [name] => {
+                    let Some(crate::assoc::Target::Scalar(written)) = crate::assoc::target_of(name)
+                    else {
+                        return self.error("info constant needs a variable name written out");
+                    };
+                    let known = i64::from(self.is_const(&written));
+                    let registry = i64::from(self.consults_registry(&written));
+                    self.push_str(&written);
+                    self.emit(Op::LoadInt(known), 1);
+                    self.emit(Op::LoadInt(registry), 1);
+                    self.emit(Op::Extended(ext::CONSTANT, 0), -2);
+                    Ok(())
+                }
+                _ => self.error("wrong # args: should be \"info constant varName\""),
+            },
+            "consts" => {
+                let pattern = match rest {
+                    [] => None,
+                    [p] => Some(p),
+                    _ => return self.error("wrong # args: should be \"info consts ?pattern?\""),
+                };
+                match pattern {
+                    Some(p) => self.word(p)?,
+                    None => self.push_str("*"),
+                }
+                let mut locals: Vec<String> = self
+                    .scope
+                    .as_ref()
+                    .map(|s| s.consts.iter().cloned().collect())
+                    .unwrap_or_default();
+                locals.sort();
+                let locals = crate::list::join(&locals);
+                self.push_str(&locals);
+                let registry = i64::from(self.scope.is_none());
+                self.emit(Op::LoadInt(registry), 1);
+                self.emit(Op::Extended(ext::CONSTS, 0), -2);
+                Ok(())
+            }
             "functions" => self.info_about_list(rest, ext::FUNCTIONS, "info functions ?pattern?"),
             "tclversion" => self.info_literal(rest, TCL_VERSION, "info tclversion"),
             "patchlevel" => self.info_literal(rest, TCL_PATCHLEVEL, "info patchlevel"),
@@ -494,7 +539,6 @@ fn resolve(given: &str) -> Result<&'static str, String> {
 fn why_refused(sub: &str) -> &'static str {
     match sub {
         "class" | "object" => "TclOO is not implemented",
-        "constant" | "consts" => "constant variables are not implemented",
         "loaded" => "loadable extensions are not implemented",
         "cmdcount" | "cmdtype" | "errorstack" => "the interpreter does not keep it",
         _ => "not built yet",

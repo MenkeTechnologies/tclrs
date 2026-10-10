@@ -28,6 +28,9 @@ use crate::expr::{self, BinOp, Expr, UnOp};
 use crate::parser::{Command, Part, Script, Word};
 use crate::procs::Signature;
 
+/// The prefix that marks a name in the array set as a global constant instead.
+pub(crate) const CONST_MARK: char = '\u{1}';
+
 /// Extension opcode ids owned by this frontend.
 pub mod ext {
     pub const DIV: u16 = 0;
@@ -1151,6 +1154,8 @@ pub(crate) struct Scope {
     /// holds a [`crate::cmd_scope::Link`] descriptor rather than a value, and
     /// [`Compiler::var_place`] answers [`Place::Link`] for the name.
     pub links: crate::cmd_scope::Links,
+    /// Locals a `const` made constant.
+    pub consts: HashSet<String>,
     pub next_slot: u16,
 }
 
@@ -1304,6 +1309,15 @@ pub(crate) struct Compiler {
     /// computed can still be handed back to [`Compiler::eval_rebuilt`] while
     /// nothing has been emitted past it; see [`Compiler::body_of`].
     pub(crate) command_mark: usize,
+    /// Globals known to be constants: the ones the interpreter already holds
+    /// ([`crate::runtime::State::consts`]) and the ones a `const` earlier in this
+    /// script made. A write to one is lowered as the refusal it is.
+    pub(crate) consts: HashSet<String>,
+    /// The verb a refused write names: `set`, `incr` or `unset`.
+    pub(crate) write_verb: &'static str,
+    /// Names a write has been lowered for so far. A `const` after one of them
+    /// finds the variable already there and fails, so it makes nothing constant.
+    pub(crate) written: HashSet<String>,
     /// Names known to be used as arrays, from the previous pass.
     pub(crate) arrays: ArrayNames,
     /// Names found to be used as arrays during this pass.
@@ -1402,6 +1416,16 @@ impl Compiler {
         debug: bool,
         projected: bool,
     ) -> Result<Compiler, CompileError> {
+        // Constants the interpreter holds ride in the array set under a marker no
+        // variable name starts with, so the cache key and every entry point that
+        // already carries the set carry them too.
+        let (consts, arrays): (ArrayNames, ArrayNames) = arrays
+            .into_iter()
+            .partition(|name| name.starts_with(CONST_MARK));
+        let consts = consts
+            .into_iter()
+            .map(|name| name[CONST_MARK.len_utf8()..].to_string())
+            .collect();
         let mut c = Compiler {
             b: ChunkBuilder::new(),
             tolerant_reads: Vec::new(),
@@ -1412,6 +1436,9 @@ impl Compiler {
             line: 1,
             command_line: 1,
             command_mark: 0,
+            consts,
+            write_verb: "set",
+            written: HashSet::new(),
             arrays,
             seen_arrays: ArrayNames::new(),
             emap: crate::errinfo::Builder::default(),
@@ -1675,6 +1702,11 @@ impl Compiler {
     /// Emit an in-place append of `parts` onto `name`, leaving the new value —
     /// the lowering `append` uses, reached from `set` through [`grows_itself`].
     fn append_parts(&mut self, name: &str, parts: &[Part]) -> Result<(), CompileError> {
+        if self.is_const(name) {
+            self.refuse_const(name);
+            self.push_empty();
+            return Ok(());
+        }
         let id = self.append_target(name);
         for part in parts {
             self.part(part)?;
@@ -1896,8 +1928,80 @@ impl Compiler {
         };
     }
 
+    /// Whether `name`, as the code being lowered reaches it, is a constant.
+    pub(crate) fn is_const(&self, name: &str) -> bool {
+        let global = |n: &str| {
+            let at = match self.scope {
+                None => crate::cmd_namespace::resolve(&self.ns.current, n),
+                Some(_) => n.to_string(),
+            };
+            self.consts.contains(crate::cmd_namespace::store_key(&at))
+        };
+        match self.scope.as_ref() {
+            Some(scope) => {
+                if name.starts_with("::") {
+                    global(name)
+                } else if scope.locals.contains_key(name) && !scope.globals.contains(name) {
+                    scope.consts.contains(name)
+                } else if scope.globals.contains(name) {
+                    global(name)
+                } else {
+                    false
+                }
+            }
+            None => global(name),
+        }
+    }
+
+    /// Whether the interpreter's table of global constants has a say in whether
+    /// `name` is one: it does unless the name is a local of the procedure being
+    /// lowered.
+    pub(crate) fn consults_registry(&self, name: &str) -> bool {
+        match self.scope.as_ref() {
+            Some(scope) => !scope.locals.contains_key(name) || scope.globals.contains(name),
+            None => true,
+        }
+    }
+
+    /// Record that `name` is a constant from here on.
+    pub(crate) fn mark_const(&mut self, name: &str) {
+        match self.scope.as_mut() {
+            Some(scope) if !name.starts_with("::") && !scope.globals.contains(name) => {
+                scope.consts.insert(name.to_string());
+            }
+            _ => {
+                let at = match self.scope {
+                    None => crate::cmd_namespace::resolve(&self.ns.current, name),
+                    Some(_) => name.to_string(),
+                };
+                self.consts
+                    .insert(crate::cmd_namespace::store_key(&at).to_string());
+            }
+        }
+    }
+
+    /// Lower the refusal of a write to the constant `name`; a write leaves the
+    /// stack as it found it, so this does too.
+    pub(crate) fn refuse_const(&mut self, name: &str) {
+        let msg = format!(
+            "can't {} \"{name}\": variable is a constant",
+            self.write_verb
+        );
+        self.push_str(&msg);
+        let site = self.error_site();
+        self.emit(Op::ExtendedWide(ext_wide::ERROR_AT, site), -1);
+    }
+
     /// Pop the top of the stack into a variable.
     pub(crate) fn emit_set_var(&mut self, name: &str) {
+        if self.is_const(name) {
+            // The value is already on the stack; the refusal comes after it was
+            // computed, as tclsh's does.
+            self.emit(Op::Pop, -1);
+            self.refuse_const(name);
+            return;
+        }
+        self.written.insert(name.to_string());
         match self.var_place(name) {
             Place::Slot(slot) => self.emit(Op::SetSlot(slot), -1),
             Place::Global(idx) => self.emit(Op::SetVar(idx), -1),
@@ -2755,7 +2859,9 @@ impl Compiler {
         self.incr_sites.push(self.b.current_pos());
         self.emit(Op::Add, -1);
         self.emit(Op::Dup, 1);
+        self.write_verb = "incr";
         self.emit_set_var(&name);
+        self.write_verb = "set";
         Ok(())
     }
 

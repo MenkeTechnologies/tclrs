@@ -47,10 +47,13 @@ pub mod ext {
     /// [`TAILCALL`] from inside a `catch` or `try` region: the call is made from
     /// the activation, which stays.
     pub const TAILCALL_CALL: u16 = BASE + 4;
+    /// `[value, name, place, again]` → `""`, having made the variable a
+    /// constant. `again` says the compiler already knew the name for one.
+    pub const CONST: u16 = BASE + 5;
 }
 
 /// The command names this module claims.
-pub const COMMANDS: &[&str] = &["exec", "exit", "tailcall", "time"];
+pub const COMMANDS: &[&str] = &["const", "exec", "exit", "tailcall", "time"];
 
 /// Set in `time`'s inline operand when the command was written inside a
 /// procedure body, so the script runs against that body's frame.
@@ -96,6 +99,7 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
             Ok(())
         }
         "tailcall" => compile_tailcall(c, args),
+        "const" => compile_const(c, args),
         _ => {
             let Ok(argc) = u8::try_from(args.len()) else {
                 return c.error("too many arguments for \"exec\"");
@@ -141,6 +145,7 @@ pub(crate) fn run(
             terminate(out, code)
         }
         ext::TIME => time_op(interp, vm, arg),
+        ext::CONST => const_op(interp, vm),
         ext::TAILCALL => crate::procs::tailcall_op(interp, vm, arg, true),
         ext::TAILCALL_CALL => crate::procs::tailcall_op(interp, vm, arg, false),
         _ => {
@@ -900,5 +905,97 @@ fn compile_tailcall(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError>
     c.emit(Op::Extended(ext::TAILCALL, argc), 1 - i32::from(argc));
     c.emit(Op::ReturnValue, -1);
     c.push_empty();
+    Ok(())
+}
+
+// ── const ────────────────────────────────────────────────────────────────
+
+/// `const varName value` (`Tcl_ConstObjCmd`): create the variable and make
+/// every later write to it, `unset` included, an error.
+///
+/// What this frontend can refuse is what the compiler can see: a write the
+/// script spells out — `set`, `incr`, `append`, `lappend`, `unset`, a loop
+/// variable, a namespace variable — is lowered as the refusal, for the
+/// constants this script made and the global ones the interpreter holds. A
+/// write through a name only the running script knows, or by a command that
+/// stores through a variable place at run time (`scan`, `regexp`, `gets`), is
+/// not refused.
+fn compile_const(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
+    let [name_w, value_w] = args else {
+        return c.error("wrong # args: should be \"const varName value\"");
+    };
+    let Some(target) = crate::assoc::target_of(name_w) else {
+        return c.error(
+            "a computed \"const\" name is not supported yet: the variable it names has to be \
+             written out",
+        );
+    };
+    match target {
+        crate::assoc::Target::Scalar(name) => {
+            c.word(value_w)?;
+            let place = c.var_place(&name).encode();
+            let again = i64::from(c.is_const(&name));
+            // A namespace's own variable is filed under its qualified name.
+            let named = match c.scope {
+                None if !c.ns.at_global() => crate::cmd_namespace::resolve(&c.ns.current, &name),
+                _ => name.clone(),
+            };
+            c.push_str(&named);
+            c.emit(Op::LoadInt(place), 1);
+            c.emit(Op::LoadInt(again), 1);
+            c.emit(Op::Extended(ext::CONST, 0), -3);
+            // A variable written earlier is already there: the `const` fails.
+            if !c.written.contains(&name) {
+                c.mark_const(&name);
+            }
+            Ok(())
+        }
+        crate::assoc::Target::Elem { name, index } => {
+            let spelled: String = index
+                .iter()
+                .map(|p| match p {
+                    crate::parser::Part::Lit(s) => s.clone(),
+                    _ => String::new(),
+                })
+                .collect();
+            Err(c.deferrable_err(format!(
+                "can't make constant \"{name}({spelled})\": name refers to an element in an array"
+            )))
+        }
+    }
+}
+
+fn const_op(interp: &Shared, vm: &mut VM) -> Result<(), TclError> {
+    let again = matches!(vm.pop(), Value::Int(1));
+    let place = crate::compiler::Place::decode(match vm.pop() {
+        Value::Int(raw) => raw,
+        other => return Err(TclError::plain(format!("not a variable place: {other:?}"))),
+    });
+    let name = to_tcl_string(&vm.pop());
+    let value = vm.pop();
+    let global = matches!(place, crate::compiler::Place::Global(_));
+    let key = crate::cmd_namespace::store_key(&name).to_string();
+    let known = again
+        || (global
+            && interp
+                .lock()
+                .expect("interpreter lock")
+                .consts
+                .contains(&key));
+    // A variable that is already there cannot be turned into a constant; one
+    // that already is a constant may be declared again.
+    if !known && crate::runtime::var_is_set(vm, place) {
+        return Err(TclError::plain(format!(
+            "can't make constant \"{name}\": variable already exists"
+        )));
+    }
+    // A constant declared again keeps the value it has.
+    if !known {
+        crate::runtime::set_scalar(vm, place, &name, value).map_err(TclError::plain)?;
+    }
+    if global {
+        interp.lock().expect("interpreter lock").consts.insert(key);
+    }
+    vm.push(Value::Str(Arc::new(String::new())));
     Ok(())
 }

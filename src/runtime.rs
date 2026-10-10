@@ -529,6 +529,10 @@ impl Output {
 /// extension handler of the chunk that invoked it. No lock is ever held across
 /// a `VM::run`, so that nesting can go as deep as `limit` allows.
 pub(crate) struct State {
+    /// The global variables a `const` made constant, by the name the variable
+    /// table keeps them under. Compiling a later script is told which of them it
+    /// mentions, so its writes to them are refusals.
+    pub(crate) consts: HashSet<String>,
     /// The variables, keyed by name. This is the authority, not the VM's slot
     /// vector — see `seed`. A namespace variable is one of these under its
     /// qualified name; `crate::cmd_namespace::store_key` is the spelling.
@@ -643,6 +647,7 @@ impl Interp {
     fn with_output(output: Output) -> Self {
         Interp {
             shared: Arc::new(Mutex::new(State {
+                consts: HashSet::new(),
                 globals: crate::cmd_info::startup_globals(),
                 commands: HashMap::new(),
                 ns: crate::cmd_namespace::Registry::default(),
@@ -791,7 +796,7 @@ pub(crate) fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> 
         // name apart from a bare one, because there the two are different
         // variables. See [`crate::compiler::Compiler::projected`].
         let projected = state.projected();
-        let arrays = live_arrays(&state.globals, src);
+        let arrays = live_arrays(&state, src);
         state.cache.compile_in(src, projected, &arrays)
     };
     // The depth is given back however this returns, including the compile
@@ -822,11 +827,20 @@ pub(crate) fn run_source(shared: &Shared, src: &str) -> Result<Value, TclError> 
 /// script never touches; that costs only a guard on the name. It cannot miss
 /// one the script does touch by a literal name, which is the only kind the
 /// compiler lowers without a guard of its own.
-fn live_arrays(table: &HashMap<String, Value>, src: &str) -> Vec<String> {
-    let mut names: Vec<String> = table
+fn live_arrays(state: &State, src: &str) -> Vec<String> {
+    let mut names: Vec<String> = state
+        .globals
         .iter()
         .filter(|(name, value)| matches!(value, Value::Hash(_)) && src.contains(name.as_str()))
         .map(|(name, _)| name.clone())
+        // The global constants the text mentions, marked: see `Compiler::run`.
+        .chain(
+            state
+                .consts
+                .iter()
+                .filter(|name| src.contains(name.as_str()))
+                .map(|name| format!("{}{name}", crate::compiler::CONST_MARK)),
+        )
         .collect();
     names.sort_unstable();
     names
@@ -854,7 +868,7 @@ fn run_prefix(shared: &Shared, src: &str, err: TclError) -> Result<Value, TclErr
     let compiled = {
         let mut state = shared.lock().expect("interpreter lock");
         let projected = state.projected();
-        let arrays = live_arrays(&state.globals, &src[..end]);
+        let arrays = live_arrays(&state, &src[..end]);
         state.cache.compile_in(&src[..end], projected, &arrays)
     };
     // The prefix parsed, so it can only fail while running — and a command
@@ -2087,6 +2101,10 @@ impl Hooks {
                 // `info frame` counts the scripts that are running as well as the
                 // procedure activations, and only the interpreter knows the first.
                 crate::cmd_info::ext::FRAME => info_frame_op(&interp, vm, arg),
+                crate::cmd_info::ext::CONSTANT | crate::cmd_info::ext::CONSTS => {
+                    info_consts_op(&interp, vm, id);
+                    Ok(())
+                }
                 // ── end of the frame ops ─────────────────────────────────
                 // `exit`, `time` and `exec` need the interpreter's output sink
                 // and, for `time`, its frame projection.
@@ -2285,6 +2303,41 @@ fn ffi_op(vm: &mut VM, argc: u8) -> Result<(), String> {
     let result = crate::rust_ffi::call(&to_tcl_string(name), args)?;
     vm.push(result);
     Ok(())
+}
+
+/// `info constant name` and `info consts ?pattern?`: what the compiler saw
+/// made constant, and the global constants the interpreter holds.
+fn info_consts_op(interp: &Shared, vm: &mut VM, id: u16) {
+    let registry = matches!(vm.pop(), Value::Int(1));
+    if id == crate::cmd_info::ext::CONSTANT {
+        let known = matches!(vm.pop(), Value::Int(1));
+        let name = to_tcl_string(&vm.pop());
+        let held = registry
+            && interp
+                .lock()
+                .expect("interpreter lock")
+                .consts
+                .contains(crate::cmd_namespace::store_key(&name));
+        vm.push(Value::Int(i64::from(known || held)));
+        return;
+    }
+    let locals = to_tcl_string(&vm.pop());
+    let pattern = to_tcl_string(&vm.pop());
+    let mut names: Vec<String> = list::split(&locals).unwrap_or_default();
+    if registry {
+        names.extend(
+            interp
+                .lock()
+                .expect("interpreter lock")
+                .consts
+                .iter()
+                .cloned(),
+        );
+    }
+    names.retain(|n| list::glob_match(&pattern, n));
+    names.sort();
+    names.dedup();
+    vm.push(Value::Str(Arc::new(list::join(&names))));
 }
 
 /// `info frame ?number?`: the number of the current frame, or a dictionary about

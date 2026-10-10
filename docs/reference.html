@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="tclrs — Command reference. Every one of the 345 names the current tclrs build implements: 87 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
+  <meta name="description" content="tclrs — Command reference. Every one of the 346 names the current tclrs build implements: 88 commands, 169 ensemble subcommands, the expr operator ladder, the string is classes and the format conversions — each with a signature and a description, generated from the compiler's own tables. MIT licensed.">
   <title>tclrs &mdash; Command Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -126,15 +126,15 @@
 
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>LANGUAGE REFERENCE</h2>
-      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 87 commands,
+      <p class="tutorial-subtitle">Every name the current tclrs build knows &mdash; 88 commands,
       169 ensemble subcommands, the <code>expr</code> ladder, the
       <code>string is</code> classes and the <code>format</code> conversions &mdash; each with the
       signature the compiler reports and a description written from what the code does.
-      345 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
+      346 entries in all. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
       <section class="tutorial-section">
         <h2>Chapters</h2>
         <ul class="chapter-index">
-          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">87</span></li>
+          <li><a href="#ch-commands">Commands</a> <span class="chapter-count">88</span></li>
           <li><a href="#ch-string">The <code>string</code> ensemble</a> <span class="chapter-count">23</span></li>
           <li><a href="#ch-array">The <code>array</code> ensemble</a> <span class="chapter-count">13</span></li>
           <li><a href="#ch-dict">The <code>dict</code> ensemble</a> <span class="chapter-count">22</span></li>
@@ -147,7 +147,7 @@
 
       <section class="tutorial-section" id="ch-commands">
         <h2>Commands</h2>
-        <p class="chapter-meta">87 entries</p>
+        <p class="chapter-meta">88 entries</p>
         <p>Every command the current build compiles. A name absent from this
         chapter is <code>invalid command name "&hellip;"</code> at <em>compile</em>
         time, not a runtime lookup that fails &mdash; resolving the name while
@@ -159,11 +159,11 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">87</div>
+            <div class="stat-val">88</div>
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">148/169</div>
+            <div class="stat-val">150/169</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -241,6 +241,12 @@
           <pre><code class="lang-tcl">concat ?arg ...?
 </code></pre>
           <p>Trim each argument of surrounding whitespace and join them with single spaces into one list.</p>
+        </article>
+        <article class="doc-entry" id="doc-cmd-const">
+          <h3><a class="doc-anchor" href="#doc-cmd-const">#</a> <code>const</code></h3>
+          <pre><code class="lang-tcl">const varName value
+</code></pre>
+          <p>Create the variable with the value and make every write to it an error: <code>set</code>, <code>incr</code>, <code>append</code>, <code>lappend</code>, <code>lset</code>, a loop variable and <code>unset</code> (<code>unset -nocomplain</code> leaves it alone). A constant declared again keeps its value; a variable that already exists cannot become one. A write is refused where the compiler can see it or, for a global, where the name is computed; <code>scan</code>, <code>regexp</code> and <code>gets</code> into a constant are not yet.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-continue">
           <h3><a class="doc-anchor" href="#doc-cmd-continue">#</a> <code>continue</code></h3>
@@ -1072,7 +1078,7 @@
 
       <section class="tutorial-section" id="ch-info">
         <h2>The <code>info</code> ensemble</h2>
-        <p class="chapter-meta">29 subcommands recognised &middot; 21 implemented &middot; 8 refused</p>
+        <p class="chapter-meta">29 subcommands recognised &middot; 23 implemented &middot; 6 refused</p>
         <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
         <article class="doc-entry" id="doc-info-args">
           <h3><a class="doc-anchor" href="#doc-info-args">#</a> <code>info args</code></h3>
@@ -1123,15 +1129,13 @@
           <h3><a class="doc-anchor" href="#doc-info-constant">#</a> <code>info constant</code></h3>
           <pre><code class="lang-tcl">info constant varName
 </code></pre>
-          <p>Whether a variable was made read-only by Tcl 9's <code>const</code>. Refused: constant variables are not implemented, so no variable can answer 1 and answering 0 for all of them would be a claim rather than a report.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info constant is not supported yet: constant variables are not implemented</code></p>
+          <p>1 when the variable was made read-only by <code>const</code>: what the compiler saw the script make constant, and the global constants the interpreter holds.</p>
         </article>
         <article class="doc-entry" id="doc-info-consts">
           <h3><a class="doc-anchor" href="#doc-info-consts">#</a> <code>info consts</code></h3>
           <pre><code class="lang-tcl">info consts ?pattern?
 </code></pre>
-          <p>The constant variable names matching the pattern. Refused for the same reason as <code>info constant</code>.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info consts is not supported yet: constant variables are not implemented</code></p>
+          <p>The constant variable names matching the pattern: the current procedure's, or the global ones at a script's own level.</p>
         </article>
         <article class="doc-entry" id="doc-info-coroutine">
           <h3><a class="doc-anchor" href="#doc-info-coroutine">#</a> <code>info coroutine</code></h3>

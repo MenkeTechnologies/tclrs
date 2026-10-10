@@ -681,6 +681,10 @@ impl Compiler {
 
     /// Refuse a scalar assignment to a variable that holds an array.
     pub(crate) fn scalar_set_guard(&mut self, name: &str) {
+        if self.is_const(name) {
+            self.refuse_const(name);
+            return;
+        }
         if !self.is_array(name) {
             return;
         }
@@ -840,6 +844,14 @@ impl Compiler {
                 continue;
             };
             match target {
+                Target::Scalar(name) if self.is_const(&name) => {
+                    // `-nocomplain` leaves a constant where it is and says nothing.
+                    if complain {
+                        self.write_verb = "unset";
+                        self.refuse_const(&name);
+                        self.write_verb = "set";
+                    }
+                }
                 Target::Scalar(name) => {
                     // A local is a frame slot rather than a global-table entry,
                     // and the op reaches either through the place it is handed.

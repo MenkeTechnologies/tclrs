@@ -534,6 +534,11 @@ impl Compiler {
             return self.elem_store(&name, &index);
         }
         let name = self.var_name_of(target)?;
+        if self.is_const(&name) {
+            self.refuse_const(&name);
+            self.push_empty();
+            return Ok(());
+        }
 
         if self.is_array(&name) {
             self.push_str(&name);

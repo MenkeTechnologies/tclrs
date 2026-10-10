@@ -164,6 +164,8 @@ fn blocks() -> Vec<Block> {
                 ("BODY", tclrs::cmd_info::ext::BODY),
                 ("FUNCTIONS", tclrs::cmd_info::ext::FUNCTIONS),
                 ("FRAME", tclrs::cmd_info::ext::FRAME),
+                ("CONSTANT", tclrs::cmd_info::ext::CONSTANT),
+                ("CONSTS", tclrs::cmd_info::ext::CONSTS),
             ],
         ),
         ("PKG", ext::PKG_BASE, vec![("PACKAGE", ext::PACKAGE)]),
@@ -199,6 +201,7 @@ fn blocks() -> Vec<Block> {
                 ("EXEC", tclrs::cmd_process::ext::EXEC),
                 ("TAILCALL", tclrs::cmd_process::ext::TAILCALL),
                 ("TAILCALL_CALL", tclrs::cmd_process::ext::TAILCALL_CALL),
+                ("CONST", tclrs::cmd_process::ext::CONST),
             ],
         ),
         (
