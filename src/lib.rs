@@ -56,6 +56,7 @@ pub(crate) mod dtoa;
 pub mod dump;
 /// The `.enc` tables, generated. See `scripts/gen_encoding_tables.py`.
 pub mod encoding_tables;
+pub(crate) mod errinfo;
 pub(crate) mod errorcode;
 pub mod expr;
 pub mod expr_math;

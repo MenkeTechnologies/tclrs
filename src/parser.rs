@@ -65,6 +65,9 @@ pub struct Word {
     pub braced: bool,
     /// The word was double-quoted. Substitutions still apply (rule 4).
     pub quoted: bool,
+    /// The line the word began on, in the text it was parsed from. Position is
+    /// not part of what a word is, so it never takes part in equality.
+    pub pos: Pos,
 }
 
 impl Word {
@@ -88,21 +91,113 @@ impl Word {
             expand,
             braced,
             quoted: false,
+            pos: Pos::default(),
         }
     }
 }
 
-/// One command: its words and the 1-based line it started on.
+/// Where a command sits in the text it was parsed from: the byte range from its
+/// first word to its terminator, trailing white space included, which is the
+/// text a failure is reported against.
+///
+/// Position is not part of what a command *is*, so two spans always compare
+/// equal and a script is the same script wherever it was written.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl PartialEq for Span {
+    fn eq(&self, _: &Span) -> bool {
+        true
+    }
+}
+
+impl Eq for Span {}
+
+/// The text a [`Script`] was parsed from, shared by the script and every nested
+/// one, so a [`Span`] can be turned back into the command it names. Empty for a
+/// script no caller read spans from. Like [`Span`] it is not part of equality.
+#[derive(Debug, Clone, Default)]
+pub struct Source(pub Option<std::sync::Arc<str>>);
+
+impl PartialEq for Source {
+    fn eq(&self, _: &Source) -> bool {
+        true
+    }
+}
+
+impl Eq for Source {}
+
+/// A line number that is not part of equality; see [`Word::pos`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Pos(pub usize);
+
+impl PartialEq for Pos {
+    fn eq(&self, _: &Pos) -> bool {
+        true
+    }
+}
+
+impl Eq for Pos {}
+
+/// The line of its container a script's first line is, when the script is a body
+/// compiled inline; not part of equality.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Base(pub Option<usize>);
+
+impl PartialEq for Base {
+    fn eq(&self, _: &Base) -> bool {
+        true
+    }
+}
+
+impl Eq for Base {}
+
+/// One command: its words, the 1-based line it started on, and where it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
     pub words: Vec<Word>,
     pub line: usize,
+    pub span: Span,
 }
 
 /// A parsed script.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Script {
     pub commands: Vec<Command>,
+    pub source: Source,
+    pub base: Base,
+}
+
+impl Script {
+    /// Record the text this script, and every script nested in it, was parsed
+    /// from.
+    fn attach(&mut self, text: &std::sync::Arc<str>) {
+        self.source = Source(Some(std::sync::Arc::clone(text)));
+        for command in &mut self.commands {
+            for word in &mut command.words {
+                for part in &mut word.parts {
+                    part.attach(text);
+                }
+            }
+        }
+    }
+}
+
+impl Part {
+    fn attach(&mut self, text: &std::sync::Arc<str>) {
+        match self {
+            Part::Script(script) => script.attach(text),
+            Part::Elem { index, .. } => {
+                for part in index {
+                    part.attach(text);
+                }
+            }
+            Part::Lit(_) | Part::Var(_) => {}
+        }
+    }
 }
 
 /// How deeply command substitutions and array indices may nest before the parser
@@ -163,11 +258,12 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
         scripts: Vec::new(),
         mark: 0,
     };
-    let script = p.parse_script(false)?;
+    let mut script = p.parse_script(false)?;
     // A `]` with no opening `[` reaches here as an unconsumed terminator.
     if p.pos < p.src.len() {
         return Err(p.error("extra characters after close-bracket"));
     }
+    script.attach(&std::sync::Arc::from(src));
     Ok(script)
 }
 
@@ -260,11 +356,12 @@ pub(crate) fn command_at(src: &str, at: usize) -> Result<(Script, usize), ParseE
         scripts: Vec::new(),
         mark: 0,
     };
-    let script = p.parse_script(true)?;
+    let mut script = p.parse_script(true)?;
     if p.peek() != Some(b']') {
         return Err(p.error("missing close-bracket"));
     }
     p.pos += 1;
+    script.attach(&std::sync::Arc::from(src));
     Ok((script, p.pos))
 }
 
@@ -558,16 +655,31 @@ impl<'a> Parser<'a> {
                 break;
             }
             let line = self.line;
+            let start = self.pos;
             let mut words = Vec::new();
             loop {
-                words.push(self.parse_word(nested)?);
+                let at = self.line;
+                let mut word = self.parse_word(nested)?;
+                word.pos = Pos(at);
+                words.push(word);
                 if !self.skip_word_gap() || self.at_command_end(nested) {
                     break;
                 }
             }
-            commands.push(Command { words, line });
+            commands.push(Command {
+                words,
+                line,
+                span: Span {
+                    start,
+                    end: self.pos,
+                },
+            });
         }
-        Ok(Script { commands })
+        Ok(Script {
+            commands,
+            source: Source::default(),
+            base: Base::default(),
+        })
     }
 
     /// How much of an unterminated `[`'s text still runs: everything before the
@@ -697,6 +809,7 @@ impl<'a> Parser<'a> {
                     expand,
                     braced: false,
                     quoted: true,
+                    pos: Pos::default(),
                 })
             }
             _ => {
@@ -706,6 +819,7 @@ impl<'a> Parser<'a> {
                     expand,
                     braced: false,
                     quoted: false,
+                    pos: Pos::default(),
                 })
             }
         }

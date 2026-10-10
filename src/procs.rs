@@ -370,6 +370,7 @@ fn dispatch(
         code: crate::runtime::TCL_ERROR,
         level: 0,
         errorcode: None,
+        info: None,
     };
     match defined {
         // A procedure the script defined shadows a foreign command of the same
@@ -601,6 +602,7 @@ pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(
         code: crate::runtime::TCL_ERROR,
         level: 0,
         errorcode: None,
+        info: None,
     };
     let words = splice(&values[2..]).map_err(here)?;
     let Some((first, args)) = words.split_first() else {
@@ -614,7 +616,11 @@ pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(
     // procedure to enter, or whether to fall through to the compiler.
     let defined = defined_proc(interp, &name);
     if defined.is_none() && crate::names::is_command(&name) {
-        return as_script(interp, vm, &words, Some(&declared)).map_err(|e| here(e.msg));
+        return as_script(interp, vm, &words, Some(&declared)).map_err(|e| TclError {
+            info: e.info.clone(),
+            errorcode: e.errorcode.clone(),
+            ..here(e.msg)
+        });
     }
     dispatch(interp, vm, &name, args, line, defined)
 }
@@ -770,6 +776,7 @@ impl Compiler {
         for slot in (0..slots).rev() {
             self.emit(Op::SetSlot(slot as u16), -1);
         }
+        let barrier = self.emap.enter_body(false);
         let compiled = match &body {
             crate::compiler::Body::Script(script) => self.script_value(script),
             crate::compiler::Body::Deferred { prefix, msg } => {
@@ -783,6 +790,7 @@ impl Compiler {
                 ran.and_then(|()| self.raise_at_run_time(&msg))
             }
         };
+        self.emap.leave_body(barrier);
         // A body that falls off its end returns the value of its last command.
         self.emit(Op::ReturnValue, -1);
 
@@ -995,6 +1003,9 @@ impl Compiler {
                     };
                 }
                 Some("-errorcode") => errorcode = Some(value),
+                // The record an error carries is merged when the command runs, as
+                // `-options` is.
+                Some("-errorinfo" | "-errorstack" | "-errorline") => has_options = true,
                 Some("-options") => has_options = true,
                 Some(other) if other.starts_with('-') => {
                     return self.error(format!("return option \"{other}\" is not supported"))

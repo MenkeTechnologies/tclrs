@@ -753,7 +753,9 @@ impl Compiler {
             }
             text.push_str(piece);
         }
-        let script = crate::parser::parse(&text).map_err(|e| self.deferrable_err(e.msg))?;
+        let mut script = crate::parser::parse(&text).map_err(|e| self.deferrable_err(e.msg))?;
+        // The body is a container of its own: its lines count from it.
+        script.base = crate::parser::Base(Some(0));
         // Every `proc` the body defines belongs to the namespace, so the
         // signatures are collected under their qualified names before anything
         // is lowered — which is what lets a procedure defined later in the body
@@ -776,7 +778,9 @@ impl Compiler {
         // The body is parsed from its own text, so its commands are numbered
         // from 1 and must not move the line a failure is reported at.
         self.body_depth += 1;
+        let container = self.emap.enter_body(false);
         let result = self.script_value(&script);
+        self.emap.leave_body(container);
         self.body_depth -= 1;
         self.ns.current = outer;
         result
@@ -1118,6 +1122,7 @@ fn literal_word(text: &str) -> Word {
         expand: false,
         braced: true,
         quoted: false,
+        pos: Default::default(),
     }
 }
 

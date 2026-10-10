@@ -2,7 +2,7 @@
 
 mod golden;
 
-use golden::{ok, Case};
+use golden::ok;
 
 #[test]
 fn pinned() {

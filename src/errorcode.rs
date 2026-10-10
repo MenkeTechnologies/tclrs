@@ -117,6 +117,167 @@ pub(crate) fn classify(msg: &str) -> Option<String> {
     Some(crate::list::join(&code))
 }
 
+/// The `REG_*` name `regerror` words as `reason` (`generic/regerrs.h`).
+const REGEX_ERRORS: &[(&str, &str)] = &[
+    ("invalid regexp (reg version 0.8)", "REG_BADPAT"),
+    ("invalid collating element", "REG_ECOLLATE"),
+    ("invalid character class", "REG_ECTYPE"),
+    ("invalid escape \\ sequence", "REG_EESCAPE"),
+    ("invalid backreference number", "REG_ESUBREG"),
+    ("brackets [] not balanced", "REG_EBRACK"),
+    ("parentheses () not balanced", "REG_EPAREN"),
+    ("braces {} not balanced", "REG_EBRACE"),
+    ("invalid repetition count(s)", "REG_BADBR"),
+    ("invalid character range", "REG_ERANGE"),
+    ("out of memory", "REG_ESPACE"),
+    ("invalid quantifier operand", "REG_BADRPT"),
+    ("invalid argument to regex function", "REG_INVARG"),
+    ("character widths of regex and string differ", "REG_MIXED"),
+    ("invalid embedded option", "REG_BADOPT"),
+    ("regular expression too big", "REG_ETOOBIG"),
+    ("too many colors", "REG_ECOLORS"),
+    ("can't match", "REG_CANTMATCH"),
+];
+
+/// [`classify`], for the templates whose code depends on where the error was
+/// raised: whether the command that failed ran in a procedure body — a local
+/// variable is found by slot there and by name elsewhere, and the two raise
+/// different codes — and which command it was.
+///
+/// Anything this still cannot place is `None`, and the error carries tclsh's
+/// default code.
+pub(crate) fn classify_in(msg: &str, in_proc: bool, command: &str) -> Option<String> {
+    if let Some(code) = classify(msg) {
+        return Some(code);
+    }
+    let first = msg.lines().next().unwrap_or(msg);
+    // `Tcl_ParseExpr`'s own refusals: the message carries the expression after a
+    // line break, with the offset marked.
+    if msg.contains("\nin expression \"") {
+        let kind = if first.starts_with("missing operand") || first.starts_with("missing operator")
+        {
+            "MISSING"
+        } else if first == "empty expression" {
+            "EMPTY"
+        } else if first.starts_with("unbalanced")
+            || first.starts_with("missing close-bracket")
+            || first == "missing \""
+            || first == "missing )"
+        {
+            "UNBALANCED"
+        } else if first.starts_with("invalid character") {
+            "BADCHAR"
+        } else if first.starts_with("invalid bareword") {
+            if msg.ends_with("(invalid binary number?)") {
+                "BADNUMBER BINARY"
+            } else if msg.ends_with("(invalid octal number?)") {
+                "BADNUMBER OCTAL"
+            } else if msg.ends_with("(invalid hexadecimal number?)") {
+                "BADNUMBER HEXADECIMAL"
+            } else {
+                "BAREWORD"
+            }
+        } else {
+            return None;
+        };
+        return Some(format!("TCL PARSE EXPR {kind}"));
+    }
+    if first.starts_with("not enough arguments for math function")
+        || first.starts_with("too many arguments for math function")
+    {
+        return Some("TCL WRONGARGS".to_string());
+    }
+    if let Some(name) = quoted(msg, "can't read \"", "\": no such variable") {
+        // A local read is by slot (`TclObjVarErrMsg` from `TclPtrGetVarIdx`); a
+        // global one is found by name.
+        return Some(if in_proc {
+            "TCL READ VARNAME".to_string()
+        } else {
+            crate::list::join(&["TCL", "LOOKUP", "VARNAME", name])
+        });
+    }
+    if quoted(msg, "can't read \"", "\": no such element in array").is_some() {
+        return Some("TCL READ VARNAME".to_string());
+    }
+    if let Some(name) = quoted(msg, "can't unset \"", "\": no such variable") {
+        return Some(if in_proc {
+            "TCL UNSET VARNAME".to_string()
+        } else {
+            crate::list::join(&["TCL", "LOOKUP", "VARNAME", name])
+        });
+    }
+    if let Some(element) = quoted(msg, "can't unset \"", "\": no such element in array")
+        .and_then(|n| n.split_once('(').map(|(_, e)| e.trim_end_matches(')')))
+    {
+        return Some(crate::list::join(&["TCL", "LOOKUP", "ELEMENT", element]));
+    }
+    if let Some(text) = quoted(msg, "expected integer but got \"", "\"") {
+        // A value that is a number but not an integer is refused by a different
+        // site than a word that is no number at all.
+        let numeric = crate::list::double(text).is_ok();
+        return Some(
+            if numeric {
+                "TCL VALUE INTEGER"
+            } else {
+                "TCL VALUE NUMBER"
+            }
+            .to_string(),
+        );
+    }
+    if first.starts_with("expected floating-point number but got ") {
+        return Some("TCL VALUE NUMBER".to_string());
+    }
+    if first == "format string ended in middle of field specifier" {
+        return Some("TCL FORMAT INCOMPLETE".to_string());
+    }
+    if first.starts_with("can't interpret \"") && first.ends_with("\" as a lambda expression") {
+        return Some("TCL VALUE LAMBDA".to_string());
+    }
+    if first == "yield can only be called in a coroutine" {
+        return Some("TCL COROUTINE ILLEGAL_YIELD".to_string());
+    }
+    if let Some(reason) = msg.strip_prefix("cannot compile regular expression pattern: ") {
+        if let Some((_, name)) = REGEX_ERRORS.iter().find(|(text, _)| *text == reason) {
+            return Some(crate::list::join(&["REGEXP", name, reason]));
+        }
+    }
+    if let Some(rest) = msg.strip_prefix("bad level \"") {
+        if let Some(level) = rest.strip_suffix('"') {
+            return Some(crate::list::join(&[
+                "TCL",
+                "LOOKUP",
+                if command == "info" {
+                    "STACK_LEVEL"
+                } else {
+                    "LEVEL"
+                },
+                level,
+            ]));
+        }
+    }
+    if let Some(name) = msg
+        .strip_prefix("unknown namespace \"")
+        .and_then(|r| r.split_once('"'))
+        .map(|(name, _)| name)
+    {
+        return Some(crate::list::join(&["TCL", "LOOKUP", "NAMESPACE", name]));
+    }
+    // `Tcl_GetIndexFromObjStruct`'s refusal: `bad <what> "<value>": must be …`.
+    // `clock` words its own option errors differently.
+    if command != "clock" {
+        if let Some(rest) = msg.strip_prefix("bad ") {
+            if let Some((what, tail)) = rest.split_once(" \"") {
+                if let Some((value, after)) = tail.split_once("\": must be ") {
+                    if !what.contains(' ') && !after.is_empty() {
+                        return Some(crate::list::join(&["TCL", "LOOKUP", "INDEX", what, value]));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// The text between `prefix` and `suffix` when `msg` is exactly that shape.
 fn quoted<'a>(msg: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
     msg.strip_prefix(prefix)?.strip_suffix(suffix)

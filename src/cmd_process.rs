@@ -35,7 +35,7 @@ pub mod ext {
     /// `[code?]` → never returns.
     pub const EXIT: u16 = BASE;
     /// `[declared?, script, count?]` → `N microseconds per iteration`. The inline
-    /// operand is the number of words after `time`, plus [`super::IN_FRAME`]
+    /// operand is the number of words after `time`, plus `IN_FRAME`
     /// when `declared` leads the stack.
     pub const TIME: u16 = BASE + 1;
     /// `[arg …]` → what the pipeline wrote to standard output.

@@ -63,8 +63,8 @@ pub mod ext {
     ///
     /// The extras are `error`'s `errorInfo` and `errorCode` arguments, both
     /// evaluated because `Tcl_ErrorObjCmd` receives them substituted. The
-    /// `errorCode` becomes `-errorcode` (`NONE` when absent); the `errorInfo` is
-    /// dropped, since this frontend does not carry `-errorinfo` (BUGS.md).
+    /// `errorCode` becomes `-errorcode` (`NONE` when absent); a non-empty
+    /// `errorInfo` begins the error's record (see `src/errinfo.rs`).
     ///
     /// An operand of [`ERROR_BUILTIN`] instead raises a message the COMPILER
     /// chose for a builtin's own failure (an unknown `regexp` switch, `expr
@@ -1025,7 +1025,7 @@ fn lower(
     // as an array, and a `proc` whose definition only happens when the
     // enclosing code runs.
     let first = Compiler::run(script, ArrayNames::new(), HashSet::new(), debug, projected)?;
-    let (mut chunk, tolerant, incr_sites, procs, slot_names, slot_reads) =
+    let (mut chunk, tolerant, incr_sites, procs, slot_names, slot_reads, cmd_map) =
         if first.seen_arrays.is_empty() && first.seen_runtime.is_empty() && known.is_empty() {
             let procs = signature_table(&first);
             let names = first.slot_names.clone();
@@ -1036,6 +1036,7 @@ fn lower(
                 procs,
                 names,
                 first.slot_reads,
+                first.emap.finish_map(),
             )
         } else {
             let mut arrays = first.seen_arrays;
@@ -1046,7 +1047,15 @@ fn lower(
             let procs = signature_table(&second);
             let names = second.slot_names.clone();
             let slot_reads = second.slot_reads.clone();
-            (second.b.build(), reads, incrs, procs, names, slot_reads)
+            (
+                second.b.build(),
+                reads,
+                incrs,
+                procs,
+                names,
+                slot_reads,
+                second.emap.finish_map(),
+            )
         };
     // Tcl's integers are arbitrary-precision, and so are this frontend's: an
     // `i64` that overflows promotes, in the numeric hook. Native codegen would
@@ -1056,6 +1065,7 @@ fn lower(
     // compiler print -9223372036854775808 where the interpreter answers
     // 9223372036854775808.
     chunk.int_overflow_deopt = true;
+    crate::errinfo::note(&mut chunk, cmd_map);
     crate::runtime::note_tolerant_reads(&chunk, &tolerant);
     crate::runtime::note_incr_sites(&chunk, &incr_sites);
     crate::runtime::note_slot_reads(&chunk, &slot_reads);
@@ -1299,6 +1309,9 @@ pub(crate) struct Compiler {
     /// Names found to be used as arrays during this pass.
     pub(crate) seen_arrays: ArrayNames,
     /// `Some` while compiling a procedure body.
+    /// The commands lowered so far, for the trace an error carries
+    /// ([`crate::errinfo`]).
+    pub(crate) emap: crate::errinfo::Builder,
     pub(crate) scope: Option<Scope>,
     /// Signatures of every procedure the script defines, keyed by name. The
     /// call site needs one to apply defaults and collect `args`.
@@ -1401,6 +1414,7 @@ impl Compiler {
             command_mark: 0,
             arrays,
             seen_arrays: ArrayNames::new(),
+            emap: crate::errinfo::Builder::default(),
             scope: None,
             procs: HashMap::new(),
             defined: HashSet::new(),
@@ -1864,7 +1878,8 @@ impl Compiler {
                 // A name bound by `upvar #0` reads the target's variable, and an
                 // unset read is refused under the name the script wrote — the
                 // alias — not the target's: `can't read "z"` after `upvar #0 q z`.
-                if self.is_upvar_alias(name) {
+                // A name written with its leading `::` is refused with it.
+                if self.is_upvar_alias(name) || name.starts_with("::") {
                     self.slot_reads
                         .push((self.b.current_pos(), name.to_string()));
                 }
@@ -1919,7 +1934,9 @@ impl Compiler {
         let outer = std::mem::replace(&mut self.top_level, false);
         let outer_static = std::mem::replace(&mut self.static_ctx, false);
         self.body_depth += 1;
+        let container = self.emap.enter_body(self.scope.is_some());
         let result = emit(self);
+        self.emap.leave_body(container);
         self.body_depth -= 1;
         self.top_level = outer;
         self.static_ctx = outer_static;
@@ -1947,22 +1964,36 @@ impl Compiler {
             self.push_empty();
             return Ok(());
         }
+        self.emap
+            .enter_script(script.source.0.as_ref(), script.base.0);
+        let mut outcome = Ok(());
         for (i, cmd) in script.commands.iter().enumerate() {
             if i > 0 {
                 self.emit(Op::Pop, -1);
             }
-            self.command(cmd)?;
+            outcome = self.command(cmd);
+            if outcome.is_err() {
+                break;
+            }
         }
-        Ok(())
+        self.emap.leave_script();
+        outcome
     }
 
     /// Emit a script for its effect, leaving the stack as it was found.
     pub(crate) fn script_effect(&mut self, script: &Script) -> Result<(), CompileError> {
+        self.emap
+            .enter_script(script.source.0.as_ref(), script.base.0);
+        let mut outcome = Ok(());
         for cmd in &script.commands {
-            self.command(cmd)?;
+            outcome = self.command(cmd);
+            if outcome.is_err() {
+                break;
+            }
             self.emit(Op::Pop, -1);
         }
-        Ok(())
+        self.emap.leave_script();
+        outcome
     }
 
     // ── words ────────────────────────────────────────────────────────────
@@ -2162,6 +2193,23 @@ impl Compiler {
     ];
 
     fn command(&mut self, cmd: &Command) -> Result<(), CompileError> {
+        let kind = cmd
+            .words
+            .first()
+            .and_then(|w| w.as_literal())
+            .and_then(|name| {
+                let sub = cmd.words.get(1).and_then(|w| w.as_literal());
+                crate::errinfo::BodyKind::of(name, sub)
+            });
+        let start = self.b.current_pos();
+        self.emap
+            .begin(start, cmd.line, (cmd.span.start, cmd.span.end), kind);
+        let outcome = self.command_inner(cmd);
+        self.emap.finish(self.b.current_pos());
+        outcome
+    }
+
+    fn command_inner(&mut self, cmd: &Command) -> Result<(), CompileError> {
         self.line = cmd.line;
         // A command substitution is parsed from the script's own text, so its
         // commands carry absolute lines and may set this; a body is re-parsed
@@ -3125,8 +3173,17 @@ impl Compiler {
     }
 
     pub(crate) fn body_script(&mut self, word: &Word) -> Result<Script, CompileError> {
-        let text = self.literal_of(word, "script body")?;
-        crate::parser::parse(text).map_err(|e| self.deferrable_err(e.msg))
+        let text = self.literal_of(word, "script body")?.to_string();
+        // The body's lines count from the container it ends up in, which is
+        // where tclsh reports them; see `crate::errinfo::Builder::body_base`.
+        let base = self.emap.body_base(word.pos.0);
+        match crate::parser::parse(&text) {
+            Ok(mut script) => {
+                script.base = crate::parser::Base(Some(base));
+                Ok(script)
+            }
+            Err(e) => Err(self.deferrable_err(e.msg)),
+        }
     }
 
     /// A body, held in whichever of its two states it is in: parsed, or known

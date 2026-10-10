@@ -555,7 +555,12 @@ impl Compiler {
                         2 => {}
                         _ => return Err(self.deferrable_err("finally clause must be last")),
                     }
-                    finally = Some(self.body_of(&rest[1])?);
+                    let mut body = self.body_of(&rest[1])?;
+                    if let Body::Script(script) = &mut body {
+                        // A container of its own: lines count from it.
+                        script.base = crate::parser::Base(Some(0));
+                    }
+                    finally = Some(body);
                     rest = &[];
                 }
                 other => {
@@ -580,7 +585,9 @@ impl Compiler {
                 // cleanup for its effect, then hand the outcome on.
                 let handler = self.b.current_pos();
                 self.depth = entry + 3;
+                self.emap.pending_try = Some(crate::errinfo::BodyKind::TryFinally);
                 self.emit_body(&cleanup)?;
+                self.emap.pending_try = None;
                 self.emit(Op::Extended(ext::RERAISE, 0), -3);
 
                 let guarded = self.b.current_pos();
@@ -594,7 +601,10 @@ impl Compiler {
                 self.emit(Op::Extended(ext::CATCH_END, 0), 0);
                 // Outside the region, so an error the cleanup raises leaves
                 // the command instead of re-entering the handler above.
-                self.emit_body(&cleanup)
+                self.emap.pending_try = Some(crate::errinfo::BodyKind::TryFinally);
+                let ended = self.emit_body(&cleanup);
+                self.emap.pending_try = None;
+                ended
             }
         }
     }
@@ -651,10 +661,19 @@ impl Compiler {
             self.store_or_drop(options_var);
             self.emit(Op::Pop, -1);
             let body = match crate::parser::parse(script) {
-                Ok(script) => Body::Script(script),
+                Ok(mut script) => {
+                    script.base = crate::parser::Base(Some(0));
+                    Body::Script(script)
+                }
                 Err(e) => Body::deferred(script, e.msg),
             };
+            self.emap.pending_try = Some(if h.test.starts_with("on") {
+                crate::errinfo::BodyKind::TryOn
+            } else {
+                crate::errinfo::BodyKind::TryTrap
+            });
             self.emit_body_value(&body)?;
+            self.emap.pending_try = None;
             to_end.push(self.emit(Op::Jump(usize::MAX), 0));
             let next = self.b.current_pos();
             self.b.patch_jump(miss, next);

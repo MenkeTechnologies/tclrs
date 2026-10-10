@@ -111,6 +111,10 @@ pub struct TclError {
     /// one carry it: `error`'s third word, `throw`'s type, and `return
     /// -errorcode`; a plain `error` carries tclsh's `NONE`.
     pub errorcode: Option<String>,
+    /// What was executing when the error was raised, once a machine has looked
+    /// ([`crate::errinfo`]); `None` before then and for an error the compiler
+    /// reported.
+    pub(crate) info: Option<Box<crate::errinfo::ErrInfo>>,
 }
 
 impl TclError {
@@ -121,6 +125,7 @@ impl TclError {
             code: TCL_ERROR,
             level: 0,
             errorcode: None,
+            info: None,
         }
     }
 
@@ -133,6 +138,7 @@ impl TclError {
             code,
             level,
             errorcode: None,
+            info: None,
         }
     }
 
@@ -174,24 +180,53 @@ impl TclError {
         }
     }
 
-    /// Tcl's `-errorcode`-style option dictionary for `catch`'s options
-    /// variable. `-code` and `-level` are always present and exact;
-    /// `-errorcode` joins them when the error carries one, or when it is an
-    /// error a builtin raised whose message determines tclsh's code
-    /// ([`crate::errorcode::classify`]).
-    ///
-    /// The value goes through the list quoter, because an error code is itself a
-    /// LIST (`POSIX ENOENT {no such file or directory}`) and the dictionary is
-    /// parsed as one — writing it raw would turn `A B` into two keys.
-    pub(crate) fn options(&self) -> String {
-        let mut out = format!("-code {} -level {}", self.code, self.level);
+    /// The `-errorcode` of an error: the one it carries, or the one its message
+    /// determines, or `NONE` — which is what tclsh's `errorCode` holds for an
+    /// error that states nothing.
+    pub(crate) fn code_text(&self) -> String {
         let classified = match (&self.errorcode, self.code) {
             (None, TCL_ERROR) => crate::errorcode::classify(&self.msg),
             _ => None,
         };
-        if let Some(ec) = self.errorcode.as_ref().or(classified.as_ref()) {
-            out.push_str(" -errorcode ");
-            out.push_str(&crate::list::quote(ec, false));
+        self.errorcode
+            .clone()
+            .or(classified)
+            .unwrap_or_else(|| "NONE".to_string())
+    }
+
+    /// Tcl's option dictionary for `catch`'s options variable. `-code` and
+    /// `-level` are always present and exact; `-errorcode` joins them for an
+    /// error — the one it carries, the one its message determines
+    /// ([`crate::errorcode::classify_in`]), or `NONE` — and so do the
+    /// `-errorstack`, `-errorinfo` and `-errorline` of the record of what was
+    /// executing, which tclsh places around `-errorcode` in that order.
+    ///
+    /// Values go through the list quoter, because an error code is itself a
+    /// LIST (`POSIX ENOENT {no such file or directory}`) and the dictionary is
+    /// parsed as one — writing it raw would turn `A B` into two keys.
+    pub(crate) fn options_with(&self, trace: Option<&Trace>) -> String {
+        let mut out = format!("-code {} -level {}", self.code, self.level);
+        if let Some(t) = trace {
+            out.push_str(" -errorstack ");
+            out.push_str(&crate::list::quote(&t.stack, false));
+        }
+        let classified = match (&self.errorcode, self.code) {
+            (None, TCL_ERROR) => crate::errorcode::classify(&self.msg),
+            _ => None,
+        };
+        match self.errorcode.as_ref().or(classified.as_ref()) {
+            Some(ec) => {
+                out.push_str(" -errorcode ");
+                out.push_str(&crate::list::quote(ec, false));
+            }
+            // An error that states no code carries `NONE`.
+            None if self.code == TCL_ERROR => out.push_str(" -errorcode NONE"),
+            None => {}
+        }
+        if let Some(t) = trace {
+            out.push_str(" -errorinfo ");
+            out.push_str(&crate::list::quote(&t.info, false));
+            out.push_str(&format!(" -errorline {}", t.line));
         }
         out
     }
@@ -210,6 +245,7 @@ impl TclError {
             code: TCL_ERROR,
             level: 0,
             errorcode: None,
+            info: None,
         };
         // Split as a LIST rather than on whitespace: `-errorcode {A B}` is one
         // value of two words, and a whitespace split would read `{A` as the
@@ -230,6 +266,18 @@ impl TclError {
                 }
                 "-level" => error.level = value.parse().unwrap_or(0),
                 "-errorcode" => error.errorcode = Some(value),
+                "-errorinfo" => {
+                    let info = error.info.get_or_insert_with(Default::default);
+                    info.preset = Some(value);
+                }
+                "-errorline" => {
+                    let info = error.info.get_or_insert_with(Default::default);
+                    info.line_hint = value.parse().unwrap_or(0);
+                }
+                "-errorstack" => {
+                    let info = error.info.get_or_insert_with(Default::default);
+                    info.stack_prefix = value;
+                }
                 _ => {}
             }
         }
@@ -250,6 +298,14 @@ impl TclError {
             ..self
         }
     }
+}
+
+/// What a `catch` is handed beyond the code: the rendered record of where the
+/// error came from.
+pub(crate) struct Trace {
+    pub stack: String,
+    pub info: String,
+    pub line: usize,
 }
 
 impl fmt::Display for TclError {
@@ -356,8 +412,19 @@ fn merge_return_options(pairs: &str, msg: String) -> Result<TclError, TclError> 
         None if code == TCL_ERROR => Some("NONE".to_string()),
         other => other,
     };
+    let info = get("-errorinfo").filter(|_| code == TCL_ERROR).map(|text| {
+        Box::new(crate::errinfo::ErrInfo {
+            preset: Some(text.to_string()),
+            // The `return` that hands the record on is not logged again.
+            suppress_first: true,
+            line_hint: get("-errorline").and_then(|l| l.parse().ok()).unwrap_or(0),
+            stack_prefix: get("-errorstack").unwrap_or_default().to_string(),
+            ..Default::default()
+        })
+    });
     Ok(TclError {
         errorcode,
+        info,
         ..TclError::coded(code, level, msg)
     })
 }
@@ -850,6 +917,13 @@ pub(crate) fn call_in_chunk(
 }
 
 thread_local! {
+    /// The `errorInfo` an `error` command was given, beside the code: set by the
+    /// op, taken by the one place that turns its message into a `TclError`.
+    static PENDING_ERRORINFO: std::cell::RefCell<Option<(String, bool)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+thread_local! {
     /// The `-errorcode` the extension op now raising stated, if it stated one.
     ///
     /// An extension op reports failure as a bare `String`, and that signature is
@@ -868,6 +942,13 @@ thread_local! {
 fn with_pending_errorcode(mut e: TclError) -> TclError {
     if let Some(ec) = PENDING_ERRORCODE.with(|p| p.borrow_mut().take()) {
         e.errorcode = Some(ec);
+    }
+    if let Some((info, suppress_first)) = PENDING_ERRORINFO.with(|p| p.borrow_mut().take()) {
+        e.info = Some(Box::new(crate::errinfo::ErrInfo {
+            preset: Some(info),
+            suppress_first,
+            ..Default::default()
+        }));
     }
     e
 }
@@ -1767,7 +1848,13 @@ impl Hooks {
             // happily have answered 2.5. An operand that *is* an integer falls
             // through, so promotion to a bignum still works here.
             if is_incr_site(call.chunk, call.ip) {
-                if let Some(e) = incr_operand_error(call.a, call.b) {
+                if let Some((e, increment)) = incr_operand_error(call.a, call.b) {
+                    // Only the increment is named as such: the variable's own
+                    // value is refused as `incr` found it.
+                    if increment {
+                        let info = format!("{e}\n    (reading increment)");
+                        PENDING_ERRORINFO.with(|p| *p.borrow_mut() = Some((info, false)));
+                    }
                     return Err(e);
                 }
             }
@@ -2104,6 +2191,7 @@ impl Hooks {
                     code: TCL_ERROR,
                     level: 0,
                     errorcode: None,
+                    info: None,
                 });
                 vm.push(Value::Undef);
                 vm.request_halt();
@@ -2708,7 +2796,9 @@ fn apply_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     }
 
     flush(&vm.chunk, interp, &vm.globals);
+    crate::errinfo::enter_lambda(&lambda);
     let result = run_source(interp, &src);
+    crate::errinfo::leave_lambda();
     vm.globals = seed(&vm.chunk, interp);
     // The synthesized name must not surface in a diagnostic the script can see:
     // tclsh reports a lambda's arity against `apply lambdaExpr`.
@@ -2716,6 +2806,10 @@ fn apply_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
     // `break` or `continue` reaching it as itself is an error there.
     vm.push(result.map_err(|e| match (e.level, e.code) {
         (0, TCL_BREAK | TCL_CONTINUE) => e.leave_procedure(),
+        _ if e.code == TCL_ERROR => TclError {
+            msg: rename_lambda(&e.msg),
+            ..e
+        },
         _ => TclError::plain(rename_lambda(&e.msg)),
     })?);
     Ok(())
@@ -2941,6 +3035,10 @@ struct Machine {
     globals: Vec<Value>,
     /// The context currently running.
     current: usize,
+    /// Whether the main context was started inside a procedure body rather than
+    /// at the top of the chunk, which leaves a frame that returns past the end of
+    /// the program.
+    entered: bool,
 }
 
 impl Machine {
@@ -2963,6 +3061,7 @@ impl Machine {
         chunk: Arc<Chunk>,
         at: Option<(usize, Vec<Value>)>,
     ) -> Result<Value, TclError> {
+        let entered = at.is_some();
         let hooks = Hooks::new(Arc::clone(shared));
         let mut main = acquire_vm(&chunk);
         hooks.install(&mut main);
@@ -3006,6 +3105,7 @@ impl Machine {
             created: HashSet::new(),
             globals,
             current: 0,
+            entered,
         };
         let outcome = machine.drive();
         // The machine's first context is the VM this run started on; a
@@ -3042,7 +3142,7 @@ impl Machine {
                 .expect("error lock")
                 .take()
                 .or_else(|| match &outcome {
-                    VMResult::Error(e) => Some(TclError::plain(e.clone())),
+                    VMResult::Error(e) => Some(with_pending_errorcode(TclError::plain(e.clone()))),
                     _ => None,
                 });
             if let Some(e) = raised {
@@ -3110,6 +3210,122 @@ impl Machine {
         outcome
     }
 
+    /// Record, on an error that carries no record yet, what was executing when it
+    /// was raised; on one that does, add what this machine's frames were.
+    fn trace(&mut self, e: &mut TclError, mut returned: bool) {
+        if e.code != TCL_ERROR {
+            return;
+        }
+        let chunk = Arc::clone(&self.chunk);
+        returned |= e.level > 0;
+        let started_inside = self.entered;
+        let msg = e.msg.clone();
+        let code = e.errorcode.clone();
+        let vm = self.vm(self.current);
+        let failing = vm.ip.saturating_sub(1);
+        let info = e.info.get_or_insert_with(Default::default);
+        let first = info.entries.is_empty();
+        let reraise = matches!(
+            chunk.ops.get(failing),
+            Some(fusevm::Op::Extended(id, _)) if *id == ext::RERAISE
+        );
+        let inline = matches!(
+            chunk.ops.get(failing),
+            Some(fusevm::Op::Extended(id, _)) if *id == ext::SUBST
+        );
+        info.extend(vm, &chunk, failing, started_inside, reraise, inline);
+        if !first || info.entries.is_empty() {
+            return;
+        }
+        // `return -code error` leaves the procedure normally: where it failed is
+        // the call, not anything inside the body.
+        if returned {
+            let top = info.entries[0].depth;
+            let keep = info
+                .entries
+                .iter()
+                .position(|en| en.depth != top)
+                .unwrap_or(info.entries.len());
+            info.entries.drain(..keep);
+            info.suppress_first = false;
+        }
+        if info.stack_prefix.is_empty() && !info.suppress_first {
+            let command = info.entries.first().map_or(String::new(), |en| {
+                crate::errinfo::first_word(&en.text).to_string()
+            });
+            if let Some(first) = info.entries.first() {
+                info.inner = crate::errinfo::inner_of(&first.text, &msg, code.as_deref());
+            }
+            info.invoked = crate::errinfo::begun_by_expression(&msg, &command);
+            // An expression that would not parse names itself after the message,
+            // which is where `(parsing expression "…")` comes from.
+            if let Some(expression) = crate::errinfo::parsed_expression(&msg) {
+                if info.preset.is_none() {
+                    info.preset = Some(format!("{msg}\n    (parsing expression \"{expression}\")"));
+                }
+            }
+            let in_proc = info.entries.first().is_some_and(|en| en.depth > 0);
+            if e.errorcode.is_none() {
+                e.errorcode = crate::errorcode::classify_in(&msg, in_proc, &command);
+            }
+        }
+    }
+
+    /// The record an error absorbed by the `catch` region `frame`, whose handler
+    /// is `handler`, hands its handler — and the globals tclsh sets with it.
+    fn absorbed(&mut self, e: &TclError, frame: &CatchFrame, handler: usize) -> Option<Trace> {
+        if e.code != TCL_ERROR {
+            return None;
+        }
+        let chunk = Arc::clone(&self.chunk);
+        let depth = {
+            let vm = self.vm(self.current);
+            let end = frame.frames.min(vm.frames.len());
+            vm.frames[..end]
+                .iter()
+                .filter(|f| f.entry_ip.is_some())
+                .count()
+        };
+        let mut info = e.info.as_deref().cloned().unwrap_or_default();
+        info.settle();
+        let region = crate::errinfo::region_of(&chunk, handler);
+        let upto = info.within(depth, region);
+        let trace = Trace {
+            info: info.info(&e.msg, upto),
+            stack: info.stack(upto),
+            line: upto
+                .checked_sub(1)
+                .and_then(|i| info.entries.get(i))
+                .map_or(1, |en| en.line),
+        };
+        self.set_global("errorInfo", &trace.info);
+        self.set_global("errorCode", &e.code_text());
+        Some(trace)
+    }
+
+    /// Set a global the way a `set` at the script's top level would, for the
+    /// variables tclsh itself maintains.
+    fn set_global(&mut self, name: &str, value: &str) {
+        let value = Value::Str(Arc::new(value.to_string()));
+        let qualified = format!("::{name}");
+        let slot = self
+            .chunk
+            .names
+            .iter()
+            .position(|n| n == name || *n == qualified);
+        if let Some(slot) = slot {
+            if let Some(cell) = self.globals.get_mut(slot) {
+                *cell = value.clone();
+            }
+        }
+        self.hooks
+            .interp
+            .lock()
+            .expect("interpreter lock")
+            .globals
+            .insert(name.to_string(), value);
+    }
+
     fn vm(&mut self, context: usize) -> &mut VM {
         self.contexts[context].vm.as_mut().expect("live context")
     }
@@ -3119,6 +3335,7 @@ impl Machine {
     /// report the error to whoever resumed it, as the reference implementation
     /// does. `Err` means nothing was left to catch it.
     fn raise(&mut self, mut e: TclError) -> Result<(), TclError> {
+        self.trace(&mut e, false);
         // Every VM call frame the code unwinds past is a procedure-call
         // boundary, and a `return` spends one level at each — which is what
         // makes `proc p {} {return -code break}` break the loop that called
@@ -3142,15 +3359,26 @@ impl Machine {
                 // Innermost first: a procedure activation is where a `break`
                 // or `continue` arriving as itself turns into an error, and
                 // any other frame only spends a level.
+                let mut became_error = false;
                 for crossed in (frame.frames..depth).rev() {
                     let activation = vm.frames.get(crossed).is_some_and(|f| f.entry_ip.is_some());
+                    let was_error = e.code == TCL_ERROR;
                     e = if activation {
                         e.leave_procedure()
                     } else {
                         e.descend()
                     };
+                    // A `break` that reached the end of a procedure became an
+                    // error there: it is the call that failed, as with a
+                    // `return -code error`.
+                    if !was_error && e.code == TCL_ERROR && e.info.is_none() {
+                        became_error = true;
+                    }
                 }
                 depth = frame.frames;
+                if became_error {
+                    self.trace(&mut e, true);
+                }
                 let code = e.visible_code();
                 let resume = match frame.kind {
                     FrameKind::Catch(handler) => Some(handler),
@@ -3193,7 +3421,11 @@ impl Machine {
                 if matches!(frame.kind, FrameKind::Catch(_)) {
                     self.contexts[self.current].catches.pop();
                 }
-                let options = e.options();
+                let trace = match frame.kind {
+                    FrameKind::Catch(handler) => self.absorbed(&e, &frame, handler),
+                    FrameKind::Loop { .. } => None,
+                };
+                let options = e.options_with(trace.as_ref());
                 let vm = self.vm(self.current);
                 // Unwind to the guarded script's entry state and hand the
                 // handler the code, the options and the message.
@@ -3944,8 +4176,8 @@ fn incr_operand(text: &str) -> Result<Num, String> {
 /// the one tclsh reports when both are. `None` when neither operand explains the
 /// failure, which leaves the arithmetic's own message in place rather than
 /// inventing one.
-fn incr_operand_error(a: &Value, b: &Value) -> Option<String> {
-    for operand in [a, b] {
+fn incr_operand_error(a: &Value, b: &Value) -> Option<(String, bool)> {
+    for (which, operand) in [a, b].into_iter().enumerate() {
         // `Undef` is the variable not existing, which `incr` reads as zero — the
         // undef hook answered it deliberately for this site. Absent is not the
         // same as not-an-integer.
@@ -3960,9 +4192,12 @@ fn incr_operand_error(a: &Value, b: &Value) -> Option<String> {
             Ok(Num::Int(_)) | Ok(Num::Big(_))
         );
         if !integral {
-            return Some(format!(
-                "expected integer but got {}",
-                named(&to_tcl_string(operand), 50)
+            return Some((
+                format!(
+                    "expected integer but got {}",
+                    named(&to_tcl_string(operand), 50)
+                ),
+                which == 1,
             ));
         }
     }
@@ -4432,9 +4667,16 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                 words.push(to_tcl_string(&vm.pop()));
             }
             let message = to_tcl_string(&vm.pop());
-            // The third word is the code. The second (`errorInfo`) is still
-            // evaluated and dropped — it sets `-errorinfo`, which this frontend
-            // does not carry (BUGS.md).
+            // The third word is the code. The second is the `errorInfo`, which
+            // starts the error's record when it is not empty.
+            let given = match arg {
+                1 => words.first().cloned(),
+                2 => words.get(1).cloned(),
+                _ => None,
+            };
+            if let Some(info) = given.filter(|i| !i.is_empty()) {
+                PENDING_ERRORINFO.with(|p| *p.borrow_mut() = Some((info, true)));
+            }
             set_pending_errorcode(match words.first() {
                 Some(code) if arg >= 2 => code.clone(),
                 // `error msg` and `error msg info` both leave the code at the

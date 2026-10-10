@@ -348,3 +348,69 @@ fn every_committed_finding_carries_its_provenance() {
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
+
+/// The half of every record that is tclrs's, checked without a reference
+/// interpreter.
+///
+/// The test above skips unless a tclsh 9.0.4 is on `PATH`, which CI does not
+/// install, so there nothing in this corpus would be compared against anything.
+/// The records carry what tclrs printed, and that needs no oracle: a change to
+/// stdout, the exit status or the error text of any committed case fails here
+/// on every machine. What cannot be checked here — that the recorded tclsh half
+/// is still what tclsh prints — stays with the test above.
+#[test]
+fn every_committed_finding_still_behaves_as_recorded_by_tclrs_alone() {
+    let cases = cases();
+    assert!(
+        !cases.is_empty(),
+        "tests/fuzz_corpus has no cases — run scripts/fuzz_parity.sh -m to fill it"
+    );
+
+    let dir = std::env::temp_dir().join(format!("tclrs-fuzz-corpus-alone-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+
+    let mut failures = Vec::new();
+    for case in &cases {
+        let record = parse_record(
+            &std::fs::read_to_string(case.with_extension("expected"))
+                .unwrap_or_else(|e| panic!("read record for {}: {e}", case.display())),
+        );
+        let script = dir.join(case.file_name().expect("case file name"));
+        std::fs::write(&script, driven(case)).expect("write driven script");
+        let actual = run(Path::new(TCLRS), &script);
+        let name = case.file_name().unwrap().to_string_lossy().into_owned();
+        let got_err: String = actual.stderr.lines().map(|l| format!("{l}\n")).collect();
+        for (what, expected, got) in [
+            (
+                "tclrs stdout",
+                record.tclrs_out.clone(),
+                actual.stdout.clone(),
+            ),
+            (
+                "tclrs status",
+                record.tclrs_status.to_string(),
+                actual.status.to_string(),
+            ),
+            (
+                "tclrs stderr",
+                normalize(&record.tclrs_err),
+                normalize(&got_err),
+            ),
+        ] {
+            if expected != got {
+                failures.push(format!(
+                    "{name}: {what}\n  recorded: {expected:?}\n  now:      {got:?}"
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} committed fuzz findings no longer match tclrs's recorded half.\n\
+         The behavior changed — re-record with `scripts/fuzz_parity.sh -R tests/fuzz_corpus`, and \
+         move anything now fixed into tests/parity_fuzz_findings.rs.\n\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n\n")
+    );
+}

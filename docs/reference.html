@@ -276,7 +276,7 @@
           <h3><a class="doc-anchor" href="#doc-cmd-error">#</a> <code>error</code></h3>
           <pre><code class="lang-tcl">error message ?errorInfo? ?errorCode?
 </code></pre>
-          <p>Raise an error carrying the message. The third word becomes the error's <code>-errorcode</code> (<code>NONE</code> when absent); the second is evaluated and dropped, since this frontend does not carry <code>-errorinfo</code>.</p>
+          <p>Raise an error carrying the message. The third word becomes the error's <code>-errorcode</code> (<code>NONE</code> when absent); the second, when it is not empty, begins the error's <code>errorInfo</code>, so the <code>error</code> command itself is not logged again.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-eval">
           <h3><a class="doc-anchor" href="#doc-cmd-eval">#</a> <code>eval</code></h3>

@@ -624,49 +624,64 @@ approximated, and nothing is silently mis-run.
   reference interpreter's `yield can only be called in a coroutine`, and an
   `eval` inside a coroutine that does not yield is unaffected
   (`tests/frame_differential.rs`).
-- **Return options beyond `-code`, `-level`, `-errorcode` and `-options`.** The
-  return-code system itself is implemented — see the entry in "Implemented" — and
-  `-errorcode` travels with the error: `error`'s third word, `throw`'s type
-  word and `return -errorcode` all set it, a plain `error` and a `return -code
-  error` carry tclsh's `NONE`, and it round-trips through the options dictionary
-  as a list, so `{A {B C}}` comes back with its element structure intact.
-  `return -options` merges a dictionary (see "Implemented"). `return -errorinfo`
-  is still refused.
+- **The error dictionary is the common shapes' exact, not every shape's.**
+  `catch {…} m o` carries `-code`, `-level`, `-errorstack`, `-errorcode`,
+  `-errorinfo` and `-errorline`, and `::errorInfo` and `::errorCode` are set
+  when a `catch` or `try` takes the error. The record behind them is built by
+  `src/errinfo.rs`: the compiler keeps, per chunk, every command's op range,
+  source text and line, and when an error is raised the running VM's frames are
+  walked into the commands tclsh would have logged — the failing command, the
+  `(procedure "p" line N)` it sat in, the command that called `p`, and so on
+  out through nested scripts (`eval`, `uplevel`, `namespace eval`, `apply`),
+  across chunks, to the `catch`. `error msg info` and `return -errorinfo`
+  begin the record with their text, `return -options` carries one on, and a
+  `finally` handing an error on does not lose it. Where this is still not
+  tclsh's:
 
-  What remains is the rest of tclsh's *error* dictionary — `-errorstack`,
-  `-errorinfo` and `-errorline` — so `catch {error boom} m o` still gives a
-  shorter dictionary here; the options in it are exact, and
-  `tests/proc_differential.rs` compares the whole dictionary for every outcome
-  whose tclsh form has nothing else in it, plus `-errorcode` on its own for the
-  outcomes that do. `-errorinfo` and `-errorstack` are the two that carry an
-  execution trace (`while executing` and the frame list), which this frontend
-  does not accumulate; `error`'s second word is still evaluated and dropped for
-  that reason.
+  - `-errorstack`'s `INNER` element names the failing *instruction* in tclsh
+    (`loadStk`, `incrStk`, `dictGet`, `invokeReplace`, `lindexMulti`, …), which
+    this frontend has no counterpart of; `returnImm` for `error` and `throw` and
+    `syntax` are the exceptions that are exact, and every other failure is
+    `invokeStk1` with the command's words as written. The `CALL` / `UP`
+    elements after it are exact, with the *source* words of the call where
+    tclsh has the substituted ones.
+  - `(-compare command)`, `(-command substitution computation script)` and the
+    other contexts the commands that call back into the interpreter add are not
+    logged, and an error raised by such a callback loses the record of the
+    callback.
+  - `try … finally {error x}` logs `("try ... finally" body line N)` whether or
+    not the body raised; tclsh logs it only when it did.
+  - `catch {tailcall …}` and the record of an error a coroutine raises are not
+    modelled.
+  - A `-errorinfo` ends with the container of the command the `catch` is in
+    only in the forms above; an error that is *uncaught* at a script's top
+    level is still printed as the message and `(file … line N)` alone, not as
+    the full record tclsh prints, because tclsh evaluates the commands of a
+    script it runs command by command and logs every `[…]` level of them.
+  - tclsh compiles `foreach`, `lmap`, `dict for`/`map`/`with`/`update` and
+    `try` only inside a procedure body, where they log no container of their
+    own; this frontend follows that rule by whether the command was lowered
+    inside a `proc`, which an `eval` or `uplevel` of such a command from a
+    procedure body reproduces.
 
-  An error a builtin raises carries tclsh's code when its message template
-  determines one: tclrs raises builtin errors as message text held identical to
-  tclsh's, and `src/errorcode.rs` maps each template Tcl 9.0.4 emits with exactly
-  one code — `TCL WRONGARGS`, `ARITH DIVZERO`/`DOMAIN`, `TCL LOOKUP
+  An error a builtin raises carries tclsh's code when its message determines
+  one: tclrs raises builtin errors as message text held identical to tclsh's,
+  and `src/errorcode.rs` maps the templates — `classify` for those one site
+  emits (`TCL WRONGARGS`, `ARITH DIVZERO`/`DOMAIN`, `TCL LOOKUP
   COMMAND`/`DICT`/`CHANNEL`/`ENCODING`/`SUBCOMMAND`, `TCL VALUE INDEX`/`NUMBER`,
-  `TCL READ VARNAME` and `TCL WRITE VARNAME` for a variable that is an array,
-  `TCL RESULT ILLEGAL_CODE` and `ILLEGAL_LEVEL` for a bad `return` option,
-  `TCL OPENMODE INVALID`, and `POSIX <errno> <reason>`. `-errorcode` is still
-  ABSENT where two raise sites share a template under different codes:
-
-  | message | tclsh codes |
-  | --- | --- |
-  | `expected integer but got "x"` | `TCL VALUE INTEGER` (`tclObj.c:2702`) or `TCL VALUE NUMBER` (`tclStrToD.c:1540`) |
-  | `can't read "x": no such variable` | `TCL LOOKUP VARNAME x` (`tclVar.c:719`) or `TCL READ VARNAME` (`tclVar.c:1472`) |
-  | `integer value too large to represent` | `ARITH IOVERFLOW` or `CLOCK dateTooLarge` |
-  | `bad <what> "x": must be …` | `TCL LOOKUP INDEX <what> x`, but `CLOCK badOption` for `clock` |
-
-  (`regexp`'s unknown switch states its code at the raise site and is exact.)
-  An absent key is a visible gap where `NONE` would be a wrong value. Every code
-  it does emit is the reference's.
-  `::errorInfo` and `::errorCode` are not set either, and reading one is
-  `no such variable`; the globals are the legacy face of the same information,
-  and setting `::errorCode` only where a code is known would make
-  `info exists ::errorCode` disagree with tclsh more often than it agrees.
+  `TCL READ VARNAME`/`TCL WRITE VARNAME` for a variable that is an array,
+  `TCL RESULT ILLEGAL_CODE`/`ILLEGAL_LEVEL`, `TCL OPENMODE INVALID`, `POSIX
+  <errno> <reason>`), and `classify_in` for those that depend on where the
+  command ran: a read of an unset variable is `TCL READ VARNAME` in a procedure
+  body and `TCL LOOKUP VARNAME x` anywhere else, `can't unset` is `TCL UNSET
+  VARNAME` or `TCL LOOKUP VARNAME x` the same way, `expected integer` is `TCL
+  VALUE INTEGER` for a number that is not an integer and `TCL VALUE NUMBER` for
+  a word, `bad <what> "x": must be …` is `TCL LOOKUP INDEX <what> x` (`CLOCK
+  badOption` for `clock`), an expression that will not parse is `TCL PARSE EXPR
+  <kind>`, and a pattern that will not compile is `REGEXP REG_<name> {…}`.
+  Every other error carries tclsh's default, `NONE`; a site this does not know
+  is `NONE` where tclsh has a specific code — the `TCL FORMAT …` family beyond
+  an unfinished specifier, and `clock`'s `CLOCK badOption`.
 - **`namespace path` and `namespace unknown`.** Both change how a name
   resolves *after* the point this frontend resolved it, so honouring them would
   mean re-resolving names at run time. Refused where they are written.
@@ -852,8 +867,7 @@ approximated, and nothing is silently mis-run.
   subcommands outside the
   implemented set; `format` conversions outside the
   implemented set; `regexp -about`;
-  `return -errorinfo` (the options `-code`, `-level`, `-errorcode` and
-  `-options` are implemented). They go through the reference option parser first,
+  `info frame`. They go through the reference option parser first,
   so abbreviation and ambiguity behave as tclsh does, and are then refused.
   `lsort -command`, `dict map` and `dict filter … script` were on this list until
   the change that added `subst`, `dict update` until the change that built the
@@ -1180,11 +1194,6 @@ the measurement behind it.
   compiler and are not in the registry `namespace ensemble` reads; and `info
   locals` in a procedure with a formal named twice lists the name once where
   tclsh lists it twice.
-- **`-errorinfo`, `-errorline`, `-errorstack` and `$::errorInfo` / `$::errorCode`.**
-  `catch {error x} m o` carries `-code`, `-level` and `-errorcode` only; the
-  rest of tclsh's error dictionary is a trace of the *commands* that were
-  executing, which this frontend does not record, and `return -errorinfo` is
-  refused. Needs a per-command record in the VM.
 - **`tailcall` inside `catch` or `try` runs the call at once.** tclsh answers
   the region with code `return` and carries the tail call out to the end of the
   procedure, where it replaces the activation; here the callee runs where the

@@ -160,7 +160,7 @@ pub const CORPUS: &[Entry] = &[
     Entry {
         name: "error",
         synopsis: "error message ?errorInfo? ?errorCode?",
-        summary: "Raise an error carrying the message. The third word becomes the error's `-errorcode` (`NONE` when absent); the second is evaluated and dropped, since this frontend does not carry `-errorinfo`.",
+        summary: "Raise an error carrying the message. The third word becomes the error's `-errorcode` (`NONE` when absent); the second, when it is not empty, begins the error's `errorInfo`, so the `error` command itself is not logged again.",
     },
     Entry {
         name: "eval",

@@ -94,6 +94,7 @@ impl ChunkCache {
             code: crate::runtime::TCL_ERROR,
             level: 0,
             errorcode: None,
+            info: None,
         })?;
         let known: crate::assoc::ArrayNames = arrays.iter().cloned().collect();
         let lowered = crate::compiler::compile_with_arrays(&script, projected, &known);
@@ -103,6 +104,7 @@ impl ChunkCache {
             code: crate::runtime::TCL_ERROR,
             level: 0,
             errorcode: None,
+            info: None,
         })?);
         // At capacity the whole cache is dropped rather than one entry chosen.
         // An `eval` loop reuses a handful of sources and never reaches the
