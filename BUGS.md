@@ -291,7 +291,9 @@ approximated, and nothing is silently mis-run.
     `^` holds there only after a newline: `regsub -all {\y} "ab cd" |` is
     `|a|b |c|d`. `\A` matches at a restart, as in tclsh (`regsub -all {\A} abc X`
     is `XaXbXcX`); a pattern holding both `\A` and `^` (`\Aa|^b`) runs on the
-    backtracking matcher, which reads the restart exactly so.
+    backtracking matcher, which reads the restart exactly so. An offset `-start` puts
+    past the end is `NOTBOL` whatever precedes the end, newline included
+    (`regexp -start 2 {^$} {}` and `regexp -line -start 5 {^} "ab\n"` are 0).
   * **The empty-match loop** is Tcl's, where `regexp -all {x*} ab` counts 2 but
     `regsub -all {x*} ab -` substitutes 3 times, and the literally empty pattern
     — not `(?:)` or `a{0}` — stops where `regexp` stops.

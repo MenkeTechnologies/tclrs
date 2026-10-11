@@ -482,23 +482,48 @@ impl Caps {
 /// `\A` at a `NOTBOL` position matches, as it does in tclsh, for a pattern that
 /// has no `^` ([`crate::are::Translated::start_anchor`]); one that has both is
 /// searched in place, and its `\A` does not match there.
-fn exec(re: &Compiled, subject: &str, pos: usize) -> Result<Option<Caps>, String> {
+///
+/// `beyond_end` says the offset the command was given lay past the end of the
+/// subject: `pos` is then the end, and the search is `NOTBOL` whatever precedes
+/// it (`Tcl_RegexpObjCmd` picks `TCL_REG_NOTBOL` for `offset > stringLength`
+/// before it looks for a newline), so `regexp -start 2 {^$} {}` is 0.
+fn exec(
+    re: &Compiled,
+    subject: &str,
+    pos: usize,
+    beyond_end: bool,
+) -> Result<Option<Caps>, String> {
     match &re.re {
-        Matcher::Linear(rx) => Ok(exec_linear(re, rx, subject, pos).map(|mut caps| {
-            caps.0.resize(re.groups + 1, None);
-            caps
-        })),
-        Matcher::Backtracking(engine) => exec_backtracking(engine, subject, pos),
+        Matcher::Linear(rx) => Ok(
+            exec_linear(re, rx, subject, pos, beyond_end).map(|mut caps| {
+                caps.0.resize(re.groups + 1, None);
+                caps
+            }),
+        ),
+        Matcher::Backtracking(engine) => exec_backtracking(engine, subject, pos, beyond_end),
     }
 }
 
 /// [`exec`] on the `regex` crate.
-fn exec_linear(re: &Compiled, rx: &Regex, subject: &str, pos: usize) -> Option<Caps> {
-    if pos == 0 || pos > subject.len() || !re.left_context {
+fn exec_linear(
+    re: &Compiled,
+    rx: &Regex,
+    subject: &str,
+    pos: usize,
+    beyond_end: bool,
+) -> Option<Caps> {
+    // Past the end even a `^` that `REG_NLANCH` lets match after a newline is
+    // refused, so the left context is supplied for every pattern there.
+    if !beyond_end && (pos == 0 || pos > subject.len() || !re.left_context) {
         return rx.captures_at(subject, pos).map(|c| Caps::from(&c, 0, 0));
     }
-    let prev = subject[..pos].chars().next_back()?;
-    if prev == '\n' || re.start_anchor {
+    // Past the end no character behind counts, a newline included.
+    let prev = if beyond_end {
+        None
+    } else {
+        subject[..pos].chars().next_back()
+    };
+    if prev == Some('\n') || re.start_anchor {
         // The rest of the subject is searched as a string of its own, whose start
         // is a line start: not `NOTBOL` after a newline, and a pattern whose
         // only start constraint is `\A` has nothing else to get wrong.
@@ -507,7 +532,7 @@ fn exec_linear(re: &Compiled, rx: &Regex, subject: &str, pos: usize) -> Option<C
     // `NOTBOL`: one character of left context that is neither a newline nor a
     // word character. The real one serves when it already is; otherwise a
     // space stands in for it.
-    if prev.is_ascii() && !(prev.is_ascii_alphanumeric() || prev == '_') {
+    if prev.is_some_and(|c| c.is_ascii() && !(c.is_ascii_alphanumeric() || c == '_')) {
         let from = pos - 1;
         return rx
             .captures_at(&subject[from..], 1)
@@ -542,6 +567,7 @@ fn exec_backtracking(
     engine: &crate::are_bt::Engine,
     subject: &str,
     pos: usize,
+    beyond_end: bool,
 ) -> Result<Option<Caps>, String> {
     if pos > subject.len() {
         return Ok(None);
@@ -566,7 +592,7 @@ fn exec_backtracking(
         let Ok(first) = d.bytes.binary_search(&pos) else {
             return Ok(None);
         };
-        let notbol = first > 0 && d.chars[first - 1] != '\n';
+        let notbol = beyond_end || (first > 0 && d.chars[first - 1] != '\n');
         let spans = engine.exec(&d.chars[first..], notbol)?;
         Ok(spans.map(|groups| {
             Caps(
@@ -595,7 +621,9 @@ pub(crate) fn matches_anywhere(pattern: &str, subject: &str, nocase: bool) -> Re
     let re = compiled(pattern, flags)?;
     match &re.re {
         Matcher::Linear(rx) => Ok(rx.is_match(subject)),
-        Matcher::Backtracking(engine) => Ok(exec_backtracking(engine, subject, 0)?.is_some()),
+        Matcher::Backtracking(engine) => {
+            Ok(exec_backtracking(engine, subject, 0, false)?.is_some())
+        }
     }
 }
 
@@ -635,7 +663,7 @@ fn run_switch_vars(vm: &mut VM, operands: &[Value]) -> Result<(), String> {
         _ => 0,
     };
     let re = compiled(&pattern, if nocase { F_NOCASE } else { 0 })?;
-    let Some(caps) = exec(&re, &subject, 0)? else {
+    let Some(caps) = exec(&re, &subject, 0, false)? else {
         vm.push(Value::Str(Arc::new("0".to_string())));
         return Ok(());
     };
@@ -795,6 +823,7 @@ fn matches(
     from: usize,
     idx: &CharIndex,
     stop: Stop,
+    beyond_end: bool,
 ) -> Result<Vec<Caps>, String> {
     let len = subject.len();
     let mut found = Vec::new();
@@ -805,7 +834,7 @@ fn matches(
     if stop == Stop::EachCharacter && len == 0 {
         return Ok(found);
     }
-    while let Some(caps) = exec(re, subject, pos)? {
+    while let Some(caps) = exec(re, subject, pos, beyond_end)? {
         let whole = caps.get(0).expect("group 0 always participates");
         let (s, e) = (whole.start(), whole.end());
         found.push(caps);
@@ -868,9 +897,11 @@ fn run_regexp(vm: &mut VM, operands: &[Value]) -> Result<(), String> {
     // only matters when every match is.
     let all = flags & F_ALL != 0;
     let found = if all {
-        matches(&re, &subject, from_byte, &idx, Stop::BeforeEnd)?
+        matches(&re, &subject, from_byte, &idx, Stop::BeforeEnd, shift > 0)?
     } else {
-        exec(&re, &subject, from_byte)?.into_iter().collect()
+        exec(&re, &subject, from_byte, shift > 0)?
+            .into_iter()
+            .collect()
     };
 
     let count = found.len() as i64;
@@ -960,9 +991,10 @@ fn run_regsub(interp: Option<&Shared>, vm: &mut VM, operands: &[Value]) -> Resul
             } else {
                 Stop::PastEnd
             },
+            false,
         )?
     } else {
-        exec(&re, &subject, from_byte)?.into_iter().collect()
+        exec(&re, &subject, from_byte, false)?.into_iter().collect()
     };
 
     // Under `-command` every replacement is the result of a call, and the calls

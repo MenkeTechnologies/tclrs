@@ -509,6 +509,11 @@ const RESTARTS: &[&str] = &[
     "puts [regexp -start 2 {^b} \"a\\nb\"]",
     "puts [regexp -line -start 1 {^b} ab]",
     "puts [regexp -line -start 2 {^b} \"a\\nb\"]",
+    // An offset past the end is `NOTBOL` whatever precedes the end, a newline
+    // included and `-line` or not (regexp.test regexp-15.6); the backtracking
+    // engine, which a back-reference selects, agrees.
+    "puts [list [regexp -start 2 {^$} {}] [regexp -start 5 {^} \"ab\\n\"] [regexp -line -start 5 {^} \"ab\\n\"] [regexp -line -start 5 {^$} {}] [regexp -all -start 2 {^|x} {}] [regexp -start 2 {\\A} {}]]",
+    "puts [list [regexp -start 4 {^(x?)\\1} \"ab\\n\"] [regexp -line -start 4 {^(x?)\\1} \"ab\\n\"] [regexp -line -start 3 {^(x?)\\1} \"ab\\n\"]]",
     "puts [regsub -all -line {^.\\n?} \"a\\nb\\nc\" X]",
     "puts [regexp -all -inline -line {^.} \"a\\nb\\nc\"]",
     "puts [regsub -all {\\yb} \"ab b\" X]",
