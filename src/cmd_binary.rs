@@ -624,8 +624,16 @@ fn to_single(d: f64) -> f32 {
         return d as f32;
     }
     let half_ulp = 2f64.powi(f32::MAX_EXP - f32::MANTISSA_DIGITS as i32 - 1);
-    let magnitude = if d.abs() > max + half_ulp { f32::INFINITY } else { f32::MAX };
-    if d >= 0.0 { magnitude } else { -magnitude }
+    let magnitude = if d.abs() > max + half_ulp {
+        f32::INFINITY
+    } else {
+        f32::MAX
+    };
+    if d >= 0.0 {
+        magnitude
+    } else {
+        -magnitude
+    }
 }
 
 /// `value` reduced into `bits` bits, little-endian — the modular truncation
