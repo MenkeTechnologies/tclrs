@@ -83,6 +83,9 @@ const PROGRAMS: &[&str] = &[
     "puts [hex [binary format qQ 1.6 1.6]]",
     "puts [hex [binary format f 1e40]]",
     "puts [hex [binary format f -1e40]]",
+    // Past FLT_MAX by at most half an ulp narrows to FLT_MAX, not infinity
+    // (binary.test binary-53.23); one bit further is infinity.
+    "foreach h {47effffff0000000 c7effffff0000000 47effffff0000001} {binary scan [binary format H* $h] Q d; puts [hex [binary format R $d]]}",
     "puts [hex [binary format f 1e-60]]",
     "puts [hex [binary format d Inf]]",
     // The cursor moves, and the high-water mark that is the result's length.

@@ -601,7 +601,7 @@ fn write_number(slot: &mut [u8], cmd: char, text: &str) -> Result<(), String> {
 /// for the rest, in the field's byte order.
 fn write_double(slot: &mut [u8], cmd: char, f: f64) {
     let bytes: Vec<u8> = if matches!(cmd, 'f' | 'r' | 'R') {
-        (f as f32).to_le_bytes().to_vec()
+        to_single(f).to_le_bytes().to_vec()
     } else {
         f.to_le_bytes().to_vec()
     };
@@ -612,6 +612,20 @@ fn write_double(slot: &mut [u8], cmd: char, f: f64) {
     } else {
         slot.copy_from_slice(&bytes);
     }
+}
+
+/// A double narrowed to single precision as `FormatNumber` in tclBinary.c
+/// narrows it: a magnitude past `FLT_MAX` but no further than half a unit in
+/// the last place beyond it becomes `FLT_MAX`, and only one further out becomes
+/// infinity. A plain `as f32` rounds that half-way value up to infinity.
+fn to_single(d: f64) -> f32 {
+    let max = f64::from(f32::MAX);
+    if d.abs() <= max || d.is_nan() {
+        return d as f32;
+    }
+    let half_ulp = 2f64.powi(f32::MAX_EXP - f32::MANTISSA_DIGITS as i32 - 1);
+    let magnitude = if d.abs() > max + half_ulp { f32::INFINITY } else { f32::MAX };
+    if d >= 0.0 { magnitude } else { -magnitude }
 }
 
 /// `value` reduced into `bits` bits, little-endian — the modular truncation
