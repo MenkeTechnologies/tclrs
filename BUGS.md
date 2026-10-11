@@ -1643,9 +1643,12 @@ tclsh, with the seed and case number of the divergence it was reduced from.
   lexes before it parses, so its refusals name the token: `invalid bareword "a"`,
   `missing operand at _@_` (the marker is literal on the first line; the position
   is on the second), `missing operator at _@_`, `missing operator ":" at _@_`,
-  `empty expression`, `unbalanced open paren`, `unbalanced close paren` and
-  `incomplete operator "="`, with `invalid character "@"` kept for a character
-  that really is no token. 227 of the compile-time `message` divergences.
+  `empty expression`, `empty subexpression at _@_`, `unbalanced open paren`,
+  `unbalanced close paren` and `incomplete operator "="`, with `invalid
+  character "@"` kept for a character that really is no token. A `)` where an
+  operand belongs is named by the token before it, as `ParseExpr` names it:
+  `expr {)1}` is the unbalanced close paren, `expr {(1+)}` the missing operand
+  and `expr {()}` the empty subexpression. 227 of the compile-time `message` divergences.
   Text left over once an expression is complete follows the same rule: a word is
   named, where a second number or variable is only a missing operator, so
   `expr {1 x}` and `expr {(1)x}` are `invalid bareword "x"` while `expr {1 1}`
@@ -2078,8 +2081,7 @@ re-measured against tclsh 9.0.4 and pinned by a differential program:
   (`generic/tclCompExpr.c:1247`, `:1333`) — and refuses a `,` outside a
   function's own paren as it arrives (`:1322`). `expr 2:3` was `missing
   operand at _@_` and `expr {(1,2)}` `unbalanced open paren` here
-  (`expr-old-26.14`, `parseExpr-21.15`, `parseExpr-21.28`). The `-errorcode`
-  of every expression parse error (`TCL PARSE EXPR …`) is still absent.
+  (`expr-old-26.14`, `parseExpr-21.15`, `parseExpr-21.28`).
 - **`regexp`/`regsub -start` took only an integer.** Both commands read the
   offset with `TclGetIntForIndexM` and `end` standing for the string's length,
   so `regexp -start end {\d} 1abc2de3` is 0 and `-start end-2` works

@@ -193,7 +193,7 @@ pub(crate) fn classify_in(msg: &str, in_proc: bool, command: &str) -> Option<Str
         let kind = if first.starts_with("missing operand") || first.starts_with("missing operator")
         {
             "MISSING"
-        } else if first == "empty expression" {
+        } else if first == "empty expression" || first.starts_with("empty subexpression") {
             "EMPTY"
         } else if first.starts_with("unbalanced")
             || first.starts_with("missing close-bracket")

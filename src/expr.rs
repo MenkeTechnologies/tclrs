@@ -472,14 +472,15 @@ impl<'a> ExprParser<'a> {
     /// What tclsh 9.0.4 says when it wanted an operand and did not find one.
     ///
     /// Its expression lexer tokenises before it parses, so the diagnostic names
-    /// what the *token* was rather than where the parser was, and there are four
-    /// answers rather than one:
+    /// what the *token* was rather than where the parser was:
     ///
     /// ```text
     /// expr {1 + }   missing operand at _@_     input ran out
     /// expr {1 + (}  unbalanced open paren      ... with a paren still open
     /// expr {*1}     missing operand at _@_     an operator, which is no operand
-    /// expr {)1}     unbalanced close paren
+    /// expr {)1}     unbalanced close paren     a `)` with nothing before it
+    /// expr {(1+)}   missing operand at _@_     a `)` after an operator
+    /// expr {()}     empty subexpression at _@_ a `)` after a `(`
     /// expr {@1}     invalid character "@"      no token at all
     /// ```
     ///
@@ -495,7 +496,16 @@ impl<'a> ExprParser<'a> {
             });
         }
         match self.char_here() {
-            ')' => self.error("unbalanced close paren"),
+            // A `)` where an operand belongs is judged by the token before it
+            // (`ParseExpr`, `tclCompExpr.c:1099-1151`): nothing at all is the
+            // unbalanced close paren, a `(` is the empty subexpression, and
+            // an operator is the operand it lacks — `expr {(1+)}` is `missing
+            // operand at _@_`. A function's `()` and its `,)` never get here.
+            ')' => match self.src[..self.pos].trim_end().chars().next_back() {
+                None => self.error("unbalanced close paren"),
+                Some('(') => self.error("empty subexpression at _@_"),
+                Some(_) => self.error("missing operand at _@_"),
+            },
             // `=` is the one operator character that is not an operator on its
             // own, and tclsh names it as an unfinished one rather than as a
             // missing operand.

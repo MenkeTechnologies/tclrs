@@ -44,6 +44,16 @@ const REFUSED: &[&str] = &[
     "",
     "(1",
     "1)",
+    // A `)` where an operand belongs is named by the token before it: nothing
+    // is the close paren, an operator is the missing operand, and a `(` is the
+    // empty subexpression (expr.test expr-23.7).
+    ")1",
+    "(1+)",
+    "(-3-)**6",
+    "1?2:)",
+    "(!)",
+    "()",
+    "(  )",
     "\u{1F600}",
     "1 + \u{1F600}",
     // Multi-byte operands, where a marker inserted at a byte offset would split
