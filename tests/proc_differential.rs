@@ -331,6 +331,10 @@ const PROGRAMS: &[&str] = &[
     "proc c {s} {catch {uplevel 1 $s} r o\nputs [list $r [dict get $o -errorcode]]}\nc {expr {1/0}}\nc {expr {1%0}}\nc {expr {sqrt(-1)}}\nc {expr {\"abc\" + 1}}\nc {expr {1 & 1.5}}",
     "proc c {s} {catch {uplevel 1 $s} r o\nputs [list $r [dict get $o -errorcode]]}\nc {nosuchcmd}\nc {rename nosuch x}\nc {lappend}\nc {dict get {a 1} b}\nc {lindex {a b} foo}",
     "proc c {s} {catch {uplevel 1 $s} r o\nputs [list $r [dict get $o -errorcode]]}\nc {open /nonexistent/x}\nc {puts nosuchchan x}\nc {encoding convertto nosuch x}\nc {string foo}\nc {regexp -foo a b}\nc {open /tmp/x q}",
+    // `FindElement`: the type in the code follows the word in the message, so
+    // a malformed value read as a dictionary is `DICTIONARY` and as a list is
+    // `LIST` (dict.test dict-4.14a, dict-4.16a).
+    "proc c {s} {catch {uplevel 1 $s} r o\nputs [list $r [dict get $o -errorcode]]}\nc {dict replace { a b {}c d }}\nc {dict get { a b \"x\"c }}\nc {dict size \"\\{a\"}\nc {dict size {a \"b}}\nc {dict size {a}}\nc {llength {a {b}c}}\nc {llength {a \"b}}\nc {lindex \"\\{a\" 0}",
     // `return -code error` with no `-errorcode` is `NONE`, as `error` is.
     "catch {return -code error m} r o\nputs [dict get $o -errorcode]",
     // A message the script raises itself is never classified.

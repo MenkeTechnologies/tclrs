@@ -105,6 +105,11 @@ pub(crate) fn classify(msg: &str) -> Option<String> {
     {
         // `ParseSearchId` (`tclVar.c:5326-5338`).
         vec!["TCL", "LOOKUP", "ARRAYSEARCH", handle]
+    } else if let Some(code) = list_parse(msg) {
+        return Some(code);
+    } else if msg == "missing value to go with key" {
+        // `SetDictFromAny` (`tclDictObj.c:719-720`).
+        vec!["TCL", "VALUE", "DICTIONARY"]
     } else if quoted(msg, "illegal access mode \"", "\"").is_some() {
         // `TclGetOpenMode` (`tclIOUtil.c:1519`).
         vec!["TCL", "OPENMODE", "INVALID"]
@@ -115,6 +120,37 @@ pub(crate) fn classify(msg: &str) -> Option<String> {
         return None;
     };
     Some(crate::list::join(&code))
+}
+
+/// `FindElement`'s refusals (`tclUtil.c:682-777`): `TCL VALUE <type> <what>`,
+/// where the type is `LIST` or `DICTIONARY` as the message's own `list` or
+/// `dict` says, and what went wrong is `JUNK` after a closing brace or quote,
+/// or `BRACE` / `QUOTE` for one never closed.
+fn list_parse(msg: &str) -> Option<String> {
+    let (kind, rest) = if let Some(rest) = msg.strip_prefix("list ") {
+        ("LIST", rest)
+    } else if let Some(rest) = msg.strip_prefix("dict ") {
+        ("DICTIONARY", rest)
+    } else if let Some(rest) = msg.strip_prefix("unmatched open ") {
+        let (what, typ) = rest.split_once(" in ")?;
+        let kind = match typ {
+            "list" => "LIST",
+            "dict" => "DICTIONARY",
+            _ => return None,
+        };
+        let what = match what {
+            "brace" => "BRACE",
+            "quote" => "QUOTE",
+            _ => return None,
+        };
+        return Some(format!("TCL VALUE {kind} {what}"));
+    } else {
+        return None;
+    };
+    let junk = (rest.starts_with("element in braces followed by \"")
+        || rest.starts_with("element in quotes followed by \""))
+        && rest.ends_with("\" instead of space");
+    junk.then(|| format!("TCL VALUE {kind} JUNK"))
 }
 
 /// The `REG_*` name `regerror` words as `reason` (`generic/regerrs.h`).

@@ -677,7 +677,10 @@ approximated, and nothing is silently mis-run.
   emits (`TCL WRONGARGS`, `ARITH DIVZERO`/`DOMAIN`, `TCL LOOKUP
   COMMAND`/`DICT`/`CHANNEL`/`ENCODING`/`SUBCOMMAND`, `TCL VALUE INDEX`/`NUMBER`,
   `TCL READ VARNAME`/`TCL WRITE VARNAME` for a variable that is an array,
-  `TCL RESULT ILLEGAL_CODE`/`ILLEGAL_LEVEL`, `TCL OPENMODE INVALID`, `POSIX
+  `TCL RESULT ILLEGAL_CODE`/`ILLEGAL_LEVEL`, `TCL VALUE LIST`/`DICTIONARY`
+  `JUNK`/`BRACE`/`QUOTE` for a value that does not parse as the list or
+  dictionary it is read as, `TCL VALUE DICTIONARY` for an odd one, `TCL
+  OPENMODE INVALID`, `POSIX
   <errno> <reason>`), and `classify_in` for those that depend on where the
   command ran: a read of an unset variable is `TCL READ VARNAME` in a procedure
   body and `TCL LOOKUP VARNAME x` anywhere else, `can't unset` is `TCL UNSET
