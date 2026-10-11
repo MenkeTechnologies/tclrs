@@ -26,6 +26,9 @@ const PROGRAMS: &[&str] = &[
     "puts [expr {abs(-1)}]",
     "puts [expr {abs(-2.5)}]",
     "puts [expr {abs(-0.0)}]",
+    // A positive zero stays positive (expr.test expr-38.9), whether it is a
+    // literal or arrives through a variable.
+    "set z 0.0\nputs [expr {abs(0.0)}]\nputs [expr {abs($z)}]\nputs [expr {abs(-$z)}]",
     "puts [expr {abs(-9223372036854775808)}]",
     "puts [expr {abs(-12345678901234567890123)}]",
     "puts [expr {int(2.99)}]",

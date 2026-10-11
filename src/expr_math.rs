@@ -370,10 +370,10 @@ fn apply(name: &str, args: &[Value]) -> Result<Value, String> {
             Num::Int(i64::MIN) => Ok(from_big(-BigInt::from(i64::MIN))),
             Num::Int(i) => Ok(Value::Int(i.abs())),
             Num::Float(f) if f.is_nan() => Err("floating point value is Not a Number".to_string()),
-            // `abs(-0.0)` is `0.0`, and `abs(0.0)` keeps the value it was
-            // given: `ExprAbsFunc` negates only what compares below `-0.0` or
-            // *is* the negative zero (Tcl bug 2954959).
-            Num::Float(f) => Ok(Value::Float(if f > -0.0 { f } else { -f })),
+            // `ExprAbsFunc` leaves a positive zero and anything above zero
+            // unchanged and negates the rest, the negative zero included (Tcl
+            // bug 2954959): a sign-bit clear, which is `f64::abs`.
+            Num::Float(f) => Ok(Value::Float(f.abs())),
             Num::Big(b) => Ok(from_big(if b.sign() == num_bigint::Sign::Minus {
                 -b
             } else {
