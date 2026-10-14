@@ -372,14 +372,13 @@ approximated, and nothing is silently mis-run.
   is `0.0`, not `1`), and only the comparison is exact (`runtime::big_cmp`,
   `runtime::numeric`, `tests/bignum_differential.rs`).
 
-  Two bounds are this frontend's own. A promoted integer may reach 2^20 bits,
+  One bound is this frontend's own. A promoted integer may reach 2^20 bits,
   a little over 315,000 digits, and a wider one is refused: tclsh has no bound
   and `expr {10 ** 123456789}` sits there computing — measured, still running
   after 30 seconds — where a catchable error is the better answer, the same
-  trade `expr::MAX_EXPR_DEPTH` already makes. And `format`'s integer
-  conversions still refuse a value past `i64` rather than narrowing to one:
-  tclsh answers `format %d 99999999999999999999` with `1661992959`, its low 32
-  bits, and narrowing silently is the one thing this frontend will not do.
+  trade `expr::MAX_EXPR_DEPTH` already makes. `format`'s integer conversions
+  narrow a value past `i64` as tclsh does: `format %d 99999999999999999999` is
+  `1661992959`, its low 32 bits, in both.
 - **Tcl arithmetic.** Floored integer division and remainder, integral `**` for
   integral operands — a negative exponent included, where the integral result
   truncates to 0 or ±1 and a zero base is an error — numeric-preferring comparison
@@ -1118,25 +1117,6 @@ the measurement behind it.
   `expr {[lindex [list [expr {2.0**64}]] 0] == 2.0**64}` is 0 where tclsh
   answers 1. A double held in a variable, passed as an argument, or handed to
   `binary format` keeps its value.
-- **`< > <= >= == !=` between an integer past 2^53 and a double round where
-  tclsh is exact.** Measured against tclsh 9.0.4: `set l [expr {3**34}]` is
-  16677181699666569 and `double($l)` is 16677181699666568, one apart, so tclsh
-  answers `==` 0 and `>` 1. tclrs answers 1 and 0. The rule is not in doubt and
-  the frontend already holds it — `runtime::numeric` orders any pair with an
-  integer in it through `runtime::big_cmp`, which
-  `runtime::numeric_hook_tests` asserts operator by operator in both operand
-  orders — but these six operators lower to fusevm's native `Op::NumLt` …
-  `Op::NumNe`, and `fusevm 0.17.0`'s `cmp_int_fast` answers a pair of native
-  numbers itself, through `to_float`, without consulting the hook. The next
-  fusevm release delegates such a pair instead, on the grounds that only the
-  frontend knows its language's rule, and this divergence closes with no
-  further change here. Ordering *is* already exact everywhere the hook is
-  reached: `min` and `max` go through `expr_math::extremum`, and
-  `tests/bignum_differential.rs` compares those at the same band. Making the
-  operators exact without the fusevm change would mean routing every
-  comparison with a substituted operand through an extension op, which costs
-  the tracing JIT every comparison loop — the trade this frontend declines
-  everywhere else it appears.
 - **`encoding names` answers what actually converts, not tclsh's list.** tclsh
   answers in the order of its own hash table and includes the three escape-
   sequence encodings it can load; this one is sorted and omits them, because they
@@ -1302,27 +1282,6 @@ The same runtime command table that would fix "procedures across an `eval`"
 fixes this.
 
 
-- **`incr` on a non-integer *variable* reports an `expr` operand error.**
-  `set x abc; incr x` says `cannot use non-numeric string "abc" as left operand
-  of "+"` where tclsh says `expected integer but got "abc"`. An increment the script wrote
-  out (`incr x abc`) is checked while compiling and does report `incr`'s own
-  wording; the variable's value cannot be, because the check would have to be an
-  extension op in the `incr` lowering and `is_trace_op_allowed_at` rejects
-  `Op::Extended` — every loop that counts with `incr` would lose its compiled
-  trace, which is the one thing this frontend has that reaches native code.
-  Deliberately not taken.
-
-  Re-verified rather than assumed, and the mechanism is worth writing down:
-  `incr i` lowers to `GetVar / LoadInt(1) / Add` — *the same ops* as
-  `expr {$i + 1}` — and the message comes from the numeric hook, whose signature
-  is `(NumOp, &Value, &Value)`. The hook sees `NumOp::Add` and the operands and
-  cannot see which construct emitted them, so the two cannot be told apart at
-  the point the message is made. The distinguishing op would be `Op::Inc`, which
-  fusevm's `is_block_eligible_op_at` refuses under strict numeric mode — the
-  mode a numeric hook turns on — so using it would cost `counted_loop` its
-  trace. Closing this needs the hook to carry the construct, which is a fusevm
-  change, not a frontend one. `expr {$x + 1}` on the same value already matches
-  tclsh exactly; only `incr`'s own wording differs.
 - **Unreachable code costs a script nothing** — the whole class is closed. Both
   halves of it: a command that cannot work raises where it stands, and a body
   whose own text will not parse is lowered *as* that failure, so it raises only
@@ -1506,23 +1465,6 @@ fixes this.
   failing one in a body (`if {1} {puts one; puts [expr {a}]}` prints `one`
   first). So the failure belongs at the command inside the body, and the body's
   own parse failure belongs at the body — not at either enclosing command.
-- **`format`'s floating-point conversions lose precision on an integer past
-  `i64`.** `format %.2f 99999999999999999999` prints
-  `100000000000000016384.00` against tclsh's `100000000000000000000.00`:
-  `cmd_string::parse_double` accumulates the digits in an `f64`, and tclsh
-  converts the bignum. The same missing bignum as above, in the one place that
-  answers rather than refusing.
-- **`format`'s size limit is not checked for `%s` and `%c`.** Both refuse a field
-  *width* past the limit, like every other conversion, but a *precision* past it
-  is accepted: `format %.9223372036854775807s abc` is `abc` here and
-  `max size for a Tcl value exceeded` under tclsh. Neither allocates — a `%s`
-  precision truncates and a `%c` ignores it — so this is a message tclsh produces
-  and tclrs does not, not a crash. Found while closing the size crashes below.
-- **A field width too large for an `i64` reports the wrong message.**
-  `format %99999999999999999999d 1` is `integer value too large to represent`
-  here and `max size for a Tcl value exceeded` under tclsh. The *precision* in the
-  same position saturates and reports tclsh's message
-  (`cmd_string::format`); the width still parses and fails.
 
 - **`puts` with no channel does not go through the channel table.** `close
   stdout` makes `puts stdout hi` report `can not find channel named "stdout"`,
@@ -1535,17 +1477,11 @@ fixes this.
 
 ### Reached by the widened generator
 
-Seven more, from the 2000-program run above. Each is pinned in
-`tests/parity_fuzz_findings.rs` against a live tclsh, and each is reachable only
+From the 2000-program run above. What it found is pinned in
+`tests/parity_fuzz_findings.rs` against a live tclsh, and was reachable only
 because the generator now builds `format`'s specifier matrix, draws shift counts
 with a sign, and carries `nan` / `inf` in its value pools.
 
-- **`format`'s `-` flag does not override `0`.** `format %-08.2f 1.5` is
-  `00001.50` against tclsh's `1.50    `, and `format %-08s ab` is `000000ab`
-  against `ab000000`. The integer conversions already agree — `format %-08d 5` is
-  `00000005` in both — so this is the `-`-against-`0` rule for `e`, `f`, `g` and
-  `s`, not the padding as a whole. Reached only because the generator builds the
-  specifier from its axes rather than drawing a fixed spelling.
 - **A refusal decided at run time is catchable, so `catch` sees a message where
   tclsh saw an answer.** `catch {dict info {a 1}} m` leaves `m` as
   `dict info is not supported yet` and the script runs on, where tclsh
@@ -1555,6 +1491,37 @@ with a sign, and carries `nan` / `inf` in its value pools.
   take the whole case out of comparison as a skip. The two halves are pinned
   together, because which side a refusal falls on is what decides whether the
   harness counts it as a skip or as a divergence.
+
+### Closed since they were listed
+
+Each of these stood above as open and is parity at v0.4.12, re-measured against
+tclsh 9.1.0 with `target/debug/tclrs` built from the same tree:
+
+- **`< > <= >= == !=` between an integer past 2^53 and a double rounded where
+  tclsh is exact.** `set l [expr {3**34}]; expr {$l == double($l)}` is 0 and
+  `>` is 1 in both. The entry waited on fusevm handing a native pair that would
+  round on the way to an `f64` to the frontend's numeric hook instead of
+  comparing it through `to_float`; under strict numeric mode the fusevm this
+  crate now builds against (0.26.9) does (`cmp_int_fast`, `src/vm.rs`), so the
+  six operators reach `runtime::big_cmp` with no extension op.
+- **`incr` on a non-integer *variable* reported an `expr` operand error.**
+  `set x abc; incr x` is `expected integer but got "abc"` in both, where it was
+  `cannot use non-numeric string "abc" as left operand of "+"`.
+- **`format`'s floating-point conversions lost precision on an integer past
+  `i64`.** `format %.2f 99999999999999999999` is `100000000000000000000.00` in
+  both, where it was `100000000000000016384.00`.
+- **`format`'s size limit was not checked for a `%s` or `%c` precision.**
+  `format %.9223372036854775807s abc` and `format %.9223372036854775807c 65` are
+  `max size for a Tcl value exceeded` in both: a precision is read through
+  `cmd_string::literal_field`, which refuses a spelling that reaches `WIDE_MAX`
+  before the conversion character is looked at, whatever that character is.
+- **A field width too large for an `i64` reported the wrong message.**
+  `format %99999999999999999999d 1` and `format %99999999999999999999s a` are
+  `max size for a Tcl value exceeded` in both, through the same
+  `literal_field` that reads the precision.
+- **`format`'s `-` flag did not override `0` for `e`, `f`, `g` and `s`.**
+  `format %-08.2f 1.5` is `1.50    ` and `format %-08s ab` is `ab000000` in
+  both — the fix described under "Fixed by the four-run campaign" below.
 
 ### Fixed by the four-run campaign
 
