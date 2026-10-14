@@ -4281,8 +4281,8 @@ pub(crate) fn named(text: &str, limit: usize) -> String {
     format!("\"{}\"", &text[..end])
 }
 
-/// An integer operand, in the wording of the commands that want one — `incr`
-/// and `format`'s integer conversions — rather than of `expr`'s operators.
+/// A machine-integer operand, in `incr`'s wording rather than that of `expr`'s
+/// operators. A value past `i64` is refused, not narrowed and not promoted.
 pub(crate) fn tcl_int(v: &Value) -> Result<i64, String> {
     if let Value::Int(i) = v {
         return Ok(*i);
@@ -4290,12 +4290,11 @@ pub(crate) fn tcl_int(v: &Value) -> Result<i64, String> {
     let text = to_tcl_string(v);
     match parse_number(text.trim()) {
         Ok(Num::Int(i)) => Ok(i),
-        // The callers here want a machine integer specifically: `format`'s
-        // integer conversions are C's, and tclsh itself narrows for them —
-        // `format %d 99999999999999999999` is 1661992959 there, the low 32
-        // bits. Narrowing silently is the one thing this frontend will not do,
-        // so the operand is refused and the divergence is recorded rather than
-        // guessed at (BUGS.md).
+        // `format` no longer comes through here: its integer conversions narrow
+        // a value past `i64` to its low bits as tclsh does. The callers left
+        // are in `src/assoc.rs`, and one of them is `incr` on an array element,
+        // where tclsh promotes instead (`incr a(k)` on 9223372036854775807 is
+        // 9223372036854775808 there) — an open divergence recorded in BUGS.md.
         Ok(Num::Big(_)) => Err(too_large()),
         _ => Err(format!("expected integer but got {}", named(&text, 50))),
     }
@@ -4304,11 +4303,10 @@ pub(crate) fn tcl_int(v: &Value) -> Result<i64, String> {
 /// Add two Tcl integers, promoting on overflow, for a command that increments a
 /// value of its own rather than through `expr`.
 ///
-/// `dict incr` is the caller. It cannot use [`tcl_int`], which refuses a bignum
-/// because `format`'s integer conversions must narrow or refuse; incrementing
-/// past an `i64` is ordinary in Tcl — `dict incr d k` on 9223372036854775807 is
-/// 9223372036854775808 there — so this promotes instead. Floats are refused with
-/// the wording tclsh's own `incr` uses.
+/// `dict incr` is the caller. It cannot use [`tcl_int`], which refuses a bignum;
+/// incrementing past an `i64` is ordinary in Tcl — `dict incr d k` on
+/// 9223372036854775807 is 9223372036854775808 there — so this promotes instead.
+/// Floats are refused with the wording tclsh's own `incr` uses.
 pub(crate) fn incr_text(current: &str, by: &str) -> Result<String, String> {
     let one = incr_operand(current)?;
     let other = incr_operand(by)?;

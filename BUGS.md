@@ -1475,6 +1475,16 @@ fixes this.
   on every write to buy a case that only `close stdout` reaches. Named here
   rather than hidden.
 
+- **`incr` on an array element refuses to promote past an `i64`.**
+  `set a(k) 9223372036854775807; incr a(k)` is `integer value too large to
+  represent` here, where tclsh 9.1.0 answers `9223372036854775808`. The scalar
+  form (`set b 9223372036854775807; incr b`) and `dict incr` already promote, in
+  both. The element path, `ext::ELEM_INCR` in `src/assoc.rs`, still reads the
+  current value and the increment through `runtime::tcl_int`, which refuses a
+  bignum, and adds with `checked_add`; it wants the promoting arithmetic
+  `runtime::incr_text` gives `dict incr`. Observed at v0.4.12+79 with
+  `target/debug/tclrs` built from that source.
+
 ### Reached by the widened generator
 
 From the 2000-program run above. What it found is pinned in
