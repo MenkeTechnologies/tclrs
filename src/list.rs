@@ -443,6 +443,21 @@ fn convert(src: &str, mode: Mode, quote_hash: bool) -> String {
 /// implementation switches to arbitrary precision — the two agree for every
 /// index, since both ends are far outside any list.
 pub fn parse_int(text: &str) -> Option<i64> {
+    let (negative, radix, digits) = split_int(text)?;
+    let mut value: i64 = 0;
+    for ch in digits.chars().filter(|&c| c != '_') {
+        let digit = ch.to_digit(radix)? as i64;
+        value = value
+            .checked_mul(radix as i64)
+            .and_then(|v| v.checked_add(digit))
+            .unwrap_or(i64::MAX);
+    }
+    Some(if negative { -value } else { value })
+}
+
+/// The sign, radix and digit run of an integer spelling, or `None` when it is
+/// not one. The grammar [`parse_int`] documents, shared with [`parse_int_exact`].
+fn split_int(text: &str) -> Option<(bool, u32, &str)> {
     let text = trim_space(text);
     let (negative, body) = match text.as_bytes().first()? {
         b'-' => (true, &text[1..]),
@@ -459,18 +474,7 @@ pub fn parse_int(text: &str) -> Option<i64> {
     if digits.is_empty() || digits.starts_with('_') || digits.ends_with('_') {
         return None;
     }
-    let mut value: i64 = 0;
-    for ch in digits.chars() {
-        if ch == '_' {
-            continue;
-        }
-        let digit = ch.to_digit(radix)? as i64;
-        value = value
-            .checked_mul(radix as i64)
-            .and_then(|v| v.checked_add(digit))
-            .unwrap_or(i64::MAX);
-    }
-    Some(if negative { -value } else { value })
+    Some((negative, radix, digits))
 }
 
 /// The same grammar as [`parse_int`], refusing a value too wide for an `i64`
@@ -481,31 +485,26 @@ pub fn parse_int(text: &str) -> Option<i64> {
 /// that number or `i64::MAX`, and tclsh answers the empty string for it. An
 /// operand of `lsort -integer` or `lsearch -integer` must not: tclsh raises
 /// `integer value too large to represent` there, and saturating would sort by a
-/// value the script never wrote.
+/// value the script never wrote. The test is on the mathematical value, in any
+/// radix: `0xffffffffffffffff` and `-9223372036854775809` are both bignums.
 pub fn parse_int_exact(text: &str) -> Option<i64> {
-    let parsed = parse_int(text)?;
-    // Saturation is the only way `parse_int` reaches either bound from digits,
-    // so a value at one is either a genuine `i64::MIN`/`MAX` or an overflow;
-    // re-reading the digits tells the two apart.
-    if parsed == i64::MAX || parsed == i64::MIN {
-        let trimmed = trim_space(text);
-        let digits = trimmed.trim_start_matches(['-', '+']).replace('_', "");
-        let magnitude = digits.trim_start_matches('0');
-        let bound = if parsed == i64::MAX {
-            "9223372036854775807"
-        } else {
-            "9223372036854775808"
-        };
-        // Only a decimal spelling is compared: a radix one is re-parsed by the
-        // same accumulator and would need its own bound.
-        if !trimmed.contains(['x', 'X', 'o', 'O', 'b', 'B'])
-            && (magnitude.len() > bound.len()
-                || (magnitude.len() == bound.len() && magnitude > bound))
-        {
+    let (negative, radix, digits) = split_int(text)?;
+    let mut magnitude: u64 = 0;
+    for ch in digits.chars().filter(|&c| c != '_') {
+        let digit = u64::from(ch.to_digit(radix)?);
+        magnitude = magnitude
+            .checked_mul(u64::from(radix))
+            .and_then(|v| v.checked_add(digit))
+            .unwrap_or(u64::MAX);
+        if magnitude == u64::MAX {
             return None;
         }
     }
-    Some(parsed)
+    if negative {
+        0i64.checked_sub_unsigned(magnitude)
+    } else {
+        i64::try_from(magnitude).ok()
+    }
 }
 
 /// Tcl's double syntax. Integers are doubles too, so the integer grammar is

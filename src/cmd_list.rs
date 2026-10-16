@@ -536,6 +536,10 @@ fn dispatch(id: u16, args: &[String]) -> Result<String, String> {
         ext::LRANGE => lrange(&args[0], &args[1], &args[2]),
         ext::LREVERSE => {
             let mut items = list::split(&args[0])?;
+            // An empty list comes back as the same object, whitespace and all.
+            if items.is_empty() {
+                return Ok(args[0].clone());
+            }
             items.reverse();
             Ok(list::join(&items))
         }

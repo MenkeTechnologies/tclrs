@@ -73,6 +73,11 @@ const PROGRAMS: &[&str] = &[
     // digits, in an index and in every integer a list command reads.
     "puts [list [lindex {a b c d e f g h i j k l} 1__0] [lindex {a b c d e f g h i j k l} end-1__0] [lrange {a b c d e f g h i j k} 1___0 end] [lindex {a b c d} 0b1__1]]",
     "puts [list [lsort -integer {1__0 3}] [lrepeat 0x0__2 x]]",
+    // Overflow is decided on the value, not the spelling: a radix literal past
+    // an i64 and a decimal one past i64::MIN are both bignums.
+    "foreach v {0x8000000000000000 0xffffffffffffffff 0o1000000000000000000000 -9223372036854775809 -9223372036854775808 0x7fffffffffffffff} {puts \"$v: [catch {lsort -integer [list $v 1]} m]$m\"}",
+    // An empty list comes back as the same object, whitespace included.
+    "puts \"[lreverse { }]|[lreverse {}]|[lreverse { a }]|\"",
     // An `integer±integer` index with a bignum on either side is the exact
     // sum (`GetEndOffsetFromObj` hands it to `Tcl_ExprObj`), truncated to the
     // wide range only afterwards — in list and string commands alike.
