@@ -733,6 +733,56 @@ fn fail_index(class: &str, strict: bool, text: &str) -> i64 {
     0
 }
 
+/// `string length`, `index` and `range` on a string value, read where it sits.
+///
+/// Each used to copy the string and then decode it into a vector of `char`s, so
+/// a loop walking a string by index spent time and memory proportional to its
+/// length on every turn. An ASCII string — checked with the standard library's
+/// vectorised scan — is addressed by byte, and any other is walked without the
+/// vector. Returns `None` for everything else, which takes the general path.
+fn read_in_place(id: u16, operands: &[Value]) -> Option<Result<String, String>> {
+    if !matches!(id, ext::LENGTH | ext::INDEX | ext::RANGE) {
+        return None;
+    }
+    let Some(Value::Str(text)) = operands.first() else {
+        return None;
+    };
+    let ascii = text.is_ascii();
+    let len = if ascii {
+        text.len()
+    } else {
+        text.chars().count()
+    };
+    let end = len as i64 - 1;
+    let spec = |i: usize| to_tcl_string(&operands[i]);
+    Some((|| match id {
+        ext::LENGTH => Ok(len.to_string()),
+        ext::INDEX => {
+            let i = index_of(&spec(1), end)?;
+            let at = usize::try_from(i).ok();
+            Ok(match at {
+                Some(i) if ascii => text.as_bytes().get(i).map(|b| char::from(*b).to_string()),
+                Some(i) => text.chars().nth(i).map(|c| c.to_string()),
+                None => None,
+            }
+            .unwrap_or_default())
+        }
+        _ => {
+            let first = index_of(&spec(1), end)?.max(0);
+            let last = index_of(&spec(2), end)?.min(end);
+            if first > last {
+                return Ok(String::new());
+            }
+            let (first, last) = (first as usize, last as usize);
+            Ok(if ascii {
+                text[first..=last].to_string()
+            } else {
+                text.chars().skip(first).take(last - first + 1).collect()
+            })
+        }
+    })())
+}
+
 fn dispatch(id: u16, operands: &[Value]) -> Result<String, String> {
     // `append` is the one op that needs an operand's identity rather than its
     // string form: an unset variable reads back as `Undef`, and appending to
@@ -747,6 +797,10 @@ fn dispatch(id: u16, operands: &[Value]) -> Result<String, String> {
             out.push_str(&to_tcl_string(v));
         }
         return Ok(out);
+    }
+
+    if let Some(result) = read_in_place(id, operands) {
+        return result;
     }
 
     let a: Vec<String> = operands.iter().map(to_tcl_string).collect();
