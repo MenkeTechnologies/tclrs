@@ -131,8 +131,8 @@ fn list_parse(msg: &str) -> Option<String> {
         ("LIST", rest)
     } else if let Some(rest) = msg.strip_prefix("dict ") {
         ("DICTIONARY", rest)
-    } else if let Some(rest) = msg.strip_prefix("unmatched open ") {
-        let (what, typ) = rest.split_once(" in ")?;
+    } else {
+        let (what, typ) = msg.strip_prefix("unmatched open ")?.split_once(" in ")?;
         let kind = match typ {
             "list" => "LIST",
             "dict" => "DICTIONARY",
@@ -144,8 +144,6 @@ fn list_parse(msg: &str) -> Option<String> {
             _ => return None,
         };
         return Some(format!("TCL VALUE {kind} {what}"));
-    } else {
-        return None;
     };
     let junk = (rest.starts_with("element in braces followed by \"")
         || rest.starts_with("element in quotes followed by \""))
