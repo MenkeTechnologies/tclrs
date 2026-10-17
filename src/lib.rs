@@ -23,6 +23,7 @@ mod are;
 mod are_bt;
 pub mod assoc;
 pub mod cache;
+mod clock_freescan;
 pub mod clock_locale;
 pub mod clock_msgs;
 /// `after`, `update` and `vwait` — the event loop a Tk script lives inside.

@@ -44,6 +44,7 @@ use std::sync::Arc;
 
 use fusevm::{Op, Value, VM};
 
+use crate::clock_freescan;
 use crate::clock_locale::Catalog;
 use crate::compiler::{CompileError, Compiler};
 use crate::parser::Word;
@@ -116,13 +117,18 @@ pub(crate) fn compile(c: &mut Compiler, args: &[Word]) -> Result<(), CompileErro
             if rest.len() > 1 {
                 return c.error("wrong # args: should be \"clock clicks ?-switch?\"");
             }
-            // The switch always rides on the stack, empty when absent, so the
-            // handler has one shape rather than two.
+            // With a switch the word rides on the stack and the operand is 3; with
+            // none the counter is the microsecond one, operand 2, as for
+            // `clock microseconds` — an empty switch is not "no switch".
             match rest.first() {
-                Some(w) => c.word(w)?,
-                None => c.push_str(""),
+                Some(w) => {
+                    c.word(w)?;
+                    c.emit(Op::Extended(ext::NOW, 3), 0);
+                }
+                None => {
+                    c.emit(Op::Extended(ext::NOW, 2), 1);
+                }
             }
-            c.emit(Op::Extended(ext::NOW, 3), 0);
             Ok(())
         }
         other => {
@@ -804,6 +810,23 @@ const ZONE_DIRECTORIES: &[&str] = &[
     "/usr/local/etc/zoneinfo",
 ];
 
+/// The name `%Z` writes for a zone read from a zoneinfo file. Tcl's own time
+/// zone data names a zone whose rule gives only an offset by that offset in
+/// full — `-0300` where the system's file has `-03` — so an abbreviation that
+/// is a sign and two digits is written as a sign and four. A zone given as a
+/// POSIX rule or a numeric offset keeps the name it was written with.
+fn full_offset_name(abbreviation: &str) -> String {
+    let bytes = abbreviation.as_bytes();
+    let numeric = bytes.len() == 3
+        && matches!(bytes[0], b'+' | b'-')
+        && bytes[1..].iter().all(u8::is_ascii_digit);
+    if numeric {
+        format!("{abbreviation}00")
+    } else {
+        abbreviation.to_string()
+    }
+}
+
 /// Resolve a zone name.
 fn load_zone(name: &str) -> Result<Zone, String> {
     let trimmed = name.strip_prefix(':').unwrap_or(name);
@@ -838,7 +861,11 @@ fn load_zone(name: &str) -> Result<Zone, String> {
     for directory in ZONE_DIRECTORIES {
         let path = std::path::Path::new(directory).join(trimmed);
         if let Ok(bytes) = std::fs::read(&path) {
-            if let Some(zone) = parse_tzif(&bytes) {
+            if let Some(mut zone) = parse_tzif(&bytes) {
+                zone.initial.abbreviation = full_offset_name(&zone.initial.abbreviation);
+                for (_, state) in &mut zone.transitions {
+                    state.abbreviation = full_offset_name(&state.abbreviation);
+                }
                 return Ok(zone);
             }
         }
@@ -1374,6 +1401,15 @@ mod flag {
     pub const ISO8601CENTURY: u32 = 1 << 14;
     pub const DATE: u32 =
         JULIANDAY | DAYOFMONTH | DAYOFYEAR | MONTH | YEAR | ISO8601YEAR | DAYOFWEEK | ISO8601WEEK;
+    // The flags only the free-form scan raises, and the three "assemble on
+    // demand" marks both scans keep.
+    pub const ZONE: u32 = 1 << 5;
+    pub const HAVEDATE: u32 = DAYOFMONTH | MONTH | YEAR;
+    pub const RELCONV: u32 = 1 << 17;
+    pub const ORDINALMONTH: u32 = 1 << 18;
+    pub const ASSEMBLE_DATE: u32 = 1 << 28;
+    pub const ASSEMBLE_JULIANDAY: u32 = 1 << 29;
+    pub const ASSEMBLE_SECONDS: u32 = 1 << 30;
 }
 
 /// `ClockDefaultCenturySwitch` and `ClockDefaultYearCentury`: a two-digit
@@ -1425,6 +1461,8 @@ struct Scanned {
     seconds: i64,
     /// A zone the input named, which replaces the command's own.
     offset: Option<i32>,
+    /// `yyRelSeconds`: what the free-form scan still has to add to the instant.
+    rel_seconds: i64,
 }
 
 impl Scanned {
@@ -1455,6 +1493,7 @@ impl Scanned {
             local_seconds: local,
             seconds: base_at,
             offset: None,
+            rel_seconds: 0,
         }
     }
 
@@ -2142,16 +2181,37 @@ fn assemble(mut got: Scanned, zone: &Zone, validate: bool) -> Result<i64, String
         }
     }
     got.flags = flags;
-
-    // ── ClockScanCommit ──
-    let mut stage_one_done = false;
-    if validate && (assemble_seconds || flags & LOCALSEC != 0) {
-        validate_fields(&mut got, &mut assemble_julian)?;
-        stage_one_done = true;
-    }
     if assemble_julian {
-        assemble_julian_day(&mut got)?;
+        got.flags |= ASSEMBLE_JULIANDAY;
     }
+    if assemble_seconds {
+        got.flags |= ASSEMBLE_SECONDS;
+    }
+    commit(&mut got, zone, validate, validate)
+}
+
+/// `ClockScanCommit`, and the part of `ClockValidDate` that `clock scan` runs
+/// after it: the fields settled by the scan become an instant in `zone`.
+///
+/// `stage_one` and `stage_two` say which halves of the validation are still to
+/// run — the free-form scan runs the first itself, before it mixes in the
+/// relative terms, and the second is what `-validate` adds after the commit.
+fn commit(
+    got: &mut Scanned,
+    zone: &Zone,
+    mut stage_one: bool,
+    stage_two: bool,
+) -> Result<i64, String> {
+    use flag::*;
+    if stage_one && got.flags & (ASSEMBLE_SECONDS | LOCALSEC) != 0 {
+        validate_fields(got)?;
+        stage_one = false;
+    }
+    if got.flags & ASSEMBLE_JULIANDAY != 0 {
+        assemble_julian_day(got)?;
+        got.flags &= !ASSEMBLE_JULIANDAY;
+    }
+    let flags = got.flags;
     if flags & JULIANDAY != 0 {
         let jdn = got.julian_day as f64
             + (got.second_of_day - SECONDS_PER_DAY / 2) as f64 / SECONDS_PER_DAY as f64;
@@ -2164,21 +2224,23 @@ fn assemble(mut got: Scanned, zone: &Zone, validate: bool) -> Result<i64, String
         got.julian_day += got.second_of_day / SECONDS_PER_DAY;
         got.second_of_day %= SECONDS_PER_DAY;
     }
-    if assemble_seconds {
+    if flags & ASSEMBLE_SECONDS != 0 {
         got.local_seconds = (got.julian_day - JDN_OF_EPOCH) * SECONDS_PER_DAY + got.second_of_day;
     }
-    if assemble_seconds || flags & LOCALSEC != 0 {
+    if flags & (ASSEMBLE_SECONDS | LOCALSEC) != 0 {
         let local = got.local_seconds;
         got.seconds = match got.offset {
             Some(offset) => local - offset as i64,
             None => local - zone.for_local(local).offset as i64,
         };
     }
+    // Relative seconds are added to the instant, whatever else was settled.
+    got.seconds += got.rel_seconds;
 
     // ── the rest of ClockValidDate ──
-    if validate {
-        if !stage_one_done {
-            validate_fields(&mut got, &mut assemble_julian)?;
+    if stage_two {
+        if stage_one {
+            validate_fields(got)?;
         }
         if flags & DAYOFWEEK != 0 {
             let weekday = (got.julian_day - JDN_OF_EPOCH + 3).rem_euclid(7) + 1;
@@ -2212,13 +2274,23 @@ fn widen_year(year: i64, has_century: bool, century: i64) -> i64 {
 
 /// `TclToSeconds`: a time of day on the 24-hour clock, or on the 12-hour one
 /// when `%p` named a half of the day.
+///
+/// The arithmetic is C `int` arithmetic, which wraps: an hour of twenty million,
+/// which a ten-digit number read as a time gives, comes out as a different
+/// number of seconds than the exact product.
 fn to_seconds(hour: i64, minute: i64, second: i64, meridian: Meridian) -> i64 {
+    let (hour, minute, second) = (hour as i32, minute as i32, second as i32);
     let hour = match meridian {
         Meridian::H24 => hour,
-        Meridian::Am => hour / 24 * 24 + hour % 12,
-        Meridian::Pm => hour / 24 * 24 + hour % 12 + 12,
+        Meridian::Am => (hour / 24 * 24).wrapping_add(hour % 12),
+        Meridian::Pm => (hour / 24 * 24).wrapping_add(hour % 12).wrapping_add(12),
     };
-    (hour * 60 + minute) * 60 + second
+    i64::from(
+        hour.wrapping_mul(60)
+            .wrapping_add(minute)
+            .wrapping_mul(60)
+            .wrapping_add(second),
+    )
 }
 
 fn invalid_input(what: &str) -> String {
@@ -2255,7 +2327,7 @@ fn assemble_julian_day(got: &mut Scanned) -> Result<(), String> {
 
 /// The first stage of `ClockValidDate`: every field the input carried is held
 /// to its range, in the order tclsh checks them.
-fn validate_fields(got: &mut Scanned, assemble_julian: &mut bool) -> Result<(), String> {
+fn validate_fields(got: &mut Scanned) -> Result<(), String> {
     use flag::*;
     let flags = got.flags;
     if flags & (YEAR | ISO8601YEAR) != 0 {
@@ -2269,9 +2341,9 @@ fn validate_fields(got: &mut Scanned, assemble_julian: &mut bool) -> Result<(), 
     if flags & MONTH != 0 && !(1..=12).contains(&got.month) {
         return Err(invalid_input("invalid month"));
     }
-    if *assemble_julian {
+    if got.flags & ASSEMBLE_JULIANDAY != 0 {
         assemble_julian_day(got)?;
-        *assemble_julian = false;
+        got.flags &= !ASSEMBLE_JULIANDAY;
     }
     let leap = is_leap(got.absolute_year());
     if flags & (DAYOFMONTH | DAYOFWEEK) != 0 {
@@ -2324,6 +2396,290 @@ fn validate_fields(got: &mut Scanned, assemble_julian: &mut bool) -> Result<(), 
             return Err(invalid_input("invalid time"));
         }
     }
+    Ok(())
+}
+
+// ── clock scan without -format ───────────────────────────────────────────
+
+/// `ClockFreeScan`, `ClockCalcRelTime` and the `ClockScanCommit` they end in:
+/// read a free-form date, as the grammar in [`crate::clock_freescan`] does, and
+/// turn it into an instant. `utc` says the zone is the literal `:GMT`, which
+/// takes the shorter way through the relative seconds.
+fn free_scan(
+    input: &str,
+    zone: &Zone,
+    base_at: i64,
+    validate: bool,
+    utc: bool,
+) -> Result<i64, String> {
+    use clock_freescan::{Dst, Fields};
+    use flag::*;
+    let mut got = Scanned::from_base(base_at, zone);
+    let mut fields = Fields::new(got.year, got.month, got.day, got.weekday);
+    clock_freescan::parse(input, &mut fields)
+        .map_err(|why| format!("unable to convert date-time string \"{input}\": {why}"))?;
+    got.year = fields.year;
+    got.month = fields.month;
+    got.day = fields.day;
+    got.weekday = fields.day_of_week;
+    got.hour = fields.hour;
+    got.minute = fields.minutes;
+    got.second = fields.seconds;
+    got.meridian = match fields.meridian {
+        clock_freescan::Meridian::Am => Meridian::Am,
+        clock_freescan::Meridian::Pm => Meridian::Pm,
+        clock_freescan::Meridian::H24 => Meridian::H24,
+    };
+    got.flags = fields.flags;
+    got.rel_seconds = fields.rel_seconds;
+    let mut gmt = utc;
+
+    // A date in the string settles the year, two digits of it by the century
+    // switch.
+    if got.flags & YEAR != 0 {
+        if got.year < 100 {
+            if got.year >= YEAR_OF_CENTURY_SWITCH {
+                got.year -= 100;
+            }
+            got.year += CURRENT_YEAR_CENTURY;
+        }
+        got.bce = false;
+        got.flags |= ASSEMBLE_JULIANDAY | ASSEMBLE_SECONDS;
+    }
+
+    // A zone in the string replaces the command's own: a numeric offset, with
+    // the hour daylight saving adds, or else UTC.
+    let named;
+    let mut zone = zone;
+    if got.flags & ZONE != 0 {
+        let east = if fields.timezone != 0 || fields.dst_mode == Dst::On {
+            let dst_hours = match fields.dst_mode {
+                Dst::On => 1,
+                Dst::Off => 0,
+                Dst::Maybe => -1,
+            };
+            -fields.timezone * 60 + 3600 * dst_hours
+        } else {
+            gmt = true;
+            0
+        };
+        named = load_zone(&format_numeric_time_zone(east as i32))?;
+        zone = &named;
+        got.flags |= ASSEMBLE_SECONDS;
+    }
+
+    // The first stage of validation runs before the relative terms are mixed
+    // in, which would otherwise turn any date into a valid one.
+    if validate {
+        validate_fields(&mut got)?;
+    }
+
+    let flags = got.flags;
+    if flags & (TIME | HAVEDATE) == HAVEDATE {
+        got.second_of_day = 0;
+        got.flags |= ASSEMBLE_SECONDS;
+    } else if flags & TIME != 0 {
+        got.second_of_day = to_seconds(got.hour, got.minute, got.second, got.meridian);
+        got.flags |= ASSEMBLE_SECONDS;
+    } else if flags & (DAYOFWEEK | HAVEDATE) == DAYOFWEEK
+        || flags & ORDINALMONTH != 0
+        || (flags & RELCONV != 0 && (fields.rel_month != 0 || fields.rel_day != 0))
+    {
+        got.second_of_day = 0;
+        got.flags |= ASSEMBLE_SECONDS;
+    } else {
+        got.second_of_day = got.local_seconds.rem_euclid(SECONDS_PER_DAY);
+    }
+
+    if got.flags & RELCONV != 0 {
+        calc_relative_time(&mut got, &mut fields, zone, gmt)?;
+    }
+    commit(&mut got, zone, false, validate)
+}
+
+/// `Clock_itoaw`: write `value` in at least `width` digits, padded with zeros,
+/// at `at`, followed by a NUL; the index just past the digits.
+fn itoaw(buf: &mut [u8; 13], at: usize, value: i32, width: usize) -> usize {
+    let digits = value.to_string();
+    let width = digits.len().max(width);
+    for slot in &mut buf[at..at + width] {
+        *slot = b'0';
+    }
+    buf[at + width - digits.len()..at + width].copy_from_slice(digits.as_bytes());
+    buf[at + width] = 0;
+    at + width
+}
+
+/// `ClockFormatNumericTimeZone`: `+hhmm` (or `+hhmmss`) for an offset in seconds
+/// east. The minutes are written at a fixed place after the hours, so an offset
+/// of a hundred hours or more — which `+0100 12` makes of a four-digit offset
+/// read as a number of minutes — overwrites the hours' last digit, and the zone
+/// that results is a different one. Reproduced, not corrected.
+fn format_numeric_time_zone(seconds: i32) -> String {
+    let mut buf = [0u8; 13];
+    let mut z = seconds;
+    buf[0] = if z < 0 {
+        z = -z;
+        b'-'
+    } else {
+        b'+'
+    };
+    itoaw(&mut buf, 1, z / 3600, 2);
+    z %= 3600;
+    let mut end = itoaw(&mut buf, 3, z / 60, 2);
+    z %= 60;
+    if z != 0 {
+        end = itoaw(&mut buf, 5, z, 2);
+    }
+    String::from_utf8_lossy(&buf[..end]).into_owned()
+}
+
+/// `WeekdayOnOrBefore`: the Julian day of the given weekday (Monday is 1,
+/// Sunday 7) that falls on or before `julian_day`.
+fn weekday_on_or_before(weekday: i64, julian_day: i64) -> i64 {
+    let k = (weekday + 6).rem_euclid(7);
+    julian_day - (julian_day - k) % 7
+}
+
+/// `GetGregorianEraYearDay`, `GetMonthDay` and `GetYearWeekDay`: the calendar
+/// fields of the date the Julian day number names.
+fn refresh_date(got: &mut Scanned) {
+    let civil = civil_of((got.julian_day - JDN_OF_EPOCH) * SECONDS_PER_DAY);
+    got.bce = civil.year <= 0;
+    got.year = if got.bce { 1 - civil.year } else { civil.year };
+    got.month = civil.month as i64;
+    got.day = civil.day as i64;
+    got.day_of_year = civil.day_of_year();
+    let (iso_year, iso_week) = civil.iso_week();
+    got.iso_year = iso_year;
+    got.iso_week = iso_week;
+    got.weekday = civil.iso_weekday() as i64;
+}
+
+/// `ClockCalcRelTime`: apply the relative months, days, ordinal month,
+/// weekday and seconds the string asked for. The steps depend on one another
+/// (a month moved first changes which day a weekday lands on), so the work is
+/// done in tclsh's order and repeated where it repeats.
+fn calc_relative_time(
+    got: &mut Scanned,
+    fields: &mut clock_freescan::Fields,
+    zone: &Zone,
+    gmt: bool,
+) -> Result<(), String> {
+    use flag::*;
+    let scanned_weekday = got.weekday;
+    loop {
+        if fields.rel_month != 0 {
+            if got.flags & ASSEMBLE_DATE != 0 {
+                refresh_date(got);
+                got.flags &= !ASSEMBLE_DATE;
+            }
+            got.month += i64::from(fields.rel_month as i32) - 1;
+            got.year += got.month / 12;
+            let mut month = got.month % 12;
+            if month < 0 {
+                month += 12;
+                got.year -= 1;
+            }
+            got.month = month + 1;
+            // A day the new month lacks is the month's last.
+            let last = month_length(got.absolute_year(), got.month as u32) as i64;
+            if got.day > last {
+                got.day = last;
+            }
+            got.flags |= ASSEMBLE_JULIANDAY | ASSEMBLE_SECONDS;
+            fields.rel_month = 0;
+        }
+
+        if fields.rel_day != 0 {
+            if got.flags & ASSEMBLE_JULIANDAY != 0 {
+                got.julian_day = julian_day_of(got.absolute_year(), got.month, got.day);
+                got.flags &= !ASSEMBLE_JULIANDAY;
+            }
+            got.julian_day += fields.rel_day;
+            if got.julian_day < GREGORIAN_CHANGE_JDN {
+                return Err(too_early());
+            }
+            got.flags |= ASSEMBLE_DATE | ASSEMBLE_SECONDS;
+            fields.rel_day = 0;
+        }
+
+        if got.flags & ORDINALMONTH != 0 {
+            if got.flags & ASSEMBLE_DATE != 0 {
+                refresh_date(got);
+                got.flags &= !ASSEMBLE_DATE;
+            }
+            let month_diff;
+            if fields.month_ordinal_incr > 0 {
+                let diff = fields.month_ordinal - got.month;
+                month_diff = if diff <= 0 { diff + 12 } else { diff };
+                fields.month_ordinal_incr -= 1;
+            } else {
+                let diff = got.month - fields.month_ordinal;
+                month_diff = if diff >= 0 { diff - 12 } else { diff };
+                fields.month_ordinal_incr += 1;
+            }
+            // The rest is a relative number of months.
+            got.year += fields.month_ordinal_incr;
+            fields.rel_month += month_diff;
+            got.flags &= !ORDINALMONTH;
+            got.flags |= ASSEMBLE_JULIANDAY | ASSEMBLE_SECONDS;
+            continue;
+        }
+
+        if got.flags & (DAYOFWEEK | flag::HAVEDATE) == DAYOFWEEK {
+            got.weekday = scanned_weekday;
+            if got.flags & ASSEMBLE_JULIANDAY != 0 {
+                got.julian_day = julian_day_of(got.absolute_year(), got.month, got.day);
+                got.flags &= !ASSEMBLE_JULIANDAY;
+            }
+            got.bce = false;
+            got.julian_day =
+                weekday_on_or_before(got.weekday, got.julian_day + 6) + 7 * fields.day_ordinal;
+            if fields.day_ordinal > 0 {
+                got.julian_day -= 7;
+            }
+            got.flags |= ASSEMBLE_DATE | ASSEMBLE_SECONDS;
+        }
+
+        if got.rel_seconds != 0 {
+            if !gmt {
+                // Added to the instant, in UTC, so that a daylight-saving hole
+                // in between is not skipped by the local clock; then the date
+                // is read back from the new instant.
+                commit(got, zone, false, false)?;
+                got.rel_seconds = 0;
+                let back = Scanned::from_base(got.seconds, zone);
+                got.year = back.year;
+                got.month = back.month;
+                got.day = back.day;
+                got.day_of_year = back.day_of_year;
+                got.iso_year = back.iso_year;
+                got.iso_week = back.iso_week;
+                got.julian_day = back.julian_day;
+                got.local_seconds = back.local_seconds;
+                got.bce = false;
+                got.second_of_day = got.local_seconds.rem_euclid(SECONDS_PER_DAY);
+                got.weekday = scanned_weekday;
+            } else {
+                // UTC has no hole: seconds that run out of the day carry into
+                // the days, and the rest is added to the instant by the commit.
+                let total = got.second_of_day + got.rel_seconds;
+                if total / SECONDS_PER_DAY != got.second_of_day / SECONDS_PER_DAY {
+                    fields.rel_day += total / SECONDS_PER_DAY;
+                    got.second_of_day = 0;
+                    got.rel_seconds = total % SECONDS_PER_DAY;
+                    if got.rel_seconds < 0 {
+                        got.rel_seconds += SECONDS_PER_DAY;
+                        fields.rel_day -= 1;
+                    }
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+    got.flags &= !RELCONV;
     Ok(())
 }
 
@@ -2638,9 +2994,18 @@ fn run_scan(words: &[Value]) -> Result<Value, String> {
         None => current_seconds(),
     };
     let Some(format) = opts.format.as_deref() else {
-        return Err(
-            "clock scan: the free-form parser is not supported yet; use -format".to_string(),
-        );
+        // The legacy parser is not localized.
+        if opts.locale.is_some() {
+            return Err("legacy [clock scan] does not support -locale".to_string());
+        }
+        let utc = opts.gmt == Some(true) || opts.timezone.as_deref() == Some(":GMT");
+        return Ok(Value::Int(free_scan(
+            &to_tcl_string(&words[0]),
+            &zone,
+            base_at,
+            opts.validate,
+            utc,
+        )?));
     };
     let cat = opts.catalog()?;
     Ok(Value::Int(scan_time(

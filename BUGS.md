@@ -1068,11 +1068,15 @@ approximated, and nothing is silently mis-run.
   still for `ru`, `ro` and `el`. This frontend has one calendar, proleptic
   Gregorian, so an instant before 1752-09-14T00:00:00Z is refused rather than
   answered from a calendar the reference interpreter may not be using.
-- **`clock scan` without `-format`.** tclsh's free-form parser is a grammar over
-  relative words, month names, ISO forms and zone abbreviations; it is refused
-  by name. `-base` is refused with it, and so is reading a time zone by
-  abbreviation inside a `%Z` field, which would need the table tclsh builds from
-  the whole zone database.
+- **`clock scan` without `-format`** runs tclsh's grammar (`src/clock_freescan.rs`,
+  a port of `generic/tclGetDate.y` and the bison tables of `generic/tclDate.c`),
+  so what it accepts, and the column it reports a syntax error at, are the
+  reference's. Where it differs: a byte of 0x80 or more is read as it is on a
+  platform whose `char` is signed, so it ends the input; the one message `invalid
+  time` carries the code `CLOCK invInpStr seconds` although tclsh gives
+  `time` to a `24:mm:ss` that is not midnight; and reading a time zone by
+  abbreviation inside a `%Z` field of `-format` is refused, since it would need
+  the table tclsh builds from the whole zone database.
 - **`clock`'s `-locale` outside the root catalogue.** The month and day names,
   the AM/PM words and the `%x` / `%X` / `%c` expansions come from `msgcat`;
   only the root catalogue is built in, so `-locale fr` is refused rather than

@@ -492,7 +492,42 @@ fn clock_code(first: &str) -> Option<String> {
     if let Some(zone) = quoted(first, "time zone \"", "\" not found") {
         return Some(crate::list::join(&["CLOCK", "badTimeZone", zone]));
     }
-    None
+    if first.starts_with("unable to convert date-time string \"") {
+        // `TclClockFreeScan`: a part found twice, or the grammar's refusal.
+        let kind = if first.contains("\": more than one ") {
+            "MULTIPLE"
+        } else {
+            "PARSE"
+        };
+        return Some(format!("TCL VALUE DATE {kind}"));
+    }
+    if let Some(what) = first.strip_prefix("unable to convert input string: ") {
+        // `ClockValidDate`. The one message two of its checks share — `invalid
+        // time` for a 24:mm:ss that is not midnight and for seconds out of
+        // range — is given the code of the commoner, the seconds.
+        let code = match what {
+            "invalid iso year" => "iso year",
+            "invalid year" | "ambiguous year" => "year",
+            "invalid month" => "month",
+            "invalid day" | "ambiguous day" => "day",
+            "invalid day of year" => "day of year",
+            "invalid day of week" => "day of week",
+            "invalid time (hour)" => "hour",
+            "invalid time (minutes)" => "minutes",
+            "invalid time" => "seconds",
+            "invalid time (does not exist in this time-zone)" => "out-of-time",
+            _ => return None,
+        };
+        return Some(crate::list::join(&["CLOCK", "invInpStr", code]));
+    }
+    match first {
+        "input string does not match supplied format" => Some("CLOCK badInputString".to_string()),
+        "requested date too large to represent" => Some("CLOCK dateTooLarge".to_string()),
+        "legacy [clock scan] does not support -locale" => {
+            Some("CLOCK flagWithLegacyFormat".to_string())
+        }
+        _ => None,
+    }
 }
 
 /// The text between `prefix` and `suffix` when `msg` is exactly that shape.

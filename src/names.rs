@@ -699,7 +699,7 @@ const CLOCK_CORPUS: &[Entry] = &[
     Entry {
         name: "scan",
         synopsis: "clock scan string ?-base seconds? ?-format string? ?-gmt boolean? ?-locale LOCALE? ?-timezone ZONE? ?-validate boolean?",
-        summary: "Text as an instant. The -format form only; the free-form parser is refused.",
+        summary: "Text as an instant: read by the free-form grammar of dates, times, zones and relative terms, or by an explicit -format.",
     },
     Entry {
         name: "seconds",
