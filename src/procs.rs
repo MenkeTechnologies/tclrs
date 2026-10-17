@@ -146,11 +146,23 @@ pub fn parse_signature(spec: &str) -> Result<Signature, String> {
         if param.name.is_empty() {
             return Err("argument with no name".to_string());
         }
-        if param.name.ends_with(')') && param.name.contains('(') {
-            return Err(format!(
-                "formal parameter \"{}\" is an array element",
-                param.name
-            ));
+        // Scanned left to right, as `TclCreateProc` does: whichever of an array
+        // element's `(` and a namespace separator comes first decides the
+        // refusal.
+        let bytes = param.name.as_bytes();
+        for (i, byte) in bytes.iter().enumerate() {
+            if *byte == b'(' && param.name.ends_with(')') {
+                return Err(format!(
+                    "formal parameter \"{}\" is an array element",
+                    param.name
+                ));
+            }
+            if bytes[i..].starts_with(b"::") {
+                return Err(format!(
+                    "formal parameter \"{}\" is not a simple name",
+                    param.name
+                ));
+            }
         }
         params.push(param);
     }

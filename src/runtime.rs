@@ -2945,6 +2945,20 @@ fn apply_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclError> {
         _ => return Err(TclError::plain(bad_lambda(&lambda))),
     };
 
+    // A parameter list the procedure machinery would refuse is refused here, with
+    // the context tclsh logs for a lambda that never got as far as running.
+    if let Err(msg) = crate::procs::parse_signature(params) {
+        return Err(TclError {
+            info: Some(Box::new(crate::errinfo::ErrInfo {
+                preset: Some(format!(
+                    "{msg}\n    (parsing lambda expression \"{lambda}\")"
+                )),
+                ..Default::default()
+            })),
+            ..TclError::plain(msg)
+        });
+    }
+
     const NAME: &str = "\u{0}apply";
     let mut src = String::with_capacity(body.len() + params.len() + 32);
     src.push_str("proc ");
