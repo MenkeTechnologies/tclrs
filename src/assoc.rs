@@ -2217,7 +2217,7 @@ pub(crate) const DICT_SUBCOMMANDS: &[&str] = &[
 ];
 
 /// Resolve a possibly abbreviated subcommand, as the ensemble machinery does.
-fn resolve(word: &str, table: &'static [&'static str]) -> Result<&'static str, String> {
+pub(crate) fn resolve(word: &str, table: &'static [&'static str]) -> Result<&'static str, String> {
     if let Some(exact) = table.iter().copied().find(|s| *s == word) {
         return Ok(exact);
     }

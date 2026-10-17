@@ -574,6 +574,13 @@ approximated, and nothing is silently mis-run.
 - **Command pipelines and sockets.** `open |command` is refused rather than
   read as a file whose name begins with a pipe, and there is no socket driver,
   so `Tcl_OpenCommandChannel` and `Tcl_MakeTcpClientChannel` have no body.
+- **`chan` subcommands without a driver or event source.** `blocked`, `close`,
+  `configure`, `eof`, `flush`, `gets`, `names`, `puts`, `read`, `seek` and `tell`
+  are the standalone commands under `chan`, with `chan`'s own usage wording;
+  `copy`, `create`, `event`, `pending`, `pipe`, `pop`, `postevent`, `push` and
+  `truncate` are refused as `chan X is not supported yet`. `chan names` lists the
+  standard channels first and the rest in the order they were opened, where
+  tclsh's order is a hash table's.
 - **Stacked channels.** `Tcl_StackChannel` (`generic/tclIO.c:1796`) puts one
   driver on top of another and is what `zlib push` and `tls` are built from;
   every `topChanPtr` / `bottomChanPtr` hop in `tclIO.c` exists for it. There is
@@ -2132,7 +2139,7 @@ than an unexamined one. Measured against the 2000-program run above.
   `VM::slot_names_at`, which is what the projection uses. See the refusal list
   above.
 - **Commands tclrs does not have.** `interp`, `socket`,
-  `timerate`, `chan`, `fcopy`, `fileevent`,
+  `timerate`, `fcopy`, `fileevent`,
   `fblocked` and `zlib` are outside the command set entirely, so a generated use
   of one is `invalid command name` and says nothing about parity. `{*}`
   expansion, `namespace`, `rename`, `source`, `encoding`, `binary` and file I/O

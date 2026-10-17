@@ -698,6 +698,10 @@ pub mod ext {
     pub const TELL: u16 = CHANNEL_BASE + 8;
     /// `fconfigure channelId ?-option value ...?`.
     pub const FCONFIGURE: u16 = CHANNEL_BASE + 9;
+    /// `chan names ?pattern?`.
+    pub const NAMES: u16 = CHANNEL_BASE + 10;
+    /// `chan blocked channelId`.
+    pub const BLOCKED: u16 = CHANNEL_BASE + 11;
     /// `namespace`, `variable` and `rename` ([`crate::cmd_namespace`]), and
     /// `source` and `tcl_findLibrary` ([`crate::cmd_source`]), which share a
     /// block because they are one feature: a namespace-aware `source`.
@@ -2846,7 +2850,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn cmd_puts(&mut self, args: &[Word]) -> Result<(), CompileError> {
+    pub(crate) fn cmd_puts(&mut self, args: &[Word]) -> Result<(), CompileError> {
         // The channel forms go to `cmd_channel`; the two without one keep the
         // lowering they had, so a script that never names a channel is
         // unchanged. tclsh 9 has no third form: `puts stdout hi nonewline` is

@@ -119,6 +119,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "Change the working directory; no argument means the home directory.",
     },
     Entry {
+        name: "chan",
+        synopsis: "chan subcommand ?arg ...?",
+        summary: "The channel ensemble: `blocked`, `close`, `configure`, `eof`, `flush`, `gets`, `names`, `puts`, `read`, `seek` and `tell`, with the semantics of the standalone commands.",
+    },
+    Entry {
         name: "clock",
         synopsis: "clock subcommand ?arg ...?",
         summary: "The time ensemble: read the clock, and convert between an instant and a calendar.",

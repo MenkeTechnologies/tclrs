@@ -146,6 +146,11 @@ const PROGRAMS: &[&str] = &[
     "puts [catch {open /nonexistent-directory-for-tclrs/x} e]\nputs $e",
     // ── pid: the process id, and no pipeline behind an ordinary channel ──
     "puts [expr {[pid] == [pid]}]\nputs [string is integer -strict [pid]]\nputs <[pid stdout]>\nputs [list [catch {pid nosuch} m] $m]\nputs [list [catch {pid a b} m] $m]",
+    // ── chan: the ensemble over the same operations ─────────────────────
+    "puts [chan names std*]\nputs [chan names nosuchchannel]\nputs [llength [chan names]]",
+    "set f [open %F w]\nchan puts $f one\nchan puts -nonewline $f two\nchan flush $f\nchan close $f\nset g [open %F]\nputs [list [chan gets $g] [chan gets $g v] $v [chan eof $g] [chan blocked $g]]\nchan seek $g 0\nputs [chan tell $g]\nputs <[chan read $g 3]>\nputs <[chan read -nonewline $g]>\nputs [chan configure $g -translation]\nchan close $g",
+    "set f [open %F w]\nputs [lsearch -exact [chan names] [string trim $f]]\nputs [expr {[lsearch -exact [chan names] $f] >= 0}]\nputs [expr {[lsearch -exact [chan names *] $f] >= 0}]\nclose $f\nputs [expr {[lsearch -exact [chan names] $f] >= 0}]",
+    "chan puts stdout hi\nchan puts -nonewline stdout x\nchan puts stdout y\nputs [chan c stdout -buffering]",
 ];
 
 /// Programs whose *error* must agree, first line for first line.
@@ -182,6 +187,20 @@ const ERRORS: &[&str] = &[
     "puts stdout hi nonewline",
     "set f [open %F]; puts $f hi",
     "set f [open %F w]; gets $f",
+    "chan",
+    "chan eof",
+    "chan names a b",
+    "chan puts",
+    "chan puts a b c",
+    "chan gets",
+    "chan read",
+    "chan seek stdin",
+    "chan tell nosuchchannel",
+    "chan close nosuchchannel",
+    "chan configure stdout -bogus",
+    "chan blocked nosuchchannel",
+    "chan flush",
+    "set f [open %F w]; chan blocked $f",
 ];
 
 fn tclsh() -> Option<PathBuf> {

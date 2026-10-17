@@ -103,6 +103,8 @@ fn blocks() -> Vec<Block> {
                 ("SEEK", ext::SEEK),
                 ("TELL", ext::TELL),
                 ("FCONFIGURE", ext::FCONFIGURE),
+                ("NAMES", ext::NAMES),
+                ("BLOCKED", ext::BLOCKED),
             ],
         ),
         (

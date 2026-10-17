@@ -1459,11 +1459,15 @@ pub const COMMANDS: &[&str] = &[
     "seek",
     "tell",
     "fconfigure",
+    "chan",
 ];
 
 /// Lower one of the channel commands. Every argument is an ordinary word, so
 /// nothing about a channel is resolved while compiling.
 pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(), CompileError> {
+    if name == "chan" {
+        return compile_chan(c, args);
+    }
     let (id, usage, min, max) = match name {
         "open" => (ext::OPEN, "open fileName ?access? ?permissions?", 1, 3),
         "close" => (ext::CLOSE, "close channel ?direction?", 1, 2),
@@ -1494,6 +1498,93 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
     }
     let argc = u8::try_from(args.len()).map_err(|_| c.err("too many arguments for one command"))?;
     c.emit(Op::Extended(id, argc), 1 - args.len() as i32);
+    Ok(())
+}
+
+/// The subcommands of `chan` in the order the interpreter lists them
+/// (`generic/tclIO.c`'s `Tcl_ChanObjCmd`).
+const CHAN_SUBCOMMANDS: &[&str] = &[
+    "blocked",
+    "close",
+    "configure",
+    "copy",
+    "create",
+    "eof",
+    "event",
+    "flush",
+    "gets",
+    "names",
+    "pending",
+    "pipe",
+    "pop",
+    "postevent",
+    "push",
+    "puts",
+    "read",
+    "seek",
+    "tell",
+    "truncate",
+];
+
+/// `chan subcommand ?arg ...?`: the same operations as the standalone commands,
+/// refused for the wrong argument count in `chan`'s own usage wording.
+fn compile_chan(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
+    let Some((first, rest)) = args.split_first() else {
+        return c.error("wrong # args: should be \"chan subcommand ?arg ...?\"");
+    };
+    let given = c.literal_of(first, "chan subcommand")?.to_string();
+    let sub = match crate::assoc::resolve(&given, CHAN_SUBCOMMANDS) {
+        Ok(sub) => sub,
+        Err(message) => return c.error(message),
+    };
+    let usage = |usage: &str| format!("wrong # args: should be \"chan {usage}\"");
+    let (id, usage_text, min, max) = match sub {
+        "close" => (ext::CLOSE, "close channel ?direction?", 1, 2),
+        "eof" => (ext::EOF, "eof channel", 1, 1),
+        "flush" => (ext::FLUSH, "flush channel", 1, 1),
+        "read" => (
+            ext::READ,
+            "read channel ?numChars?\" or \"chan read ?-nonewline? channel",
+            1,
+            2,
+        ),
+        "seek" => (ext::SEEK, "seek channel offset ?origin?", 2, 3),
+        "tell" => (ext::TELL, "tell channel", 1, 1),
+        "configure" => (
+            ext::FCONFIGURE,
+            "configure channel ?-option value ...?",
+            1,
+            usize::MAX,
+        ),
+        "blocked" => (ext::BLOCKED, "blocked channel", 1, 1),
+        "names" => (ext::NAMES, "names ?pattern?", 0, 1),
+        "gets" => {
+            if !(1..=2).contains(&rest.len()) {
+                return c.error(usage("gets channel ?varName?"));
+            }
+            return compile_gets(c, rest);
+        }
+        "puts" => {
+            let flagged = rest.first().and_then(Word::as_literal) == Some("-nonewline");
+            if rest.is_empty() || rest.len() > 3 || (rest.len() == 3 && !flagged) {
+                return c.error(usage("puts ?-nonewline? ?channel? string"));
+            }
+            return c.cmd_puts(rest);
+        }
+        other => {
+            return c.error(format!(
+                "chan {other} is not supported yet: it needs a channel driver or an event source this frontend does not have"
+            ))
+        }
+    };
+    if rest.len() < min || rest.len() > max {
+        return c.error(usage(usage_text));
+    }
+    for arg in rest {
+        c.word(arg)?;
+    }
+    let argc = u8::try_from(rest.len()).map_err(|_| c.err("too many arguments for one command"))?;
+    c.emit(Op::Extended(id, argc), 1 - rest.len() as i32);
     Ok(())
 }
 
@@ -1601,6 +1692,15 @@ pub(crate) fn run(vm: &mut VM, id: u16, arg: u8, sink: &Output) -> Result<(), St
         ext::FCONFIGURE => {
             let rest: Vec<String> = (1..operands.len()).map(text).collect();
             Value::Str(Arc::new(fconfigure(&text(0), &rest)?))
+        }
+        ext::NAMES => Value::Str(Arc::new(names_command(
+            operands.first().map(|_| text(0)).as_deref(),
+        ))),
+        ext::BLOCKED => {
+            // No channel here is non-blocking (`fconfigure -blocking 0` is
+            // refused), so a read never leaves the blocked flag set.
+            resolve_readable(&text(0))?;
+            Value::Int(0)
         }
         other => return Err(format!("unknown channel op {other}")),
     };
@@ -2067,4 +2167,28 @@ mod tests {
         translate_in(&mut c, "\nb\rc\nd");
         assert_eq!(c.pending, "a\nb\nc\nd");
     }
+}
+
+/// `chan names ?pattern?` (`Tcl_GetChannelNames`, `generic/tclIO.c`): the open
+/// channels whose name matches the glob pattern. The standard three come first
+/// and the rest in the order they were opened; tclsh's order is that of a hash
+/// table and is not something a script can rely on.
+fn names_command(pattern: Option<&str>) -> String {
+    for kind in [TCL_STDIN, TCL_STDOUT, TCL_STDERR] {
+        std_channel(kind);
+    }
+    let mut named: Vec<(usize, String)> = with_table(|t| {
+        t.names
+            .iter()
+            .map(|(name, id)| (*id, name.clone()))
+            .collect()
+    });
+    let is_std = |name: &str| matches!(name, "stdin" | "stdout" | "stderr");
+    named.sort_by_key(|(id, name)| (!is_std(name), *id));
+    let kept: Vec<String> = named
+        .into_iter()
+        .map(|(_, name)| name)
+        .filter(|name| pattern.is_none_or(|p| crate::list::glob_match(p, name)))
+        .collect();
+    crate::list::join(&kept)
 }
