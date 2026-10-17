@@ -181,6 +181,11 @@ const REGEX_ERRORS: &[(&str, &str)] = &[
 /// Anything this still cannot place is `None`, and the error carries tclsh's
 /// default code.
 pub(crate) fn classify_in(msg: &str, in_proc: bool, command: &str) -> Option<String> {
+    if command == "clock" && msg.starts_with("wrong # args: should be \"clock ") {
+        if let Some(code) = clock_code(msg.lines().next().unwrap_or(msg)) {
+            return Some(code);
+        }
+    }
     if let Some(code) = classify(msg) {
         return Some(code);
     }
@@ -227,7 +232,12 @@ pub(crate) fn classify_in(msg: &str, in_proc: bool, command: &str) -> Option<Str
         return Some(if in_proc {
             "TCL READ VARNAME".to_string()
         } else {
-            crate::list::join(&["TCL", "LOOKUP", "VARNAME", name])
+            crate::list::join(&[
+                "TCL",
+                "LOOKUP",
+                "VARNAME",
+                name.split('(').next().unwrap_or(name),
+            ])
         });
     }
     if quoted(msg, "can't read \"", "\": no such element in array").is_some() {
@@ -260,6 +270,9 @@ pub(crate) fn classify_in(msg: &str, in_proc: bool, command: &str) -> Option<Str
     }
     if first.starts_with("expected floating-point number but got ") {
         return Some("TCL VALUE NUMBER".to_string());
+    }
+    if let Some(code) = operation_code(first, command) {
+        return Some(code);
     }
     if first == "format string ended in middle of field specifier" {
         return Some("TCL FORMAT INCOMPLETE".to_string());
@@ -297,17 +310,184 @@ pub(crate) fn classify_in(msg: &str, in_proc: bool, command: &str) -> Option<Str
         return Some(crate::list::join(&["TCL", "LOOKUP", "NAMESPACE", name]));
     }
     // `Tcl_GetIndexFromObjStruct`'s refusal: `bad <what> "<value>": must be …`.
-    // `clock` words its own option errors differently.
-    if command != "clock" {
-        if let Some(rest) = msg.strip_prefix("bad ") {
-            if let Some((what, tail)) = rest.split_once(" \"") {
-                if let Some((value, after)) = tail.split_once("\": must be ") {
-                    if !what.contains(' ') && !after.is_empty() {
-                        return Some(crate::list::join(&["TCL", "LOOKUP", "INDEX", what, value]));
-                    }
-                }
+    // `clock`'s Tcl-level option errors are `CLOCK badOption` (see
+    // [`clock_code`]); only its `unit` and `clicks` refusals come from here.
+    if let Some((what, tail)) = msg.strip_prefix("bad ").and_then(|r| r.split_once(" \"")) {
+        if let Some((value, after)) = tail.split_once("\": must be ") {
+            let own = command != "clock" || what == "unit" || after.starts_with("-milliseconds");
+            if own && !what.contains(' ') && !after.is_empty() {
+                return Some(crate::list::join(&["TCL", "LOOKUP", "INDEX", what, value]));
             }
         }
+    }
+    None
+}
+
+/// The codes of the refusals that name an operation rather than a lookup:
+/// `TCL OPERATION <command> <what>` and its relatives, plus the `clock` and
+/// `binary` families, each from the site that raises it.
+fn operation_code(first: &str, command: &str) -> Option<String> {
+    // `format` and `scan` raise these; `binary` words the first one the same
+    // way and leaves the default code.
+    let format_fixed = [
+        (
+            "not enough arguments for all format specifiers",
+            "TCL FORMAT FIELDVARMISMATCH",
+        ),
+        (
+            "\"%n$\" argument index out of range",
+            "TCL FORMAT INDEXRANGE",
+        ),
+        (
+            "cannot mix \"%\" and \"%n$\" conversion specifiers",
+            "TCL FORMAT MIXEDSPECTYPES",
+        ),
+    ];
+    if command != "binary" {
+        if let Some((_, code)) = format_fixed.iter().find(|(text, _)| *text == first) {
+            return Some((*code).to_string());
+        }
+    }
+    let fixed = [
+        (
+            "list size must be a multiple of the stride length",
+            "TCL OPERATION LSORT BADSTRIDE",
+        ),
+        (
+            "list must have an even number of elements",
+            "TCL ARGUMENT FORMAT",
+        ),
+        ("foreach varlist is empty", "TCL OPERATION FOREACH NEEDVARS"),
+        (
+            "extra switch pattern with no body",
+            "TCL OPERATION SWITCH BADARM",
+        ),
+        (
+            "finally clause must be last",
+            "TCL OPERATION TRY FINALLY NONTERMINAL",
+        ),
+        (
+            "wrong # args to finally clause: must be \"... finally script\"",
+            "TCL OPERATION TRY FINALLY ARGUMENT",
+        ),
+        (
+            "must have exactly two variable names",
+            "TCL SYNTAX dict for",
+        ),
+    ];
+    if let Some((_, code)) = fixed.iter().find(|(text, _)| *text == first) {
+        return Some((*code).to_string());
+    }
+    if first.starts_with("expected boolean value but got \"") {
+        return Some("TCL VALUE NUMBER".to_string());
+    }
+    if first.starts_with("bad scan conversion character") {
+        return Some("TCL FORMAT BADTYPE".to_string());
+    }
+    if first.starts_with("element ") && first.contains(" missing from sublist ") {
+        return Some("TCL OPERATION LSORT INDEXFAILED".to_string());
+    }
+    if first.starts_with("bad count \"") && first.ends_with("\": must be integer >= 0") {
+        return Some("TCL OPERATION LREPEAT NEGARG".to_string());
+    }
+    if first.starts_with("too many fields in argument specifier ") {
+        return Some("TCL OPERATION PROC FORMALARGUMENTFORMAT".to_string());
+    }
+    if let Some(rest) = first.strip_prefix("wrong # args to ") {
+        for (clause, what) in [("on", "ON"), ("trap", "TRAP")] {
+            if rest.starts_with(&format!("{clause} clause: must be ")) {
+                return Some(format!("TCL OPERATION TRY {what} ARGUMENT"));
+            }
+        }
+    }
+    if let Some(value) = quoted(
+        first,
+        "bad handler type \"",
+        "\": must be finally, on, or trap",
+    ) {
+        return Some(crate::list::join(&[
+            "TCL",
+            "LOOKUP",
+            "INDEX",
+            "handler type",
+            value,
+        ]));
+    }
+    if let Some(name) = quoted(first, "\"", "\" isn't a procedure") {
+        return Some(crate::list::join(&["TCL", "LOOKUP", "PROCEDURE", name]));
+    }
+    if let Some(pattern) = quoted(first, "unknown namespace in import pattern \"", "\"") {
+        return Some(crate::list::join(&["TCL", "LOOKUP", "NAMESPACE", pattern]));
+    }
+    if first.starts_with("missing argument to \"") && first.ends_with('"') {
+        return Some("TCL ARGUMENT MISSING".to_string());
+    }
+    if first.starts_with("can't incr \"") && first.ends_with("\": variable is a constant") {
+        return Some("TCL WRITE CONST".to_string());
+    }
+    if quoted(first, "can't unset \"", "\": variable is a constant").is_some() {
+        return Some("TCL UNSET CONST".to_string());
+    }
+    if quoted(first, "can't set \"", "\": variable is a constant").is_some() {
+        return Some("TCL WRITE VARNAME".to_string());
+    }
+    if first.starts_with("can't find package ") {
+        return Some("TCL PACKAGE UNFOUND".to_string());
+    }
+    if first.starts_with("expected version number but got \"") {
+        return Some("TCL VALUE VERSION".to_string());
+    }
+    if let Some(name) = first
+        .strip_prefix("package ")
+        .and_then(|r| r.strip_suffix(" is not present"))
+    {
+        return Some(crate::list::join(&["TCL", "LOOKUP", "PACKAGE", name]));
+    }
+    if command == "binary" {
+        if first.starts_with("invalid ")
+            && first.contains(" (U+")
+            && first.contains(") at position ")
+        {
+            return Some("TCL BINARY DECODE INVALID".to_string());
+        }
+        if let Some(sub) = first
+            .strip_prefix("unknown subcommand \"")
+            .and_then(|r| r.split_once('"'))
+        {
+            return Some(crate::list::join(&["TCL", "LOOKUP", "SUBCOMMAND", sub.0]));
+        }
+    }
+    if command == "clock" {
+        return clock_code(first);
+    }
+    None
+}
+
+/// `clock`'s own codes (`library/clock.tcl`): a usage error is `CLOCK
+/// wrongNumArgs` for the subcommands written in Tcl, and an option or a
+/// base it cannot read is `CLOCK badOption`.
+fn clock_code(first: &str) -> Option<String> {
+    if let Some(rest) = first.strip_prefix("wrong # args: should be \"clock ") {
+        let sub = rest.split_whitespace().next().unwrap_or_default();
+        return matches!(sub, "format" | "scan" | "add").then(|| "CLOCK wrongNumArgs".to_string());
+    }
+    if first.contains("must be -milliseconds") {
+        return None;
+    }
+    if let Some(name) = first
+        .strip_prefix("bad option \"")
+        .and_then(|r| r.split_once('"'))
+    {
+        return Some(crate::list::join(&["CLOCK", "badOption", name.0]));
+    }
+    if let Some(name) = first
+        .strip_prefix("bad seconds \"")
+        .and_then(|r| r.split_once('"'))
+    {
+        return Some(crate::list::join(&["CLOCK", "badOption", name.0]));
+    }
+    if let Some(zone) = quoted(first, "time zone \"", "\" not found") {
+        return Some(crate::list::join(&["CLOCK", "badTimeZone", zone]));
     }
     None
 }
@@ -440,6 +620,106 @@ mod tests {
         assert_eq!(classify("expected integer but got \"x\""), None);
         assert_eq!(classify("can't read \"x\": no such variable"), None);
         assert_eq!(classify("bad option \"-x\": must be -a or -b"), None);
+    }
+
+    use super::classify_in;
+
+    /// Each message and the code tclsh 9.0 reports for it, measured with
+    /// `catch {...} m o; dict get $o -errorcode`.
+    #[test]
+    fn operation_templates_carry_their_codes() {
+        let cases = [
+            (
+                "format",
+                "not enough arguments for all format specifiers",
+                "TCL FORMAT FIELDVARMISMATCH",
+            ),
+            (
+                "format",
+                "\"%n$\" argument index out of range",
+                "TCL FORMAT INDEXRANGE",
+            ),
+            (
+                "lsort",
+                "element 3 missing from sublist \"a\"",
+                "TCL OPERATION LSORT INDEXFAILED",
+            ),
+            (
+                "lrepeat",
+                "bad count \"-1\": must be integer >= 0",
+                "TCL OPERATION LREPEAT NEGARG",
+            ),
+            (
+                "foreach",
+                "foreach varlist is empty",
+                "TCL OPERATION FOREACH NEEDVARS",
+            ),
+            (
+                "try",
+                "bad handler type \"d\": must be finally, on, or trap",
+                "TCL LOOKUP INDEX {handler type} d",
+            ),
+            (
+                "info",
+                "\"nosuch\" isn't a procedure",
+                "TCL LOOKUP PROCEDURE nosuch",
+            ),
+            (
+                "incr",
+                "can't incr \"x\": variable is a constant",
+                "TCL WRITE CONST",
+            ),
+            (
+                "package",
+                "can't find package nosuch",
+                "TCL PACKAGE UNFOUND",
+            ),
+            (
+                "clock",
+                "wrong # args: should be \"clock format clockval\"",
+                "CLOCK wrongNumArgs",
+            ),
+            (
+                "clock",
+                "wrong # args: should be \"clock seconds\"",
+                "TCL WRONGARGS",
+            ),
+            (
+                "clock",
+                "bad option \"-bogus\": must be -format",
+                "CLOCK badOption -bogus",
+            ),
+            (
+                "clock",
+                "bad unit \"u\": must be years",
+                "TCL LOOKUP INDEX unit u",
+            ),
+            (
+                "clock",
+                "time zone \":Nowhere\" not found",
+                "CLOCK badTimeZone :Nowhere",
+            ),
+            (
+                "set",
+                "can't read \"nosuch(x)\": no such variable",
+                "TCL LOOKUP VARNAME nosuch",
+            ),
+        ];
+        for (command, msg, code) in cases {
+            assert_eq!(
+                classify_in(msg, false, command).as_deref(),
+                Some(code),
+                "{msg}"
+            );
+        }
+    }
+
+    /// `binary` words the field-count refusal as `format` does and leaves the
+    /// default code on it.
+    #[test]
+    fn binary_keeps_the_default_code_for_a_short_argument_list() {
+        let msg = "not enough arguments for all format specifiers";
+        assert_eq!(classify_in(msg, false, "binary"), None);
     }
 
     #[test]

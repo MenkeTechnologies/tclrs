@@ -2586,7 +2586,7 @@ fn now(unit: u8, switch: Option<&Value>) -> Result<Value, String> {
             "-milliseconds" => Ok(Value::Int(current_micros() / 1000)),
             "-microseconds" | "" => Ok(Value::Int(current_micros())),
             other => Err(format!(
-                "bad option \"{other}\": must be -microseconds or -milliseconds"
+                "bad option \"{other}\": must be -milliseconds or -microseconds"
             )),
         };
     }
