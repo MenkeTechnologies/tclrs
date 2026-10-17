@@ -49,6 +49,10 @@ fn quoting_matrix(template: &str) -> String {
 }
 
 const FIXED: &[&str] = &[
+    // ── `array for` ──
+    "array set a {x 1 y 2}\nset l {}\narray for {k v} a {lappend l $k=$v}\nputs [lsort $l]",
+    "array set a {x 1}\nputs [catch {array for {k} a {}} m]\nputs $m\nputs [catch {array for {k v} nosuch {}} m]\nputs $m",
+    "array set a {x 1 y 2}\nputs [catch {array for {k v} a {unset a(x)}} m]\nputs $m",
     // ── an in-place `dict` write into an array element ──
     "set a(1) x\nputs [catch {dict incr a(1) k} m]$m\nputs [catch {dict set a(1) k v} m]$m\nputs $a(1)",
     "dict set a(1) k v\ndict incr a(2) n 3\ndict lappend a(3) l x y\ndict append a(4) s p q\nputs [lsort -stride 2 [array get a]]",
@@ -687,7 +691,6 @@ fn unimplemented_subcommands_are_refused() {
             "set a(1) 1\narray startsearch a",
             "array startsearch is not supported yet",
         ),
-        ("array for {k v} a {}", "array for is not supported yet"),
         // `array names -regexp` landed; what it answers is compared against
         // tclsh in `FIXED`, and a pattern that will not compile is in the
         // error corpus.

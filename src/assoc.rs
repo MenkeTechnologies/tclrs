@@ -886,8 +886,12 @@ impl Compiler {
                 | "nextelement"
                 | "donesearch"
                 | "startsearch"
+                | "for"
         ) {
             return self.error(format!("array {sub} is not supported yet"));
+        }
+        if sub == "for" {
+            return self.array_for(&args[1..]);
         }
 
         let Some(array) = args.get(1) else {
@@ -990,6 +994,47 @@ impl Compiler {
                 self.emit(Op::LoadInt(0), 1);
             }
         }
+        Ok(())
+    }
+
+    /// `array for {keyVar valueVar} arrayName script`: the elements of an array,
+    /// one pair at a time.
+    ///
+    /// The walk is over the pairs the array holds when the loop begins, taken
+    /// by [`ext::ARR_FOR`] and stepped through by the machinery `dict for`
+    /// uses, so the variables are assigned and the body run exactly as there.
+    /// tclsh walks the live table and refuses a body that adds or removes an
+    /// element (`array changed during iteration`); this snapshot does not.
+    fn array_for(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        let [vars, array, body] = args else {
+            return self
+                .error("wrong # args: should be \"array for {key value} arrayName script\"");
+        };
+        let text = self.literal_of(vars, "array for variable list")?;
+        let names = split(text, "list").map_err(|msg| CompileError {
+            msg,
+            line: self.line,
+        })?;
+        let [key, value] = names.as_slice() else {
+            return Err(self.deferrable_err("must have two variable names".to_string()));
+        };
+        let names = (key.clone(), value.clone());
+        let name = self.literal_of(array, "array name")?.to_string();
+        let script = self.body_of(body)?;
+        let slot = self.array_place(&name);
+        self.push_str(&name);
+        self.emit(Op::LoadInt(slot), 1);
+        self.emit(Op::Extended(ext::ARR_FOR, 0), -1);
+        self.emit(Op::Extended(ext::DICT_PAIRS, 0), 0);
+        self.dict_each_step(Step::Init, 0);
+        self.dict_each(&names, |c| {
+            c.emit_body(&script)?;
+            c.push_str(&name);
+            c.emit(Op::LoadInt(slot), 1);
+            c.emit(Op::Extended(ext::ARR_CHECK, 0), -2);
+            Ok(())
+        })?;
+        self.dict_each_step(Step::Discard, 0);
         Ok(())
     }
 
@@ -2412,6 +2457,44 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             let place = place_of(vm);
             let exists = matches!(peek(vm, place), Some(Value::Hash(_)));
             vm.push(Value::Int(exists as i64));
+            Ok(())
+        }
+        ext::ARR_FOR => {
+            let place = place_of(vm);
+            let name = pop_str(vm);
+            let Some(Value::Hash(map)) = peek(vm, place) else {
+                return Err(format!("\"{name}\" isn't an array"));
+            };
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let mut flat = Vec::with_capacity(keys.len() * 2);
+            for key in keys {
+                flat.push(key.clone());
+                flat.push(map.get(key).map(to_tcl_string).unwrap_or_default());
+            }
+            vm.push(Value::Str(Arc::new(join(&flat))));
+            Ok(())
+        }
+        ext::ARR_CHECK => {
+            // After each turn of `array for`: the walk's record is on top of the
+            // stack, and an array that no longer has as many elements as it had
+            // when the walk began has been changed under it.
+            let place = place_of(vm);
+            let _name = pop_str(vm);
+            let walked = match vm.stack.last() {
+                Some(Value::Array(state)) => match state.first() {
+                    Some(Value::Array(pairs)) => pairs.len() / 2,
+                    _ => 0,
+                },
+                _ => 0,
+            };
+            let now = match peek(vm, place) {
+                Some(Value::Hash(map)) => map.len(),
+                _ => 0,
+            };
+            if now != walked {
+                return Err("array changed during iteration".to_string());
+            }
             Ok(())
         }
         ext::ARR_SEARCH => {

@@ -631,6 +631,13 @@ pub mod ext {
     /// for `[name, place]`, `array startsearch` itself. See
     /// [`crate::assoc`]'s `array_search`.
     pub const ARR_SEARCH: u16 = ASSOC_BASE + 34;
+    /// `[name, place]` → the array's pairs as a dictionary string, for
+    /// `array for`; `"name" isn't an array` when the variable is not one.
+    pub const ARR_FOR: u16 = ASSOC_BASE + 35;
+    /// `[name, place]` → nothing, or `array changed during iteration` when the
+    /// array no longer has the elements the `array for` walk on top of the stack
+    /// began with.
+    pub const ARR_CHECK: u16 = ASSOC_BASE + 36;
 
     /// Where the string commands' ops begin — the `string` ensemble, `append`
     /// and `format` — dispatched to [`crate::cmd_string`], which names them.

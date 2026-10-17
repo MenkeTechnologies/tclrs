@@ -361,6 +361,8 @@ fn operation_code(first: &str, command: &str) -> Option<String> {
             "TCL ARGUMENT FORMAT",
         ),
         ("foreach varlist is empty", "TCL OPERATION FOREACH NEEDVARS"),
+        ("must have two variable names", "TCL SYNTAX array for"),
+        ("array changed during iteration", "TCL READ array for"),
         (
             "extra switch pattern with no body",
             "TCL OPERATION SWITCH BADARM",

@@ -163,7 +163,7 @@
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">150/169</div>
+            <div class="stat-val">151/169</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -876,7 +876,7 @@
 
       <section class="tutorial-section" id="ch-array">
         <h2>The <code>array</code> ensemble</h2>
-        <p class="chapter-meta">13 subcommands recognised &middot; 10 implemented &middot; 3 refused</p>
+        <p class="chapter-meta">13 subcommands recognised &middot; 11 implemented &middot; 2 refused</p>
         <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
         <article class="doc-entry" id="doc-array-anymore">
           <h3><a class="doc-anchor" href="#doc-array-anymore">#</a> <code>array anymore</code></h3>
@@ -908,7 +908,6 @@
           <pre><code class="lang-tcl">array for {keyVar valueVar} arrayName script
 </code></pre>
           <p>Run the script once per element with the two variables bound, the way <code>dict for</code> does, yielding the empty string. <code>dict for</code> is built here and this is not: iterating an array needs a snapshot of a <em>variable's</em> elements taken before the body can modify them, which is a different lowering from walking a value.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>array for is not supported yet</code></p>
         </article>
         <article class="doc-entry" id="doc-array-get">
           <h3><a class="doc-anchor" href="#doc-array-get">#</a> <code>array get</code></h3>
