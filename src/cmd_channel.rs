@@ -2138,6 +2138,30 @@ fn fconfigure(name: &str, rest: &[String]) -> Result<String, String> {
     }
 }
 
+/// `chan names ?pattern?` (`Tcl_GetChannelNames`, `generic/tclIO.c`): the open
+/// channels whose name matches the glob pattern. The standard three come first
+/// and the rest in the order they were opened; tclsh's order is that of a hash
+/// table and is not something a script can rely on.
+fn names_command(pattern: Option<&str>) -> String {
+    for kind in [TCL_STDIN, TCL_STDOUT, TCL_STDERR] {
+        std_channel(kind);
+    }
+    let mut named: Vec<(usize, String)> = with_table(|t| {
+        t.names
+            .iter()
+            .map(|(name, id)| (*id, name.clone()))
+            .collect()
+    });
+    let is_std = |name: &str| matches!(name, "stdin" | "stdout" | "stderr");
+    named.sort_by_key(|(id, name)| (!is_std(name), *id));
+    let kept: Vec<String> = named
+        .into_iter()
+        .map(|(_, name)| name)
+        .filter(|name| pattern.is_none_or(|p| crate::list::glob_match(p, name)))
+        .collect();
+    crate::list::join(&kept)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2181,28 +2205,4 @@ mod tests {
         translate_in(&mut c, "\nb\rc\nd");
         assert_eq!(c.pending, "a\nb\nc\nd");
     }
-}
-
-/// `chan names ?pattern?` (`Tcl_GetChannelNames`, `generic/tclIO.c`): the open
-/// channels whose name matches the glob pattern. The standard three come first
-/// and the rest in the order they were opened; tclsh's order is that of a hash
-/// table and is not something a script can rely on.
-fn names_command(pattern: Option<&str>) -> String {
-    for kind in [TCL_STDIN, TCL_STDOUT, TCL_STDERR] {
-        std_channel(kind);
-    }
-    let mut named: Vec<(usize, String)> = with_table(|t| {
-        t.names
-            .iter()
-            .map(|(name, id)| (*id, name.clone()))
-            .collect()
-    });
-    let is_std = |name: &str| matches!(name, "stdin" | "stdout" | "stderr");
-    named.sort_by_key(|(id, name)| (!is_std(name), *id));
-    let kept: Vec<String> = named
-        .into_iter()
-        .map(|(_, name)| name)
-        .filter(|name| pattern.is_none_or(|p| crate::list::glob_match(p, name)))
-        .collect();
-    crate::list::join(&kept)
 }
