@@ -2582,11 +2582,24 @@ fn now(unit: u8, switch: Option<&Value>) -> Result<Value, String> {
         // `clock clicks` with no switch answers the highest-resolution
         // counter the platform has, which here is the microsecond clock the
         // other two units are read from.
-        return match to_tcl_string(switch).as_str() {
-            "-milliseconds" => Ok(Value::Int(current_micros() / 1000)),
-            "-microseconds" | "" => Ok(Value::Int(current_micros())),
-            other => Err(format!(
-                "bad option \"{other}\": must be -milliseconds or -microseconds"
+        // The switch is matched as `Tcl_GetIndexFromObj` matches one: exactly, or
+        // as an abbreviation only one of the two admits.
+        const SWITCHES: [&str; 2] = ["-milliseconds", "-microseconds"];
+        let given = to_tcl_string(switch);
+        let hits: Vec<usize> = (0..SWITCHES.len())
+            .filter(|&i| SWITCHES[i].starts_with(given.as_str()))
+            .collect();
+        let chosen = match hits.as_slice() {
+            _ if SWITCHES.contains(&given.as_str()) => SWITCHES.iter().position(|s| *s == given),
+            [only] if !given.is_empty() => Some(*only),
+            _ => None,
+        };
+        return match chosen {
+            Some(0) => Ok(Value::Int(current_micros() / 1000)),
+            Some(_) => Ok(Value::Int(current_micros())),
+            None => Err(format!(
+                "{} option \"{given}\": must be -milliseconds or -microseconds",
+                if hits.len() > 1 { "ambiguous" } else { "bad" }
             )),
         };
     }

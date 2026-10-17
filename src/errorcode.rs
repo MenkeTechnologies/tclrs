@@ -312,7 +312,10 @@ pub(crate) fn classify_in(msg: &str, in_proc: bool, command: &str) -> Option<Str
     // `Tcl_GetIndexFromObjStruct`'s refusal: `bad <what> "<value>": must be …`.
     // `clock`'s Tcl-level option errors are `CLOCK badOption` (see
     // [`clock_code`]); only its `unit` and `clicks` refusals come from here.
-    if let Some((what, tail)) = msg.strip_prefix("bad ").and_then(|r| r.split_once(" \"")) {
+    let refused = msg
+        .strip_prefix("bad ")
+        .or_else(|| msg.strip_prefix("ambiguous "));
+    if let Some((what, tail)) = refused.and_then(|r| r.split_once(" \"")) {
         if let Some((value, after)) = tail.split_once("\": must be ") {
             let own = command != "clock" || what == "unit" || after.starts_with("-milliseconds");
             if own && !what.contains(' ') && !after.is_empty() {
