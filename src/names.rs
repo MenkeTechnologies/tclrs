@@ -37,6 +37,7 @@ const TABLES: &[&[&str]] = &[
     crate::cmd_encoding::COMMANDS,
     crate::cmd_process::COMMANDS,
     crate::cmd_trace::COMMANDS,
+    crate::cmd_prefix::COMMANDS,
 ];
 
 /// Every command name the compiler accepts. Sorted and free of duplicates,
@@ -459,6 +460,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "Replace the running procedure or lambda activation with a call to the command, which runs at the caller's level and whose value is the procedure's. A procedure of the same chunk is entered with the activation's own return address, so a tail-recursive loop uses constant space.",
     },
     Entry {
+        name: "tcl::prefix",
+        synopsis: "tcl::prefix subcommand ?arg ...?",
+        summary: "Match a string against a table of strings by exact value or unique abbreviation: `match` selects an entry, `all` lists every entry it begins, `longest` is the longest prefix they share.",
+    },
+    Entry {
         name: "tcl_findLibrary",
         synopsis: "tcl_findLibrary basename version patch initScript enVarName varName",
         summary: "Tcl's own library-directory search, ported from `library/auto.tcl`: find the initialisation script, set the library variable and source it.",
@@ -551,6 +557,7 @@ pub fn subcommands(command: &str) -> &'static [&'static str] {
         "file" => cmd_file::SUBCOMMANDS,
         "encoding" => crate::cmd_encoding::SUBCOMMANDS,
         "binary" => crate::cmd_binary::SUBCOMMANDS,
+        "tcl::prefix" => crate::cmd_prefix::SUBCOMMANDS,
         _ => &[],
     }
 }
@@ -572,12 +579,32 @@ pub fn subcommand_corpus(command: &str) -> &'static [Entry] {
         "file" => FILE_CORPUS,
         "encoding" => ENCODING_CORPUS,
         "binary" => BINARY_CORPUS,
+        "tcl::prefix" => PREFIX_CORPUS,
         "info" => INFO_CORPUS,
         "namespace" => NAMESPACE_CORPUS,
         "package" => PACKAGE_CORPUS,
         _ => &[],
     }
 }
+
+/// The `tcl::prefix` subcommands, in the order [`subcommands`] lists them.
+const PREFIX_CORPUS: &[Entry] = &[
+    Entry {
+        name: "all",
+        synopsis: "tcl::prefix all table string",
+        summary: "Every entry of the table that begins with the string, in table order.",
+    },
+    Entry {
+        name: "longest",
+        synopsis: "tcl::prefix longest table string",
+        summary: "The longest prefix shared by every entry that begins with the string, or the empty string when none does.",
+    },
+    Entry {
+        name: "match",
+        synopsis: "tcl::prefix match ?-exact? ?-message string? ?-error options? table string",
+        summary: "The entry the string names, exactly or as a unique abbreviation. A failure is an error worded from `-message` (default `option`), or what `-error` states: an empty dictionary makes it an empty result, and any other is merged into a `return -code error`.",
+    },
+];
 
 /// The `binary` subcommands, in the order [`subcommands`] lists them.
 const BINARY_CORPUS: &[Entry] = &[

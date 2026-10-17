@@ -772,6 +772,10 @@ pub mod ext {
     pub const TRACE_BASE: u16 = SUBSYSTEM_BASE + 11 * BLOCK;
     /// One past the trace block.
     pub const TRACE_END: u16 = TRACE_BASE + BLOCK;
+    /// `tcl::prefix` ([`crate::cmd_prefix`]).
+    pub const PREFIX_BASE: u16 = SUBSYSTEM_BASE + 12 * BLOCK;
+    /// One past the prefix block.
+    pub const PREFIX_END: u16 = PREFIX_BASE + BLOCK;
 }
 
 /// Wide extension opcode ids, whose payload is a `usize` rather than a byte.
@@ -2614,6 +2618,7 @@ impl Compiler {
             // [`crate::cmd_binary`]. Ahead of the namespace block below, like
             // every other builtin.
             "binary" => crate::cmd_binary::compile(self, args),
+            "tcl::prefix" => crate::cmd_prefix::compile(self, args),
             // ── end of the binary ensemble ───────────────────────────────
             // ── namespaces, `rename` and `source` ────────────────────────
             // One block, so that the module owning them merges as one hunk.

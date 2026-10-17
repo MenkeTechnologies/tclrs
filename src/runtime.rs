@@ -328,7 +328,7 @@ impl std::error::Error for TclError {}
 ///
 /// Options other than those three are accepted and dropped: an exception here
 /// carries no dictionary of its own to keep them in.
-fn merge_return_options(pairs: &str, msg: String) -> Result<TclError, TclError> {
+pub(crate) fn merge_return_options(pairs: &str, msg: String) -> Result<TclError, TclError> {
     let illegal = |msg: String, what: &str| TclError {
         errorcode: Some(format!("TCL RESULT {what}")),
         ..TclError::plain(msg)
@@ -2132,6 +2132,7 @@ impl Hooks {
                     crate::cmd_process::run(&interp, vm, id, arg, &out)
                 }
                 id if crate::cmd_trace::is_op(id) => crate::cmd_trace::run(&interp, vm, arg),
+                id if crate::cmd_prefix::is_op(id) => crate::cmd_prefix::run(vm, id, arg),
                 // The channel ops write through the running interpreter's own
                 // output, so that `puts stdout x` reaches wherever `puts x`
                 // does — including an `Output::Capture`. That sink is only in

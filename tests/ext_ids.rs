@@ -176,6 +176,15 @@ fn blocks() -> Vec<Block> {
             tclrs::cmd_trace::ext::BASE,
             vec![("TRACE", tclrs::cmd_trace::ext::TRACE)],
         ),
+        (
+            "PREFIX",
+            tclrs::cmd_prefix::ext::BASE,
+            vec![
+                ("PREFIX_MATCH", tclrs::cmd_prefix::ext::MATCH),
+                ("PREFIX_ALL", tclrs::cmd_prefix::ext::ALL),
+                ("PREFIX_LONGEST", tclrs::cmd_prefix::ext::LONGEST),
+            ],
+        ),
         ("PKG", ext::PKG_BASE, vec![("PACKAGE", ext::PACKAGE)]),
         // The math block is indexed by position in `expr_math`'s own table
         // rather than named here, so the block check below is the whole of
