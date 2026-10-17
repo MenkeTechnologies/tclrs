@@ -15,7 +15,7 @@
 //! `tclsh`'s startup rather than `Tcl_PackageObjCmd`'s behaviour: `package
 //! names` includes the packages `init.tcl` has already provided (`Tcl`, `tcl`,
 //! `TclOO`, …), and `package unknown` is the handler `init.tcl` installs.
-//! tclrs provides nothing about itself and installs no handler, so those two
+//! tclrs provides only `Tcl` and `tcl` and installs no handler, so those two
 //! are compared only for the packages this script itself creates.
 //!
 //! Skipped when no tclsh is installed.
@@ -41,6 +41,10 @@ const CASES: &[&str] = &[
     "package names extra",
     "package unknown a b",
     "package require -exact foo",
+    "package require Tcl 8.6-",
+    "package require Tcl 10",
+    "package present Tcl",
+    "package provide tcl",
     "package require -exact foo 1 2",
     // `Tcl_GetIndexFromObj` accepts a unique abbreviation
     // (`generic/tclIndexObj.c:242-296`).

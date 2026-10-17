@@ -119,7 +119,7 @@ const SHAREDLIBEXTENSION: u8 = 4;
 /// `info tclversion` to decide whether a *language* feature is available, so
 /// answering with the crate version would make every such test wrong.
 const TCL_VERSION: &str = "9.0";
-const TCL_PATCHLEVEL: &str = "9.0.4";
+pub(crate) const TCL_PATCHLEVEL: &str = "9.0.4";
 
 /// Every `info` subcommand tclsh 9.0.4 has, in the order it lists them when it
 /// refuses one. Listed whole even where this frontend refuses the subcommand,

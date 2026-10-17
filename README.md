@@ -420,8 +420,9 @@ runs a hundred cases through `tclsh` and through this binary and requires the
 completion code and the result string to agree on every one.
 
 Two answers differ from a freshly started `tclsh`, and both are `init.tcl`'s
-doing rather than the command's: `package names` starts empty, because this
-frontend provides nothing about itself, and `package unknown` starts unset,
+doing rather than the command's: `package names` starts with `Tcl` and `tcl`
+only (the core, as `Tcl_Init` provides it; `TclOO`, `tcl::zlib` and the rest are
+not present), and `package unknown` starts unset,
 because there is no `auto_path` to search. `package files` always answers the
 empty string for the same reason — nothing records which file provided a
 package, since there is no package index to record.

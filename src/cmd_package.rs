@@ -130,7 +130,17 @@ static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
     prefer: PREFER_STABLE,
 });
 
+/// The registry, seeded on first use with what `Tcl_Init` provides before any
+/// script runs: the core itself, as `Tcl` and `tcl` at the release this port follows
+/// (`generic/tclBasic.c`'s `Tcl_PkgProvideEx(interp, "Tcl", TCL_PATCH_LEVEL, ...)`).
 fn registry() -> std::sync::MutexGuard<'static, Registry> {
+    static SEEDED: std::sync::Once = std::sync::Once::new();
+    SEEDED.call_once(|| {
+        let mut reg = REGISTRY.lock().expect("package registry poisoned");
+        for name in ["Tcl", "tcl"] {
+            reg.find_or_create(name).version = Some(crate::cmd_info::TCL_PATCHLEVEL.to_string());
+        }
+    });
     REGISTRY.lock().expect("package registry poisoned")
 }
 
@@ -1077,6 +1087,20 @@ mod tests {
         // A unique abbreviation is accepted, as `Tcl_GetIndexFromObj` accepts
         // one: measured, `package prov foo` is `package provide foo`.
         assert_eq!(ok(&["package", "prov", "nothing-provided-under-this"]), "");
+    }
+
+    /// `Tcl_Init` provides the core before any script runs, so the idiomatic
+    /// `package require Tcl 8.6-` of a library header succeeds, and a floor the
+    /// release cannot meet is refused with the version conflict.
+    #[test]
+    fn the_core_is_provided_at_startup() {
+        let have = ok(&["package", "require", "Tcl", "8.6-"]);
+        assert_eq!(have, crate::cmd_info::TCL_PATCHLEVEL);
+        assert_eq!(ok(&["package", "provide", "tcl"]), have);
+        assert_eq!(
+            err(&["package", "require", "Tcl", "10"]),
+            format!("version conflict for package \"Tcl\": have {have}, need 10")
+        );
     }
 
     /// The `-exact` requirement is `V-V`, and comes back out as `exactly V`.
