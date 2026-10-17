@@ -2380,7 +2380,10 @@ fn validate_fields(got: &mut Scanned) -> Result<(), String> {
             // input named is the next day's.
             if got.meridian == Meridian::H24 && got.hour == 24 {
                 if got.minute != 0 || got.second != 0 {
-                    return Err(invalid_input("invalid time"));
+                    return Err(crate::runtime::coded(
+                        "CLOCK invInpStr time",
+                        &invalid_input("invalid time"),
+                    ));
                 }
                 if flags & DAYOFWEEK != 0 {
                     got.weekday = got.weekday % 7 + 1;
@@ -2393,7 +2396,10 @@ fn validate_fields(got: &mut Scanned) -> Result<(), String> {
             return Err(invalid_input("invalid time (minutes)"));
         }
         if !(0..=59).contains(&got.second) || got.second_of_day <= -1 {
-            return Err(invalid_input("invalid time"));
+            return Err(crate::runtime::coded(
+                "CLOCK invInpStr seconds",
+                &invalid_input("invalid time"),
+            ));
         }
     }
     Ok(())
@@ -2716,7 +2722,10 @@ fn add_units(seconds: i64, count: i64, unit: &str, zone: &Zone) -> Result<i64, S
             .epoch_day
             .checked_add(count.checked_mul(7).ok_or_else(overflow)?)
             .ok_or_else(overflow)?,
-        "weekdays" => weekday_walk(civil.epoch_day, count),
+        "weekdays" => civil
+            .epoch_day
+            .checked_add(weekdays_offset(i64::from(civil.iso_weekday()), count))
+            .ok_or_else(overflow)?,
         _ => {
             let months = if unit == "years" {
                 count.checked_mul(12).ok_or_else(overflow)?
@@ -2733,7 +2742,10 @@ fn add_units(seconds: i64, count: i64, unit: &str, zone: &Zone) -> Result<i64, S
             days_from_civil(year, month, civil.day.min(month_length(year, month)))
         }
     };
-    let moved = days * 86400 + local.rem_euclid(86400);
+    let moved = days
+        .checked_mul(86400)
+        .and_then(|d| d.checked_add(local.rem_euclid(86400)))
+        .ok_or_else(overflow)?;
     let result = moved - zone.for_local(moved).offset as i64;
     if result < EARLIEST {
         return Err(too_early());
@@ -2741,19 +2753,33 @@ fn add_units(seconds: i64, count: i64, unit: &str, zone: &Zone) -> Result<i64, S
     Ok(result)
 }
 
-/// `weekdays` counts only Monday through Friday.
-fn weekday_walk(start: i64, count: i64) -> i64 {
-    let step = if count < 0 { -1 } else { 1 };
-    let mut day = start;
-    let mut left = count.abs();
-    while left > 0 {
-        day += step;
-        if (day + 3).rem_euclid(7) < 5 {
-            left -= 1;
-        }
+/// `ClockWeekdaysOffs`: the days to move to land `offs` weekdays — Monday
+/// through Friday only — from a day of the week (Monday is 1).
+fn weekdays_offset(day_of_week: i64, offs: i64) -> i64 {
+    let mut weeks = offs / 5;
+    let mut offs = offs % 5;
+    if offs < 0 {
+        offs += 5;
+        weeks -= 1;
     }
-    day
+    offs += 7 * weeks;
+    let day = offs % 7;
+    let mut resulting = day_of_week + if day < 0 { day + 7 } else { day };
+    // Starting from a weekend counts from the Friday before it.
+    if day_of_week > 5 {
+        let adjust = 5 - day_of_week;
+        offs += adjust;
+        resulting += adjust;
+    }
+    // Ending on a weekend carries over it.
+    if resulting > 5 {
+        offs += 2;
+    }
+    offs
 }
+
+/// `TCL_MAX_SECONDS`: the largest clock value, and the magnitude of the smallest.
+const TCL_MAX_SECONDS: i64 = 0x00F0_0000_0000_0000;
 
 fn overflow() -> String {
     "integer value too large to represent".to_string()
@@ -2889,8 +2915,17 @@ fn seconds_of(v: &Value) -> Result<i64, String> {
     if text.trim() == "now" {
         return Ok(current_seconds());
     }
+    // An integer past what a clock value may hold, or too wide to be one, is
+    // `integer value too large to represent` with the value in its code.
+    let too_large = || {
+        crate::runtime::coded(
+            &crate::list::join(&["CLOCK", "badOption", &text]),
+            &overflow(),
+        )
+    };
     match crate::runtime::parse_number(text.trim()) {
-        Ok(Num::Int(i)) => Ok(i),
+        Ok(Num::Int(i)) if i.abs() <= TCL_MAX_SECONDS => Ok(i),
+        Ok(Num::Int(_) | Num::Big(_)) => Err(too_large()),
         _ => Err(format!("bad seconds \"{text}\": must be now or integer")),
     }
 }
@@ -3036,6 +3071,20 @@ fn run_add(words: &[Value]) -> Result<Value, String> {
         let Some(resolved) = resolve(&unit, UNITS) else {
             return Err(bad_unit(&unit));
         };
+        // A date unit takes an offset that fits an `int`; the time units take as
+        // many seconds as a clock value may hold.
+        let limit = if matches!(resolved, "hours" | "minutes" | "seconds") {
+            TCL_MAX_SECONDS
+        } else {
+            0x7fff_ffff
+        };
+        if count.abs() > limit {
+            return Err(overflow());
+        }
+        // A zero quantity changes nothing, a weekend start included.
+        if count == 0 {
+            continue;
+        }
         seconds = add_units(seconds, count, resolved, &zone)?;
     }
     Ok(Value::Int(seconds))

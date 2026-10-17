@@ -118,13 +118,24 @@ pub struct TclError {
 }
 
 impl TclError {
+    /// An error with only its message. A message that begins with the
+    /// [`coded`] marker carries its `-errorcode` in front, which is how an op
+    /// that can only return a `String` states the one it knows.
     pub(crate) fn plain(msg: impl Into<String>) -> Self {
+        let msg = msg.into();
+        let (errorcode, msg) = match msg
+            .strip_prefix(CODE_MARK)
+            .and_then(|r| r.split_once(CODE_MARK))
+        {
+            Some((code, rest)) => (Some(code.to_string()), rest.to_string()),
+            None => (None, msg),
+        };
         TclError {
-            msg: msg.into(),
+            msg,
             line: None,
             code: TCL_ERROR,
             level: 0,
-            errorcode: None,
+            errorcode,
             info: None,
         }
     }
@@ -298,6 +309,16 @@ impl TclError {
             ..self
         }
     }
+}
+
+/// The character a message starts and separates its code with; see [`coded`].
+const CODE_MARK: char = '\u{1}';
+
+/// A message that states its own `-errorcode`: `TclError::plain` splits it off.
+/// For the ops whose failures are `String`s but whose code is not decided by
+/// the wording alone.
+pub(crate) fn coded(code: &str, msg: &str) -> String {
+    format!("{CODE_MARK}{code}{CODE_MARK}{msg}")
 }
 
 /// What a `catch` is handed beyond the code: the rendered record of where the

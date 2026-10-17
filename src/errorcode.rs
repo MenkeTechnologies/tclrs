@@ -560,6 +560,8 @@ fn clock_code(first: &str) -> Option<String> {
         return Some(crate::list::join(&["CLOCK", "invInpStr", code]));
     }
     match first {
+        "day of week is greater than 7" => Some("CLOCK badDayOfWeek".to_string()),
+        "cannot use -gmt and -timezone in same call" => Some("CLOCK gmtWithTimezone".to_string()),
         "input string does not match supplied format" => Some("CLOCK badInputString".to_string()),
         "requested date too large to represent" => Some("CLOCK dateTooLarge".to_string()),
         "legacy [clock scan] does not support -locale" => {
