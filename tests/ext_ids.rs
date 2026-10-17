@@ -105,6 +105,7 @@ fn blocks() -> Vec<Block> {
                 ("FCONFIGURE", ext::FCONFIGURE),
                 ("NAMES", ext::NAMES),
                 ("BLOCKED", ext::BLOCKED),
+                ("ISBINARY", ext::ISBINARY),
             ],
         ),
         (

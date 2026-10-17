@@ -318,6 +318,14 @@ impl Channel {
     fn writable(&self) -> bool {
         self.mode & TCL_WRITABLE != 0
     }
+
+    /// `chan isbinary`: the one-byte encoding with no line-ending translation
+    /// on any side the channel has, which is what `-translation binary` sets.
+    fn is_binary(&self) -> bool {
+        self.encoding == Encoding::Iso8859_1
+            && (!self.readable() || self.input_translation == Translation::Lf)
+            && (!self.writable() || self.output_translation == Translation::Lf)
+    }
 }
 
 /// `ThreadSpecificData` of `generic/tclIO.c`: every channel this thread has
@@ -1513,6 +1521,7 @@ const CHAN_SUBCOMMANDS: &[&str] = &[
     "event",
     "flush",
     "gets",
+    "isbinary",
     "names",
     "pending",
     "pipe",
@@ -1557,6 +1566,7 @@ fn compile_chan(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
             usize::MAX,
         ),
         "blocked" => (ext::BLOCKED, "blocked channel", 1, 1),
+        "isbinary" => (ext::ISBINARY, "isbinary channel", 1, 1),
         "names" => (ext::NAMES, "names ?pattern?", 0, 1),
         "gets" => {
             if !(1..=2).contains(&rest.len()) {
@@ -1696,6 +1706,10 @@ pub(crate) fn run(vm: &mut VM, id: u16, arg: u8, sink: &Output) -> Result<(), St
         ext::NAMES => Value::Str(Arc::new(names_command(
             operands.first().map(|_| text(0)).as_deref(),
         ))),
+        ext::ISBINARY => {
+            let id = resolve(&text(0))?;
+            Value::Int(i64::from(with_channel(id, |c| Ok(c.is_binary()))?))
+        }
         ext::BLOCKED => {
             // No channel here is non-blocking (`fconfigure -blocking 0` is
             // refused), so a read never leaves the blocked flag set.

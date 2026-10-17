@@ -575,7 +575,7 @@ approximated, and nothing is silently mis-run.
   read as a file whose name begins with a pipe, and there is no socket driver,
   so `Tcl_OpenCommandChannel` and `Tcl_MakeTcpClientChannel` have no body.
 - **`chan` subcommands without a driver or event source.** `blocked`, `close`,
-  `configure`, `eof`, `flush`, `gets`, `names`, `puts`, `read`, `seek` and `tell`
+  `configure`, `eof`, `flush`, `gets`, `isbinary`, `names`, `puts`, `read`, `seek` and `tell`
   are the standalone commands under `chan`, with `chan`'s own usage wording;
   `copy`, `create`, `event`, `pending`, `pipe`, `pop`, `postevent`, `push` and
   `truncate` are refused as `chan X is not supported yet`. `chan names` lists the
@@ -697,9 +697,15 @@ approximated, and nothing is silently mis-run.
   a word, `bad <what> "x": must be …` is `TCL LOOKUP INDEX <what> x` (`CLOCK
   badOption` for `clock`), an expression that will not parse is `TCL PARSE EXPR
   <kind>`, and a pattern that will not compile is `REGEXP REG_<name> {…}`.
-  Every other error carries tclsh's default, `NONE`; a site this does not know
-  is `NONE` where tclsh has a specific code — the `TCL FORMAT …` family beyond
-  an unfinished specifier, and `clock`'s `CLOCK badOption`.
+  The sites that name an operation are mapped too: `TCL FORMAT …` for `format`
+  and `scan`, `TCL OPERATION <command> …` for `lsort`, `lrepeat`, `foreach`,
+  `switch`, `proc` and `try`, `TCL LOOKUP PROCEDURE` and `PACKAGE`, `TCL PACKAGE
+  UNFOUND`, `TCL WRITE CONST` and `TCL UNSET CONST`, `TCL BINARY DECODE INVALID`,
+  and `CLOCK wrongNumArgs`, `badOption` and `badTimeZone` for the `clock`
+  subcommands tclsh writes in Tcl. Every other error carries tclsh's default,
+  `NONE`; a site this does not know is `NONE` where tclsh has a specific code —
+  `info frame`'s `TCL LOOKUP LEVEL` and the `TCL VALUE DATE` / `CLOCK
+  badInputString` family of `clock scan`.
 - **`namespace path` and `namespace unknown`.** Both change how a name
   resolves *after* the point this frontend resolved it, so honouring them would
   mean re-resolving names at run time. Refused where they are written.

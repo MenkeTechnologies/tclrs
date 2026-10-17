@@ -702,6 +702,8 @@ pub mod ext {
     pub const NAMES: u16 = CHANNEL_BASE + 10;
     /// `chan blocked channelId`.
     pub const BLOCKED: u16 = CHANNEL_BASE + 11;
+    /// `chan isbinary channelId`.
+    pub const ISBINARY: u16 = CHANNEL_BASE + 12;
     /// `namespace`, `variable` and `rename` ([`crate::cmd_namespace`]), and
     /// `source` and `tcl_findLibrary` ([`crate::cmd_source`]), which share a
     /// block because they are one feature: a namespace-aware `source`.

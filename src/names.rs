@@ -121,7 +121,7 @@ pub const CORPUS: &[Entry] = &[
     Entry {
         name: "chan",
         synopsis: "chan subcommand ?arg ...?",
-        summary: "The channel ensemble: `blocked`, `close`, `configure`, `eof`, `flush`, `gets`, `names`, `puts`, `read`, `seek` and `tell`, with the semantics of the standalone commands.",
+        summary: "The channel ensemble: `blocked`, `close`, `configure`, `eof`, `flush`, `gets`, `isbinary`, `names`, `puts`, `read`, `seek` and `tell`, with the semantics of the standalone commands.",
     },
     Entry {
         name: "clock",
