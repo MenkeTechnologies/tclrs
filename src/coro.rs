@@ -185,6 +185,24 @@ impl Compiler {
                  supported"
             ));
         }
+        // `coroutine name apply {params body} ?arg ...?` with the lambda written
+        // out is a coroutine of a procedure that has no name in the script: define
+        // one under a name no script can type, and start the coroutine at that.
+        let mut hidden_name = None;
+        let (command, actuals) = match self.coroutine_lambda(&name, &command, actuals) {
+            Some(((hidden, params, body), rest)) => {
+                // A command substitution at a script's top level runs once, as the
+                // script itself does, so the definition binds at compile time
+                // there as well.
+                let outer_top = std::mem::replace(&mut self.top_level, true);
+                let defined = self.define_hidden_proc(&hidden, &params, &body);
+                self.top_level = outer_top;
+                defined?;
+                hidden_name = Some(hidden.clone());
+                (hidden, rest)
+            }
+            None => (command, actuals),
+        };
         if Compiler::BUILTINS.contains(&command.as_str()) {
             return self.error(format!(
                 "a coroutine of the built-in command \"{command}\" is not supported; its body \
@@ -195,7 +213,13 @@ impl Compiler {
             return self.error(format!("invalid command name \"{command}\""));
         }
 
-        let slots = self.push_actuals(&command, actuals)?;
+        // The hidden name of a lambda's procedure never reaches a message.
+        let slots = self.push_actuals(&command, actuals).map_err(|mut e| {
+            if let Some(hidden) = &hidden_name {
+                e.msg = e.msg.replace(hidden.as_str(), "apply lambdaExpr");
+            }
+            e
+        })?;
         let count = u8::try_from(slots).map_err(|_| {
             self.err(format!(
                 "procedure \"{command}\" has more than 255 formal parameters"
@@ -206,6 +230,51 @@ impl Compiler {
         self.emit(Op::Extended(ext::CORO_CREATE, count), -(slots as i32) - 1);
         // The name is only registered by the prescan, which has seen every
         // position this command is allowed to appear in.
+        Ok(())
+    }
+
+    /// The parameter list and body of an `apply` whose lambda is a literal of two
+    /// elements (or three, naming the global namespace), the name a procedure
+    /// standing for it is filed under, and the actuals that follow the lambda.
+    ///
+    /// `None` for anything else, which keeps the refusal: a lambda that is
+    /// computed, or that names another namespace, has no body to compile here.
+    #[allow(clippy::type_complexity)]
+    fn coroutine_lambda<'w>(
+        &self,
+        coroutine: &str,
+        command: &str,
+        actuals: &'w [Word],
+    ) -> Option<((String, String, String), &'w [Word])> {
+        if command != "apply" {
+            return None;
+        }
+        let (lambda, rest) = actuals.split_first()?;
+        let parts = crate::list::split(lambda.as_literal()?).ok()?;
+        let (params, body) = match parts.as_slice() {
+            [params, body] => (params, body),
+            [params, body, ns] if ns == "::" || ns.is_empty() => (params, body),
+            _ => return None,
+        };
+        let name = format!("\u{0}lambda {coroutine} {}", self.command_line);
+        Some(((name, params.clone(), body.clone()), rest))
+    }
+
+    /// Define the procedure a literal lambda stands for, as the `proc` command it
+    /// is, at the point the `coroutine` command is written.
+    fn define_hidden_proc(
+        &mut self,
+        name: &str,
+        params: &str,
+        body: &str,
+    ) -> Result<(), CompileError> {
+        let literal = |text: &str| Word {
+            parts: vec![Part::Lit(text.to_string())],
+            braced: true,
+            ..Word::default()
+        };
+        self.cmd_proc(&[literal(name), literal(params), literal(body)])?;
+        self.emit(Op::Pop, -1);
         Ok(())
     }
 

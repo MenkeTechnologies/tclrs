@@ -737,8 +737,9 @@ approximated, and nothing is silently mis-run.
   operates on, so `rename c {}` for a coroutine `c` is `can't rename "c":
   command doesn't exist`. A coroutine goes away when its body ends.
 - **Coroutines of anything but a procedure of the script.** `coroutine`'s name
-  and command are literals, its command is one of the script's own procedures,
-  and the command appears at the top level of a script or in a command
+  and command are literals, its command is one of the script's own procedures
+  (or an `apply` of a literal lambda, which is compiled as a procedure filed
+  under a name no script can type), and the command appears at the top level of a script or in a command
   substitution in one, because the name has to be known to every call site and
   the body is entered through the chunk's sub table. `yieldto` at a command that
   is not a coroutine of the script is refused: it would have to evaluate that
