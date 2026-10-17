@@ -1402,6 +1402,20 @@ pub fn instance_data(id: usize) -> Option<usize> {
     with_channel(id, |c| Ok(c.device.instance_data())).unwrap_or(None)
 }
 
+/// A channel over a file this module did not open itself, read-write: the
+/// descriptor-named channel `Tcl_MakeFileChannel` makes.
+pub(crate) fn adopt_file(file: File) -> String {
+    use std::os::fd::AsRawFd;
+    let name = format!("file{}", file.as_raw_fd());
+    let id = create(
+        &name,
+        Box::new(FileDevice { file }),
+        TCL_READABLE | TCL_WRITABLE,
+    );
+    register(id);
+    name
+}
+
 /// `Tcl_OpenFileChannel` (`generic/tclIOUtil.c:345`): the channel's name.
 pub fn open_file(path: &str, access: &str) -> Result<String, String> {
     open(path, Some(access), None)
@@ -1705,7 +1719,7 @@ pub(crate) fn run(vm: &mut VM, id: u16, arg: u8, sink: &Output) -> Result<(), St
             let rest: Vec<String> = (1..operands.len()).map(text).collect();
             Value::Str(Arc::new(fconfigure(&text(0), &rest)?))
         }
-        ext::NAMES => Value::Str(Arc::new(names_command(
+        ext::NAMES => Value::Str(Arc::new(channel_names(
             operands.first().map(|_| text(0)).as_deref(),
         ))),
         ext::ISBINARY => {
@@ -1732,7 +1746,7 @@ fn empty() -> Value {
 /// Store a line in the variable an encoded place operand names, as
 /// [`crate::regexp`]'s match variables are stored: an array refuses, in
 /// `Tcl_ObjSetVar2`'s words, naming `name`.
-fn assign(vm: &mut VM, name: &str, encoded: &Value, value: &str) -> Result<(), String> {
+pub(crate) fn assign(vm: &mut VM, name: &str, encoded: &Value, value: &str) -> Result<(), String> {
     let raw = match encoded {
         Value::Int(v) => *v,
         other => return Err(format!("gets: not a variable place: {other:?}")),
@@ -1979,7 +1993,7 @@ fn open_fd(path: &str, m: &OpenMode, prot: u32) -> std::io::Result<std::fs::File
 }
 
 /// `close channel ?direction?`.
-fn close_command(name: &str, direction: Option<&str>) -> Result<(), String> {
+pub(crate) fn close_command(name: &str, direction: Option<&str>) -> Result<(), String> {
     let id = resolve(name)?;
     if let Some(direction) = direction {
         let (want, side) = match direction {
@@ -2144,7 +2158,7 @@ fn fconfigure(name: &str, rest: &[String]) -> Result<String, String> {
 /// channels whose name matches the glob pattern. The standard three come first
 /// and the rest in the order they were opened; tclsh's order is that of a hash
 /// table and is not something a script can rely on.
-fn names_command(pattern: Option<&str>) -> String {
+pub(crate) fn channel_names(pattern: Option<&str>) -> String {
     for kind in [TCL_STDIN, TCL_STDOUT, TCL_STDERR] {
         std_channel(kind);
     }

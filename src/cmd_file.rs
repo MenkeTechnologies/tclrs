@@ -16,9 +16,10 @@
 //! also begins with `.` — which is why `glob .*` answers `. ..` and `.hidden`
 //! while `glob *` answers neither.
 //!
-//! Refused rather than approximated: `file attributes`, `link`, `channels`,
-//! `system`, `tempfile`, `tempdir` and `volumes`, and
-//! `glob`'s `-types` in its two-element attribute form. Each says so by name.
+//! The subcommands that reach the file system beyond a stat — `attributes`, `link`,
+//! `tempfile`, `tempdir`, `volumes`, `system`, `channels` and the setting forms of
+//! `atime` and `mtime` — are in `cmd_file_fs`. Refused rather than
+//! approximated: `glob`'s `-types` in its two-element attribute form, by name.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -43,6 +44,9 @@ pub mod ext {
     pub const CD: u16 = BASE + 3;
     /// `[channel?]` → the process id, or a channel's pipeline ids.
     pub const PID: u16 = BASE + 4;
+    /// `file tempfile`: `[]`, or `[template, nameVar, place]` when a variable is
+    /// to be given the file's name → the new channel's name.
+    pub const TEMPFILE: u16 = BASE + 5;
 }
 
 /// The command names this module claims, for the REPL's completion and for the
@@ -50,8 +54,7 @@ pub mod ext {
 pub const COMMANDS: &[&str] = &["cd", "file", "glob", "pid", "pwd"];
 
 /// Every `file` subcommand, in the order the interpreter lists them when it
-/// rejects one. The refused ones are listed because their presence decides
-/// whether an abbreviation is ambiguous.
+/// rejects one.
 pub const SUBCOMMANDS: &[&str] = &[
     "atime",
     "attributes",
@@ -90,22 +93,6 @@ pub const SUBCOMMANDS: &[&str] = &[
     "type",
     "volumes",
     "writable",
-];
-
-/// The subcommands this module recognises and then refuses. They are in
-/// [`SUBCOMMANDS`] so that an abbreviation of one is found ambiguous exactly
-/// where tclsh finds it ambiguous, and refused here — while the command is
-/// being compiled, as the `string` ensemble refuses its own unbuilt names — so
-/// that the reference page, which asks the compiler rather than keeping a
-/// second list, reports them as unbuilt.
-const REFUSED: &[&str] = &[
-    "attributes",
-    "channels",
-    "link",
-    "system",
-    "tempdir",
-    "tempfile",
-    "volumes",
 ];
 
 // ── compiling ────────────────────────────────────────────────────────────
@@ -164,10 +151,8 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
                     listing(SUBCOMMANDS)
                 ));
             };
-            if REFUSED.contains(&sub) {
-                return c.error(format!(
-                    "file {sub} is not supported yet: it needs an interface this frontend has not built"
-                ));
+            if sub == "tempfile" {
+                return compile_tempfile(c, &args[1..]);
             }
             if matches!(sub, "stat" | "lstat") && args.len() == 3 {
                 return compile_stat_into(c, sub, &args[1], &args[2]);
@@ -183,6 +168,52 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
             Ok(())
         }
     }
+}
+
+/// `file tempfile ?nameVar? ?template?`. The variable travels as where it
+/// lives, as `gets`'s does, because the op assigns to it.
+fn compile_tempfile(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
+    match args {
+        [] => {
+            c.emit(Op::Extended(ext::TEMPFILE, 0), 1);
+            Ok(())
+        }
+        [var, rest @ ..] if rest.len() <= 1 => {
+            match rest.first() {
+                Some(template) => c.word(template)?,
+                None => c.push_str(""),
+            }
+            let name = c.var_name_of(var)?;
+            c.push_str(&name);
+            let encoded = c.place_operand(&name);
+            c.emit(Op::LoadInt(encoded), 1);
+            c.emit(Op::Extended(ext::TEMPFILE, 3), -2);
+            Ok(())
+        }
+        _ => c.error("wrong # args: should be \"file tempfile ?nameVar? ?template?\""),
+    }
+}
+
+/// The `file tempfile` op: a read-write channel on a new file, the file's name
+/// stored in the variable when one was given, and the file unlinked at once
+/// when not.
+fn tempfile_op(vm: &mut VM, arg: u8) -> Result<Value, String> {
+    let (template, variable) = if arg == 3 {
+        let place = vm.pop();
+        let name = to_tcl_string(&vm.pop());
+        (to_tcl_string(&vm.pop()), Some((name, place)))
+    } else {
+        (String::new(), None)
+    };
+    let (file, path) = crate::cmd_file_fs::open_temporary(&template, variable.is_some())?;
+    let channel = crate::cmd_channel::adopt_file(file);
+    if let Some((name, place)) = variable {
+        if let Err(message) = crate::cmd_channel::assign(vm, &name, &place, &path) {
+            let _ = crate::cmd_channel::close_command(&channel, None);
+            return Err(message);
+        }
+    }
+    Ok(Value::Str(Arc::new(channel)))
 }
 
 /// `file stat name varName` / `file lstat name varName`: the fields written
@@ -349,7 +380,7 @@ fn join_paths(parts: &[String]) -> String {
 
 /// `TclGetExtension`: the last `.` at or after the last `/`, and nothing when
 /// there is none.
-fn extension_at(path: &str) -> Option<usize> {
+pub(crate) fn extension_at(path: &str) -> Option<usize> {
     let dot = path.rfind('.')?;
     match path.rfind('/') {
         Some(slash) if slash > dot => None,
@@ -357,7 +388,7 @@ fn extension_at(path: &str) -> Option<usize> {
     }
 }
 
-fn dirname(path: &str) -> String {
+pub(crate) fn dirname(path: &str) -> String {
     let parts = split_path(path);
     match parts.len() {
         0 => ".".to_string(),
@@ -367,7 +398,7 @@ fn dirname(path: &str) -> String {
     }
 }
 
-fn tail(path: &str) -> String {
+pub(crate) fn tail(path: &str) -> String {
     let parts = split_path(path);
     match parts.last() {
         Some(last) if !is_root(last) => last.clone(),
@@ -541,7 +572,7 @@ fn working_directory() -> Result<String, String> {
 
 /// `Tcl_PosixError`'s text for an errno — the C library's own `strerror`, which
 /// is where tclsh's wording comes from.
-fn posix(error: &std::io::Error) -> String {
+pub(crate) fn posix(error: &std::io::Error) -> String {
     match error.raw_os_error() {
         // SAFETY: `strerror` returns a pointer to a static string for every
         // errno value, and the result is copied before returning.
@@ -565,6 +596,11 @@ fn could_not_read(path: &str, error: &std::io::Error) -> String {
 // ── running ──────────────────────────────────────────────────────────────
 
 pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
+    if id == ext::TEMPFILE {
+        let value = tempfile_op(vm, arg)?;
+        vm.push(value);
+        return Ok(());
+    }
     let mut words = Vec::with_capacity(arg as usize);
     for _ in 0..arg {
         words.push(to_tcl_string(&vm.pop()));
@@ -689,14 +725,45 @@ fn run_file(words: &[String]) -> Result<Value, String> {
             let owned = stat_of(&path).ok().is_some_and(|s| s.st_uid == me);
             Ok(Value::Int(owned as i64))
         }
-        "size" | "mtime" | "atime" => {
+        "size" => {
             let path = one(words, sub)?;
-            let s = stat_of(&path)?;
-            Ok(Value::Int(match sub {
-                "size" => s.st_size,
-                "mtime" => s.st_mtime,
-                _ => s.st_atime,
-            }))
+            Ok(Value::Int(stat_of(&path)?.st_size))
+        }
+        "mtime" | "atime" => crate::cmd_file_fs::times(words).map(text),
+        "attributes" => crate::cmd_file_fs::attributes(words).map(text),
+        "link" => crate::cmd_file_fs::link(words).map(text),
+        "tempdir" => crate::cmd_file_fs::tempdir(words).map(text),
+        "volumes" => {
+            if words.len() != 1 {
+                return Err("wrong # args: should be \"file volumes\"".to_string());
+            }
+            Ok(text("//zipfs:/ /".to_string()))
+        }
+        "channels" => {
+            if words.len() > 2 {
+                return Err("wrong # args: should be \"file channels ?pattern?\"".to_string());
+            }
+            Ok(text(crate::cmd_channel::channel_names(
+                words.get(1).map(String::as_str),
+            )))
+        }
+        "system" => {
+            // No name at all is reported against the ensemble's own procedure.
+            if words.len() == 1 {
+                return Err("wrong # args: should be \"::tcl::file::system name\"".to_string());
+            }
+            let path = one(words, sub)?;
+            if path.is_empty() {
+                return Err("unrecognised path".to_string());
+            }
+            Ok(text(
+                if path.starts_with("//zipfs:/") {
+                    "zipfs zip"
+                } else {
+                    "native"
+                }
+                .to_string(),
+            ))
         }
         "type" => {
             let path = one(words, sub)?;
@@ -726,10 +793,8 @@ fn run_file(words: &[String]) -> Result<Value, String> {
         }
         "delete" => run_delete(&words[1..]).map(text),
         "copy" | "rename" => run_transfer(sub, &words[1..]).map(text),
-        // Unreachable through the compiler, which refuses every name in
-        // `REFUSED` before the op is emitted. Kept as the same wording so a
-        // future caller that reaches the handler another way gets one answer
-        // and not two.
+        // Every name in `SUBCOMMANDS` has an arm above; the compiler resolves
+        // the word before the op is emitted, so nothing else arrives.
         other => Err(format!(
             "file {other} is not supported yet: it needs an interface this frontend has not built"
         )),
@@ -761,7 +826,7 @@ fn stat_of(path: &str) -> Result<libc::stat, String> {
 
 /// `GetStatBuf` (`generic/tclCmdAH.c:2319`): `stat(2)` or `lstat(2)`, with
 /// its message for a path it cannot read.
-fn stat_buf(path: &str, link: bool) -> Result<std::fs::Metadata, String> {
+pub(crate) fn stat_buf(path: &str, link: bool) -> Result<std::fs::Metadata, String> {
     let meta = if link {
         std::fs::symlink_metadata(path)
     } else {

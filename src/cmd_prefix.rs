@@ -207,3 +207,11 @@ fn prefix_longest(args: &[String]) -> Result<String, TclError> {
     }
     Ok(first[..keep].to_string())
 }
+
+/// `Tcl_GetIndexFromObj` over a fixed table of names, for the commands that
+/// resolve an option or a subcommand by unique abbreviation: the index, or the
+/// message `bad option "x": must be a, b, or c` / `ambiguous option …`.
+pub(crate) fn index_from(key: &str, names: &[&str], what: &str) -> Result<usize, String> {
+    let table: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    lookup(key, &table, what, false).map_err(|e| e.msg)
+}

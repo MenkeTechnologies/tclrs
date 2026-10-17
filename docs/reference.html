@@ -163,7 +163,7 @@
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">151/169</div>
+            <div class="stat-val">158/169</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -1535,7 +1535,7 @@
 
       <section class="tutorial-section" id="ch-file">
         <h2>The <code>file</code> ensemble</h2>
-        <p class="chapter-meta">37 subcommands recognised &middot; 30 implemented &middot; 7 refused</p>
+        <p class="chapter-meta">37 subcommands recognised &middot; 37 implemented &middot; 0 refused</p>
         <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
         <article class="doc-entry" id="doc-file-atime">
           <h3><a class="doc-anchor" href="#doc-file-atime">#</a> <code>file atime</code></h3>
@@ -1548,14 +1548,12 @@
           <pre><code class="lang-tcl">file attributes name
 </code></pre>
           <p>Refused: the platform attribute set is not built.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file attributes is not supported yet: it needs an interface this frontend has not built</code></p>
         </article>
         <article class="doc-entry" id="doc-file-channels">
           <h3><a class="doc-anchor" href="#doc-file-channels">#</a> <code>file channels</code></h3>
           <pre><code class="lang-tcl">file channels
 </code></pre>
           <p>Refused: this frontend has no channels.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file channels is not supported yet: it needs an interface this frontend has not built</code></p>
         </article>
         <article class="doc-entry" id="doc-file-copy">
           <h3><a class="doc-anchor" href="#doc-file-copy">#</a> <code>file copy</code></h3>
@@ -1622,7 +1620,6 @@
           <pre><code class="lang-tcl">file link ?-linktype? linkName ?target?
 </code></pre>
           <p>Refused: creating links is not built.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file link is not supported yet: it needs an interface this frontend has not built</code></p>
         </article>
         <article class="doc-entry" id="doc-file-lstat">
           <h3><a class="doc-anchor" href="#doc-file-lstat">#</a> <code>file lstat</code></h3>
@@ -1719,7 +1716,6 @@
           <pre><code class="lang-tcl">file system name
 </code></pre>
           <p>Refused: there is one filesystem here and no way to name another.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file system is not supported yet: it needs an interface this frontend has not built</code></p>
         </article>
         <article class="doc-entry" id="doc-file-tail">
           <h3><a class="doc-anchor" href="#doc-file-tail">#</a> <code>file tail</code></h3>
@@ -1732,14 +1728,12 @@
           <pre><code class="lang-tcl">file tempdir ?template?
 </code></pre>
           <p>Refused: it is built on the channel layer.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file tempdir is not supported yet: it needs an interface this frontend has not built</code></p>
         </article>
         <article class="doc-entry" id="doc-file-tempfile">
           <h3><a class="doc-anchor" href="#doc-file-tempfile">#</a> <code>file tempfile</code></h3>
           <pre><code class="lang-tcl">file tempfile ?nameVar? ?template?
 </code></pre>
           <p>Refused: it returns an open channel.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file tempfile is not supported yet: it needs an interface this frontend has not built</code></p>
         </article>
         <article class="doc-entry" id="doc-file-tildeexpand">
           <h3><a class="doc-anchor" href="#doc-file-tildeexpand">#</a> <code>file tildeexpand</code></h3>
@@ -1758,7 +1752,6 @@
           <pre><code class="lang-tcl">file volumes
 </code></pre>
           <p>Refused: there is no volume table here.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>file volumes is not supported yet: it needs an interface this frontend has not built</code></p>
         </article>
         <article class="doc-entry" id="doc-file-writable">
           <h3><a class="doc-anchor" href="#doc-file-writable">#</a> <code>file writable</code></h3>

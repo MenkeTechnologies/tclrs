@@ -427,6 +427,43 @@ fn operation_code(first: &str, command: &str) -> Option<String> {
     if first.starts_with("missing argument to \"") && first.ends_with('"') {
         return Some("TCL ARGUMENT MISSING".to_string());
     }
+    // `file attributes`, `file link`, and the user lookups of the path commands.
+    if first.starts_with("value for \"") && first.ends_with("\" missing") {
+        return Some("TCL OPERATION FATTR NOVALUE".to_string());
+    }
+    if first.starts_with("unknown permission string format \"") {
+        return Some("TCL VALUE PERMISSION".to_string());
+    }
+    if first.starts_with("user \"") && first.ends_with("\" doesn't exist") {
+        return Some("TCL VALUE PATH NOUSER".to_string());
+    }
+    if first.starts_with("could not set owner for file \"") && first.ends_with("\" does not exist")
+    {
+        return Some("TCL OPERATION SETOWN NO_USER".to_string());
+    }
+    if first.starts_with("could not set group for file \"") && first.ends_with("\" does not exist")
+    {
+        return Some("TCL OPERATION SETGRP NO_GROUP".to_string());
+    }
+    if first.starts_with("could not create new link \"") {
+        if first.ends_with("that path already exists") {
+            return Some("POSIX EEXIST {file exists}".to_string());
+        }
+        if first.contains("\": target \"") && first.ends_with("\" doesn't exist") {
+            return Some("POSIX ENOENT {no such file or directory}".to_string());
+        }
+    }
+    if first == "integer value too large to represent" && command != "clock" {
+        return Some("ARITH IOVERFLOW {integer value too large to represent}".to_string());
+    }
+    if first == "unrecognised path" {
+        return Some("TCL LOOKUP FILESYSTEM {}".to_string());
+    }
+    if let Some(name) = quoted(first, "can't set \"", "\": variable isn't array") {
+        // An element of a scalar: the code names the variable, not the element.
+        let variable = name.split('(').next().unwrap_or(name);
+        return Some(crate::list::join(&["TCL", "LOOKUP", "VARNAME", variable]));
+    }
     if first.starts_with("can't incr \"") && first.ends_with("\": variable is a constant") {
         return Some("TCL WRITE CONST".to_string());
     }

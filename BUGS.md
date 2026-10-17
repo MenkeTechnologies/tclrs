@@ -1081,10 +1081,11 @@ approximated, and nothing is silently mis-run.
   the AM/PM words and the `%x` / `%X` / `%c` expansions come from `msgcat`;
   only the root catalogue is built in, so `-locale fr` is refused rather than
   answered in English. `%E` and `%O` are refused for the same reason.
-- **`file attributes`, `link`, `channels`, `system`, `tempfile`, `tempdir`
-  and `volumes`.** Each is recognised, so an abbreviation
-  resolves as tclsh resolves it, and then refused by name. `glob -types` in its
-  two-element attribute form is refused the same way.
+- **`file attributes` on macOS.** tclsh there also lists `-readonly`, `-creator`,
+  `-type`, `-hidden` and `-rsrclength`, which come from `getattrlist` and the
+  Finder's flags; this frontend provides the Unix three, `-group`, `-owner` and
+  `-permissions`, everywhere. `glob -types` in its two-element attribute form is
+  refused by name.
   `file stat` and `file lstat` are built: the dictionary form Tcl 9 answers
   with no `varName`, and the array form, in `StoreStatData`'s field order
   (`rdev` only in the array form, only for a device). A `varName` that names

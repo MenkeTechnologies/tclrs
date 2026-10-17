@@ -34,6 +34,7 @@ pub mod cmd_channel;
 pub mod cmd_clock;
 pub mod cmd_encoding;
 pub mod cmd_file;
+mod cmd_file_fs;
 /// `info` — what the interpreter knows about itself.
 pub mod cmd_info;
 pub mod cmd_list;
