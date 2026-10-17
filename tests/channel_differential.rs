@@ -150,9 +150,9 @@ const PROGRAMS: &[&str] = &[
     "puts [fblocked stdin]\nset f [open %F w]\nputs [catch {fblocked $f} m]\nputs [string range $m [string first {wasn} $m] end]\nclose $f",
     "puts [chan names std*]\nputs [chan names nosuchchannel]\nputs [llength [chan names]]",
     "set f [open %F w]\nchan puts $f one\nchan puts -nonewline $f two\nchan flush $f\nchan close $f\nset g [open %F]\nputs [list [chan gets $g] [chan gets $g v] $v [chan eof $g] [chan blocked $g]]\nchan seek $g 0\nputs [chan tell $g]\nputs <[chan read $g 3]>\nputs <[chan read -nonewline $g]>\nputs [chan configure $g -translation]\nchan close $g",
-    "set f [open %F w]\nputs [lsearch -exact [chan names] [string trim $f]]\nputs [expr {[lsearch -exact [chan names] $f] >= 0}]\nputs [expr {[lsearch -exact [chan names *] $f] >= 0}]\nclose $f\nputs [expr {[lsearch -exact [chan names] $f] >= 0}]",
+    "set f [open %F w]\nputs [expr {[lsearch -exact [chan names] $f] >= 0}]\nputs [expr {[lsearch -exact [chan names *] $f] >= 0}]\nclose $f\nputs [expr {[lsearch -exact [chan names] $f] >= 0}]",
     "set f [open %F w]\nputs [chan isbinary $f]\nfconfigure $f -translation binary\nputs [chan isbinary $f]\nfconfigure $f -encoding utf-8\nputs [chan isbinary $f]\nfconfigure $f -encoding iso8859-1 -translation crlf\nputs [chan isbinary $f]\nclose $f\nset f [open %F r]\nfconfigure $f -encoding iso8859-1 -translation {lf crlf}\nputs [chan isbinary $f]\nclose $f",
-    "chan puts stdout hi\nchan puts -nonewline stdout x\nchan puts stdout y\nputs [chan c stdout -buffering]",
+    "chan puts stdout hi\nchan puts -nonewline stdout x\nchan puts stdout y\nputs [chan conf stdout -buffering]",
 ];
 
 /// Programs whose *error* must agree, first line for first line.

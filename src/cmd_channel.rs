@@ -2154,8 +2154,13 @@ fn names_command(pattern: Option<&str>) -> String {
             .map(|(name, id)| (*id, name.clone()))
             .collect()
     });
-    let is_std = |name: &str| matches!(name, "stdin" | "stdout" | "stderr");
-    named.sort_by_key(|(id, name)| (!is_std(name), *id));
+    // The standard three in their usual order, then the rest as opened.
+    let std_rank = |name: &str| {
+        ["stdin", "stdout", "stderr"]
+            .iter()
+            .position(|s| *s == name)
+    };
+    named.sort_by_key(|(id, name)| (std_rank(name).unwrap_or(3), *id));
     let kept: Vec<String> = named
         .into_iter()
         .map(|(_, name)| name)
