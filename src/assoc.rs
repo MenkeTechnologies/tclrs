@@ -441,8 +441,8 @@ fn matches(mut s: &[char], mut p: &[char]) -> bool {
 /// A dict: keys in the order they were first inserted, which is the order
 /// `dict keys`, `dict values`, `dict get` with no keys and `dict for` all use.
 pub(crate) struct Dict {
-    entries: Vec<(String, String)>,
-    index: HashMap<String, usize>,
+    pub(crate) entries: Vec<(String, String)>,
+    pub(crate) index: HashMap<String, usize>,
 }
 
 impl Dict {
@@ -468,12 +468,12 @@ impl Dict {
         Ok(d)
     }
 
-    fn get(&self, key: &str) -> Option<&str> {
+    pub(crate) fn get(&self, key: &str) -> Option<&str> {
         self.index.get(key).map(|&i| self.entries[i].1.as_str())
     }
 
     /// Insert or update. An existing key keeps the position it was first given.
-    fn put(&mut self, key: String, value: String) {
+    pub(crate) fn put(&mut self, key: String, value: String) {
         match self.index.get(&key) {
             Some(&i) => self.entries[i].1 = value,
             None => {
@@ -494,7 +494,7 @@ impl Dict {
         }
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
@@ -507,18 +507,6 @@ impl Dict {
         }
         join(&flat)
     }
-}
-
-/// Walk a key path through nested dicts, returning the innermost dict.
-fn trace_path(dict: &str, keys: &[String]) -> Result<Dict, String> {
-    let mut current = Dict::parse(dict)?;
-    for key in keys {
-        let Some(next) = current.get(key) else {
-            return Err(format!("key \"{key}\" not known in dictionary"));
-        };
-        current = Dict::parse(next)?;
-    }
-    Ok(current)
 }
 
 // ─── compile-time lowering ────────────────────────────────────────────────
@@ -2530,31 +2518,20 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             Ok(())
         }
         ext::DICT_GET => {
-            let mut args = pop_args(vm);
-            let dict = args.remove(0);
-            if args.is_empty() {
+            let (dict, keys) = pop_container_and_keys(vm);
+            if keys.is_empty() {
                 // No keys: the pairs as a list, which is the canonical form.
-                push_str(vm, Dict::parse(&dict)?.to_list());
+                push_str(vm, Dict::parse(&to_tcl_string(&dict))?.to_list());
                 return Ok(());
             }
-            let last = args.pop().expect("at least one key");
-            let inner = trace_path(&dict, &args)?;
-            let value = inner
-                .get(&last)
-                .ok_or_else(|| format!("key \"{last}\" not known in dictionary"))?;
-            push_str(vm, value.to_string());
+            push_str(vm, crate::dict_cache::lookup(&dict, &keys)?);
             Ok(())
         }
         ext::DICT_EXISTS => {
-            let mut args = pop_args(vm);
-            let dict = args.remove(0);
-            let last = args.pop().expect("arity checked at compile time");
+            let (dict, keys) = pop_container_and_keys(vm);
             // Unlike `dict get`, a malformed dict along the path is simply a
             // miss rather than an error.
-            let found = match trace_path(&dict, &args) {
-                Ok(inner) => inner.get(&last).is_some(),
-                Err(_) => false,
-            };
+            let found = crate::dict_cache::lookup(&dict, &keys).is_ok();
             vm.push(Value::Int(found as i64));
             Ok(())
         }
@@ -2612,15 +2589,19 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             Ok(())
         }
         ext::DICT_SIZE => {
-            let dict = pop_str(vm);
-            let size = Dict::parse(&dict)?.len() as i64;
-            vm.push(Value::Int(size));
+            let dict = vm.pop();
+            vm.push(Value::Int(crate::dict_cache::size(&dict)? as i64));
             Ok(())
         }
         ext::DICT_SET => {
             let mut args = pop_args(vm);
             let value = args.pop().expect("value operand");
             let keys = args;
+            if let [key] = keys.as_slice() {
+                return dict_update_one(vm, arg == 1, |current| {
+                    crate::dict_cache::set(current, key, &value)
+                });
+            }
             let (current, _name) = dict_variable(vm, arg == 1)?;
             push_str(vm, dict_set(&current, &keys, value)?);
             Ok(())
@@ -2628,9 +2609,9 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         ext::DICT_INCR => {
             let by = pop_str(vm);
             let key = pop_str(vm);
-            let (current, _name) = dict_variable(vm, arg == 1)?;
-            push_str(vm, dict_incr(&current, &key, &by)?);
-            Ok(())
+            dict_update_one(vm, arg == 1, |current| {
+                crate::dict_cache::incr(current, &key, &by)
+            })
         }
         ext::DICT_EACH => dict_each_op(vm, arg),
         ext::DICT_UPDATE_BIND => dict_update_bind(vm),
@@ -2737,6 +2718,53 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
 /// `on_stack` is the element form (operand 1): the target is an array element,
 /// and the compiler has already pushed its current value — read tolerantly, so
 /// a missing element is the empty dict — where the place would stand.
+/// The operands of `dict get` and `dict exists`: the dictionary as the value it
+/// is, so its identity can find it in [`crate::dict_cache`], then the keys.
+fn pop_container_and_keys(vm: &mut VM) -> (Value, Vec<String>) {
+    let n = pop_int(vm).max(0) as usize;
+    let mut operands: Vec<Value> = (0..n).map(|_| vm.pop()).collect();
+    operands.reverse();
+    let keys = operands.split_off(1).iter().map(to_tcl_string).collect();
+    (operands.remove(0), keys)
+}
+
+/// A one-key `dict set` or `dict incr`, which edits the variable's own string.
+///
+/// The value is taken out of its place for the edit, as `lappend` takes its
+/// list, so that the string is unshared and the change lands on it rather than
+/// on a copy; the instruction that follows stores the result back. A change
+/// that is refused hands the value back, and the variable is as it was.
+fn dict_update_one(
+    vm: &mut VM,
+    on_stack: bool,
+    change: impl FnOnce(Value) -> Result<Arc<String>, (Value, String)>,
+) -> Result<(), String> {
+    let place = (!on_stack).then(|| place_of(vm));
+    let current = match place {
+        Some(place) => crate::runtime::take_var(vm, place),
+        None => vm.pop(),
+    };
+    let name = pop_str(vm);
+    if matches!(current, Value::Hash(_)) {
+        if let Some(cell) = place.and_then(|p| crate::runtime::var_cell(vm, p)) {
+            *cell = current;
+        }
+        return Err(format!("can't set \"{name}\": variable is array"));
+    }
+    match change(current) {
+        Ok(text) => {
+            vm.push(Value::Str(text));
+            Ok(())
+        }
+        Err((original, msg)) => {
+            if let Some(cell) = place.and_then(|p| crate::runtime::var_cell(vm, p)) {
+                *cell = original;
+            }
+            Err(msg)
+        }
+    }
+}
+
 fn dict_variable(vm: &mut VM, on_stack: bool) -> Result<(String, String), String> {
     let current = if on_stack {
         vm.pop()
@@ -2776,14 +2804,6 @@ fn dict_unset(dict: &str, keys: &[String]) -> Result<String, String> {
 /// A missing key counts as 0 rather than as an error, so `dict incr d fresh 7`
 /// leaves `fresh 7` — measured against tclsh, along with the promotion past an
 /// `i64` that [`crate::runtime::incr_text`] does.
-fn dict_incr(dict: &str, key: &str, by: &str) -> Result<String, String> {
-    let mut d = Dict::parse(dict)?;
-    let current = d.get(key).unwrap_or("0").to_string();
-    let sum = crate::runtime::incr_text(&current, by)?;
-    d.put(key.to_string(), sum);
-    Ok(d.to_list())
-}
-
 /// `dict set` down a key path, creating the intermediate dicts it needs.
 fn dict_set(dict: &str, keys: &[String], value: String) -> Result<String, String> {
     let mut d = Dict::parse(dict)?;

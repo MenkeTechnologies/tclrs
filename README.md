@@ -521,6 +521,17 @@ A value another variable holds is copied rather than extended, so a script never
 sees a string change under it. `lappend` works the same way, with one more
 question to answer first — see [Lists](#lists).
 
+A dict is its string form too, so `dict get`, `dict exists`, `dict size`,
+`dict set` and `dict incr` would each split the whole string; a loop over an
+n-key dict was quadratic where tclsh's hash table makes it linear. The last
+dict any of them parsed or produced is kept beside the identity of its string
+(`src/dict_cache.rs`), so a read of the same value is a lookup. A one-key
+`dict set` or `dict incr` takes the string out of its variable the way `append`
+does: a new key is appended in place, and an existing key's value is spliced
+over its recorded span, so nothing already in the string is re-quoted. Nested
+paths, `dict unset`, `dict merge` and the other writers still rebuild the whole
+string.
+
 ### Procedures
 
 A procedure's parameters and locals are **frame slots**, not entries in the

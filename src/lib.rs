@@ -53,6 +53,7 @@ pub mod control;
 pub mod coro;
 pub mod cursor;
 pub mod dap;
+mod dict_cache;
 pub(crate) mod dtoa;
 pub mod dump;
 /// The `.enc` tables, generated. See `scripts/gen_encoding_tables.py`.
