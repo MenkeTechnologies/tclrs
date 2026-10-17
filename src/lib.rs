@@ -63,6 +63,7 @@ pub(crate) mod errorcode;
 pub mod expr;
 pub mod expr_math;
 pub mod list;
+mod list_spans;
 pub mod lsp;
 pub mod names;
 pub mod parser;

@@ -399,6 +399,7 @@ pub(crate) fn run(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     let result = match id {
         ext::LINDEX => lindex_op(&values)?,
         ext::LLENGTH if values.len() == 1 => elements(&values[0])?.len().to_string(),
+        ext::LRANGE if values.len() == 3 => lrange_op(&values)?,
         _ => {
             let args: Vec<String> = values.iter().map(to_tcl_string).collect();
             dispatch(id, &args)?
@@ -442,7 +443,7 @@ thread_local! {
     ///
     /// Four entries rather than one, so that a loop reading two lists — the
     /// shape `foreach` over one and `lindex` into another produces — hits on
-    /// both instead of evicting each in turn.
+    /// both instead of evicting each in turn. The least recently used goes first.
     static SPLIT: RefCell<Vec<SplitEntry>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -457,12 +458,16 @@ fn elements(value: &Value) -> Result<Arc<Vec<String>>, String> {
         // with; nothing repeats over one, so nothing is remembered.
         return Ok(Arc::new(list::split(&to_tcl_string(value))?));
     };
+    // A hit moves the entry to the back, so the entry evicted is the one used
+    // longest ago: a loop that reads a long list and also splits a fresh short
+    // one every turn (`lindex [lrange $l $i $i] 0`) must not lose the long one.
     let hit = SPLIT.with(|cache| {
-        cache
-            .borrow()
-            .iter()
-            .find(|(key, _)| Arc::ptr_eq(key, text))
-            .map(|(_, items)| Arc::clone(items))
+        let mut cache = cache.borrow_mut();
+        let at = cache.iter().position(|(key, _)| Arc::ptr_eq(key, text))?;
+        let entry = cache.remove(at);
+        let items = Arc::clone(&entry.1);
+        cache.push(entry);
+        Some(items)
     });
     if let Some(items) = hit {
         return Ok(items);
@@ -1223,6 +1228,19 @@ fn forget(list: &Arc<String>) -> bool {
             _ => false,
         }
     })
+}
+
+/// `lrange`, reading its list through the split cache as `lindex` does, so a
+/// loop taking slices of one list splits it once.
+fn lrange_op(values: &[Value]) -> Result<String, String> {
+    let items = elements(&values[0])?;
+    let end = items.len() as i64 - 1;
+    let first = list::index(&to_tcl_string(&values[1]), end)?.max(0);
+    let last = list::index(&to_tcl_string(&values[2]), end)?.min(end);
+    if first > last {
+        return Ok(String::new());
+    }
+    Ok(list::join(&items[first as usize..=last as usize]))
 }
 
 fn lrange(value: &str, first: &str, last: &str) -> Result<String, String> {
@@ -2360,6 +2378,29 @@ fn list_var_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     if current == Value::Undef {
         return Err(format!("can't read \"{name}\": no such variable"));
     }
+
+    // One index into a flat list is the common `lset`: edit the string where
+    // it sits rather than splitting it. See [`crate::list_spans`].
+    let current = match (id, &current, rest.as_slice()) {
+        (ext::LSET, Value::Str(text), [at, replacement])
+            if list::index(at, i64::MAX - 1).is_ok() =>
+        {
+            let outcome = crate::list_spans::set_element(Arc::clone(text), at, replacement);
+            drop(current);
+            match outcome {
+                Ok(done) => {
+                    store_back(vm, is_elem, place, &index, Value::Str(Arc::clone(&done)));
+                    vm.push(Value::Str(done));
+                    return Ok(());
+                }
+                Err((original, msg)) => {
+                    store_back(vm, is_elem, place, &index, Value::Str(original));
+                    return Err(msg);
+                }
+            }
+        }
+        _ => current,
+    };
     let text = to_tcl_string(&current);
 
     let rewritten = match id {
@@ -2401,6 +2442,18 @@ fn list_var_op(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     }
     vm.push(Value::Str(Arc::new(yielded)));
     Ok(())
+}
+
+/// Put a value back where `lset` took it from: the variable, or the element of
+/// the array that `element` names.
+fn store_back(vm: &mut VM, is_elem: bool, place: Place, element: &str, value: Value) {
+    if is_elem {
+        if let Some(map) = crate::assoc::elements_of(vm, place) {
+            map.insert(element.to_string(), value);
+        }
+    } else if let Some(cell) = var_cell(vm, place) {
+        *cell = value;
+    }
 }
 
 /// Take one element out of the array at `place`, leaving it absent — the

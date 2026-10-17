@@ -2295,6 +2295,12 @@ The official suite's `clock` files found one more:
 
 ## Defects in the reference implementation
 
+- **A refused `lset` through a deep index path leaves the list one element
+  longer in tclsh.** `set l {a}; catch {lset l {1 end} x}` is the error `index
+  "end" out of range` in both, but tclsh 9.0.3 and 9.1.0 then hold `a {}` in `l`:
+  the index one past the end appended an empty element before the next step of
+  the path failed. tclrs refuses without changing the variable. Found by comparing `lset`
+  sequences against tclsh.
 - **tclsh 9.0.4 reads one byte past its input to describe a `cesu-8` decoding
   error.** When a `cesu-8` decode ends on an unpaired high surrogate under
   `-profile strict`, `UtfToUtfProc` reports a failure at an index equal to the

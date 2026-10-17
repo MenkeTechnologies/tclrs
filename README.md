@@ -532,6 +532,16 @@ over its recorded span, so nothing already in the string is re-quoted. Nested
 paths, `dict unset`, `dict merge` and the other writers still rebuild the whole
 string.
 
+A list is its string as well. A one-index `lset` takes the string out of its
+variable, remembers the byte span of every element beside the string's identity
+(`src/list_spans.rs`), and splices the one element's span, so assigning the
+elements of an n-element list in a loop no longer splits and joins the whole
+list per assignment. `lrange` reads its list through the same split cache
+`lindex` uses, which evicts the least recently used entry, so a loop that slices
+one long list while splitting a short fresh one each turn keeps the long one.
+`string length`, `string index` and `string range` read an ASCII string by byte
+where it sits and any other without building a vector of characters.
+
 ### Procedures
 
 A procedure's parameters and locals are **frame slots**, not entries in the
