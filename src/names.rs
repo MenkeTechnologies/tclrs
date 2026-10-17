@@ -194,6 +194,11 @@ pub const CORPUS: &[Entry] = &[
         summary: "Evaluate the arguments as an expression. A braced argument is compiled once, not re-parsed per evaluation.",
     },
     Entry {
+        name: "fblocked",
+        synopsis: "fblocked channel",
+        summary: "Whether the last input operation on the channel found less data than it asked for; always 0, since no channel here is non-blocking.",
+    },
+    Entry {
         name: "fconfigure",
         synopsis: "fconfigure channel ?-option value ...?",
         summary: "Read or set a channel's generic options: -translation, -encoding, -buffering, -buffersize, -blocking.",

@@ -2146,8 +2146,8 @@ than an unexamined one. Measured against the 2000-program run above.
   `VM::slot_names_at`, which is what the projection uses. See the refusal list
   above.
 - **Commands tclrs does not have.** `interp`, `socket`,
-  `timerate`, `fcopy`, `fileevent`,
-  `fblocked` and `zlib` are outside the command set entirely, so a generated use
+  `timerate`, `fcopy`, `fileevent`
+  and `zlib` are outside the command set entirely, so a generated use
   of one is `invalid command name` and says nothing about parity. `{*}`
   expansion, `namespace`, `rename`, `source`, `encoding`, `binary` and file I/O
   were on this list until each landed.

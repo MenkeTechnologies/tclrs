@@ -1467,6 +1467,7 @@ pub const COMMANDS: &[&str] = &[
     "seek",
     "tell",
     "fconfigure",
+    "fblocked",
     "chan",
 ];
 
@@ -1489,6 +1490,7 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
         "eof" => (ext::EOF, "eof channel", 1, 1),
         "seek" => (ext::SEEK, "seek channel offset ?origin?", 2, 3),
         "tell" => (ext::TELL, "tell channel", 1, 1),
+        "fblocked" => (ext::BLOCKED, "fblocked channel", 1, 1),
         "fconfigure" => (
             ext::FCONFIGURE,
             "fconfigure channel ?-option value ...?",

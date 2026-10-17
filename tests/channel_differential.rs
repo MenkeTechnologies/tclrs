@@ -147,6 +147,7 @@ const PROGRAMS: &[&str] = &[
     // ── pid: the process id, and no pipeline behind an ordinary channel ──
     "puts [expr {[pid] == [pid]}]\nputs [string is integer -strict [pid]]\nputs <[pid stdout]>\nputs [list [catch {pid nosuch} m] $m]\nputs [list [catch {pid a b} m] $m]",
     // ── chan: the ensemble over the same operations ─────────────────────
+    "puts [fblocked stdin]\nset f [open %F w]\nputs [catch {fblocked $f} m]\nputs [string range $m [string first {wasn} $m] end]\nclose $f",
     "puts [chan names std*]\nputs [chan names nosuchchannel]\nputs [llength [chan names]]",
     "set f [open %F w]\nchan puts $f one\nchan puts -nonewline $f two\nchan flush $f\nchan close $f\nset g [open %F]\nputs [list [chan gets $g] [chan gets $g v] $v [chan eof $g] [chan blocked $g]]\nchan seek $g 0\nputs [chan tell $g]\nputs <[chan read $g 3]>\nputs <[chan read -nonewline $g]>\nputs [chan configure $g -translation]\nchan close $g",
     "set f [open %F w]\nputs [lsearch -exact [chan names] [string trim $f]]\nputs [expr {[lsearch -exact [chan names] $f] >= 0}]\nputs [expr {[lsearch -exact [chan names *] $f] >= 0}]\nclose $f\nputs [expr {[lsearch -exact [chan names] $f] >= 0}]",
@@ -200,6 +201,10 @@ const ERRORS: &[&str] = &[
     "chan close nosuchchannel",
     "chan configure stdout -bogus",
     "chan blocked nosuchchannel",
+    "fblocked",
+    "fblocked stdout",
+    "fblocked nosuchchannel",
+    "fblocked stdin stdout",
     "chan isbinary",
     "chan isbinary nosuchchannel",
     "chan flush",
