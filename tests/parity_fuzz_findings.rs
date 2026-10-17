@@ -2925,24 +2925,18 @@ fn fixed_a_refused_in_place_list_edit_keeps_the_variable() {
     ]);
 }
 
-/// An `lseq` argument that is neither a number nor a keyword is an expression
-/// (`SequenceIdentifyArgument` hands it to `Tcl_ExprObj`), evaluated in the
-/// frame the command was written in, and its failure is the expression's own:
-/// a bare word is the bareword refusal, `[nosuch]` is `invalid command name`.
+/// An `lseq` argument that is neither a number nor a keyword is refused as
+/// `Tcl_GetNumberFromObj` refuses any text that is not a number. 9.0.3 evaluated
+/// it as an expression; 9.0.4 removed that (TIP 746), and so did this port.
 #[test]
-fn fixed_lseq_arguments_are_index_expressions() {
+fn fixed_lseq_arguments_are_numbers_only() {
     all_agree(&[
-        "puts [lseq 1+1 5]\nputs [lseq {2*3}]\nputs [lseq 1 {2+3}]",
-        "set a 3\nputs [lseq $a-1 6]\nputs [lseq {$a - 1} 6]",
-        "set a 3\nproc p {} {global a; lseq {$a - 1} 6}\nputs [p]",
-        "proc p {n} {lseq 1 {$n + 5} {$n}}\nputs [p 2]",
-        "puts [lseq {[expr 4]} count 3]\nputs [lseq {max(1,3)}]",
-        "puts [lseq {1 + 1} to {2 + 4} by {1 + 1}]",
+        "puts [catch {lseq 1+1 5} m]$m\nputs [catch {lseq {2*3}} m]$m\nputs [catch {lseq 1 {2+3}} m]$m",
+        "set a 3\nputs [catch {lseq $a-1 6} m]$m\nputs [lseq $a 6]",
         "puts [catch {lseq abc} m]$m\nputs [catch {lseq 1 to abc} m]$m",
         "puts [catch {lseq a count 3} m]$m\nputs [catch {lseq {[nosuch]}} m]$m",
-        "puts [catch {lseq {$nosuch}} m]$m\nputs [catch {lseq 1 {10/0}} m]$m",
-        "puts [catch {lseq {\"abc\"}} m]$m\nputs [catch {lseq {1+}} m]$m",
-        "puts [catch {lseq 1 {}} m]$m\nputs [catch {lseq {1 2}} m]$m",
+        "puts [catch {lseq {\"abc\"}} m]$m\nputs [catch {lseq 1 {}} m]$m\nputs [catch {lseq {1 2}} m]$m",
+        "puts [lseq 0x10 0x12]\nputs [lseq 1e0 3]\nputs [lseq 1 to 6 by 2]",
     ]);
 }
 

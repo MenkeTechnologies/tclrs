@@ -134,3 +134,22 @@ fn assigning_every_element_of_a_large_list_is_linear() {
         started.elapsed()
     );
 }
+
+#[test]
+fn lseq_arguments_are_numbers_and_keywords_never_expressions() {
+    let out = run(
+        "foreach s {{lseq 1+1 5} {lseq {2*3}} {lseq a} {lseq 1 zz 5} {lseq 0x10 0x12} {lseq 2 count 3 by 2}} {\n\
+           catch $s m\n\
+           puts $m\n\
+         }",
+    );
+    assert_eq!(
+        out,
+        "expected number but got \"1+1\"\n\
+         expected number but got \"2*3\"\n\
+         expected number but got \"a\"\n\
+         expected number but got \"zz\"\n\
+         16 17 18\n\
+         2 4 6\n"
+    );
+}

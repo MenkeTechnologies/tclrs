@@ -74,7 +74,7 @@ pub(crate) fn compile(c: &mut Compiler, name: &str, args: &[Word]) -> Result<(),
         // `lseq`'s own argument grammar decides how many arguments are too
         // many, and it reports that at run time as tclsh does, so the bounds
         // here are open rather than a second, earlier answer to the question.
-        "lseq" => return lseq_compile(c, args),
+        "lseq" => (ext::LSEQ, "lseq n ??op? n ??by? n??", 0, usize::MAX),
         "lappend" => return lappend(c, args),
         "lassign" => return lassign(c, args),
         "lset" => return lset(c, args),
@@ -562,9 +562,7 @@ fn dispatch(id: u16, args: &[String]) -> Result<String, String> {
         ext::CONCAT => Ok(concat(args)),
         ext::LREPEAT => lrepeat(&args[0], &args[1..]),
         ext::LREMOVE => lremove(&args[0], &args[1..]),
-        // The pure path has no frame to evaluate an expression in; `lseq`
-        // itself is lowered to its own op ([`lseq_op`]).
-        ext::LSEQ => lseq(args, &mut |text| Err(list::number_error("number", text))),
+        ext::LSEQ => lseq(args),
         other => Err(format!("unknown list op {other}")),
     }
 }
@@ -630,61 +628,6 @@ fn lremove(value: &str, indices: &[String]) -> Result<String, String> {
     Ok(list::join(&kept))
 }
 
-/// `lseq`, lowered to `[declared, arg …]`.
-///
-/// An argument that is neither a number nor a keyword is an expression
-/// (`SequenceIdentifyArgument`), evaluated in the frame the command was written
-/// in, so the op needs what `subst` needs: the names the enclosing body linked
-/// with `global`.
-fn lseq_compile(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
-    let count = u8::try_from(args.len() + 1).map_err(|_| CompileError {
-        msg: "too many arguments for \"lseq\"".to_string(),
-        line: c.line,
-    })?;
-    let declared = c.declared_globals().unwrap_or_default();
-    c.push_str(&declared);
-    for arg in args {
-        c.word(arg)?;
-    }
-    c.emit(Op::Extended(ext::LSEQ, count), 1 - i32::from(count));
-    Ok(())
-}
-
-/// The `lseq` op.
-pub(crate) fn lseq_op(
-    interp: &Shared,
-    vm: &mut VM,
-    argc: u8,
-) -> Result<(), crate::runtime::TclError> {
-    let mut args: Vec<String> = (0..argc).map(|_| to_tcl_string(&vm.pop())).collect();
-    args.reverse();
-    let declared = args.remove(0);
-    // The frame the command was written in, found as `eval` and `subst` find it.
-    let up = crate::runtime::levels(vm).first().copied().unwrap_or(0);
-    // An expression's own failure keeps its error code and trace: the closure
-    // hands the string to `lseq` and keeps the error itself here.
-    let mut failure = None;
-    let result = lseq(&args, &mut |text| {
-        let script = list::join(&["expr".to_string(), text.to_string()]);
-        crate::runtime::in_frame(interp, vm, up, &declared, |interp| {
-            crate::runtime::run_source(interp, &script)
-        })
-        .map(|value| to_tcl_string(&value))
-        .map_err(|e| {
-            let msg = e.msg.clone();
-            failure = Some(e);
-            msg
-        })
-    });
-    match result {
-        Ok(series) => {
-            vm.push(Value::Str(Arc::new(series)));
-            Ok(())
-        }
-        Err(msg) => Err(failure.unwrap_or_else(|| crate::runtime::TclError::plain(msg))),
-    }
-}
-
 /// One `lseq` operand: its value and the text it was written as.
 type SeqOperand<'a> = (Num, &'a str);
 
@@ -699,10 +642,7 @@ type SeqOperand<'a> = (Num, &'a str);
 /// makes the series one of doubles, rounded to the most decimal places any of
 /// its operands was written with, so `lseq 4 10 0.1` is `4.0 4.1 …` and not
 /// the accumulated error of repeated addition.
-fn lseq(
-    args: &[String],
-    expr: &mut dyn FnMut(&str) -> Result<String, String>,
-) -> Result<String, String> {
+fn lseq(args: &[String]) -> Result<String, String> {
     const USAGE: &str = "wrong # args: should be \"lseq n ??op? n ??by? n??\"";
     if args.len() > 5 {
         return Err(USAGE.to_string());
@@ -717,7 +657,7 @@ fn lseq(
     for (i, arg) in args.iter().enumerate() {
         arg_key *= 10;
         let last = if i + 1 == args.len() { SEQ_LAST } else { 0 };
-        match seq_identify(arg, allowed | last, expr)? {
+        match seq_identify(arg, allowed | last)? {
             None => {
                 // Neither a number nor a keyword where only a keyword fits:
                 // the keyword lookup's own refusal.
@@ -826,11 +766,7 @@ enum SeqArg {
 /// keyword when keywords are — a keyword in the last position is missing its
 /// value — else `None`, or the number parser's refusal when a number would
 /// have fitted.
-fn seq_identify(
-    arg: &str,
-    allowed: u32,
-    expr: &mut dyn FnMut(&str) -> Result<String, String>,
-) -> Result<Option<SeqArg>, String> {
+fn seq_identify(arg: &str, allowed: u32) -> Result<Option<SeqArg>, String> {
     if allowed & SEQ_NUMERIC != 0 {
         if let Some(n) = seq_number(arg) {
             return Ok(Some(SeqArg::Number(n, arg.to_string())));
@@ -850,14 +786,10 @@ fn seq_identify(
     if allowed & SEQ_NUMERIC == 0 {
         return Ok(None);
     }
-    // Neither a number nor a keyword: an index expression, which
-    // `SequenceIdentifyArgument` hands to `Tcl_ExprObj` and then reads the
-    // result of as a number.
-    let text = expr(arg)?;
-    match seq_number(&text) {
-        Some(n) => Ok(Some(SeqArg::Number(n, text))),
-        None => Err(list::number_error("number", &text)),
-    }
+    // Neither a number nor a keyword. An expression is not a number here: since
+    // 9.0.4 (TIP 746) `lseq 1+1 5` is refused as `Tcl_GetNumberFromObj` refuses
+    // any text that is not one.
+    Err(list::number_error("number", arg))
 }
 
 /// `Tcl_GetNumberFromObj`: an integer of any width or a double, NaN included.

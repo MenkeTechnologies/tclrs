@@ -2103,9 +2103,6 @@ impl Hooks {
                 // interpreter once per compared pair — and whether a given call
                 // says `-command` is only known when it runs.
                 ext::LSORT => crate::cmd_list::lsort_op(&interp, vm, arg).map_err(TclError::plain),
-                // `lseq` evaluates an argument that is no number as an expression,
-                // in the frame it was written in.
-                ext::LSEQ => crate::cmd_list::lseq_op(&interp, vm, arg),
                 // `regsub` for the same reason: `-command` calls back into the
                 // interpreter once per match, and whether a given call says
                 // `-command` is only known when it runs.

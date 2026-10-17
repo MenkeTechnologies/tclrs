@@ -1990,10 +1990,10 @@ differential program in `tests/parity_fuzz_findings.rs`.
   destination in an unknown namespace creates the namespace. A `rename` onto an
   existing procedure no longer makes a compile-time second name for the source.
 - **`namespace inscope` of a missing namespace** is `namespace "::a" not found`.
-- **`lseq` took only numbers.** An argument that is not a number or a keyword is
-  an expression, evaluated in the frame the command was written in
-  (`SequenceIdentifyArgument`), so `lseq 1+1 5` and `lseq {$n - 1} 0` work and
-  a bad one carries the expression's own refusal.
+- **`lseq` followed 9.0.3 in reading an expression as a number.** 9.0.4 removed
+  that (TIP 746): an argument that is neither a number nor a keyword is `expected
+  number but got "1+1"`, as `Tcl_GetNumberFromObj` refuses any other text, and
+  the operation no longer needs the frame it was written in.
 - **`lrepeat` aborted on a count past the list limit** (`capacity overflow`) and
   quoted the count as written in `bad count`; both answer as `Tcl_LrepeatObjCmd`
   does. An empty value list with a huge count is the empty list at once.
