@@ -31,11 +31,9 @@ fn a_namespace_separator_in_a_formal_parameter_is_not_a_simple_name() {
 
 #[test]
 fn an_array_element_is_named_before_a_separator_that_follows_its_parenthesis() {
-    let out = run(
-        "foreach spec {a(1) a(b::c) a( a) a:b} {\n\
+    let out = run("foreach spec {a(1) a(b::c) a( a) a:b} {\n\
            puts [catch {proc zz $spec {}} m]:$m\n\
-         }",
-    );
+         }");
     assert_eq!(
         out,
         "1:formal parameter \"a(1)\" is an array element\n\
@@ -48,11 +46,9 @@ fn an_array_element_is_named_before_a_separator_that_follows_its_parenthesis() {
 
 #[test]
 fn apply_logs_the_lambda_it_could_not_parse() {
-    let out = run(
-        "set lambda [list {{a b c}} boo]\n\
+    let out = run("set lambda [list {{a b c}} boo]\n\
          list [catch {apply $lambda} msg] $msg\n\
-         puts [string map [list \\n |] $::errorInfo]",
-    );
+         puts [string map [list \\n |] $::errorInfo]");
     assert_eq!(
         out,
         "too many fields in argument specifier \"a b c\"|    \
@@ -63,10 +59,8 @@ fn apply_logs_the_lambda_it_could_not_parse() {
 
 #[test]
 fn a_lambda_that_parses_but_fails_keeps_the_ordinary_trace() {
-    let out = run(
-        "catch {apply {{} {error foo}}}\n\
-         puts [string map [list \\n |] $::errorInfo]",
-    );
+    let out = run("catch {apply {{} {error foo}}}\n\
+         puts [string map [list \\n |] $::errorInfo]");
     assert_eq!(
         out,
         "foo|    while executing|\"error foo\"|    \
