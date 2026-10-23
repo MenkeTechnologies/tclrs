@@ -547,8 +547,29 @@ approximated, and nothing is silently mis-run.
   or `{*}`, and as the bare operator after `namespace import ::tcl::mathop::*`
   — the registry starts with `::tcl::mathop` exporting `*`, so `namespace
   exists`, `namespace origin` and `namespace forget` answer for it
-  (`src/cmd_mathop.rs`, `tests/mathop.rs`). `namespace import` with no
-  pattern still lists nothing, for these as for every import.
+  (`src/cmd_mathop.rs`, `tests/mathop.rs`), and `namespace import` with no
+  pattern lists them once imported.
+- **The global namespace's prefix on a built-in command.** `::puts`,
+  `::string length`, `::tcl::prefix` and every other built-in written with a
+  leading `::` — or any longer run of colons, `::::puts` — is the command the
+  simple name reaches, as `Tcl_FindCommand` (`generic/tclNamesp.c`) looks a
+  name with that prefix up in the global namespace. It works written out,
+  computed (`set c ::puts; $c hi`) and through `{*}`; inside `namespace eval`
+  it is never the namespace's own procedure of the same tail; a `wrong # args`
+  spells the command as the script did (`should be "::puts ?-nonewline?
+  ?channel? string"`), as `Tcl_WrongNumArgs` does; and a body-owning command
+  keeps its `-errorinfo` context. A definition is filed the same way: `proc
+  ::lindex` replaces what a bare `lindex` reaches, `proc ::::g` defines `g`,
+  and `proc ::puts` is refused as `proc puts` is (`src/names.rs`
+  `global_command`, `tests/global_qualified.rs`). Still unhandled: a run of
+  three or more colons *between* components of a built-in's name
+  (`::tcl:::prefix`) is `invalid command name`, where tclsh collapses it.
+- **`namespace import` with no pattern** lists the simple names of the
+  current namespace's imported commands, as `NamespaceImportCmd`'s
+  introspection form does — sorted here, where tclsh answers in hash order.
+  A renamed import is still listed; a `rename` moves a non-imported
+  command's `namespace origin` to the new name, as `TclGetOriginalCommand`
+  answers it.
 
 ## Not implemented
 

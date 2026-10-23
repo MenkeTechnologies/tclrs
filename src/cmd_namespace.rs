@@ -909,7 +909,15 @@ impl Compiler {
     /// and `rename` then answer from.
     pub(crate) fn ns_proc(&mut self, args: &[Word]) -> Result<(), CompileError> {
         let qualified;
-        let args = if self.ns.at_global() {
+        // At the root a name is already what it is filed under, except one
+        // written with the global prefix: `proc ::lindex` defines the command
+        // a bare `lindex` reaches (`Tcl_FindCommand`), so it is filed as
+        // `lindex`, the key a call resolves to — not as the text `::lindex`.
+        let absolute = args
+            .first()
+            .and_then(|w| w.as_literal())
+            .is_some_and(|n| n.starts_with("::"));
+        let args = if self.ns.at_global() && !absolute {
             args
         } else {
             let [name_w, rest @ ..] = args else {
@@ -1203,7 +1211,7 @@ pub fn prescan(procs: &mut HashMap<String, crate::procs::Signature>, script: &Sc
         let [head, name, spec, _body] = cmd.words.as_slice() else {
             continue;
         };
-        if head.as_literal() != Some("proc") {
+        if head.as_literal().map(crate::names::canonical) != Some("proc") {
             continue;
         }
         let (Some(name), Some(spec)) = (name.as_literal(), spec.as_literal()) else {
@@ -1234,7 +1242,7 @@ fn walk(procs: &mut HashMap<String, crate::procs::Signature>, script: &Script, n
         let [head, sub, name, body @ ..] = cmd.words.as_slice() else {
             continue;
         };
-        if head.as_literal() != Some("namespace") {
+        if head.as_literal().map(crate::names::canonical) != Some("namespace") {
             continue;
         }
         if sub.as_literal().and_then(subcommand_of) != Some("eval") {
@@ -1398,16 +1406,26 @@ fn rename(
             state.ns.ensure(&ns);
         }
     }
-    let entry = state
+    let mut entry = state
         .ns
         .commands
         .remove(&old)
         .expect("the old command was found above");
     let defined = state.commands.remove(store_key(&old));
-    state.ns.gone.insert(old);
     let Some(new) = new else {
+        state.ns.gone.insert(old);
         return Ok(String::new());
     };
+    // A command's origin is itself unless it is an import, and a rename moves
+    // the command, not the link: `TclGetOriginalCommand` follows the import
+    // chain (`cmdPtr->deleteProc == DeleteImportedCmd`) and stops at the
+    // command that has none. So `proc x {} {}; rename x y` makes `namespace
+    // origin y` answer `::y` (measured), while a renamed *import* keeps
+    // pointing at what it imports and still counts as one.
+    if entry.origin == old {
+        entry.origin = new.clone();
+    }
+    state.ns.gone.insert(old);
     state.ns.gone.remove(&new);
     if let Some(defined) = defined {
         state.commands.insert(store_key(&new).to_string(), defined);
@@ -1576,6 +1594,20 @@ fn run(
             Ok(String::new())
         }
         "import" => {
+            // `NamespaceImportCmd` with no pattern is the introspection form:
+            // the simple names of the imported commands of the current
+            // namespace — the entries of its command table whose `deleteProc`
+            // is `DeleteImportedCmd`, which here are the entries whose origin
+            // is another command. tclsh walks a hash table; this list is sorted.
+            if args.is_empty() {
+                let imported: Vec<String> = reg
+                    .commands_in(here)
+                    .into_iter()
+                    .filter(|local| reg.commands.get(local).is_some_and(|e| e.origin != *local))
+                    .map(|local| tail(&local).to_string())
+                    .collect();
+                return Ok(crate::list::join(&imported));
+            }
             let mut patterns = args.to_vec();
             let force = patterns.first().map(String::as_str) == Some("-force");
             if force {

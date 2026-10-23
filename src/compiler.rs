@@ -982,6 +982,26 @@ pub struct CompileError {
     pub line: usize,
 }
 
+impl CompileError {
+    /// The same refusal for a command the script wrote as `written` and this
+    /// compiler lowered under its table name `simple` — `::puts` for `puts`.
+    ///
+    /// `Tcl_WrongNumArgs` spells the command as `objv[0]` has it, so tclsh's
+    /// `::puts a b c d` is `wrong # args: should be "::puts ?-nonewline?
+    /// ?channel? string"`. Only that message names the command; every other
+    /// refusal is left as it is.
+    fn respelled(mut self, simple: &str, written: &str) -> CompileError {
+        let usage = format!("wrong # args: should be \"{simple}");
+        if self.msg.starts_with(&usage) {
+            self.msg = format!(
+                "wrong # args: should be \"{written}{}",
+                &self.msg[usage.len()..]
+            );
+        }
+        self
+    }
+}
+
 impl fmt::Display for CompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} (line {})", self.msg, self.line)
@@ -2434,7 +2454,8 @@ impl Compiler {
             .and_then(|w| w.as_literal())
             .and_then(|name| {
                 let sub = cmd.words.get(1).and_then(|w| w.as_literal());
-                crate::errinfo::BodyKind::of(name, sub)
+                // `::foreach` owns a body as `foreach` does.
+                crate::errinfo::BodyKind::of(crate::names::canonical(name), sub)
             });
         let start = self.b.current_pos();
         self.emap.begin(
@@ -2685,6 +2706,20 @@ impl Compiler {
             // `proc p {a} {}`). The run-time table is where that is decided.
             other if self.precedes_definition(other) => self.call_runtime(other, args),
             other if self.procs.contains_key(other) => self.call_proc(other, args),
+            // A built-in command written with the global namespace's prefix:
+            // `::puts`, `::string length`, `::tcl::prefix`. `Tcl_FindCommand`
+            // looks a name beginning with `::` up in the global namespace,
+            // which is where every built-in lives, so the command is the one
+            // the simple name reaches — dispatched again under that name, with
+            // a `wrong # args` respelled the way the script wrote the command.
+            // Behind every procedure arm, because a `proc ::puts` the script
+            // defines is what the global namespace holds under that name then,
+            // in tclsh as here.
+            other if crate::names::global_command(other).is_some() => {
+                let simple = crate::names::global_command(other).expect("the arm asked first");
+                self.dispatch(simple, args)
+                    .map_err(|e| e.respelled(simple, other))
+            }
             // A function an inline `rust { ... }` block exported. Asked after
             // the procedures, so a Tcl procedure of the same name still wins —
             // a script's own definition is never shadowed by a library it

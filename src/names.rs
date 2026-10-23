@@ -7,8 +7,11 @@
 //! anyone can read: the REPL's completer needs one, so it is assembled here
 //! from the same constants the matches are written beside, never copied.
 //!
-//! Nothing in the compile path calls this module. It exists so that a name
-//! offered at the prompt is a name the compiler knows.
+//! The compile path asks this module one question only — whether a name is a
+//! command at all ([`is_command`], [`global_command`]) — for a name it did not
+//! match itself: a computed one, or one written with the global namespace's
+//! `::` prefix. Otherwise it exists so that a name offered at the prompt is a
+//! name the compiler knows.
 
 use crate::assoc::{ARRAY_SUBCOMMANDS, DICT_SUBCOMMANDS};
 use crate::cmd_clock;
@@ -58,10 +61,34 @@ pub fn commands() -> Vec<&'static str> {
 /// only the running script knows. Both read `TABLES`, so neither can be the
 /// only one that knows about a command.
 pub fn is_command(name: &str) -> bool {
-    // The tables hold one spelling of each name; the operators of `tcl::mathop`
-    // are also commands under their fully-qualified `::tcl::mathop::` one,
-    // which is how a script computes them (`[list ::tcl::mathop::*] 3 4`).
-    TABLES.iter().any(|t| t.contains(&name)) || crate::cmd_mathop::operator(name).is_some()
+    TABLES.iter().any(|t| t.contains(&name)) || global_command(name).is_some()
+}
+
+/// The built-in command a name written with a leading `::` reaches, as the
+/// tables spell it: `::puts` is `puts`, `::tcl::prefix` is `tcl::prefix`, and
+/// `::::string` is `string`. `None` for a name without the prefix, and for one
+/// whose remainder is not a built-in command.
+///
+/// Port of `Tcl_FindCommand`'s rule for the prefix (`generic/tclNamesp.c`): a
+/// name beginning with `::` is looked up in the global namespace, which is where
+/// every built-in command lives. `TclGetNamespaceForQualName` reads the prefix
+/// as the whole run of colons it starts (`start = qualName + 2; while (*start
+/// == ':') start++`), so `::::puts` names the same command.
+///
+/// The tables hold one spelling of each name. This is the other, and it is how a
+/// script computes a command's name — `[list ::tcl::mathop::*] 3 4` — and how a
+/// script written for a namespace reaches the global command rather than one of
+/// its own: inside `namespace eval ns`, `::string` is never `ns::string`.
+pub fn global_command(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("::")?.trim_start_matches(':');
+    TABLES.iter().any(|t| t.contains(&rest)).then_some(rest)
+}
+
+/// A command name as the tables spell it: the simple name for a leading-`::`
+/// spelling of a built-in command ([`global_command`]), and the name unchanged
+/// for everything else.
+pub fn canonical(name: &str) -> &str {
+    global_command(name).unwrap_or(name)
 }
 
 /// One command: its name, the synopsis the compiler reports when the argument

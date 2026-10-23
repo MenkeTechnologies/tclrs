@@ -194,7 +194,7 @@ pub fn prescan(procs: &mut HashMap<String, Signature>, script: &Script) {
         let [head, name, spec, body] = cmd.words.as_slice() else {
             continue;
         };
-        if head.as_literal() != Some("proc") {
+        if head.as_literal().map(crate::names::canonical) != Some("proc") {
             continue;
         }
         // A computed word of any of the three makes the whole definition a
@@ -208,7 +208,10 @@ pub fn prescan(procs: &mut HashMap<String, Signature>, script: &Script) {
         if let Ok(mut sig) = parse_signature(spec) {
             // The body's source text, which `info body` answers with.
             sig.body = Some(body.to_string());
-            procs.insert(name.to_string(), sig);
+            // Filed under the key a call resolves to, so `proc ::f` is `f`;
+            // `Compiler::ns_proc` files the definition the same way.
+            let fqn = crate::cmd_namespace::resolve("::", name);
+            procs.insert(crate::cmd_namespace::store_key(&fqn).to_string(), sig);
         }
     }
 }
