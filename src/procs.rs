@@ -516,6 +516,15 @@ fn enter_elsewhere(
 /// is the `invalid command name` the compiler used to defer — same wording,
 /// same line.
 fn foreign(interp: &Shared, vm: &mut VM, name: &str, args: &[Value]) -> Result<(), String> {
+    // A bare operator `namespace import ::tcl::mathop::*` brought in, reached
+    // by a computed name: `set op +; $op 1 2`. The registry maps it to the
+    // builtin, which is run on the arguments as they are; a `wrong # args`
+    // names the operator as the script wrote it, as `Tcl_WrongNumArgs` does.
+    if let Some(origin) = crate::cmd_namespace::imported_builtin(interp, name) {
+        let value = crate::cmd_mathop::call(vm, name, &origin, args)?;
+        vm.push(value);
+        return Ok(());
+    }
     // An ensemble command decides its callee only now, from its subcommand.
     let target = {
         let state = interp.lock().expect("interpreter lock");

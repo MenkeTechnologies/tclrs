@@ -674,7 +674,7 @@ impl Interp {
                 traces: crate::cmd_trace::Traces::default(),
                 globals: crate::cmd_info::startup_globals(),
                 commands: HashMap::new(),
-                ns: crate::cmd_namespace::Registry::default(),
+                ns: crate::cmd_namespace::Registry::with_builtins(),
                 running: Vec::new(),
                 aliases: HashMap::new(),
                 projections: Vec::new(),
@@ -4629,6 +4629,83 @@ fn too_large() -> String {
     "integer value too large to represent".to_string()
 }
 
+/// One binary operator of `expr`, named by its symbol, applied to two values
+/// outside any `expr` — which is what a `tcl::mathop` command is
+/// (`crate::cmd_mathop`).
+///
+/// Every answer is the one `expr {$a op $b}` gives, because every arm is the
+/// path that expression lowers to: `+ - *` and the numeric comparisons are the
+/// numeric hook `Op::Add` and `Op::NumLt` call, with the one case the VM
+/// answers natively — two machine integers that do not overflow — answered
+/// here; everything else is already an extension op reading its operands off
+/// the stack, so the operands are pushed and that op is run.
+pub(crate) fn mathop_binary(vm: &mut VM, op: &str, a: Value, b: Value) -> Result<Value, String> {
+    if let (Value::Int(x), Value::Int(y)) = (&a, &b) {
+        let native = match op {
+            "+" => x.checked_add(*y),
+            "-" => x.checked_sub(*y),
+            "*" => x.checked_mul(*y),
+            _ => None,
+        };
+        if let Some(v) = native {
+            return Ok(Value::Int(v));
+        }
+    }
+    let hooked = match op {
+        "+" => Some(NumOp::Add),
+        "-" => Some(NumOp::Sub),
+        "*" => Some(NumOp::Mul),
+        "<" => Some(NumOp::Lt),
+        ">" => Some(NumOp::Gt),
+        "<=" => Some(NumOp::Le),
+        ">=" => Some(NumOp::Ge),
+        "==" => Some(NumOp::Eq),
+        "!=" => Some(NumOp::Ne),
+        _ => None,
+    };
+    if let Some(num_op) = hooked {
+        return numeric(num_op, &a, &b);
+    }
+    let (id, arg) = match op {
+        "/" => (ext::DIV, 2),
+        "%" => (ext::MOD, 2),
+        "**" => (ext::POW, 2),
+        "&" => (ext::BIT_AND, 2),
+        "|" => (ext::BIT_OR, 2),
+        "^" => (ext::BIT_XOR, 2),
+        "<<" => (ext::SHL, 2),
+        ">>" => (ext::SHR, 2),
+        "in" => (ext::IN, 2),
+        "ni" => (ext::NI, 2),
+        // The always-string comparisons, in [`ext::STR_CMP`]'s own numbering
+        // (`Compiler::str_cmp`).
+        "lt" => (ext::STR_CMP, 0),
+        "gt" => (ext::STR_CMP, 1),
+        "le" => (ext::STR_CMP, 2),
+        "ge" => (ext::STR_CMP, 3),
+        "eq" => (ext::STR_CMP, 4),
+        "ne" => (ext::STR_CMP, 5),
+        other => unreachable!("no binary operator {other}"),
+    };
+    vm.push(a);
+    vm.push(b);
+    extension(vm, id, arg)?;
+    Ok(vm.pop())
+}
+
+/// The two unary operators of `expr` as [`mathop_binary`] is the binary ones:
+/// `!` is [`ext::BOOL`]'s operand rule and `~` is [`ext::BIT_NOT`].
+pub(crate) fn mathop_unary(vm: &mut VM, op: &str, a: Value) -> Result<Value, String> {
+    let (id, arg) = match op {
+        "!" => (ext::BOOL, 1),
+        "~" => (ext::BIT_NOT, 1),
+        other => unreachable!("no unary operator {other}"),
+    };
+    vm.push(a);
+    extension(vm, id, arg)?;
+    Ok(vm.pop())
+}
+
 /// The frontend's extension ops.
 fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
     match id {
@@ -4959,6 +5036,11 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             crate::cmd_info::extension(vm, id, arg)
         }
         // ── end of the info block ────────────────────────────────────────
+        // ── the mathop block ─────────────────────────────────────────────
+        // Bounded, and ahead of the open-ended arms below, which would
+        // otherwise claim it: it is the highest block allocated.
+        id if crate::cmd_mathop::is_op(id) => crate::cmd_mathop::run(vm, arg),
+        // ── end of the mathop block ──────────────────────────────────────
         // ── the binary block ─────────────────────────────────────────────
         // Bounded, and ahead of the two open-ended arms below it, for the
         // reason the `info` arm above states.

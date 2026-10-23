@@ -783,6 +783,10 @@ pub mod ext {
     pub const PREFIX_BASE: u16 = SUBSYSTEM_BASE + 12 * BLOCK;
     /// One past the prefix block.
     pub const PREFIX_END: u16 = PREFIX_BASE + BLOCK;
+    /// `tcl::mathop` ([`crate::cmd_mathop`]).
+    pub const MATHOP_BASE: u16 = SUBSYSTEM_BASE + 13 * BLOCK;
+    /// One past the mathop block.
+    pub const MATHOP_END: u16 = MATHOP_BASE + BLOCK;
 }
 
 /// Wide extension opcode ids, whose payload is a `usize` rather than a byte.
@@ -2626,6 +2630,15 @@ impl Compiler {
             // every other builtin.
             "binary" => crate::cmd_binary::compile(self, args),
             "tcl::prefix" => crate::cmd_prefix::compile(self, args),
+            // The `expr` operators as commands, under either spelling of
+            // their namespace. Claimed here, ahead of the namespace block,
+            // because tclsh registers them as commands of `::tcl::mathop`
+            // and a qualified name would otherwise be looked for among the
+            // script's own procedures. A bare operator reaches the module
+            // through `namespace import` instead (`Compiler::ns_call`).
+            name if crate::cmd_mathop::operator(name).is_some() => {
+                crate::cmd_mathop::compile(self, name, name, args)
+            }
             // ── end of the binary ensemble ───────────────────────────────
             // ── namespaces, `rename` and `source` ────────────────────────
             // One block, so that the module owning them merges as one hunk.

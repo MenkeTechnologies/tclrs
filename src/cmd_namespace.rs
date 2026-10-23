@@ -383,7 +383,44 @@ pub struct Registry {
     gone: BTreeSet<String>,
 }
 
+/// The namespace tclsh keeps the `expr` operators in as commands
+/// (`crate::cmd_mathop`).
+const MATHOP_NS: &str = "::tcl::mathop";
+
+/// The operator commands, fully qualified — what `::tcl::mathop` holds.
+fn mathop_commands() -> Vec<String> {
+    crate::cmd_mathop::COMMANDS
+        .iter()
+        .map(|name| format!("::{name}"))
+        .collect()
+}
+
+/// The built-in command an imported name stands for, when `namespace import`
+/// brought one in from `::tcl::mathop`: `+` → `::tcl::mathop::+`. `None` for a
+/// name that is not such an import, which is every other name.
+pub(crate) fn imported_builtin(interp: &crate::runtime::Shared, name: &str) -> Option<String> {
+    let state = interp.lock().expect("interpreter lock");
+    let entry = state.ns.commands.get(&resolve("::", name))?;
+    crate::cmd_mathop::operator(&entry.origin)
+        .is_some()
+        .then(|| entry.origin.clone())
+}
+
 impl Registry {
+    /// The registry an interpreter starts with: of the namespaces tclsh creates
+    /// before any script runs, the one this frontend has commands in.
+    /// `::tcl::mathop` holds the `expr` operators and exports every one of
+    /// them (`generic/tclBasic.c`: `Tcl_Export(interp, nsPtr, "*", 1)`), which
+    /// is what `namespace import ::tcl::mathop::*` resolves against. The
+    /// operators are not entries of `commands`, because a builtin is dispatched
+    /// by the compiler and listed from `crate::names::commands`, not from here.
+    pub fn with_builtins() -> Self {
+        let mut reg = Registry::default();
+        reg.ensure(MATHOP_NS);
+        reg.exports.insert(MATHOP_NS.to_string(), vec!["*".to_string()]);
+        reg
+    }
+
     /// Create `fqn` and every namespace above it, as `Tcl_CreateNamespace` does
     /// for a qualified name (`generic/tclNamesp.c`).
     pub fn ensure(&mut self, fqn: &str) {
@@ -430,6 +467,16 @@ impl Registry {
         self.commands
             .keys()
             .filter(|name| !self.gone.contains(*name))
+    }
+
+    /// Every command `ns` holds that an import can name, fully qualified: the
+    /// registry's own, or the built-in operators for `::tcl::mathop`, which
+    /// are dispatched by name and in no registry (see [`Registry::with_builtins`]).
+    fn members(&self, ns: &str) -> Vec<String> {
+        if ns == MATHOP_NS {
+            return mathop_commands();
+        }
+        self.commands_in(ns)
     }
 
     /// Every command in `ns`, fully qualified and sorted.
@@ -978,7 +1025,7 @@ impl Compiler {
             let from = parent_of(&fqn);
             let pat = tail(&fqn).to_string();
             let exported = self.ns.exports.get(&from).cloned().unwrap_or_default();
-            let found: Vec<String> = self
+            let mut found: Vec<String> = self
                 .procs
                 .keys()
                 .filter(|key| parent_of(&format!("::{key}")) == from)
@@ -990,6 +1037,19 @@ impl Compiler {
                 })
                 .cloned()
                 .collect();
+            // `::tcl::mathop` is a namespace of built-in commands, not of the
+            // script's procedures, and tclsh exports every one of them
+            // (`Tcl_Export(interp, nsPtr, "*", 1)` in `generic/tclBasic.c`) —
+            // which is what makes `namespace import ::tcl::mathop::*` the
+            // usual way to write `+ 1 2`.
+            if from == "::tcl::mathop" {
+                found.extend(
+                    crate::cmd_mathop::COMMANDS
+                        .iter()
+                        .filter(|key| crate::assoc::string_match(tail(key), &pat))
+                        .map(|key| key.to_string()),
+                );
+            }
             let force = rest.iter().any(|w| w.as_literal() == Some("-force"));
             for origin in found {
                 let local = store_key(&resolve(&here, tail(&origin))).to_string();
@@ -1083,6 +1143,12 @@ impl Compiler {
     ) -> Result<(), CompileError> {
         if self.ns.renames.contains(written) || self.ns.renames.contains(tail(written)) {
             self.ns_guard(written);
+        }
+        // An import of a `tcl::mathop` operator resolves to a built-in command,
+        // not to a procedure of the script; the usage message still names the
+        // operator as the script wrote it.
+        if crate::cmd_mathop::operator(key).is_some() {
+            return crate::cmd_mathop::compile(self, written, key, args);
         }
         self.call_proc(key, args)
     }
@@ -1541,7 +1607,7 @@ fn run(
                 }
                 let exported = reg.exports.get(&from).cloned().unwrap_or_default();
                 let matches: Vec<String> = reg
-                    .commands_in(&from)
+                    .members(&from)
                     .into_iter()
                     .filter(|c| crate::assoc::string_match(tail(c), &pat))
                     .filter(|c| {
@@ -1601,7 +1667,7 @@ fn run(
                     )));
                 }
                 let sources: Vec<String> = reg
-                    .commands_in(&from)
+                    .members(&from)
                     .into_iter()
                     .filter(|c| crate::assoc::string_match(tail(c), &pat))
                     .collect();

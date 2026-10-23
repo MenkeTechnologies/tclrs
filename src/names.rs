@@ -38,6 +38,7 @@ const TABLES: &[&[&str]] = &[
     crate::cmd_process::COMMANDS,
     crate::cmd_trace::COMMANDS,
     crate::cmd_prefix::COMMANDS,
+    crate::cmd_mathop::COMMANDS,
 ];
 
 /// Every command name the compiler accepts. Sorted and free of duplicates,
@@ -57,7 +58,10 @@ pub fn commands() -> Vec<&'static str> {
 /// only the running script knows. Both read `TABLES`, so neither can be the
 /// only one that knows about a command.
 pub fn is_command(name: &str) -> bool {
-    TABLES.iter().any(|t| t.contains(&name))
+    // The tables hold one spelling of each name; the operators of `tcl::mathop`
+    // are also commands under their fully-qualified `::tcl::mathop::` one,
+    // which is how a script computes them (`[list ::tcl::mathop::*] 3 4`).
+    TABLES.iter().any(|t| t.contains(&name)) || crate::cmd_mathop::operator(name).is_some()
 }
 
 /// One command: its name, the synopsis the compiler reports when the argument
@@ -458,6 +462,144 @@ pub const CORPUS: &[Entry] = &[
         name: "tailcall",
         synopsis: "tailcall command ?arg ...?",
         summary: "Replace the running procedure or lambda activation with a call to the command, which runs at the caller's level and whose value is the procedure's. A procedure of the same chunk is entered with the activation's own return address, so a tail-recursive loop uses constant space.",
+    },
+    // The `tcl::mathop` operators, in the byte order [`commands`] sorts them
+    // into. Each is also reachable as `::tcl::mathop::<op>`, and as the bare
+    // operator once `namespace import ::tcl::mathop::*` has run.
+    Entry {
+        name: "tcl::mathop::!",
+        synopsis: "tcl::mathop::! boolean",
+        summary: "Logical negation of exactly one boolean: 1 when it is false, 0 when it is true, as `expr`'s `!`.",
+    },
+    Entry {
+        name: "tcl::mathop::!=",
+        synopsis: "tcl::mathop::!= value value",
+        summary: "Whether exactly two values differ, compared as numbers when both are numbers and as strings otherwise, as `expr`'s `!=`.",
+    },
+    Entry {
+        name: "tcl::mathop::%",
+        synopsis: "tcl::mathop::% integer integer",
+        summary: "The remainder of exactly two integers, taking the divisor's sign, as `expr`'s `%`.",
+    },
+    Entry {
+        name: "tcl::mathop::&",
+        synopsis: "tcl::mathop::& ?integer ...?",
+        summary: "The bitwise AND of every integer given, folded from the left; -1 with none.",
+    },
+    Entry {
+        name: "tcl::mathop::*",
+        synopsis: "tcl::mathop::* ?value ...?",
+        summary: "The product of every number given, folded from the left; 1 with none.",
+    },
+    Entry {
+        name: "tcl::mathop::**",
+        synopsis: "tcl::mathop::** ?value ...?",
+        summary: "Exponentiation grouped from the right — `** 2 3 2` is 2 to the 9th; 1 with none, and a lone integer keeps its spelling as `expr {$x ** 1}` does.",
+    },
+    Entry {
+        name: "tcl::mathop::+",
+        synopsis: "tcl::mathop::+ ?value ...?",
+        summary: "The sum of every number given, folded from the left; 0 with none.",
+    },
+    Entry {
+        name: "tcl::mathop::-",
+        synopsis: "tcl::mathop::- value ?value ...?",
+        summary: "The first number less every one after it, or the negation of a single one. No argument is `wrong # args`.",
+    },
+    Entry {
+        name: "tcl::mathop::/",
+        synopsis: "tcl::mathop::/ value ?value ...?",
+        summary: "The first number divided by every one after it, with `expr`'s integer division, or 1.0 over a single one. No argument is `wrong # args`.",
+    },
+    Entry {
+        name: "tcl::mathop::<",
+        synopsis: "tcl::mathop::< ?value ...?",
+        summary: "Whether the values are in strictly increasing order, each pair compared as `expr`'s `<`; 1 with fewer than two. A pair that decides the answer stops the comparison.",
+    },
+    Entry {
+        name: "tcl::mathop::<<",
+        synopsis: "tcl::mathop::<< integer shift",
+        summary: "The integer shifted left by `shift` bits, growing past the machine word rather than wrapping, as `expr`'s `<<`.",
+    },
+    Entry {
+        name: "tcl::mathop::<=",
+        synopsis: "tcl::mathop::<= ?value ...?",
+        summary: "Whether the values are in non-decreasing order, each pair compared as `expr`'s `<=`; 1 with fewer than two.",
+    },
+    Entry {
+        name: "tcl::mathop::==",
+        synopsis: "tcl::mathop::== ?value ...?",
+        summary: "Whether every value equals the next, compared as `expr`'s `==`; 1 with fewer than two.",
+    },
+    Entry {
+        name: "tcl::mathop::>",
+        synopsis: "tcl::mathop::> ?value ...?",
+        summary: "Whether the values are in strictly decreasing order, each pair compared as `expr`'s `>`; 1 with fewer than two.",
+    },
+    Entry {
+        name: "tcl::mathop::>=",
+        synopsis: "tcl::mathop::>= ?value ...?",
+        summary: "Whether the values are in non-increasing order, each pair compared as `expr`'s `>=`; 1 with fewer than two.",
+    },
+    Entry {
+        name: "tcl::mathop::>>",
+        synopsis: "tcl::mathop::>> integer shift",
+        summary: "The integer shifted right arithmetically by `shift` bits, as `expr`'s `>>`.",
+    },
+    Entry {
+        name: "tcl::mathop::^",
+        synopsis: "tcl::mathop::^ ?integer ...?",
+        summary: "The bitwise XOR of every integer given, folded from the left; 0 with none.",
+    },
+    Entry {
+        name: "tcl::mathop::eq",
+        synopsis: "tcl::mathop::eq ?value ...?",
+        summary: "Whether every value is the same string as the next; 1 with fewer than two.",
+    },
+    Entry {
+        name: "tcl::mathop::ge",
+        synopsis: "tcl::mathop::ge ?value ...?",
+        summary: "Whether the values are in non-increasing string order; 1 with fewer than two.",
+    },
+    Entry {
+        name: "tcl::mathop::gt",
+        synopsis: "tcl::mathop::gt ?value ...?",
+        summary: "Whether the values are in strictly decreasing string order; 1 with fewer than two.",
+    },
+    Entry {
+        name: "tcl::mathop::in",
+        synopsis: "tcl::mathop::in value list",
+        summary: "Whether the value is an element of the list, compared as strings, as `expr`'s `in`.",
+    },
+    Entry {
+        name: "tcl::mathop::le",
+        synopsis: "tcl::mathop::le ?value ...?",
+        summary: "Whether the values are in non-decreasing string order; 1 with fewer than two.",
+    },
+    Entry {
+        name: "tcl::mathop::lt",
+        synopsis: "tcl::mathop::lt ?value ...?",
+        summary: "Whether the values are in strictly increasing string order; 1 with fewer than two.",
+    },
+    Entry {
+        name: "tcl::mathop::ne",
+        synopsis: "tcl::mathop::ne value value",
+        summary: "Whether exactly two values differ as strings, as `expr`'s `ne`.",
+    },
+    Entry {
+        name: "tcl::mathop::ni",
+        synopsis: "tcl::mathop::ni value list",
+        summary: "Whether the value is not an element of the list, compared as strings, as `expr`'s `ni`.",
+    },
+    Entry {
+        name: "tcl::mathop::|",
+        synopsis: "tcl::mathop::| ?integer ...?",
+        summary: "The bitwise OR of every integer given, folded from the left; 0 with none.",
+    },
+    Entry {
+        name: "tcl::mathop::~",
+        synopsis: "tcl::mathop::~ integer",
+        summary: "The bitwise complement of exactly one integer, as `expr`'s `~`.",
     },
     Entry {
         name: "tcl::prefix",

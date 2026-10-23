@@ -38,6 +38,8 @@ mod cmd_file_fs;
 /// `info` — what the interpreter knows about itself.
 pub mod cmd_info;
 pub mod cmd_list;
+/// `tcl::mathop` — the `expr` operators as commands.
+pub mod cmd_mathop;
 pub mod cmd_namespace;
 pub mod cmd_package;
 pub mod cmd_prefix;

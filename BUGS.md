@@ -535,6 +535,21 @@ approximated, and nothing is silently mis-run.
   lists and `level` are ops, because each is a question about the running
   program.
 
+- **`tcl::mathop`.** The twenty-seven `expr` operators as commands (`mathop(n)`),
+  with the four argument shapes of `generic/tclBasic.c`'s `mathOpCmds` table:
+  `+ * & | ^ **` answer their identity with no argument and fold any number
+  (`**` from the right); `- /` need one and negate or take one over a lone
+  argument; `< <= > >= == eq lt le gt ge` AND the operator over adjacent
+  pairs and stop at the pair that decides; `~ ! << >> % != ne in ni` take
+  exactly their count. Each pairwise step is the `expr` operation the operator
+  lowers to, so refusals, bignum promotion and double contagion are `expr`'s.
+  Reached as `tcl::mathop::+` or `::tcl::mathop::+`, through a computed name
+  or `{*}`, and as the bare operator after `namespace import ::tcl::mathop::*`
+  — the registry starts with `::tcl::mathop` exporting `*`, so `namespace
+  exists`, `namespace origin` and `namespace forget` answer for it
+  (`src/cmd_mathop.rs`, `tests/mathop.rs`). `namespace import` with no
+  pattern still lists nothing, for these as for every import.
+
 ## Not implemented
 
 - **`trace` fires where the compiler can route the access.** The registry is

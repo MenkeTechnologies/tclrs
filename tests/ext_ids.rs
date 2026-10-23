@@ -185,6 +185,11 @@ fn blocks() -> Vec<Block> {
                 ("PREFIX_LONGEST", tclrs::cmd_prefix::ext::LONGEST),
             ],
         ),
+        (
+            "MATHOP",
+            tclrs::cmd_mathop::ext::BASE,
+            vec![("MATHOP_APPLY", tclrs::cmd_mathop::ext::APPLY)],
+        ),
         ("PKG", ext::PKG_BASE, vec![("PACKAGE", ext::PACKAGE)]),
         // The math block is indexed by position in `expr_math`'s own table
         // rather than named here, so the block check below is the whole of
