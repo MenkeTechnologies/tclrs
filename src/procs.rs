@@ -1071,6 +1071,14 @@ impl Compiler {
             pairs.push((first, value));
             rest = tail;
         }
+        // `TclMergeReturnOptions` (`generic/tclResult.c`): `return -code return
+        // -level N` is `return -code ok -level N+1`, so `return -code return
+        // -level 0 x` is a plain `return x` and `return -code return x` returns
+        // from the caller too, each with code `ok` in its options.
+        if code == crate::runtime::TCL_RETURN {
+            level += 1;
+            code = crate::runtime::TCL_OK;
+        }
         let result = match rest {
             [] => None,
             [v] => Some(v),

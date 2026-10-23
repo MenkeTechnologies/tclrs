@@ -418,6 +418,11 @@ pub(crate) fn merge_return_options(pairs: &str, msg: String) -> Result<TclError,
             }
         };
     }
+    // `return -code return -level N` is `return -code ok -level N+1`.
+    if code == TCL_RETURN {
+        level += 1;
+        code = TCL_OK;
+    }
     let errorcode = get("-errorcode").map(str::to_string);
     if let Some(value) = &errorcode {
         if crate::list::split(value).is_err() {

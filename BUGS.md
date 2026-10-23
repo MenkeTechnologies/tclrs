@@ -31,7 +31,11 @@ approximated, and nothing is silently mis-run.
   ends the script, at a sourced file's own level it ends the file with its result,
   and inside an `eval` in a procedure it returns from the procedure. A bad
   `-code` or `-level` is raised when the `return` runs, with `TCL RESULT
-  ILLEGAL_CODE` or `ILLEGAL_LEVEL`. Compiled as a loop region
+  ILLEGAL_CODE` or `ILLEGAL_LEVEL`. `return -code return -level n` is `return -code ok -level
+  n+1`, as `TclMergeReturnOptions` rewrites it — written out, computed or merged
+  from `-options` — so `-level 0` is a plain `return` from the procedure and
+  the default level returns from its caller too (`tests/return_code_return.rs`).
+  Compiled as a loop region
   (`ext::LOOP_ENTER`) the driver in `src/runtime.rs` resumes at, alongside the
   `catch` regions; the direct jump a `break` in its own loop's body compiles to
   is unchanged, and so is the traced body between them.
