@@ -1383,7 +1383,7 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "class",
         synopsis: "info class subcommand class ?arg ...?",
-        summary: "Introspection on a TclOO class — its instances, methods, superclasses and mixins, selected by a second subcommand word. TclOO is not implemented here, so the whole family is refused by name.",
+        summary: "Introspection on a TclOO class — `superclasses`, `subclasses`, `instances`, `methods`, `mixins`, `filters`, `variables`, `constructor`, `destructor`, `definition`, `forward`, `methodtype` and `call` — answered from the object system in `src/oo.rs`, as TclOO's `::oo::InfoClass` ensemble answers it. `properties` and `definitionnamespace` are refused by name.",
     },
     Entry {
         name: "cmdcount",
@@ -1483,7 +1483,7 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "object",
         synopsis: "info object subcommand object ?arg ...?",
-        summary: "Introspection on a TclOO object — its class, methods, variables and mixins, selected by a second subcommand word. Refused with `info class`, because TclOO is not implemented.",
+        summary: "Introspection on a TclOO object — `class`, `isa`, `methods`, `mixins`, `filters`, `namespace`, `variables`, `vars`, `creationid`, `definition`, `forward`, `methodtype` and `call` — as TclOO's `::oo::InfoObject` ensemble answers it. `properties` is refused by name.",
     },
     Entry {
         name: "patchlevel",
@@ -1569,7 +1569,7 @@ const NAMESPACE_CORPUS: &[Entry] = &[
     Entry {
         name: "import",
         synopsis: "namespace import ?-force? ?pattern pattern...?",
-        summary: "Bring exported commands into this namespace under their tail names. A pattern that matches nothing is not an error.",
+        summary: "Bring exported commands into this namespace under their tail names. A pattern that matches nothing is not an error. With no pattern, list the simple names of the commands this namespace has imported.",
     },
     Entry {
         name: "inscope",

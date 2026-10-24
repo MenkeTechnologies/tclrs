@@ -265,6 +265,9 @@ impl Compiler {
             "sharedlibextension" => {
                 self.info_about(rest, SHAREDLIBEXTENSION, "info sharedlibextension")
             }
+            // TclOO plugs its two ensembles into `info` (`TclOOInitInfo`).
+            "object" => self.call_runtime_scoped("oo::InfoObject", rest),
+            "class" => self.call_runtime_scoped("oo::InfoClass", rest),
             // Present in the message above, absent here, and refused by name
             // rather than mis-answered.
             other => self.error(format!(
@@ -538,7 +541,6 @@ fn resolve(given: &str) -> Result<&'static str, String> {
 /// message says what is missing rather than that something is.
 fn why_refused(sub: &str) -> &'static str {
     match sub {
-        "class" | "object" => "TclOO is not implemented",
         "loaded" => "loadable extensions are not implemented",
         "cmdcount" | "cmdtype" | "errorstack" => "the interpreter does not keep it",
         _ => "not built yet",
@@ -819,6 +821,9 @@ pub(crate) fn startup_globals() -> std::collections::HashMap<String, Value> {
     globals.insert("tcl_patchLevel".to_string(), str_val(TCL_PATCHLEVEL));
     globals.insert("tcl_platform".to_string(), Value::Hash(platform));
     globals.insert("env".to_string(), Value::Hash(env));
+    // `InitFoundation` makes these constants of `::oo` (`generic/tclOO.c`).
+    globals.insert("oo::version".to_string(), str_val(crate::oo::TCLOO_VERSION));
+    globals.insert("oo::patchlevel".to_string(), str_val(crate::oo::TCLOO_PATCHLEVEL));
     globals
 }
 

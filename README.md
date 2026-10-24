@@ -393,9 +393,10 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Errors | `catch` (with a result variable and an options variable), `try` (`on`, `trap`, `finally`), `error`, `throw`, `return -options`; `-errorcode` for the errors builtins raise, and `-errorinfo`, `-errorstack`, `-errorline`, `$::errorInfo` and `$::errorCode` as the error leaves each command, procedure body and nested script, with `return -errorinfo` and `error`'s `errorInfo` argument; Tcl return codes across every boundary — a `break` or `continue` out of an `eval`, `uplevel` or `source` script reaches the loop, and one out of a procedure reaches its caller |
 | Coroutines | `coroutine`, `yield`, `yieldto`, `info coroutine` |
 | Namespaces | `namespace` — `eval`, `current`, `qualifiers`, `tail`, `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`, `import`, `forget`, `origin`, `which`, `upvar`, `ensemble exists` / `create` / `configure`, and calls through the ensemble command (`-map`, `-subcommands`, `-prefixes`); `variable`; `rename`; every built-in under its global spelling (`::puts`, `::string length`, `::tcl::prefix`), as a call and as a `proc` name |
+| Objects | TclOO: `oo::class`, `oo::object`, `oo::define`, `oo::objdefine`, `oo::copy`; constructors, destructors, methods, forwards, `export` / `unexport` / `private`, `superclass`, `mixin`, `filter` and `variable` with their slot operations, `deletemethod`, `renamemethod`; `self`, `my`, `next`, `nextto`; see [TclOO](#tcloo) |
 | The event loop | `after` — `ms`, `ms script`, `idle script`, `cancel`, `info`; `update`, `update idletasks`; `vwait` |
 | Scope | `uplevel`, `upvar`, `apply` |
-| Introspection | `info` — `args`, `body`, `commands`, `complete`, `coroutine`, `default`, `exists`, `functions`, `frame`, `globals`, `hostname`, `level`, `library`, `locals`, `nameofexecutable`, `patchlevel`, `procs`, `script`, `sharedlibextension`, `tclversion`, `vars` |
+| Introspection | `info` — `args`, `body`, `commands`, `complete`, `coroutine`, `default`, `exists`, `functions`, `frame`, `globals`, `hostname`, `level`, `library`, `locals`, `nameofexecutable`, `object`, `class`, `patchlevel`, `procs`, `script`, `sharedlibextension`, `tclversion`, `vars` |
 | Packages | `package` — `files`, `forget`, `ifneeded`, `names`, `prefer`, `present`, `provide`, `require`, `unknown`, `vcompare`, `versions`, `vsatisfies` |
 | Run-time evaluation | `eval`, `subst`, `source`, `tcl_findLibrary` |
 | Lists | `list`, `llength`, `lindex`, `lappend`, `lrange`, `lreverse`, `linsert`, `lreplace`, `lsearch`, `lsort`, `join`, `split`, `concat`, `lassign`, `lset`, `lpop`, `ledit`, `lrepeat`, `lremove`, `lseq`, `lmap` |
@@ -421,8 +422,8 @@ runs a hundred cases through `tclsh` and through this binary and requires the
 completion code and the result string to agree on every one.
 
 Two answers differ from a freshly started `tclsh`, and both are `init.tcl`'s
-doing rather than the command's: `package names` starts with `Tcl` and `tcl`
-only (the core, as `Tcl_Init` provides it; `TclOO`, `tcl::zlib` and the rest are
+doing rather than the command's: `package names` starts with `Tcl`, `tcl`, `TclOO` and
+`tcl::oo` only (the core, as `Tcl_Init` provides it; `tcl::zlib` and the rest are
 not present), and `package unknown` starts unset,
 because there is no `auto_path` to search. `package files` always answers the
 empty string for the same reason — nothing records which file provided a
@@ -717,6 +718,38 @@ change a resolution after it was made. At a script's top level a computed name
 or body is not refused: the command runs as the list its words make, where every
 word is written out.
 
+### TclOO
+
+`src/oo.rs` ports the object system of `generic/tclOO*.c`:
+
+```tcl
+oo::class create Counter {
+    variable count
+    constructor {{start 0}} { set count $start }
+    method incr {{by 1}} { incr count $by }
+}
+oo::class create Loud {
+    superclass Counter
+    method incr args { return "now [next {*}$args]" }
+}
+set c [Loud new 5]
+puts [$c incr]          ;# now 6
+puts [info object class $c]   ;# ::Loud
+$c destroy
+```
+
+An object is a command and a namespace (`::oo::Obj<n>`, numbered as tclsh
+numbers them). A call's chain is built the way `TclOOGetCallContext` builds it
+— filters, the object's mixins, its own methods, the class's mixins, then the
+class hierarchy — and `next` walks it. A method body is compiled once, on its
+first call, in a namespace that stands for "the running object's": its
+`variable`, `my variable` and the class's declared variables are mapped to the
+calling object's variables each time the body runs, so one compiled body
+serves every instance. What TclOO leaves out — class methods, properties, slots
+as objects, private variable name mangling — is listed in
+[`BUGS.md`](BUGS.md).
+
+
 ### `source` and `tcl_findLibrary`
 
 `source` reads a file and evaluates it through the same path `eval` takes, so it
@@ -860,7 +893,7 @@ value does. [`BUGS.md`](BUGS.md) is the ledger.
 | An ensemble with `-parameters` or `-unknown`; `variable` naming a qualified name inside a procedure | `bad variable name "a::b": can't create a local variable with a namespace separator` |
 | `source -encoding` for anything but UTF-8 | `"source -encoding" is only supported for utf-8: this frontend reads a script as UTF-8` |
 | `namespace eval` inside a procedure body, where an unqualified name in its body would take a frame slot rather than the namespace's variable | `"namespace eval" inside a procedure is not supported yet: an unqualified name in its body would take a frame slot rather than the namespace's variable` |
-| `info` subcommands that need machinery this frontend has none of: `cmdcount`, `cmdtype`, `class`, `object`, `consts`, `constant`, `loaded` | `info cmdcount is not supported yet` |
+| `info` subcommands that need machinery this frontend has none of: `cmdcount`, `cmdtype`, `consts`, `constant`, `loaded` | `info cmdcount is not supported yet` |
 | `info library` — a raise rather than a refusal, carrying tclsh's own message for an interpreter with no script library, which this one permanently is | `no library has been specified for Tcl` |
 | A lambda naming an existing namespace other than `::`, written out or computed (one that does not exist is tclsh's `namespace "::ns" not found`) | `the namespace "::ns" of a lambda is not supported yet: this frontend has only "::"` |
 | `vwait` on more than one variable, and its `-timeout` / `-readable` / `-writable` / `-all` options | `"vwait" takes at most one variable name in this phase` |

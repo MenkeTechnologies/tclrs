@@ -140,6 +140,11 @@ fn registry() -> std::sync::MutexGuard<'static, Registry> {
         for name in ["Tcl", "tcl"] {
             reg.find_or_create(name).version = Some(crate::cmd_info::TCL_PATCHLEVEL.to_string());
         }
+        // TclOO is part of the core and provides itself as it initialises
+        // (`TclOOInit`, `generic/tclOO.c`).
+        for name in ["TclOO", "tcl::oo"] {
+            reg.find_or_create(name).version = Some(crate::oo::TCLOO_PATCHLEVEL.to_string());
+        }
     });
     REGISTRY.lock().expect("package registry poisoned")
 }

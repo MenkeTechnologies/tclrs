@@ -71,6 +71,8 @@ pub mod list;
 mod list_spans;
 pub mod lsp;
 pub mod names;
+/// TclOO: `oo::class`, `oo::define`, `self`, `my`, `next` and the rest.
+pub(crate) mod oo;
 pub mod parser;
 pub mod procs;
 /// Tcl's regular-expression character tables, generated. See `scripts/gen_regc_locale.pl`.

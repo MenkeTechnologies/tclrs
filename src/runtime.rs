@@ -620,6 +620,9 @@ pub(crate) struct State {
     /// "tclAfter", …)`, `generic/tclTimer.c:801-807`); see
     /// [`crate::cmd_after`].
     pub(crate) afters: crate::cmd_after::Afters,
+    /// The object system: every TclOO object and class, and the method and
+    /// definition contexts in progress ([`crate::oo`]).
+    pub(crate) oo: crate::oo::Oo,
 }
 
 /// One frame projection in progress: what a nested script running against a
@@ -679,7 +682,11 @@ impl Interp {
                 traces: crate::cmd_trace::Traces::default(),
                 globals: crate::cmd_info::startup_globals(),
                 commands: HashMap::new(),
-                ns: crate::cmd_namespace::Registry::with_builtins(),
+                ns: {
+                    let mut reg = crate::cmd_namespace::Registry::with_builtins();
+                    crate::oo::install(&mut reg);
+                    reg
+                },
                 running: Vec::new(),
                 aliases: HashMap::new(),
                 projections: Vec::new(),
@@ -689,6 +696,7 @@ impl Interp {
                 limit: DEFAULT_RECURSION_LIMIT,
                 contexts: Vec::new(),
                 afters: crate::cmd_after::Afters::default(),
+                oo: crate::oo::Oo::default(),
             })),
         }
     }
@@ -1099,9 +1107,9 @@ fn seed(chunk: &Chunk, shared: &Shared) -> Vec<Value> {
                 // slot can be named. Outside a projection the two paths reach
                 // the same table.
                 let value = if crate::cmd_namespace::is_namespaced(name) {
-                    state.root_global(key)
+                    state.root_global(&key)
                 } else {
-                    state.globals.get(key)
+                    state.globals.get(key.as_ref())
                 };
                 value.cloned().unwrap_or(Value::Undef)
             })
@@ -1157,9 +1165,15 @@ fn write_back(
         // The write of a namespace variable goes past whatever projection is in
         // effect, to the same table [`seed`] read it from.
         let past = crate::cmd_namespace::is_namespaced(name);
-        let aliased = (!state.aliases.is_empty() || name.starts_with("::"))
-            .then(|| state.alias_of(name).to_string());
+        let aliased = (!state.aliases.is_empty()
+            || name.starts_with("::")
+            || name.starts_with(crate::oo::METHOD_NS_KEY))
+        .then(|| state.alias_of(name).into_owned());
         let name: &str = aliased.as_deref().unwrap_or(name);
+        // A method's variable whose object is gone has nowhere to go.
+        if name.starts_with('\u{0}') {
+            continue;
+        }
         let value = globals.get(slot).unwrap_or(&Value::Undef);
         let watched = traced.at(slot);
         if past && state.projected() {
@@ -1277,9 +1291,9 @@ pub(crate) fn read_global(interp: &Shared, name: &str) -> Option<Value> {
     // answer for it — the same rule [`seed`] applies to a chunk's names. Outside
     // one both reach the same table.
     if crate::cmd_namespace::is_namespaced(name) {
-        return state.root_global(key).cloned();
+        return state.root_global(&key).cloned();
     }
-    state.globals.get(key).cloned()
+    state.globals.get(key.as_ref()).cloned()
 }
 
 impl State {
@@ -1287,14 +1301,19 @@ impl State {
     /// every alias this frontend makes — a chain would need `upvar` to an alias,
     /// which registers the target it resolved to — and a bounded walk is what
     /// keeps a cycle from being a hang.
-    fn alias_of<'a>(&'a self, name: &'a str) -> &'a str {
+    fn alias_of<'a>(&'a self, name: &'a str) -> Cow<'a, str> {
         // A chunk spells an explicitly `::`-qualified name with its prefix, so
         // that a frame projection can tell `$::g` from `$g`
         // (`crate::cmd_namespace::chunk_key`). The variable table knows only the
         // one variable, under the prefixless key.
         let mut at = crate::cmd_namespace::store_key(name);
+        // A method body's variable of `crate::oo::METHOD_NS` is the running
+        // object's: one compiled name serves every instance.
+        if let Some(rest) = at.strip_prefix(crate::oo::METHOD_NS_KEY) {
+            return Cow::Owned(self.oo.method_var_key(rest));
+        }
         if self.aliases.is_empty() {
-            return at;
+            return Cow::Borrowed(at);
         }
         for _ in 0..8 {
             match self.aliases.get(at) {
@@ -1302,7 +1321,7 @@ impl State {
                 _ => break,
             }
         }
-        at
+        Cow::Borrowed(at)
     }
 }
 
@@ -1956,6 +1975,10 @@ impl Hooks {
                     // an `upvar` alias, and is refused as the script wrote it.
                     let name =
                         slot_read_name(read.chunk, read.ip).unwrap_or_else(|| name.to_string());
+                    // A method body reaches its object's variables under a
+                    // namespace no script can name; the script wrote the bare
+                    // name (`crate::oo::METHOD_NS`).
+                    let name = name.strip_prefix(crate::oo::METHOD_NS_KEY).unwrap_or(&name);
                     Err(format!("can't read \"{name}\": no such variable"))
                 }
                 // fusevm builds this read's `UndefRead` with `name: None` for a
@@ -2573,8 +2596,20 @@ fn info_names_op(interp: &Shared, vm: &mut VM, which: u8) -> Result<(), TclError
     let qualified = filter.as_deref().is_some_and(|p| p.contains("::"));
     if let Some(p) = filter.as_deref() {
         if qualified {
+            // `TclGetNamespaceForQualName` splits the pattern: the namespace is
+            // named exactly and only the tail is a pattern, so `::a::*` lists
+            // the commands of `::a` and not those of `::a::b`.
             let p = absolute(p);
-            names.retain(|name| crate::list::glob_match(&p, &absolute(name)));
+            let ns = match crate::cmd_namespace::qualifiers(&p) {
+                "" => "::".to_string(),
+                q => q.to_string(),
+            };
+            let tail = crate::cmd_namespace::tail(&p).to_string();
+            names.retain(|name| {
+                let name = absolute(name);
+                crate::cmd_namespace::parent_of(&name) == ns
+                    && crate::list::glob_match(&tail, crate::cmd_namespace::tail(&name))
+            });
         } else {
             names.retain(|name| crate::list::glob_match(p, name));
         }
@@ -3685,7 +3720,21 @@ impl Machine {
     /// the procedure's result instead of ending the procedure (measured against
     /// tclsh 9.0.4, which prints the dictionary and carries on).
     fn spend_call_level(&mut self, e: &mut TclError) -> Option<bool> {
+        let entered = self.entered && self.current == 0;
         let vm = self.vm(self.current);
+        // The activation a run *entered* — a procedure called from another
+        // chunk ([`call_in_chunk`]) — is the boundary between the two VMs, and
+        // `call_in_chunk` spends its level. Spending it here as well turned
+        // `return -code break` in such a procedure into a `break` arriving at
+        // the boundary as itself, which is an error there: `invoked "break"
+        // outside of a loop` where tclsh breaks the caller's loop.
+        if entered {
+            let innermost = vm.frames.iter().rposition(|f| f.entry_ip.is_some());
+            let outermost = vm.frames.iter().position(|f| f.entry_ip.is_some());
+            if innermost.is_some() && innermost == outermost {
+                return None;
+            }
+        }
         // Frames that enter no subroutine — the base frame, an `Op::PushFrame`
         // scope frame — are not Tcl levels, so they are dropped without one
         // being spent. `Frame::entry_ip` is what tells the two apart, as it does

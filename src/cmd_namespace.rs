@@ -417,7 +417,8 @@ impl Registry {
     pub fn with_builtins() -> Self {
         let mut reg = Registry::default();
         reg.ensure(MATHOP_NS);
-        reg.exports.insert(MATHOP_NS.to_string(), vec!["*".to_string()]);
+        reg.exports
+            .insert(MATHOP_NS.to_string(), vec!["*".to_string()]);
         reg
     }
 
@@ -459,6 +460,34 @@ impl Registry {
 
     pub fn command(&self, fqn: &str) -> Option<&Entry> {
         self.commands.get(fqn)
+    }
+
+    /// Take a command away, as deleting it does — an object's, when the object
+    /// is destroyed.
+    pub(crate) fn forget_command(&mut self, fqn: &str) {
+        if self.commands.remove(fqn).is_some() {
+            self.gone.insert(fqn.to_string());
+        }
+    }
+
+    /// Take a namespace away with everything in it, as `namespace delete`
+    /// does to the registry.
+    pub(crate) fn forget_namespace(&mut self, fqn: &str) {
+        let prefix = format!("{}::", fqn.trim_end_matches(':'));
+        self.namespaces
+            .retain(|ns| ns != fqn && !ns.starts_with(&prefix));
+        let doomed: Vec<String> = self
+            .commands
+            .keys()
+            .filter(|c| c.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for c in doomed {
+            self.commands.remove(&c);
+            self.gone.insert(c);
+        }
+        self.exports.remove(fqn);
+        self.ensembles.retain(|_, e| e.ns != fqn);
     }
 
     /// Every command the registry holds and `rename` or `namespace delete` has not
@@ -580,6 +609,11 @@ impl Compiler {
             "current" => {
                 if !rest.is_empty() {
                     return self.error("wrong # args: should be \"namespace current\"");
+                }
+                // A method body's namespace is its object's, known only when
+                // the method runs.
+                if self.ns.current == crate::oo::METHOD_NS {
+                    return self.call_runtime(crate::oo::CURRENT_NS_CMD, &[]);
                 }
                 let here = self.ns.current.clone();
                 self.push_str(&here);
@@ -1300,8 +1334,38 @@ pub(crate) fn extension(
         return Ok(());
     }
     let sub = to_tcl_string(&values[0]);
-    let here = to_tcl_string(&values[1]);
+    // A method body is compiled in a namespace standing for its object's.
+    let here = crate::oo::current_ns(interp, &to_tcl_string(&values[1]));
     let args: Vec<String> = values[2..].iter().map(to_tcl_string).collect();
+    // Deleting an object's namespace destroys the object, which runs its
+    // destructor — so that too is done before the registry is locked.
+    let args: Vec<String> = if sub == "delete" {
+        let mut rest = Vec::with_capacity(args.len());
+        for name in args {
+            if !crate::oo::namespace_deleted(interp, vm, &resolve(&here, &name)) {
+                rest.push(name);
+            }
+        }
+        rest
+    } else {
+        args
+    };
+    // `rename obj {}` destroys the object, destructor and all, which runs
+    // scripts — so it is done before the registry is locked.
+    if sub == "\u{0}rename" && args.len() == 2 && args[1].is_empty() {
+        let mut old = resolve(&here, &args[0]);
+        let state = interp.lock().expect("interpreter lock");
+        if !crate::oo::is_object(&state, &old) && !args[0].contains("::") {
+            old = resolve("::", &args[0]);
+        }
+        let is_object = crate::oo::is_object(&state, &old);
+        drop(state);
+        if is_object {
+            crate::oo::rename_away(interp, vm, &old);
+            vm.push(Value::Str(std::sync::Arc::new(String::new())));
+            return Ok(());
+        }
+    }
     // The running chunk's variables live in its slot vector until it ends, so a
     // query that reads or writes one — `namespace which -variable`, and the
     // nested script `namespace inscope` runs — has to see them written back
@@ -1376,7 +1440,12 @@ fn rename(
     here: &str,
     args: &[String],
 ) -> Result<String, TclError> {
-    let old = resolve(here, &args[0]);
+    // `Tcl_FindCommand`: an unqualified name not in the current namespace is
+    // the global namespace's.
+    let mut old = resolve(here, &args[0]);
+    if !state.ns.commands.contains_key(&old) && !args[0].contains("::") {
+        old = resolve("::", &args[0]);
+    }
     // `TclRenameCommand` (`generic/tclBasic.c`): the old command is found first,
     // an empty new name deletes it, and the destination is checked *before* the
     // old entry is touched — so `rename f f` is `command already exists` and
@@ -1456,7 +1525,11 @@ fn run(
     // registry, so it is answered while both halves of the interpreter are
     // reachable rather than through the registry alone.
     if sub == "\u{0}rename" {
-        let (old, new) = (resolve(here, &args[0]), args[1].clone());
+        let new = args[1].clone();
+        let mut old = resolve(here, &args[0]);
+        if !state.ns.commands.contains_key(&old) && !args[0].contains("::") {
+            old = resolve("::", &args[0]);
+        }
         let done = rename(&mut state, here, args)?;
         let op = if new.is_empty() { "delete" } else { "rename" };
         let new = if new.is_empty() {
@@ -1464,17 +1537,25 @@ fn run(
         } else {
             resolve(here, &new)
         };
+        if !new.is_empty() {
+            crate::oo::renamed(&mut state, &old, &new);
+        }
         crate::cmd_trace::queue_command_events(&mut state.traces, &old, &new, op);
         return Ok(done);
+    }
+    // A `proc` inside a method body is a command of the object's namespace.
+    if sub == "\u{0}define" {
+        let name = state
+            .oo
+            .method_command(&args[0])
+            .unwrap_or_else(|| args[0].clone());
+        state.ns.define(&name);
+        return Ok(String::new());
     }
     let reg = &mut state.ns;
     match sub {
         "\u{0}create" => {
             reg.ensure(&args[0]);
-            Ok(String::new())
-        }
-        "\u{0}define" => {
-            reg.define(&args[0]);
             Ok(String::new())
         }
         "qualifiers" => Ok(qualifiers(&args[0]).to_string()),

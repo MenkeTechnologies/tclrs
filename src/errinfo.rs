@@ -219,6 +219,8 @@ pub(crate) enum Ctx {
     Proc(String),
     /// A lambda's body, named by the lambda's text.
     Lambda(String),
+    /// A TclOO method body, named by its context: `class "::C" method "m"`.
+    Method(String),
     /// The outermost command of a script a command ran as a nested evaluation;
     /// which line says so depends on that command, and is filled in by the
     /// machine that runs it ([`ErrInfo::resolve`]).
@@ -418,6 +420,7 @@ impl ErrInfo {
                 }
                 Ctx::Proc(name) => Some(format!("(procedure \"{name}\" line {})", e.line)),
                 Ctx::Lambda(text) => Some(format!("(lambda term \"{text}\" line {})", e.line)),
+                Ctx::Method(text) => Some(format!("({text} line {})", e.line)),
                 Ctx::Done { line, .. } => line.clone(),
                 Ctx::None | Ctx::Pending => None,
             };
@@ -447,7 +450,7 @@ impl ErrInfo {
                     }
                 }
                 Ctx::Body(_) => items.extend(["UP".to_string(), "1".to_string()]),
-                Ctx::Proc(_) | Ctx::Lambda(_) => {
+                Ctx::Proc(_) | Ctx::Lambda(_) | Ctx::Method(_) => {
                     if let Some(call) = call {
                         items.extend(["CALL".to_string(), call]);
                     }
@@ -558,6 +561,11 @@ pub(crate) fn chain(vm: &VM, chunk: &Chunk, failing: usize, started_inside: bool
             continue;
         };
         let ending = match proc_name(entry) {
+            // A TclOO method body: its name carries the context line.
+            Some(name) if name.contains(crate::oo::METHOD_PROC_PREFIX) => {
+                let at = name.find(crate::oo::METHOD_PROC_PREFIX).expect("checked");
+                Ctx::Method(name[at + crate::oo::METHOD_PROC_PREFIX.len()..].to_string())
+            }
             Some(name) if name.starts_with('\u{0}') => LAMBDAS
                 .with(|l| l.borrow().last().cloned())
                 .map_or(Ctx::None, Ctx::Lambda),

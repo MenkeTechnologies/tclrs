@@ -163,7 +163,7 @@
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">158/169</div>
+            <div class="stat-val">160/169</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -1263,7 +1263,7 @@
 
       <section class="tutorial-section" id="ch-info">
         <h2>The <code>info</code> ensemble</h2>
-        <p class="chapter-meta">29 subcommands recognised &middot; 23 implemented &middot; 6 refused</p>
+        <p class="chapter-meta">29 subcommands recognised &middot; 25 implemented &middot; 4 refused</p>
         <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
         <article class="doc-entry" id="doc-info-args">
           <h3><a class="doc-anchor" href="#doc-info-args">#</a> <code>info args</code></h3>
@@ -1281,8 +1281,7 @@
           <h3><a class="doc-anchor" href="#doc-info-class">#</a> <code>info class</code></h3>
           <pre><code class="lang-tcl">info class subcommand class ?arg ...?
 </code></pre>
-          <p>Introspection on a TclOO class — its instances, methods, superclasses and mixins, selected by a second subcommand word. TclOO is not implemented here, so the whole family is refused by name.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info class is not supported yet: TclOO is not implemented</code></p>
+          <p>Introspection on a TclOO class — <code>superclasses</code>, <code>subclasses</code>, <code>instances</code>, <code>methods</code>, <code>mixins</code>, <code>filters</code>, <code>variables</code>, <code>constructor</code>, <code>destructor</code>, <code>definition</code>, <code>forward</code>, <code>methodtype</code> and <code>call</code> — answered from the object system in <code>src/oo.rs</code>, as TclOO's <code>::oo::InfoClass</code> ensemble answers it. <code>properties</code> and <code>definitionnamespace</code> are refused by name.</p>
         </article>
         <article class="doc-entry" id="doc-info-cmdcount">
           <h3><a class="doc-anchor" href="#doc-info-cmdcount">#</a> <code>info cmdcount</code></h3>
@@ -1406,8 +1405,7 @@
           <h3><a class="doc-anchor" href="#doc-info-object">#</a> <code>info object</code></h3>
           <pre><code class="lang-tcl">info object subcommand object ?arg ...?
 </code></pre>
-          <p>Introspection on a TclOO object — its class, methods, variables and mixins, selected by a second subcommand word. Refused with <code>info class</code>, because TclOO is not implemented.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info object is not supported yet: TclOO is not implemented</code></p>
+          <p>Introspection on a TclOO object — <code>class</code>, <code>isa</code>, <code>methods</code>, <code>mixins</code>, <code>filters</code>, <code>namespace</code>, <code>variables</code>, <code>vars</code>, <code>creationid</code>, <code>definition</code>, <code>forward</code>, <code>methodtype</code> and <code>call</code> — as TclOO's <code>::oo::InfoObject</code> ensemble answers it. <code>properties</code> is refused by name.</p>
         </article>
         <article class="doc-entry" id="doc-info-patchlevel">
           <h3><a class="doc-anchor" href="#doc-info-patchlevel">#</a> <code>info patchlevel</code></h3>

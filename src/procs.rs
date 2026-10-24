@@ -267,6 +267,14 @@ pub(crate) fn define_op(interp: &Shared, vm: &mut VM) -> Result<(), TclError> {
     let entry = vm.pop();
     let spec = to_tcl_string(&vm.pop());
     let name = to_tcl_string(&vm.pop());
+    // A `proc` inside a method body defines a command of the object's
+    // namespace, which the body's own namespace stands for.
+    let name = interp
+        .lock()
+        .expect("interpreter lock")
+        .oo
+        .method_command(&name)
+        .unwrap_or(name);
     let entry = match entry {
         Value::Int(n) if n >= 0 && (n as usize) < vm.chunk.ops.len() => n as usize,
         other => {
@@ -319,8 +327,91 @@ pub(crate) fn call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(), TclE
         Some(Value::Int(n)) => *n as usize,
         _ => 0,
     };
-    let name = to_tcl_string(&values[1]);
-    invoke(interp, vm, &name, &values[2..], line)
+    let written = to_tcl_string(&values[1]);
+    // A call written inside a namespace carries the namespace in front of the
+    // name (`crate::compiler::Compiler::call_runtime_scoped`), because the
+    // name resolves there first: `TclGetNamespaceForQualName`'s two steps.
+    let (ns, name) = match written.split_once(crate::oo::NS_MARK) {
+        Some((ns, name)) => (Some(crate::oo::current_ns(interp, ns)), name),
+        None => (None, written.as_str()),
+    };
+    let args = &values[2..];
+    // A call a method body's compiler resolved to a procedure of the body's
+    // namespace reaches the one the body defined in its object's namespace.
+    let mapped = if name.contains(crate::oo::METHOD_NS_KEY) {
+        interp
+            .lock()
+            .expect("interpreter lock")
+            .oo
+            .method_command(name)
+    } else {
+        None
+    };
+    let name = mapped.as_deref().unwrap_or(name);
+    if let Some(ns) = ns
+        .as_deref()
+        .filter(|ns| *ns != "::" && !name.starts_with("::"))
+    {
+        let scoped = format!("{ns}::{name}");
+        if let Some(p) = defined_proc(interp, &scoped) {
+            return dispatch(interp, vm, name, args, line, Some(p));
+        }
+    }
+    let defined = defined_proc(interp, name);
+    if defined.is_none() {
+        // An object's errors are raised while it runs, so like every other
+        // run-time failure they carry no line.
+        if let Some(outcome) = crate::oo::try_dispatch(interp, vm, name, ns.as_deref(), args) {
+            vm.push(outcome?);
+            return Ok(());
+        }
+    }
+    dispatch(interp, vm, name, args, line, defined)
+}
+
+/// The value of the procedure `p` called with `actuals` — one value per formal
+/// parameter, as [`actuals`] arranges them — run to its end before this
+/// returns, on a VM of its own over the chunk the body was compiled into.
+pub(crate) fn call_compiled(
+    interp: &Shared,
+    p: &RuntimeProc,
+    actuals: Vec<Value>,
+) -> Result<Value, TclError> {
+    crate::runtime::call_in_chunk(interp, &p.chunk, p.entry, actuals)
+}
+
+/// Run the command `words` spells and answer its value, synchronously: an
+/// object, a procedure, a built-in command or a foreign one. `ns` is the
+/// namespace the command name resolves from first.
+pub(crate) fn call_words_sync(
+    interp: &Shared,
+    vm: &mut VM,
+    words: &[Value],
+    ns: Option<&str>,
+) -> Result<Value, TclError> {
+    let Some((first, args)) = words.split_first() else {
+        return Ok(Value::Str(Arc::new(String::new())));
+    };
+    let name = to_tcl_string(first);
+    if let Some(outcome) = crate::oo::try_dispatch(interp, vm, &name, ns, args) {
+        return outcome;
+    }
+    match defined_proc(interp, &name) {
+        Some(p) => {
+            let actuals = actuals(&name, &p.sig, args).map_err(TclError::plain)?;
+            crate::runtime::with_written_back(interp, vm, |interp| {
+                call_compiled(interp, &p, actuals)
+            })
+        }
+        None if crate::names::is_command(&name) => {
+            as_script(interp, vm, words, None)?;
+            Ok(vm.pop())
+        }
+        None => {
+            foreign(interp, vm, &name, args).map_err(TclError::plain)?;
+            Ok(vm.pop())
+        }
+    }
 }
 
 /// Call the command `name` with `args`, resolving it in the run-time table and
@@ -408,7 +499,13 @@ fn dispatch(
         // arm above it is an ordinary procedure call, which cannot do that and
         // should not pay for it. See `crate::runtime::sync_out`; when nothing
         // is traced each side is one atomic load.
-        None => foreign(interp, vm, name, args).map_err(here),
+        None => {
+            if let Some(outcome) = crate::oo::try_dispatch(interp, vm, name, None, args) {
+                vm.push(outcome?);
+                return Ok(());
+            }
+            foreign(interp, vm, name, args).map_err(here)
+        }
     }
 }
 
@@ -453,7 +550,7 @@ fn enter(vm: &mut VM, name: &str, p: &RuntimeProc, args: &[Value]) -> Result<(),
 /// the run-time table knows, and it is one function rather than one per entry path
 /// so that a jump into the body and a run of the body in another chunk cannot
 /// disagree about what the arguments are.
-fn actuals(name: &str, sig: &Signature, args: &[Value]) -> Result<Vec<Value>, String> {
+pub(crate) fn actuals(name: &str, sig: &Signature, args: &[Value]) -> Result<Vec<Value>, String> {
     let fixed = sig.fixed();
     if args.len() < sig.required || (!sig.variadic && args.len() > fixed) {
         return Err(format!("wrong # args: should be \"{}\"", sig.usage(name)));
@@ -619,6 +716,10 @@ pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(
     // The body's `global`/`variable` declarations, which a builtin reached
     // here needs in order to run against the procedure's frame.
     let declared = to_tcl_string(&values[1]);
+    let (ns, declared) = match declared.split_once(crate::oo::NS_MARK) {
+        Some((ns, rest)) => (Some(crate::oo::current_ns(interp, ns)), rest.to_string()),
+        None => (None, declared),
+    };
     let at = located(vm, line);
     let here = move |msg: String| TclError {
         msg,
@@ -677,6 +778,12 @@ pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(
             errorcode: e.errorcode.clone(),
             ..here(e.msg)
         });
+    }
+    if defined.is_none() {
+        if let Some(outcome) = crate::oo::try_dispatch(interp, vm, &name, ns.as_deref(), args) {
+            vm.push(outcome?);
+            return Ok(());
+        }
     }
     dispatch(interp, vm, &name, args, line, defined)
 }
@@ -926,6 +1033,22 @@ impl Compiler {
         Ok(())
     }
 
+    /// [`Compiler::call_runtime`] for a name no module claims, written inside
+    /// a namespace: the namespace travels in front of the name, so that the
+    /// run-time lookup can try the namespace's command before the global one
+    /// and an object created by the call is named from there.
+    pub(crate) fn call_runtime_scoped(
+        &mut self,
+        name: &str,
+        args: &[Word],
+    ) -> Result<(), CompileError> {
+        if self.ns.at_global() || name.starts_with("::") {
+            return self.call_runtime(name, args);
+        }
+        let scoped = format!("{}{}{name}", self.ns.current, crate::oo::NS_MARK);
+        self.call_runtime(&scoped, args)
+    }
+
     /// A command with at least one `{*}` word (rule 5 of the dodekalogue).
     ///
     /// The whole command is handed to run time: the line, then every word as a
@@ -946,6 +1069,13 @@ impl Compiler {
         // The body's declarations, for a builtin this call turns out to reach:
         // it runs against the procedure's frame. Empty at a script's top level.
         let declared = self.declared_globals().unwrap_or_default();
+        // And the namespace the command was written in, in front, when it is
+        // not the global one: the name it computes resolves there first.
+        let declared = if self.ns.at_global() {
+            declared
+        } else {
+            format!("{}{}{declared}", self.ns.current, crate::oo::NS_MARK)
+        };
         self.push_str(&declared);
         for w in words {
             self.emit(Op::LoadInt(i64::from(w.expand)), 1);

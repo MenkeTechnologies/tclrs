@@ -2661,6 +2661,31 @@ impl Compiler {
                 crate::cmd_mathop::compile(self, name, name, args)
             }
             // ── end of the binary ensemble ───────────────────────────────
+            // ── TclOO ────────────────────────────────────────────────────
+            // `::oo::define` and `::oo::objdefine` hold a `variable` command
+            // of their own, which a definition script reaches before the
+            // built-in one (`TclGetNamespaceForQualName`).
+            "variable"
+                if self.ns.current == "::oo::define" || self.ns.current == "::oo::objdefine" =>
+            {
+                self.call_runtime_scoped("variable", args)
+            }
+            // `my variable a b` in a method body links the locals to the
+            // object's variables — what `variable a b` does there, since the
+            // body's namespace stands for the object's (`crate::oo`).
+            "my" if self.ns.current == crate::oo::METHOD_NS
+                && args.first().and_then(Word::as_literal) == Some("variable")
+                && args[1..].iter().all(|w| w.as_literal().is_some()) =>
+            {
+                // One declaration per name: `variable a b` would assign.
+                self.push_empty();
+                for name in &args[1..] {
+                    self.emit(Op::Pop, -1);
+                    self.cmd_variable(std::slice::from_ref(name))?;
+                }
+                Ok(())
+            }
+            // ── end of TclOO ─────────────────────────────────────────────
             // ── namespaces, `rename` and `source` ────────────────────────
             // One block, so that the module owning them merges as one hunk.
             // It sits here — after every builtin, before the procedures —
@@ -2749,7 +2774,9 @@ impl Compiler {
             // when the script defines no `parray` of its own (the procedure arms
             // above win) and every word is written out.
             "parray" if args.iter().all(|w| w.as_literal().is_some()) => self.cmd_parray(args),
-            other if !crate::cmd_list::COMMANDS.contains(&other) => self.call_runtime(other, args),
+            other if !crate::cmd_list::COMMANDS.contains(&other) => {
+                self.call_runtime_scoped(other, args)
+            }
             // The list commands own the tail of the dispatch. Reached by name
             // rather than by trying them, so that `llength` with three arguments
             // stays a `wrong # args` on `llength` instead of becoming a lookup

@@ -86,6 +86,48 @@ approximated, and nothing is silently mis-run.
   nothing runs nothing and answers the empty string, as tclsh does. Only a command
   that has a `{*}` pays anything. Compared against tclsh in
   `tests/expand_differential.rs`.
+- **TclOO.** `oo::object`, `oo::class`, `oo::define`, `oo::objdefine`,
+  `oo::copy`, `self`, `my`, `next`, `nextto`, `info object` and `info class`
+  (`src/oo.rs`, a port of `generic/tclOO*.c`). An object is a command and a
+  namespace, `::oo::Obj<n>` numbered as tclsh 9.1 numbers them, registered with
+  the namespace registry so `info commands`, `namespace which` and `namespace
+  exists` see it. Call chains are `TclOOGetCallContext`'s, without its caches:
+  filters (object, class and mixed-in), then the object's mixins, its own
+  methods, the class's mixins and the class hierarchy, a method that appears
+  twice kept at its later position — and `unknown` when nothing implements the
+  name. Exported, unexported and TIP 500 `private` methods; constructors and
+  destructors with `next` through them; forwards, whose `wrong # args` names
+  the words the caller wrote; the `superclass`, `mixin`, `filter` and
+  `variable` slots with `-append`, `-appendifnew`, `-clear`, `-prepend`,
+  `-remove` and `-set`; `deletemethod`, `renamemethod`, `export`, `unexport`,
+  `self`, `private`, `initialise` and `objdefine … class`. Destroying an object
+  runs its destructors once and then takes everything that depends on it:
+  the classes a class is mixed into, its subclasses and its instances (last first, as
+  `TclOODeleteDescendants` does) and the objects whose commands live in its
+  namespace; `rename obj {}` and `namespace delete` of the object's namespace
+  destroy it too, and a constructor that fails runs the destructor. `errorInfo`
+  carries `(class "::C" method "m" line N)` and `(in definition script for
+  class "::C" line N)` where tclsh's does. Pinned against tclsh 9.1 in
+  `tests/tcloo.rs`; `oo.test` and `ooNext2.test` from the official suite run
+  through `conformance/run.sh`.
+
+  A method body is compiled once, on its first call, as a procedure of a
+  namespace no script can name that stands for "the running object's"; its
+  `variable`, `my variable` and the class's declared variables are variables
+  of that namespace, which the interpreter maps to the calling object's each
+  time the body's chunk is entered and left (`State::alias_of`). So one body
+  serves every instance, `namespace current` inside it is the object's
+  namespace, and a `proc` it defines is a command of the object's namespace.
+
+  Three fixes outside the object system came with it, each measured against
+  tclsh 9.1: `return -code break` (or `continue`) from a procedure defined in
+  another chunk — a sourced file, an `eval` — breaks the caller's loop, where
+  the level was spent twice and it became `invoked "break" outside of a loop`;
+  `info commands ::a::*` and `info vars ::a::*` match the pattern's tail in
+  `::a` only, where `*` crossed into `::a::b`; and `rename` finds an
+  unqualified name in the global namespace when the current one has no such
+  command, as `Tcl_FindCommand` does.
+
 - **Namespaces.** `namespace` — `eval`, `current`, `qualifiers`, `tail`,
   `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`,
   `import`, `forget`, `origin`, `which` and `ensemble exists` / `create` /
@@ -591,11 +633,38 @@ approximated, and nothing is silently mis-run.
   execution trace makes the command's call synchronous so `leave` can be told
   what it returned. Command traces fire for `rename` and its delete form, and
   not for a procedure that is redefined or deleted with its namespace.
-- **TclOO.** `oo::class`, `oo::object`, `oo::define` and the rest are
-  `invalid command name`, so `oo::class create C {...}` cannot run and neither
-  can anything built on it. This is an object system, not a command: method
-  resolution, `next`, mixins, filters and per-object namespaces, all of which
-  need a dispatch path beside the one procedures use.
+- **What TclOO leaves out.** The core object system is in `src/oo.rs` (see
+  *Implemented*); measured against tclsh 9.1, these parts are not:
+  * `oo::define … classmethod`, `definitionnamespace` and `info class
+    definitionnamespace`, which need the class delegate (`<class>:: oo
+    ::delegate`) — the delegate's object number is spent, so numbering
+    matches, but the delegate does not exist.
+  * Properties (`oo::configurable`, `property`, `info … properties`),
+    `oo::singleton`, `oo::abstract`, and the `oo::Helpers` commands
+    `callback`, `mymethod`, `classvariable` and `link`; `myclass`.
+  * Slots as objects: `oo::define::superclass` and the rest are definition
+    commands here, not instances of `oo::Slot`, so `info object class
+    filter` inside a definition is `filter does not refer to an object`.
+  * Private variables are listed apart (`info class variables C -private`) but
+    resolved as ordinary declared variables, without tclsh's creation-id name
+    mangling — a `private variable x` of two classes in one hierarchy is one
+    variable here.
+  * `$obj variable x` from outside a method, and `my variable` with a computed
+    name, link only at the global level; inside a procedure they are refused.
+    `my variable` with its names written out is compiled as `variable`.
+  * `self`, `my` and `next` answer from the innermost method invocation even
+    when called from a plain procedure that method called, where tclsh says
+    `self may only be called from inside a method`.
+  * `upvar` and `uplevel` from a method body reach the caller's frame only
+    when the caller is the global level: a method runs as a call across
+    chunks, with the limit every procedure defined in another chunk has.
+  * `info level 0` inside a method names the hidden procedure the body compiled
+    to. `info object creationid` is the object's number, not tclsh's internal
+    epoch. `info object methods` without `-all`, `info object vars` and `info
+    class methods` without `-all` are sorted where tclsh answers in hash order.
+  * Renaming an object's `my`, variable traces firing as an object's namespace
+    is deleted, and `oo::objdefine` changing a class into a non-class are not
+    modelled.
 
 - **`string is graph`, `print` and `punct`, beyond nothing.** All three rest on
   Unicode general categories Tcl builds its own tables for: `punct` spans the
