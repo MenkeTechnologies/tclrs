@@ -43,12 +43,14 @@ fn a_catch_sees_code_ok_one_level_further_out() {
 
 #[test]
 fn the_rewrite_applies_to_merged_and_computed_options() {
-    let out = run("proc d {} {catch {return -code return 1} r o; return -options $o $r}\n\
+    let out = run(
+        "proc d {} {catch {return -code return 1} r o; return -options $o $r}\n\
                    proc e {} {d; return no}\n\
                    puts [e]\n\
                    proc f {} {return -options {-code return -level 0} nine; return no}\n\
                    puts [f]\n\
                    proc k {} {set c return; return -code $c -level 0 dyn; return no}\n\
-                   puts [catch k r]|$r");
+                   puts [catch k r]|$r",
+    );
     assert_eq!(out, "1\nnine\n0|dyn\n");
 }

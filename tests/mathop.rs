@@ -324,6 +324,7 @@ fn an_import_into_a_namespace_and_a_forget_follow_the_registry() {
 #[test]
 fn a_procedure_of_the_same_bare_name_is_not_shadowed() {
     // `+` is only an operator once imported; a script's own `+` is its own.
-    let out = run("proc + {a b} {return \"$a plus $b\"}\nputs [+ 1 2]\nputs [::tcl::mathop::+ 1 2]");
+    let out =
+        run("proc + {a b} {return \"$a plus $b\"}\nputs [+ 1 2]\nputs [::tcl::mathop::+ 1 2]");
     assert_eq!(out, "1 plus 2\n3\n");
 }

@@ -823,7 +823,10 @@ pub(crate) fn startup_globals() -> std::collections::HashMap<String, Value> {
     globals.insert("env".to_string(), Value::Hash(env));
     // `InitFoundation` makes these constants of `::oo` (`generic/tclOO.c`).
     globals.insert("oo::version".to_string(), str_val(crate::oo::TCLOO_VERSION));
-    globals.insert("oo::patchlevel".to_string(), str_val(crate::oo::TCLOO_PATCHLEVEL));
+    globals.insert(
+        "oo::patchlevel".to_string(),
+        str_val(crate::oo::TCLOO_PATCHLEVEL),
+    );
     globals
 }
 

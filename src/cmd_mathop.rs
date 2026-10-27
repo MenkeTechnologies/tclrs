@@ -32,7 +32,7 @@
 //! anywhere makes the answer a double, exactly as inside `expr {…}`.
 //!
 //! One op. The command's words are pushed in order, then their count, then
-//! [`ext::APPLY`] with the operator's index in [`TABLE`] as its inline operand.
+//! `ext::APPLY` with the operator's index in `TABLE` as its inline operand.
 //! The count travels as a value rather than in the byte operand so that
 //! `+ {*}[lseq 1 1000]` — a thousand words, well past what a byte holds — is
 //! one command, as it is in tclsh. The words are all evaluated before any
@@ -109,7 +109,7 @@ const TABLE: &[(&str, Shape)] = &[
 
 /// The command names this module claims, as `crate::names` lists every builtin:
 /// without the leading `::`. [`operator`] accepts either spelling, and
-/// `table_and_commands_agree` holds this list to [`TABLE`].
+/// `table_and_commands_agree` holds this list to `TABLE`.
 pub const COMMANDS: &[&str] = &[
     "tcl::mathop::~",
     "tcl::mathop::!",
@@ -145,10 +145,13 @@ pub(crate) fn is_op(id: u16) -> bool {
     (ext::BASE..crate::compiler::ext::MATHOP_END).contains(&id)
 }
 
-/// The index in [`TABLE`] of the operator a command name spells, with or
+/// The index in `TABLE` of the operator a command name spells, with or
 /// without the leading `::`. `None` for any other name.
 pub fn operator(name: &str) -> Option<usize> {
-    let bare = name.strip_prefix("::").unwrap_or(name).strip_prefix(PREFIX)?;
+    let bare = name
+        .strip_prefix("::")
+        .unwrap_or(name)
+        .strip_prefix(PREFIX)?;
     TABLE.iter().position(|(op, _)| *op == bare)
 }
 
@@ -287,7 +290,10 @@ mod tests {
     /// table under the namespace prefix, in the table's order.
     #[test]
     fn table_and_commands_agree() {
-        let from_table: Vec<String> = TABLE.iter().map(|(op, _)| format!("{PREFIX}{op}")).collect();
+        let from_table: Vec<String> = TABLE
+            .iter()
+            .map(|(op, _)| format!("{PREFIX}{op}"))
+            .collect();
         assert_eq!(from_table, COMMANDS);
         assert!(COMMANDS.len() <= usize::from(u8::MAX));
     }
