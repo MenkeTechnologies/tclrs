@@ -271,6 +271,9 @@ const ZONE_PROGRAMS: &[&str] = &[
     "foreach t {1234567890 0 1000000000 1609459200 4102444800} {puts [clock format $t -format {%Y-%m-%dT%H:%M:%S %Z %z} -timezone :Europe/Berlin]}",
     "foreach t {1234567890 0 1000000000 1609459200} {puts [clock format $t -format {%Y-%m-%dT%H:%M:%S %Z %z} -timezone :Asia/Kolkata]}",
     "foreach t {1234567890 1583020800} {puts [clock format $t -format {%Y-%m-%dT%H:%M:%S %Z %z} -timezone :Australia/Lord_Howe]}",
+    // A zone whose file names it only by its offset keeps that spelling:
+    // `ReadZoneinfoFile` copies the abbreviations verbatim, so `-03` is `-03`.
+    "foreach t {0 1700000000} {puts [clock format $t -format {%Z %z} -timezone :America/Sao_Paulo]}",
     // The instants either side of a daylight change in both directions.
     "foreach t {1236495600 1236499200 1257051600 1257055200} {puts [clock format $t -format {%Y-%m-%dT%H:%M:%S %Z %z} -timezone :America/New_York]}",
     "puts [clock scan {2009-02-13 18:31:30} -format {%Y-%m-%d %H:%M:%S} -timezone :America/New_York]",

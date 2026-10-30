@@ -810,23 +810,6 @@ const ZONE_DIRECTORIES: &[&str] = &[
     "/usr/local/etc/zoneinfo",
 ];
 
-/// The name `%Z` writes for a zone read from a zoneinfo file. Tcl's own time
-/// zone data names a zone whose rule gives only an offset by that offset in
-/// full — `-0300` where the system's file has `-03` — so an abbreviation that
-/// is a sign and two digits is written as a sign and four. A zone given as a
-/// POSIX rule or a numeric offset keeps the name it was written with.
-fn full_offset_name(abbreviation: &str) -> String {
-    let bytes = abbreviation.as_bytes();
-    let numeric = bytes.len() == 3
-        && matches!(bytes[0], b'+' | b'-')
-        && bytes[1..].iter().all(u8::is_ascii_digit);
-    if numeric {
-        format!("{abbreviation}00")
-    } else {
-        abbreviation.to_string()
-    }
-}
-
 /// Resolve a zone name.
 fn load_zone(name: &str) -> Result<Zone, String> {
     let trimmed = name.strip_prefix(':').unwrap_or(name);
@@ -858,14 +841,12 @@ fn load_zone(name: &str) -> Result<Zone, String> {
     if unsafe_zone_path(trimmed) {
         return Err(format!("time zone \":{trimmed}\" not valid"));
     }
+    // `ReadZoneinfoFile` keeps every abbreviation as the file spells it, so a
+    // zone named only by its offset is `-03`, not `-0300`.
     for directory in ZONE_DIRECTORIES {
         let path = std::path::Path::new(directory).join(trimmed);
         if let Ok(bytes) = std::fs::read(&path) {
-            if let Some(mut zone) = parse_tzif(&bytes) {
-                zone.initial.abbreviation = full_offset_name(&zone.initial.abbreviation);
-                for (_, state) in &mut zone.transitions {
-                    state.abbreviation = full_offset_name(&state.abbreviation);
-                }
+            if let Some(zone) = parse_tzif(&bytes) {
                 return Ok(zone);
             }
         }
