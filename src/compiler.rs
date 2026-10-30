@@ -1154,13 +1154,7 @@ fn signature_table(c: &Compiler) -> Vec<(String, crate::runtime::ProcParams)> {
                 .iter()
                 .map(|p| (p.name.clone(), p.default.clone()))
                 .collect();
-            (
-                name.clone(),
-                crate::runtime::ProcParams {
-                    params,
-                    body: sig.body.clone(),
-                },
-            )
+            (name.clone(), crate::runtime::ProcParams { params })
         })
         .collect()
 }

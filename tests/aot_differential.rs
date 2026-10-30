@@ -143,6 +143,40 @@ fn linked_executable_matches_the_interpreter() {
     );
 }
 
+/// `info args`, `info default` and `info body` in a linked binary, whose process
+/// never ran the compiler: the answer has to come from what the script's own
+/// `proc` commands bound when they ran, not from a table the lowering filled.
+#[test]
+fn linked_executable_answers_info_about_procedures() {
+    if staticlib().is_none() {
+        eprintln!("skipping: no libtclrs.a — run `cargo build` first");
+        return;
+    }
+    if Command::new("cc").arg("--version").output().is_err() {
+        eprintln!("skipping: no cc on PATH");
+        return;
+    }
+
+    let program = "proc documented {a {b 2} args} {return $a}\n\
+                   puts [info args documented]\n\
+                   puts [info default documented b v]$v\n\
+                   puts [info body documented]";
+    let out = std::env::temp_dir().join(format!("tclrs-aot-info-{}", std::process::id()));
+    tclrs::aot::compile_executable(program, &out).expect("link an AOT executable");
+
+    let produced = Command::new(&out).output().expect("run the AOT binary");
+    let _ = std::fs::remove_file(&out);
+    assert!(
+        produced.status.success(),
+        "AOT binary failed: {}",
+        String::from_utf8_lossy(&produced.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&produced.stdout),
+        "a b args\n12\nreturn $a\n"
+    );
+}
+
 /// `libtclrs.a` as `cargo build` leaves it, relative to this test binary
 /// (`target/<profile>/deps/<test>`) — the same place `aot::staticlib_path`
 /// looks, so finding it here means the link will find it too.

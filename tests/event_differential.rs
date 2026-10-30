@@ -211,6 +211,17 @@ const PROGRAMS: &[&str] = &[
     "proc p {a} {return $a}\nputs [info body p]",
     "proc p {a {b 2}} {}\nputs [info default p b v],$v",
     "proc p {a {b 2}} {}\nputs [info default p a v],<$v>",
+    // The name is resolved when the command runs, as `TclFindProc` resolves
+    // it: not yet defined, renamed away, from a namespace, through an import,
+    // and from a script that is a chunk of its own.
+    "puts [catch {info args later} m]\nputs $m\nproc later {q r} {}\nputs [info args later]",
+    "proc g {a} {}\nrename g gg\nputs [catch {info args g} m]\nputs $m\nputs [info args gg]",
+    "namespace eval zn {proc p {x {y 3}} {}; puts [info args p]; puts [info default p y v]$v}\nputs [info args zn::p]\nputs [info body ::zn::p]x",
+    "proc g {a} {}\nnamespace eval zn {puts [info args g]}",
+    "namespace eval lib {proc h {x {y 9}} {return $x}; namespace export h}\nnamespace eval app {namespace import ::lib::h; puts [info args h]; puts [info body h]}",
+    "proc g {a b} {}\neval {puts [info args g]}\neval {proc e {z} {return z}}\nputs [info args e]\nputs [info body e]",
+    "proc p {} {proc inner {k} {return k}; return [info args inner]}\nputs [p]",
+    "set b {return 1}\nproc cb {} $b\nputs [info body cb]",
     // ── info level ──
     "puts [info level]",
     "proc p {} {return [info level]}\nputs [p]",

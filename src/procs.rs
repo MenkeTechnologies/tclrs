@@ -265,6 +265,7 @@ fn table_key(name: &str) -> &str {
 /// the refusal is repeated rather than assumed away.
 pub(crate) fn define_op(interp: &Shared, vm: &mut VM) -> Result<(), TclError> {
     let entry = vm.pop();
+    let body = to_tcl_string(&vm.pop());
     let spec = to_tcl_string(&vm.pop());
     let name = to_tcl_string(&vm.pop());
     // A `proc` inside a method body defines a command of the object's
@@ -284,7 +285,8 @@ pub(crate) fn define_op(interp: &Shared, vm: &mut VM) -> Result<(), TclError> {
             )))
         }
     };
-    let sig = parse_signature(&spec).map_err(TclError::plain)?;
+    let mut sig = parse_signature(&spec).map_err(TclError::plain)?;
+    sig.body = Some(body);
     let mut state = interp.lock().expect("interpreter lock");
     let chunk = running_chunk(&state, vm);
     let defined = RuntimeProc { chunk, entry, sig };
@@ -439,6 +441,30 @@ pub(crate) fn invoke(
 pub(crate) fn defined_proc(interp: &Shared, name: &str) -> Option<RuntimeProc> {
     let state = interp.lock().expect("interpreter lock");
     state.commands.get(table_key(name)).cloned()
+}
+
+/// The signature of the procedure `name` names when written in namespace `here`,
+/// as `TclFindProc` (`generic/tclProc.c`) finds it: `Tcl_FindCommand`'s
+/// two-step search — `here`, then the root for a name not written absolute —
+/// and an imported command followed to its origin. `None` when the name reaches
+/// no procedure.
+pub(crate) fn find_proc(interp: &Shared, here: &str, name: &str) -> Option<Signature> {
+    use crate::cmd_namespace::resolve;
+    let state = interp.lock().expect("interpreter lock");
+    let mut candidates = vec![resolve(here, name)];
+    if !name.starts_with("::") && here != "::" {
+        candidates.push(resolve("::", name));
+    }
+    candidates.into_iter().find_map(|fqn| {
+        let origin = state
+            .ns
+            .command(&fqn)
+            .map_or(fqn.as_str(), |entry| entry.origin.as_str());
+        state
+            .commands
+            .get(table_key(origin))
+            .map(|p| p.sig.clone())
+    })
 }
 
 /// The line a failure raised by a call op should report as `(file "…" line N)`,
@@ -1000,14 +1026,17 @@ impl Compiler {
         // the chunk's own address book answers only inside the chunk: a `source`d
         // file, an `eval`, an `after` script and a Tk binding script are each a
         // chunk of their own, and in tclsh a procedure defined at one script's top
-        // level is callable from all of them. Four ops per definition, run once —
+        // level is callable from all of them. Five ops per definition, run once —
         // a call the compiler *can* resolve is still `Op::Call`, so nothing on a
         // call path pays for this.
+        // The body text rides along for `info body`, which asks the run-time
+        // table as `TclFindProc` does.
         self.push_str(&name);
         self.push_str(&spec);
+        self.push_str(sig.body.as_deref().unwrap_or_default());
         self.push_value(Value::Int(entry as i64));
-        // Three operands off the stack for `proc`'s own empty result on.
-        self.emit(Op::Extended(ext::PROC_DEFINE, 3), -2);
+        // Four operands off the stack for `proc`'s own empty result on.
+        self.emit(Op::Extended(ext::PROC_DEFINE, 4), -3);
         Ok(())
     }
 

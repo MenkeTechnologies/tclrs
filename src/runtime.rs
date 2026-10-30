@@ -2227,6 +2227,13 @@ impl Hooks {
                 // happens to mention them, so a chunk-only answer omits exactly
                 // the variables every script starts with.
                 crate::cmd_info::ext::NAMES => info_names_op(&interp, vm, arg),
+                // `info args`, `body` and `default` find the procedure in the
+                // interpreter's run-time command table, as `TclFindProc` does.
+                crate::cmd_info::ext::ARGS
+                | crate::cmd_info::ext::BODY
+                | crate::cmd_info::ext::DEFAULT => {
+                    crate::cmd_info::proc_op(&interp, vm, id, arg).map_err(TclError::plain)
+                }
                 // `info frame` counts the scripts that are running as well as the
                 // procedure activations, and only the interpreter knows the first.
                 crate::cmd_info::ext::FRAME => info_frame_op(&interp, vm, arg),
@@ -5738,22 +5745,18 @@ pub(crate) fn chunk_identity(chunk: &fusevm::Chunk) -> u64 {
 /// was lowered.
 static INCR_SITES: Mutex<Option<HashSet<(u64, usize)>>> = Mutex::new(None);
 
-/// What `info args`, `info default` and `info body` need about one procedure:
-/// each formal's name and its default, in declaration order, and the body's
-/// source text.
+/// Each formal's name and its default, in declaration order: what `info level`
+/// needs to rebuild the words a procedure was called with.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ProcParams {
     pub(crate) params: Vec<(String, Option<String>)>,
-    /// `None` when the definition computed its body — see
-    /// [`crate::procs::Signature::body`].
-    pub(crate) body: Option<String>,
 }
 
 /// Every procedure a chunk defines, keyed by chunk identity.
 ///
 /// The compiler already collects signatures before it emits anything, to check
-/// a call's arity; this publishes them so `info` can answer for a *computed*
-/// procedure name as well as a literal one. Same shape as [`TOLERANT_READS`] and
+/// a call's arity; this publishes them so `info level` can name a frame's
+/// actuals. Same shape as [`TOLERANT_READS`] and
 /// [`INCR_SITES`], accumulating for the same reason: a cached chunk runs long
 /// after a later one was lowered.
 static PROC_TABLE: Mutex<Option<HashMap<(u64, String), ProcParams>>> = Mutex::new(None);
@@ -5769,11 +5772,6 @@ pub(crate) fn note_procs(chunk: &fusevm::Chunk, procs: &[(String, ProcParams)]) 
     for (name, params) in procs {
         table.insert((id, name.clone()), params.clone());
     }
-}
-
-/// The body text of `name` as the running chunk declared it — `info body`.
-pub(crate) fn proc_body(vm: &VM, name: &str) -> Option<String> {
-    proc_params(vm, name)?.body
 }
 
 /// Tcl's level number for the code that is running: 0 at the script's own level

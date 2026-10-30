@@ -16,10 +16,11 @@
 //!   maps exactly onto which parse errors mean "more input would help".
 //!
 //! What a procedure's signature answers — `info args`, `info body`, `info
-//! default` — comes from the table the compiler already builds to check arity,
-//! published by `crate::runtime::note_procs` so a computed name works as well
-//! as a literal. The body text rides on the same table: `info body $n` is a
-//! computed name too.
+//! default` — comes from the interpreter's run-time command table, which every
+//! `proc` binds with its argument list and body text when it runs: the name is
+//! resolved when the command runs, as `TclFindProc` resolves it, so a computed
+//! name, a procedure another chunk defined and an ahead-of-time binary all
+//! answer as tclsh does.
 //!
 //! `locals` and `vars` inside a procedure are answered in two halves, because
 //! neither half can answer alone. Which names the frame *has* is a property of
@@ -182,8 +183,8 @@ impl Compiler {
             "coroutine" => self.info_coroutine(rest),
             "exists" => self.info_exists(rest),
             "complete" => self.info_one(rest, ext::COMPLETE, "info complete command"),
-            "args" => self.info_one(rest, ext::ARGS, "info args procname"),
-            "body" => self.info_one(rest, ext::BODY, "info body procname"),
+            "args" => self.info_proc(rest, ext::ARGS, "info args procname"),
+            "body" => self.info_proc(rest, ext::BODY, "info body procname"),
             "default" => self.info_default(rest),
             "commands" => self.info_names(rest, COMMANDS, "info commands ?pattern?"),
             "procs" => self.info_names(rest, PROCS, "info procs ?pattern?"),
@@ -323,6 +324,19 @@ impl Compiler {
         Ok(())
     }
 
+    /// `info args` and `info body`: the namespace being compiled, then the name,
+    /// because the name is resolved when the command runs, from there first.
+    fn info_proc(&mut self, args: &[Word], id: u16, usage: &str) -> Result<(), CompileError> {
+        let [only] = args else {
+            return self.error(format!("wrong # args: should be \"{usage}\""));
+        };
+        let here = self.ns.current.clone();
+        self.push_str(&here);
+        self.word(only)?;
+        self.emit(Op::Extended(id, 0), -1);
+        Ok(())
+    }
+
     /// `info default procname arg varname`.
     fn info_default(&mut self, args: &[Word]) -> Result<(), CompileError> {
         let [proc_w, arg_w, var_w] = args else {
@@ -332,19 +346,21 @@ impl Compiler {
         // variable, and an array element is a variable: `info default p a arr(k)`
         // is what a script inspecting a whole signature writes.
         let target = self.target_of(var_w)?;
+        let here = self.ns.current.clone();
+        self.push_str(&here);
         self.word(proc_w)?;
         self.word(arg_w)?;
         match target {
             crate::assoc::Target::Scalar(name) => {
                 let place = self.var_place_operand(&name);
                 self.emit(Op::LoadInt(place), 1);
-                self.emit(Op::Extended(ext::DEFAULT, 0), -2);
+                self.emit(Op::Extended(ext::DEFAULT, 0), -3);
             }
             crate::assoc::Target::Elem { name, index } => {
                 self.index_value(&index)?;
                 let place = self.var_place_operand(&name);
                 self.emit(Op::LoadInt(place), 1);
-                self.emit(Op::Extended(ext::DEFAULT, 1), -3);
+                self.emit(Op::Extended(ext::DEFAULT, 1), -4);
             }
         }
         Ok(())
@@ -582,25 +598,8 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         // takes it, because `info globals` can only be answered from the
         // interpreter's own variable table and this function has just a VM.
         ext::NAMES => Err("info names op reached the module handler".to_string()),
-        ext::ARGS => {
-            let name = to_tcl_string(&vm.pop());
-            let params = crate::runtime::proc_params(vm, &name)
-                .ok_or_else(|| format!("\"{name}\" isn't a procedure"))?;
-            let names: Vec<String> = params.params.into_iter().map(|(n, _)| n).collect();
-            vm.push(Value::Str(Arc::new(crate::list::join(&names))));
-            Ok(())
-        }
-        ext::BODY => {
-            let name = to_tcl_string(&vm.pop());
-            // A procedure with no recorded body is one whose body the script
-            // computed (`proc p {} $b`) or one defined inside a `namespace eval`
-            // block, where the signature is prescanned and the text is not. Both
-            // report the same thing tclsh reports for a name that is no
-            // procedure at all, because from here they are the same absence.
-            let body = crate::runtime::proc_body(vm, &name)
-                .ok_or_else(|| format!("\"{name}\" isn't a procedure"))?;
-            vm.push(Value::Str(Arc::new(body)));
-            Ok(())
+        ext::ARGS | ext::BODY | ext::DEFAULT => {
+            Err("info proc op reached the module handler".to_string())
         }
         ext::LEVEL if arg == 0 => {
             vm.push(Value::Int(crate::runtime::current_level(vm)));
@@ -636,40 +635,6 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             vm.push(Value::Str(Arc::new(crate::list::join(&names))));
             Ok(())
         }
-        ext::DEFAULT => {
-            let place = place_of(vm);
-            let index = (arg == 1).then(|| to_tcl_string(&vm.pop()));
-            let arg_name = to_tcl_string(&vm.pop());
-            let proc_name = to_tcl_string(&vm.pop());
-            let params = crate::runtime::proc_params(vm, &proc_name)
-                .ok_or_else(|| format!("\"{proc_name}\" isn't a procedure"))?;
-            let found = params
-                .params
-                .into_iter()
-                .find(|(n, _)| *n == arg_name)
-                .ok_or_else(|| {
-                    format!("procedure \"{proc_name}\" doesn't have an argument \"{arg_name}\"")
-                })?;
-            let (has, text) = match found.1 {
-                Some(d) => (1, d),
-                None => (0, String::new()),
-            };
-            let written = Value::Str(Arc::new(text));
-            match index {
-                Some(index) => {
-                    element_map(vm, place)
-                        .ok_or_else(|| format!("can't set \"{index}\": variable isn't array"))?
-                        .insert(index, written);
-                }
-                None => {
-                    if let Some(cell) = crate::runtime::var_cell(vm, place) {
-                        *cell = written;
-                    }
-                }
-            }
-            vm.push(Value::Int(has));
-            Ok(())
-        }
         ext::SET_SCRIPT => {
             // Returns the name it was given, as tclsh does, so
             // `set old [info script $new]` is a swap.
@@ -685,6 +650,62 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
         other => Err(format!("unknown info op {other}")),
     }
+}
+
+/// `info args`, `info body` and `info default`: the procedure is found as
+/// `TclFindProc` finds it — the command the name resolves to from the namespace
+/// the command was written in, through an import to its origin — in the
+/// interpreter's run-time command table, which every `proc` binds when it runs.
+/// So a procedure not yet defined, or renamed away, is `isn't a procedure`, and
+/// an ahead-of-time binary answers what the interpreter answers.
+pub(crate) fn proc_op(
+    interp: &crate::runtime::Shared,
+    vm: &mut VM,
+    id: u16,
+    arg: u8,
+) -> Result<(), String> {
+    let place = (id == ext::DEFAULT).then(|| place_of(vm));
+    let index = (id == ext::DEFAULT && arg == 1).then(|| to_tcl_string(&vm.pop()));
+    let arg_name = (id == ext::DEFAULT).then(|| to_tcl_string(&vm.pop()));
+    let name = to_tcl_string(&vm.pop());
+    let here = crate::oo::current_ns(interp, &to_tcl_string(&vm.pop()));
+    let sig = crate::procs::find_proc(interp, &here, &name)
+        .ok_or_else(|| format!("\"{name}\" isn't a procedure"))?;
+    let answer = match (id, arg_name) {
+        (ext::ARGS, _) => {
+            let names: Vec<String> = sig.params.iter().map(|p| p.name.clone()).collect();
+            crate::list::join(&names)
+        }
+        (ext::BODY, _) => sig.body.clone().unwrap_or_default(),
+        (_, Some(arg_name)) => {
+            let param = sig
+                .params
+                .iter()
+                .find(|p| p.name == arg_name)
+                .ok_or_else(|| {
+                    format!("procedure \"{name}\" doesn't have an argument \"{arg_name}\"")
+                })?;
+            let place = place.expect("info default pushed a place");
+            let written = Value::Str(Arc::new(param.default.clone().unwrap_or_default()));
+            match index {
+                Some(index) => {
+                    element_map(vm, place)
+                        .ok_or_else(|| format!("can't set \"{index}\": variable isn't array"))?
+                        .insert(index, written);
+                }
+                None => {
+                    if let Some(cell) = crate::runtime::var_cell(vm, place) {
+                        *cell = written;
+                    }
+                }
+            }
+            vm.push(Value::Int(i64::from(param.default.is_some())));
+            return Ok(());
+        }
+        _ => return Err(format!("unknown info op {id}")),
+    };
+    vm.push(Value::Str(Arc::new(answer)));
+    Ok(())
 }
 
 /// [`place_of`] for an operand already off the stack.

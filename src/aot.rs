@@ -125,7 +125,11 @@ pub fn run_native(src: &str) -> Result<Outcome, String> {
 /// Emits the AOT object, writes a C `main` that calls fusevm's
 /// `fusevm_aot_run_embedded`, and links the two against `libtclrs.a`.
 pub fn compile_executable(src: &str, out: &Path) -> Result<(), String> {
-    let stem = format!("tclrs_aot_{}", std::process::id());
+    // Unique per call as well as per process, so two compilations running at
+    // once in one process do not write each other's object and `main`.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stem = format!("tclrs_aot_{}_{n}", std::process::id());
     let tmp = std::env::temp_dir();
     let obj = tmp.join(format!("{stem}.o"));
     let main_c = tmp.join(format!("{stem}.c"));

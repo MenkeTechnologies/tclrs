@@ -913,24 +913,6 @@ approximated, and nothing is silently mis-run.
   state tclrs is permanently in — `auto_path` does not exist, and `info procs`
   does not list the `auto_*` procedures that a bare `info procs` in tclsh does.
   `info globals` likewise omits the `tcl_*` variables `init.tcl` sets.
-- **`info args` and `info body` answer for a procedure declared later in the
-  script.** A whole script is compiled before any of it runs, and the signature
-  table is filled on that pass, so `info args later` before `proc later {q r}
-  {}` returns `q r` where tclsh raises `"later" isn't a procedure`. The same
-  ordering is what lets a procedure call one defined below it, which tclsh also
-  allows; only the introspection disagrees. `info commands` and `info procs` do
-  not: they answer from the namespace registry, which a `proc` updates when it
-  runs, so a procedure is listed only once defined, a renamed one under its new
-  name, a deleted one not at all, and inside a `namespace eval` the namespace's
-  own commands are listed.
-- **`info body` for a procedure a nested script defined.**
-  A procedure defined by `eval {proc p …}`, by a `source`d file, or by
-  `proc p {} $b` (which runs as a command of its own chunk) binds `p` in the
-  shared run-time table when it runs, and calls from any chunk reach it through
-  the chunk it was compiled into (`crate::procs::enter_elsewhere`); but
-  `info body p` answers `"p" isn't a procedure`, because it reads the signatures
-  of the running chunk. A `proc` inside a `namespace eval` block is in
-  a similar position: its signature is prescanned and its body text is not.
 - **An `upvar` to a variable the procedure running there never names.** An
   `upvar` link is the *address* of one frame slot, and another frame's slots are
   addressed through a table of the names its procedure *wrote*
