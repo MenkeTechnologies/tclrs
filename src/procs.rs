@@ -460,10 +460,7 @@ pub(crate) fn find_proc(interp: &Shared, here: &str, name: &str) -> Option<Signa
             .ns
             .command(&fqn)
             .map_or(fqn.as_str(), |entry| entry.origin.as_str());
-        state
-            .commands
-            .get(table_key(origin))
-            .map(|p| p.sig.clone())
+        state.commands.get(table_key(origin)).map(|p| p.sig.clone())
     })
 }
 

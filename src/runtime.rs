@@ -2611,9 +2611,13 @@ fn info_names_op(interp: &Shared, vm: &mut VM, which: u8) -> Result<(), TclError
     // variable table — a namespace's variables are not in it — strips a
     // pattern's leading `::`s, and answers bare names whatever the pattern.
     if which == crate::cmd_info::GLOBALS {
-        let pattern = filter
-            .as_deref()
-            .map(|p| if p.starts_with("::") { p.trim_start_matches(':') } else { p });
+        let pattern = filter.as_deref().map(|p| {
+            if p.starts_with("::") {
+                p.trim_start_matches(':')
+            } else {
+                p
+            }
+        });
         let mut names: Vec<String> = global_names_of(interp, vm)
             .into_iter()
             .filter(|name| !name.contains("::"))
