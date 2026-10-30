@@ -748,8 +748,10 @@ calling object's variables each time the body runs, so one compiled body
 serves every instance. `oo::singleton` and `oo::abstract` are the metaclasses
 `MakeAdditionalClasses` adds: a singleton class answers `new` with its one
 instance, which refuses `destroy` and `oo::copy`, and an abstract class has no
-`new` or `create` while its subclasses do. What TclOO leaves out — class methods, properties, slots
-as objects, private variable name mangling — is listed in
+`new` or `create` while its subclasses do. A private variable (TIP 500) is kept
+in the object's namespace as `"<creation id> : <name>"` of its declarer, so
+two classes' private `x` are two variables. What TclOO leaves out — class
+methods, properties, slots as objects — is listed in
 [`BUGS.md`](BUGS.md).
 
 

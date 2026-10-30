@@ -72,6 +72,10 @@ pub(crate) const CLASS_VAR_MARK: &str = "\u{3}class::";
 /// The check a compiled `classvariable` runs, raising what
 /// `TclOOClassVariableObjCmd` raises before it links anything.
 pub(crate) const CLASSVAR_CHECK_CMD: &str = "\u{0}oo::classvariable";
+/// The declaration a method body opens with for a private variable (TIP 500):
+/// `PRIVATE_VAR_CMD fullName name` makes the local `name` the object variable
+/// `fullName`.
+pub(crate) const PRIVATE_VAR_CMD: &str = "\u{0}oo::privatevariable";
 
 /// `TCLOO_VERSION` and `TCLOO_PATCHLEVEL` (`generic/tclOO.h`).
 pub(crate) const TCLOO_VERSION: &str = "1.3";
@@ -137,7 +141,7 @@ pub(crate) struct ProcImp {
     sig: Signature,
     /// The compiled procedure, with the declared variables and the context line
     /// it was compiled for — a change to either recompiles it.
-    compiled: Mutex<Option<(Vec<String>, String, RuntimeProc)>>,
+    compiled: Mutex<Option<(Vec<DeclaredVar>, String, RuntimeProc)>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -519,6 +523,35 @@ impl Oo {
                 format!("{}::{rest}", store_key(&self.obj(obj).ns))
             }
             _ => format!("\u{0}oo-gone::{rest}"),
+        }
+    }
+
+    /// `TclOOLookupObjectVar`'s TIP 500 step: the name `name` of object `obj`
+    /// stands for in the calling method — a private variable of the method's
+    /// declaring object, or of its declaring class when `obj` is an instance
+    /// of that class or mixes it in — or `name` itself.
+    fn private_var_name(&self, obj: Id, name: &str) -> String {
+        let Some(Frame::Method { chain, index, .. }) = self.stack.last() else {
+            return name.to_string();
+        };
+        let (vars, epoch) = match chain.calls[*index].declarer {
+            Declarer::Object(o) if o == obj && self.alive(o) => {
+                (&self.obj(o).private_vars, self.obj(o).creation_id)
+            }
+            Declarer::Class(c) if self.alive(c) && self.alive(obj) => {
+                let o = self.obj(obj);
+                let instance =
+                    self.reachable(c, o.class) || o.mixins.iter().any(|&m| self.reachable(c, m));
+                if !instance {
+                    return name.to_string();
+                }
+                (&self.class(c).private_vars, self.obj(c).creation_id)
+            }
+            _ => return name.to_string(),
+        };
+        match vars.iter().any(|v| v == name) {
+            true => private_name(epoch, name),
+            false => name.to_string(),
         }
     }
 
@@ -1401,7 +1434,11 @@ pub(crate) fn try_dispatch(
         Target::NextTo => nextto_cmd(interp, vm, name, &ns, args),
         Target::Define { class } => define_cmd(interp, vm, class, name, &ns, args),
         Target::Copy => copy_cmd(interp, vm, &ns, args),
-        Target::InfoObject => info_object(interp, &ns, args),
+        // `info object vars` reads the variable table, so what the calling
+        // chunk has assigned is written back first.
+        Target::InfoObject => {
+            crate::runtime::with_written_back(interp, vm, |interp| info_object(interp, &ns, args))
+        }
         Target::InfoClass => info_class(interp, &ns, args),
         Target::CurrentNs => Ok(val(lock(interp).oo.map_ns(METHOD_NS))),
         Target::DefineCmd(cmd) => define_sub(interp, vm, cmd, name, &strings(args)),
@@ -1564,16 +1601,16 @@ fn run_proc(
         let state = lock(interp);
         let oo = &state.oo;
         let vars = match call.declarer {
-            // A private declaration is resolved like a standard one here: tclsh
-            // keeps it under a name mangled with the declarer's creation id.
-            Declarer::Class(c) if oo.alive(c) => {
-                let c = oo.class(c);
-                c.variables.iter().chain(&c.private_vars).cloned().collect()
-            }
-            Declarer::Object(o) if oo.alive(o) => {
-                let o = oo.obj(o);
-                o.variables.iter().chain(&o.private_vars).cloned().collect()
-            }
+            Declarer::Class(c) if oo.alive(c) => declared_vars(
+                &oo.class(c).private_vars,
+                &oo.class(c).variables,
+                oo.obj(c).creation_id,
+            ),
+            Declarer::Object(o) if oo.alive(o) => declared_vars(
+                &oo.obj(o).private_vars,
+                &oo.obj(o).variables,
+                oo.obj(o).creation_id,
+            ),
             _ => Vec::new(),
         };
         (vars, describe(oo, call, chain_flags))
@@ -1636,13 +1673,39 @@ pub(crate) fn method_call_words(chunk: &fusevm::Chunk, entry: usize) -> Option<V
     })
 }
 
+/// A variable a method body declares on entry: its name, and for a private
+/// one the name it is kept under in the object's namespace.
+type DeclaredVar = (String, Option<String>);
+
+/// What `ProcedureMethodCompiledVarConnect` resolves for a method of a declarer
+/// with creation id `epoch`: its private variables first, each under
+/// `PRIVATE_VARIABLE_PATTERN` (`"%d : %s"`), then its standard ones.
+fn declared_vars(private: &[String], standard: &[String], epoch: u64) -> Vec<DeclaredVar> {
+    let mut out: Vec<DeclaredVar> = private
+        .iter()
+        .map(|v| (v.clone(), Some(private_name(epoch, v))))
+        .collect();
+    for v in standard {
+        if !out.iter().any(|(n, _)| n == v) {
+            out.push((v.clone(), None));
+        }
+    }
+    out
+}
+
+/// `PRIVATE_VARIABLE_PATTERN`: where a private variable of the declarer with
+/// creation id `epoch` lives in an object's namespace.
+fn private_name(epoch: u64, name: &str) -> String {
+    format!("{epoch} : {name}")
+}
+
 /// The procedure a method body compiles to: the body, preceded by a
 /// `variable` for each name the declarer declared that is not a parameter,
 /// as a procedure of [`METHOD_NS`].
 fn compile(
     interp: &Shared,
     p: &ProcImp,
-    vars: &[String],
+    vars: &[DeclaredVar],
     desc: &str,
 ) -> Result<RuntimeProc, TclError> {
     if let Some((v, d, done)) = &*p.compiled.lock().expect("method lock") {
@@ -1652,12 +1715,16 @@ fn compile(
     }
     let params: HashSet<&str> = p.sig.params.iter().map(|x| x.name.as_str()).collect();
     let mut body = String::new();
-    for v in vars {
-        if !params.contains(v.as_str()) {
-            body.push_str("variable ");
-            body.push_str(&crate::list::quote(v, false));
-            body.push(';');
+    for (v, mangled) in vars {
+        if params.contains(v.as_str()) {
+            continue;
         }
+        let words = match mangled {
+            Some(full) => vec![PRIVATE_VAR_CMD, full.as_str(), v.as_str()],
+            None => vec!["variable", v.as_str()],
+        };
+        body.push_str(&crate::list::join(&words));
+        body.push(';');
     }
     body.push_str(&p.body);
     let name = format!("{METHOD_PROC_PREFIX}{desc}");
@@ -1783,8 +1850,9 @@ fn run_builtin(
             let [name] = args else {
                 return Err(wrong_args(&usage_of(usage, "varName")));
             };
-            let ns = lock(interp).oo.ns_of(obj);
-            Ok(val(format!("{ns}::{}", to_tcl_string(name))))
+            let state = lock(interp);
+            let name = state.oo.private_var_name(obj, &to_tcl_string(name));
+            Ok(val(format!("{}::{name}", state.oo.ns_of(obj))))
         }
         Builtin::Cloned => {
             let [origin] = args else {

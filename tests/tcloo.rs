@@ -614,3 +614,59 @@ x
 "#;
     assert_eq!(run(script), expected);
 }
+
+/// TIP 500 private variables: a method sees the private variables of the class
+/// or object that declared it, kept in the object's namespace as `"<creation
+/// id> : <name>"` (`PRIVATE_VARIABLE_PATTERN`), so two classes' `x` are two
+/// variables; `my varname` answers the mangled name in a method that can see it,
+/// and `info object vars` lists them — written back before it reads.
+#[test]
+fn private_variables_are_kept_under_the_declarers_creation_id() {
+    let script = r#"oo::class create A {private variable x; method seta v {set x $v}; method geta {} {return $x}}
+oo::class create B {superclass A; private variable x; variable y; method setb v {set x $v}; method getb {} {return $x}}
+B create o
+o seta 1; o setb 2
+puts [o geta][o getb]
+puts [lsort [info vars [info object namespace o]::*]]
+puts [info object creationid A][info object creationid B][info object creationid o]
+oo::objdefine o {private variable z; method setz v {set z $v; return [my varname z]}}
+puts [o setz 5]
+puts [lsort [info object vars o]]
+oo::define A method vn {} {my varname x}
+puts [o vn]
+oo::define A method ev {} {my eval {info exists x}}
+puts [o ev]
+oo::define A method mv {} {my variable x; return [info exists x]}
+puts [o mv]
+oo::copy o o2
+puts [lsort [info object vars o2]]
+oo::class create M {private variable q; method setq v {set q $v}; method vq {} {my varname q}}
+oo::objdefine o mixin M
+o setq 3
+puts [lsort [info object vars o]]
+puts [o vq]
+oo::class create P {private variable x; variable x; method seta v {set x $v}; method geta {} {return $x}}
+oo::class create Q {superclass P; variable x; method getq {} {return [info exists x]}}
+Q create p; p seta 7
+puts [p geta][p getq]
+oo::class create R {private {variable p q}; variable s; method sp {} {set p 1; set q 2; set s 3; lsort [info object vars [self]]}}
+puts [[R new] sp]
+puts [info class variables R -private]
+"#;
+    let expected = r#"12
+{::oo::Obj24::20 : x} {::oo::Obj24::22 : x}
+202224
+::oo::Obj24::24 : z
+{20 : x} {22 : x} {24 : z}
+::oo::Obj24::20 : x
+0
+1
+{20 : x} {22 : x} {24 : z}
+{20 : x} {22 : x} {24 : z} {26 : q}
+::oo::Obj24::26 : q
+70
+{33 : p} {33 : q} s
+p q
+"#;
+    assert_eq!(run(script), expected);
+}

@@ -941,6 +941,28 @@ impl Compiler {
         self.call_runtime(crate::oo::CLASSVAR_CHECK_CMD, args)
     }
 
+    /// The private-variable declaration a method body opens with
+    /// ([`crate::oo::PRIVATE_VAR_CMD`]): the local `name` becomes the object
+    /// variable `fullName`, the creation-id-mangled name TIP 500 keeps it under.
+    pub(crate) fn cmd_private_variable(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        let [full, name] = args else {
+            return self.error("a private variable declaration takes a full name and a name");
+        };
+        let (Some(full), Some(name)) = (full.as_literal(), name.as_literal()) else {
+            return self.error("a private variable declaration must be written out");
+        };
+        let here = self.ns.current.clone();
+        if let Some(scope) = self.scope.as_mut() {
+            scope.globals.insert(name.to_string());
+            self.ns.links.insert(
+                (here.clone(), name.to_string()),
+                Link::Variable(format!("{here}::{full}")),
+            );
+        }
+        self.push_empty();
+        Ok(())
+    }
+
     /// `global ?varname ...?`, recording that the names belong to the root
     /// namespace rather than to the enclosing one.
     ///

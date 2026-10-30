@@ -2694,9 +2694,20 @@ impl Compiler {
                 && args.first().and_then(Word::as_literal) == Some("variable")
                 && args[1..].iter().all(|w| w.as_literal().is_some()) =>
             {
+                // A name the method already declares — a private or a standard
+                // variable of its declarer — keeps that declaration: the method's
+                // variable resolver answers for it before the link would.
                 // One declaration per name: `variable a b` would assign.
                 self.push_empty();
                 for name in &args[1..] {
+                    let declared = name.as_literal().is_some_and(|n| {
+                        self.ns
+                            .links
+                            .contains_key(&(self.ns.current.clone(), n.to_string()))
+                    });
+                    if declared {
+                        continue;
+                    }
                     self.emit(Op::Pop, -1);
                     self.cmd_variable(std::slice::from_ref(name))?;
                 }
@@ -2705,6 +2716,11 @@ impl Compiler {
             // `classvariable a b` in a method body links the locals to the
             // variables of the class that declared the method, which is only
             // known when the method runs (`crate::oo::CLASS_VAR_MARK`).
+            name if name == crate::oo::PRIVATE_VAR_CMD
+                && self.ns.current == crate::oo::METHOD_NS =>
+            {
+                self.cmd_private_variable(args)
+            }
             "classvariable"
                 if self.ns.current == crate::oo::METHOD_NS
                     && args.iter().all(|w| w.as_literal().is_some()) =>
