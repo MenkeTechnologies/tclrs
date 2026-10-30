@@ -2683,7 +2683,13 @@ impl Compiler {
             // of their own, which a definition script reaches before the
             // built-in one (`TclGetNamespaceForQualName`).
             "variable"
-                if self.ns.current == "::oo::define" || self.ns.current == "::oo::objdefine" =>
+                if matches!(
+                    self.ns.current.as_str(),
+                    "::oo::define"
+                        | "::oo::objdefine"
+                        | crate::oo::CFG_CLASS_NS
+                        | crate::oo::CFG_OBJECT_NS
+                ) =>
             {
                 self.call_runtime_scoped("variable", args)
             }

@@ -949,3 +949,113 @@ v w
 "#;
     assert_eq!(run(script), expected);
 }
+
+/// Properties (`generic/tclOOProp.c`): `oo::configurable` mixes
+/// `oo::configuresupport::configurable` into its classes, whose definitions run
+/// in `oo::configuresupport::configurableclass` where `property` declares
+/// `-name` readable and/or writable with standard or scripted `<ReadProp-…>` and
+/// `<WriteProp-…>` methods; `configure` reads and writes them by unique prefix;
+/// `info class properties` and `info object properties`; the property slots;
+/// and `info commands ::oo::*` is tclsh's fourteen names.
+#[test]
+fn properties_and_oo_configurable() {
+    let script = r#"oo::configurable create P {
+  property x y
+  property ro -kind readable
+  property wo -kind writable
+  property c -get {return computed} -set {set ::seen $value}
+  variable x y ro wo
+  constructor {args} {set x 1; set y 2; set ro r; my configure {*}$args}
+}
+puts [info class properties P]|[info class properties P -writable]|[info class properties P -all]
+set p [P new -x 10]
+puts [$p configure]
+puts [$p configure -x]
+$p configure -y 5 -c 7
+puts [$p configure -y]|$::seen
+puts [catch {$p configure -ro 1} m]$m|$::errorCode
+puts [catch {$p configure -wo} m]$m
+puts [catch {$p configure -nope} m]$m|$::errorCode
+puts [catch {$p configure -x} m]$m
+puts [catch {$p configure -x 1 -y} m]$m
+puts [lsort [info class methods P -private]]
+puts [info class methodtype P <ReadProp-x>]|[info class methodtype P <WriteProp-c>]
+puts [info class definition P <ReadProp-c>]
+puts [info class mixins P]|[info object class P]|[info class superclasses oo::configurable]
+puts [info class methods oo::configuresupport::configurable]
+puts [info class definitionnamespace oo::configurable]|[info class definitionnamespace oo::configuresupport::configurable -instance]
+oo::objdefine $p property z
+puts [info object properties $p]|[info object properties $p -all]|[info object properties $p -all -writable]
+puts [catch {$p configure -z} m]$m
+oo::configurable create Q {superclass P; property q}
+puts [info class properties Q -all]
+puts [lsort [info commands ::oo::configuresupport::*]]
+puts [catch {oo::define P property -bad} m]$m|$::errorCode
+puts [catch {oo::define P property a::b} m]$m
+puts [catch {oo::define P property {a b}} m]$m
+puts [catch {oo::define P property a(b)} m]$m
+puts [catch {oo::define P property x -kind} m]$m|$::errorCode
+puts [catch {oo::define P property x -get} m]$m
+puts [catch {oo::define P property x -kind bad} m]$m
+puts [catch {oo::define P property x -foo y} m]$m
+oo::define P {properties zz}
+puts [info class properties P]
+puts [catch {oo::define P {meth m {} {}}} m]$m
+oo::define P {::oo::configuresupport::readableproperties -set -x}
+puts [info class properties P]
+puts [catch {oo::class create N {property n}} m]$m
+puts [lsort [info commands ::oo::*]]
+puts [info class instances oo::class]
+puts [lrange [info class instances oo::Slot] 7 end]
+puts [[oo::class create Fresh] new]
+oo::configurable create Cv {property v; variable v}
+set cv [Cv new]
+puts [catch {$cv configure -v} m]$m|$::errorCode
+$cv configure -v 3
+puts [$cv configure]
+oo::define Cv {property v -kind readable}
+puts [info class properties Cv -writable]x[info class properties Cv]
+puts [lsort [info class methods Cv -private]]
+"#;
+    let expected = r#"-c -ro -x -y|-c -wo -x -y|-c -ro -x -y
+-c computed -ro r -x 10 -y 2
+10
+5|7
+1property "-ro" is read only|TCL LOOKUP INDEX property -ro
+1property "-wo" is write only
+1bad property "-nope": must be -c, -ro, -x, or -y|TCL LOOKUP INDEX property -nope
+010
+1wrong # args: should be "::oo::Obj22 configure ?-option value ...?"
+<ReadProp-c> <ReadProp-ro> <ReadProp-x> <ReadProp-y> <WriteProp-c> <WriteProp-wo> <WriteProp-x> <WriteProp-y>
+PropertyGetter|method
+{} {return computed}
+::oo::configuresupport::configurable|::oo::configurable|::oo::class
+configure
+::oo::configuresupport::configurableclass|::oo::configuresupport::configurableobject
+-z|-c -ro -x -y -z|-c -wo -x -y -z
+1can't read "z": no such variable
+-c -q -ro -x -y
+::oo::configuresupport::configurable ::oo::configuresupport::objreadableproperties ::oo::configuresupport::objwritableproperties ::oo::configuresupport::readableproperties ::oo::configuresupport::writableproperties
+1bad property name "-bad": must not begin with -|TCL OO PROPERTY_FORMAT
+1bad property name "a::b": must not contain namespace separators
+1bad property name "a b": must be a simple word
+1bad property name "a(b)": must not contain parentheses
+1missing kind value to go with -kind option|TCL WRONGARGS
+1missing body to go with -get option
+1bad kind "bad": must be readable, readwrite, or writable
+1bad option "-foo": must be -get, -kind, or -set
+-c -ro -x -y -zz
+1invalid command name "meth"
+-x
+1invalid command name "property"
+::oo::DelegateName ::oo::InfoClass ::oo::InfoObject ::oo::Obj22 ::oo::SingletonInstance ::oo::Slot ::oo::UnknownDefinition ::oo::abstract ::oo::class ::oo::configurable ::oo::copy ::oo::define ::oo::objdefine ::oo::object ::oo::singleton
+::oo::object ::oo::class ::oo::Slot ::oo::singleton ::oo::SingletonInstance ::oo::abstract ::oo::configuresupport::configurable ::oo::configurable {::oo::Obj20:: oo ::delegate} {::oo::Obj23:: oo ::delegate}
+::oo::configuresupport::readableproperties ::oo::configuresupport::writableproperties ::oo::configuresupport::objreadableproperties ::oo::configuresupport::objwritableproperties
+::oo::Obj29
+1can't read "v": no such variable|TCL READ VARNAME
+-v 3
+x-v
+<ReadProp-v> <WriteProp-v>
+"#;
+    assert_eq!(run(script), expected);
+}

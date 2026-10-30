@@ -76,6 +76,11 @@ pub(crate) const CLASSVAR_CHECK_CMD: &str = "\u{0}oo::classvariable";
 /// `PRIVATE_VAR_CMD fullName name` makes the local `name` the object variable
 /// `fullName`.
 pub(crate) const PRIVATE_VAR_CMD: &str = "\u{0}oo::privatevariable";
+/// The definition namespaces of `oo::configurable`'s classes and their
+/// instances, which hold `property` and `properties` and reach the rest of
+/// `oo::define` / `oo::objdefine` through their namespace path.
+pub(crate) const CFG_CLASS_NS: &str = "::oo::configuresupport::configurableclass";
+pub(crate) const CFG_OBJECT_NS: &str = "::oo::configuresupport::configurableobject";
 
 /// `TCLOO_VERSION` and `TCLOO_PATCHLEVEL` (`generic/tclOO.h`).
 pub(crate) const TCLOO_VERSION: &str = "1.3";
@@ -131,6 +136,9 @@ pub(crate) enum Imp {
     Forward(Vec<String>),
     /// One of the methods `oo::object` and `oo::class` are born with.
     Builtin(Builtin),
+    /// A property's standard getter or setter (`Configurable_Getter`,
+    /// `Configurable_Setter`): the variable of the object it reads or writes.
+    Property { var: String, setter: bool },
 }
 
 /// A procedure-like method: its argument list, its body, and the procedure the
@@ -179,6 +187,20 @@ pub(crate) enum Builtin {
     SlotSet(Slot, bool),
     /// `Slot_ResolveClass`, the `Resolve` of the `mixin` and `superclass` slots.
     SlotResolveClass,
+    /// `oo::configuresupport::configurable`'s `configure`:
+    /// `TclOO_Configurable_Configure`.
+    Configure,
+    /// `oo::configurable`'s constructor: `TclOO_Configurable_Constructor`.
+    ConfigurableCtor,
+}
+
+/// A class's or an object's declared properties (`PropertyStorage`): the
+/// readable and the writable ones, each a set kept in declaration order, with
+/// the names hyphenated as `configure` takes them.
+#[derive(Clone, Default)]
+struct Props {
+    readable: Vec<String>,
+    writable: Vec<String>,
 }
 
 /// One entry of a method table: the export flags and, unless the record only
@@ -214,6 +236,8 @@ struct ClassData {
     /// `objDefinitionNs`: where `oo::objdefine` runs for an instance
     /// (`definitionnamespace -instance`).
     obj_def_ns: Option<String>,
+    /// The properties the class declares (`PropertyStorage`).
+    properties: Props,
 }
 
 struct Object {
@@ -234,6 +258,8 @@ struct Object {
     /// (`PrivateVariableMapping`'s `fullNameObj`): the declarer's own when
     /// they were declared, the origin's in a copy.
     private_epoch: u64,
+    /// The properties the object declares of its own (`PropertyStorage`).
+    properties: Props,
     class_data: Option<ClassData>,
     /// The destructor has been called (`DESTRUCTOR_CALLED`).
     destructing: bool,
@@ -356,6 +382,7 @@ impl Oo {
             variables: Vec::new(),
             private_vars: Vec::new(),
             private_epoch: 0,
+            properties: Props::default(),
             class_data: Some(ClassData {
                 subclasses: vec![1],
                 methods: object_methods,
@@ -385,6 +412,7 @@ impl Oo {
             variables: Vec::new(),
             private_vars: Vec::new(),
             private_epoch: 0,
+            properties: Props::default(),
             class_data: Some(ClassData {
                 superclasses: vec![0],
                 instances: vec![0, 1],
@@ -413,6 +441,7 @@ impl Oo {
         };
         oo.make_additional_classes();
         oo.make_slots();
+        oo.make_configurable();
         for id in [0, 1, SINGLETON, SINGLETON_INSTANCE, ABSTRACT] {
             let (cmd, ns) = {
                 let o = oo.obj(id);
@@ -475,6 +504,7 @@ impl Oo {
                 variables: Vec::new(),
                 private_vars: Vec::new(),
                 private_epoch: 0,
+                properties: Props::default(),
                 class_data: Some(ClassData {
                     superclasses: vec![superclass],
                     methods,
@@ -550,6 +580,26 @@ impl Oo {
             ("::oo::objdefine::filter", Slot::Filter, false),
             ("::oo::objdefine::mixin", Slot::Mixin, false),
             ("::oo::objdefine::variable", Slot::Variable, false),
+            (
+                "::oo::configuresupport::readableproperties",
+                Slot::ReadableProps,
+                true,
+            ),
+            (
+                "::oo::configuresupport::writableproperties",
+                Slot::WritableProps,
+                true,
+            ),
+            (
+                "::oo::configuresupport::objreadableproperties",
+                Slot::ReadableProps,
+                false,
+            ),
+            (
+                "::oo::configuresupport::objwritableproperties",
+                Slot::WritableProps,
+                false,
+            ),
         ];
         for (i, (command, which, class)) in slots.into_iter().enumerate() {
             let id = self.push_builtin_object(command, 4 + i as u64, None);
@@ -571,6 +621,32 @@ impl Oo {
             self.class_mut(class_cls).instances.retain(|&x| x != id);
             self.class_mut(slot_cls).instances.push(id);
         }
+    }
+
+    /// The rest of `MakeAdditionalClasses`: `oo::configuresupport::configurable`
+    /// (`::oo::Obj18`), whose `configure` the classes of `oo::configurable`
+    /// mix in, and the metaclass `oo::configurable` (`::oo::Obj19`) itself,
+    /// with the definition namespaces that hold `property`.
+    fn make_configurable(&mut self) {
+        let mut methods = BTreeMap::new();
+        methods.insert(
+            "configure".to_string(),
+            builtin(PUBLIC_METHOD, Builtin::Configure),
+        );
+        let support = self.push_builtin_object(
+            "::oo::configuresupport::configurable",
+            18,
+            Some((self.object_cls, methods)),
+        );
+        let c = self.class_mut(support);
+        c.cls_def_ns = Some(CFG_CLASS_NS.to_string());
+        c.obj_def_ns = Some(CFG_OBJECT_NS.to_string());
+        let class_cls = self.class_cls;
+        let configurable =
+            self.push_builtin_object("::oo::configurable", 19, Some((class_cls, BTreeMap::new())));
+        let c = self.class_mut(configurable);
+        c.constructor = Some(builtin(PUBLIC_METHOD, Builtin::ConfigurableCtor));
+        c.cls_def_ns = Some(CFG_CLASS_NS.to_string());
     }
 
     /// An object `InitFoundation` makes before any script runs: an instance of
@@ -595,6 +671,7 @@ impl Oo {
             variables: Vec::new(),
             private_vars: Vec::new(),
             private_epoch: 0,
+            properties: Props::default(),
             class_data: class.map(|(superclass, methods)| ClassData {
                 superclasses: vec![superclass],
                 methods,
@@ -895,6 +972,7 @@ impl Oo {
             variables: Vec::new(),
             private_vars: Vec::new(),
             private_epoch: 0,
+            properties: Props::default(),
             class_data: makes_class.then(|| ClassData {
                 superclasses: vec![self.object_cls],
                 ..ClassData::default()
@@ -1371,6 +1449,8 @@ fn method_type(imp: &Imp, name: &str) -> String {
         Imp::Proc(_) => "method".to_string(),
         Imp::Forward(_) => "forward".to_string(),
         Imp::Builtin(_) => format!("core method: \"{name}\""),
+        Imp::Property { setter: false, .. } => "PropertyGetter".to_string(),
+        Imp::Property { setter: true, .. } => "PropertySetter".to_string(),
     }
 }
 
@@ -1551,10 +1631,25 @@ pub(crate) fn install(reg: &mut Registry) {
     ] {
         reg.define(cmd);
     }
-    // `oo::Slot` and the standard slots.
-    for n in 3..=10 {
+    // `oo::Slot`, the standard slots and the configurable support classes.
+    for n in (3..=14).chain([18, 19]) {
+        reg.ensure(&format!("::oo::Obj{n}"));
         reg.define(&format!("::oo::Obj{n}::my"));
         reg.define(&format!("::oo::Obj{n}::myclass"));
+    }
+    for cmd in [
+        "::oo::configurable",
+        "::oo::configuresupport::configurable",
+        "::oo::configuresupport::readableproperties",
+        "::oo::configuresupport::writableproperties",
+        "::oo::configuresupport::objreadableproperties",
+        "::oo::configuresupport::objwritableproperties",
+    ] {
+        reg.define(cmd);
+    }
+    for space in [CFG_CLASS_NS, CFG_OBJECT_NS] {
+        reg.define(&format!("{space}::property"));
+        reg.define(&format!("{space}::properties"));
     }
     for cmd in DEFINE_CMDS {
         reg.define(&format!("::oo::define::{cmd}"));
@@ -1675,13 +1770,12 @@ impl Oo {
             Frame::Define { space, .. } => {
                 // Only `::oo::define` and `::oo::objdefine` hold the definition
                 // commands; a definition namespace holds what was put in it.
-                let table = define_table(space)?;
                 let prefix = format!("{}::", store_key(space));
                 let simple = key.strip_prefix(prefix.as_str()).unwrap_or(&key);
                 if simple.contains("::") {
                     return None;
                 }
-                define_prefix(simple, table).map(Target::DefineCmd)
+                define_lookup(space, simple).map(Target::DefineCmd)
             }
         }
     }
@@ -1845,6 +1939,9 @@ fn invoke_context(
         Imp::Proc(p) => run_proc(interp, vm, frame, &call, chain.flags, p, args, usage),
         Imp::Forward(prefix) => run_forward(interp, vm, obj, prefix, args, usage),
         Imp::Builtin(b) => run_builtin(interp, vm, frame, *b, args, usage, ns),
+        Imp::Property { var, setter } => {
+            property_access(interp, vm, obj, var, *setter, args, usage)
+        }
     };
     let mut state = lock(interp);
     if let (Some(saved), true) = (saved, state.oo.alive(obj)) {
@@ -2277,6 +2374,33 @@ fn run_builtin(
         Builtin::SlotGet(which, class) => slot_get(interp, which, class, usage, args),
         Builtin::SlotSet(which, class) => slot_set(interp, which, class, usage, args),
         Builtin::SlotResolveClass => slot_resolve_class(interp, usage, args),
+        Builtin::Configure => configure(interp, vm, obj, usage, args),
+        // `TclOO_Configurable_Constructor`: the new class mixes in
+        // `oo::configuresupport::configurable`, then the class constructor runs.
+        Builtin::ConfigurableCtor => {
+            if args.len() > 1 {
+                return Err(wrong_args(&usage_of(usage, "?definitionScript?")));
+            }
+            {
+                let mut state = lock(interp);
+                let support = "::oo::configuresupport::configurable".to_string();
+                set_mixins(&mut state.oo, obj, true, &[support], "::")?;
+            }
+            if index + 1 < chain.calls.len() {
+                invoke_context(
+                    interp,
+                    vm,
+                    obj,
+                    Arc::clone(chain),
+                    index + 1,
+                    args,
+                    usage,
+                    ns,
+                )
+            } else {
+                Ok(val(""))
+            }
+        }
         // `TclOO_Class_Cloned`: the rest of the chain, then
         // `UpdateClassDelegatesAfterClone` gives the copy a copy of the
         // origin's delegate in place of the origin's own, so the two classes'
@@ -3155,7 +3279,7 @@ fn define_cmd(
     // `MagicDefinitionInvoke`: the word is found in the definition namespace
     // by exact name or unique prefix (`FindCommand`); a word that names no
     // command there is run as written, inside the definition context.
-    if let Some(cmd) = define_table(&space).and_then(|t| define_prefix(&words[1], t)) {
+    if let Some(cmd) = define_lookup(&space, &words[1]) {
         let usage = format!("{written} {} {}", words[0], words[1]);
         return with_frame(interp, frame, || {
             define_sub(interp, vm, cmd, &usage, &words[2..])
@@ -3180,13 +3304,35 @@ fn definition_space(interp: &Shared, obj: Id, class: bool) -> Result<String, Tcl
         .ok_or_else(|| oo_err("no definition namespace available", "MONKEY_BUSINESS"))
 }
 
-/// The definition commands a definition namespace holds: `::oo::define`'s
-/// and `::oo::objdefine`'s, which this module implements; any other
-/// definition namespace holds only what the script put in it.
+/// `property` and `properties`, the commands of the configurable definition
+/// namespaces.
+const CFG_CMDS: &[&str] = &["properties", "property"];
+
+/// The commands of a definition namespace this module implements:
+/// `::oo::define`'s and `::oo::objdefine`'s, and those of the configurable
+/// definition namespaces. Any other definition namespace holds only what the
+/// script put in it.
 fn define_table(space: &str) -> Option<&'static [&'static str]> {
     match space {
         "::oo::define" => Some(DEFINE_CMDS),
         "::oo::objdefine" => Some(OBJDEFINE_CMDS),
+        CFG_CLASS_NS | CFG_OBJECT_NS => Some(CFG_CMDS),
+        _ => None,
+    }
+}
+
+/// The definition command `word` names in `space`. `::oo::define` and
+/// `::oo::objdefine` take a unique prefix too (their unknown handler is
+/// `oo::UnknownDefinition`); the configurable namespaces take the exact name
+/// of one of their own commands or, through their namespace path, of one of
+/// `oo::define`'s or `oo::objdefine`'s.
+fn define_lookup(space: &str, word: &str) -> Option<&'static str> {
+    let exact = |table: &[&'static str]| table.iter().find(|c| **c == word).copied();
+    match space {
+        "::oo::define" => define_prefix(word, DEFINE_CMDS),
+        "::oo::objdefine" => define_prefix(word, OBJDEFINE_CMDS),
+        CFG_CLASS_NS => exact(CFG_CMDS).or_else(|| exact(DEFINE_CMDS)),
+        CFG_OBJECT_NS => exact(CFG_CMDS).or_else(|| exact(OBJDEFINE_CMDS)),
         _ => None,
     }
 }
@@ -3250,7 +3396,7 @@ fn unknown_definition(interp: &Shared, vm: &mut VM, args: &[Value]) -> Result<Va
             ))
         }
     };
-    match define_table(&space).and_then(|t| define_prefix(&matched, t)) {
+    match define_lookup(&space, &matched) {
         Some(cmd) => define_sub(interp, vm, cmd, &matched, &words[1..]),
         None => {
             let mut call = vec![val(format!("{space}::{matched}"))];
@@ -3346,6 +3492,10 @@ pub(crate) enum Slot {
     Mixin,
     Filter,
     Variable,
+    /// `readableproperties` and `objreadableproperties`.
+    ReadableProps,
+    /// `writableproperties` and `objwritableproperties`.
+    WritableProps,
 }
 
 /// One definition command, run against the innermost definition context.
@@ -3643,6 +3793,7 @@ fn define_sub(
         }
         // `TclOODefineClassMethodObjCmd`: the method goes on the class's
         // delegate, and the class gets a forward `myclass name` to it.
+        "property" | "properties" => define_property(interp, !class, args),
         "classmethod" => {
             let (name, body) = match args {
                 [name] => (name, None),
@@ -3773,6 +3924,10 @@ fn slot_get(
         (Slot::Variable, false) if private => oo.obj(obj).private_vars.clone(),
         (Slot::Variable, true) => oo.class(obj).variables.clone(),
         (Slot::Variable, false) => oo.obj(obj).variables.clone(),
+        (Slot::ReadableProps, true) => oo.class(obj).properties.readable.clone(),
+        (Slot::ReadableProps, false) => oo.obj(obj).properties.readable.clone(),
+        (Slot::WritableProps, true) => oo.class(obj).properties.writable.clone(),
+        (Slot::WritableProps, false) => oo.obj(obj).properties.writable.clone(),
     };
     Ok(val(crate::list::join(&list)))
 }
@@ -3804,6 +3959,25 @@ fn slot_set(
     let items = crate::list::split(&to_tcl_string(list)).map_err(TclError::plain)?;
     match which {
         Slot::Superclass => set_superclasses(oo, obj, &items, &ns)?,
+        Slot::ReadableProps | Slot::WritableProps => {
+            // `SetPropertyList`: a set, first occurrence kept.
+            let mut unique: Vec<String> = Vec::with_capacity(items.len());
+            for p in items {
+                if !unique.contains(&p) {
+                    unique.push(p);
+                }
+            }
+            let props = if class {
+                &mut oo.class_mut(obj).properties
+            } else {
+                &mut oo.obj_mut(obj).properties
+            };
+            if which == Slot::ReadableProps {
+                props.readable = unique;
+            } else {
+                props.writable = unique;
+            }
+        }
         Slot::Mixin => set_mixins(oo, obj, class, &items, &ns)?,
         Slot::Filter => {
             if class {
@@ -3934,6 +4108,306 @@ fn slot_op(
         }
     };
     slot_call(interp, vm, slot, "Set", &[val(crate::list::join(&list))])
+}
+
+// ── properties (`generic/tclOOProp.c`) ──────────────────────────────────
+
+/// `BuildPropertyList` and its install: add `name` to `list` when `adding`
+/// and absent, take it out when not `adding` and present.
+fn register_property(list: &mut Vec<String>, name: &str, adding: bool) {
+    let present = list.iter().any(|p| p == name);
+    if adding && !present {
+        list.push(name.to_string());
+    } else if !adding && present {
+        list.retain(|p| p != name);
+    }
+}
+
+/// `TclOODefinePropertyCmd`: `property name ?-option value ...? ?name ...?`
+/// in a configurable class's definition, or an instance's when `instance`.
+fn define_property(interp: &Shared, instance: bool, args: &[String]) -> Result<Value, TclError> {
+    let (obj, _, _, _) = define_context(interp)?;
+    if !instance && !lock(interp).oo.is_class(obj) {
+        return Err(oo_err("attempt to misuse API", "MONKEY_BUSINESS"));
+    }
+    let mut i = 0;
+    while i < args.len() {
+        let name = &args[i];
+        let (mut getter, mut setter, mut kind) = (None, None, "readwrite");
+        while i + 1 < args.len() && args[i + 1].starts_with('-') {
+            let option = index_of("option", &args[i + 1], &["-get", "-kind", "-set"])?;
+            let Some(value) = args.get(i + 2) else {
+                let what = if option == "-kind" {
+                    "kind value"
+                } else {
+                    "body"
+                };
+                return Err(coded_err(
+                    format!("missing {what} to go with {option} option"),
+                    &["TCL", "WRONGARGS"],
+                ));
+            };
+            match option {
+                "-get" => getter = Some(value.clone()),
+                "-set" => setter = Some(value.clone()),
+                _ => kind = index_of("kind", value, &["readable", "readwrite", "writable"])?,
+            }
+            i += 2;
+        }
+        // `InstallStdPropertyImpls`: the name is checked, then the standard
+        // getter and setter go in where no body was given.
+        let why = if name.starts_with('-') {
+            Some("must not begin with -")
+        } else if crate::list::quote(name, false) != *name {
+            Some("must be a simple word")
+        } else if name.contains("::") {
+            Some("must not contain namespace separators")
+        } else if name.contains('(') || name.contains(')') {
+            Some("must not contain parentheses")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            return Err(oo_err(
+                format!("bad property name \"{name}\": {why}"),
+                "PROPERTY_FORMAT",
+            ));
+        }
+        let readable = kind != "writable";
+        let writable = kind != "readable";
+        let mut methods: Vec<(String, Arc<Imp>)> = Vec::new();
+        let standard = |setter: bool| {
+            Arc::new(Imp::Property {
+                var: name.clone(),
+                setter,
+            })
+        };
+        match (readable, &getter) {
+            (_, Some(body)) => methods.push((format!("<ReadProp-{name}>"), proc_method("", body)?)),
+            (true, None) => methods.push((format!("<ReadProp-{name}>"), standard(false))),
+            (false, None) => {}
+        }
+        match (writable, &setter) {
+            (_, Some(body)) => {
+                methods.push((format!("<WriteProp-{name}>"), proc_method("value", body)?))
+            }
+            (true, None) => methods.push((format!("<WriteProp-{name}>"), standard(true))),
+            (false, None) => {}
+        }
+        let hyphenated = format!("-{name}");
+        let mut state = lock(interp);
+        let oo = &mut state.oo;
+        let (table, props) = if instance {
+            let o = oo.obj_mut(obj);
+            (&mut o.methods, &mut o.properties)
+        } else {
+            let c = oo.class_mut(obj);
+            (&mut c.methods, &mut c.properties)
+        };
+        for (method, imp) in methods {
+            table.insert(
+                method,
+                Method {
+                    flags: 0,
+                    imp: Some(imp),
+                },
+            );
+        }
+        register_property(&mut props.readable, &hyphenated, readable);
+        register_property(&mut props.writable, &hyphenated, writable);
+        i += 1;
+    }
+    Ok(val(""))
+}
+
+impl Oo {
+    /// `FindClassProps`: the properties of `cls`, its class mixins and its
+    /// superclasses, stopping at the root object class.
+    fn class_props(&self, cls: Id, writable: bool, into: &mut Vec<String>) {
+        if !self.alive(cls) || !self.is_class(cls) {
+            return;
+        }
+        let c = self.class(cls);
+        let own = if writable {
+            &c.properties.writable
+        } else {
+            &c.properties.readable
+        };
+        for p in own {
+            if !into.contains(p) {
+                into.push(p.clone());
+            }
+        }
+        if cls == self.object_cls {
+            return;
+        }
+        for &m in &c.mixins {
+            self.class_props(m, writable, into);
+        }
+        for &s in &c.superclasses {
+            self.class_props(s, writable, into);
+        }
+    }
+
+    /// `GetAllObjectProperties`: the sorted properties of `obj`, its mixins and
+    /// its class.
+    fn object_props(&self, obj: Id, writable: bool) -> Vec<String> {
+        let o = self.obj(obj);
+        let mut all: Vec<String> = Vec::new();
+        let own = if writable {
+            &o.properties.writable
+        } else {
+            &o.properties.readable
+        };
+        for p in own {
+            if !all.contains(p) {
+                all.push(p.clone());
+            }
+        }
+        for &m in &o.mixins {
+            self.class_props(m, writable, &mut all);
+        }
+        self.class_props(o.class, writable, &mut all);
+        all.sort();
+        all
+    }
+}
+
+/// `info class properties` and `info object properties`
+/// (`TclOOInfoClassPropCmd`, `TclOOInfoObjectPropCmd`).
+fn info_properties(
+    oo: &Oo,
+    target: Id,
+    class: bool,
+    options: &[String],
+) -> Result<String, TclError> {
+    let (mut all, mut writable) = (false, false);
+    for o in options {
+        match index_of("option", o, &["-all", "-readable", "-writable"])? {
+            "-all" => all = true,
+            "-readable" => writable = false,
+            _ => writable = true,
+        }
+    }
+    let mut list = match (all, class) {
+        (true, true) => {
+            let mut v = Vec::new();
+            oo.class_props(target, writable, &mut v);
+            v
+        }
+        (true, false) => oo.object_props(target, writable),
+        (false, true) => {
+            let p = &oo.class(target).properties;
+            if writable {
+                p.writable.clone()
+            } else {
+                p.readable.clone()
+            }
+        }
+        (false, false) => {
+            let p = &oo.obj(target).properties;
+            if writable {
+                p.writable.clone()
+            } else {
+                p.readable.clone()
+            }
+        }
+    };
+    list.sort();
+    Ok(crate::list::join(&list))
+}
+
+/// `Configurable_Getter` and `Configurable_Setter`: the object variable named
+/// after the property, read or written.
+fn property_access(
+    interp: &Shared,
+    vm: &mut VM,
+    obj: Id,
+    var: &str,
+    setter: bool,
+    args: &[Value],
+    usage: &str,
+) -> Result<Value, TclError> {
+    match (setter, args) {
+        (false, []) | (true, [_]) => {}
+        (false, _) => return Err(wrong_args(usage)),
+        (true, _) => return Err(wrong_args(&usage_of(usage, "value"))),
+    }
+    crate::runtime::with_written_back(interp, vm, |interp| {
+        let mut state = lock(interp);
+        let name = state.oo.private_var_name(obj, var);
+        let key = format!("{}::{name}", store_key(&state.oo.ns_of(obj)));
+        if let [value] = args {
+            state.globals.insert(key, value.clone());
+            return Ok(value.clone());
+        }
+        match state.globals.get(&key) {
+            Some(Value::Undef) | None => Err(coded_err(
+                format!("can't read \"{var}\": no such variable"),
+                &["TCL", "READ", "VARNAME"],
+            )),
+            Some(v) => Ok(v.clone()),
+        }
+    })
+}
+
+/// `GetPropertyName`: the property `given` names (a unique prefix will do)
+/// among the object's readable or writable ones, or the refusal — worded
+/// `property "-x" is read only` when the other set has it.
+fn property_name(oo: &Oo, obj: Id, writable: bool, given: &str) -> Result<String, TclError> {
+    let names = oo.object_props(obj, writable);
+    let table: Vec<&str> = names.iter().map(String::as_str).collect();
+    match index_of("property", given, &table) {
+        Ok(found) => Ok(found.to_string()),
+        Err(mut e) => {
+            let others = oo.object_props(obj, !writable);
+            let others: Vec<&str> = others.iter().map(String::as_str).collect();
+            if let Ok(other) = index_of("property", given, &others) {
+                let only = if writable { "read" } else { "write" };
+                e.msg = format!("property \"{other}\" is {only} only");
+            }
+            Err(e)
+        }
+    }
+}
+
+/// `TclOO_Configurable_Configure`.
+fn configure(
+    interp: &Shared,
+    vm: &mut VM,
+    obj: Id,
+    usage: &str,
+    args: &[Value],
+) -> Result<Value, TclError> {
+    if args.len() % 2 == 1 && args.len() != 1 {
+        return Err(wrong_args(&usage_of(usage, "?-option value ...?")));
+    }
+    let read = |interp: &Shared, vm: &mut VM, name: &str| {
+        slot_call(interp, vm, obj, &format!("<ReadProp{name}>"), &[])
+    };
+    match args {
+        [] => {
+            let names = lock(interp).oo.object_props(obj, false);
+            let mut out = Vec::with_capacity(names.len() * 2);
+            for name in names {
+                let value = read(interp, vm, &name)?;
+                out.push(name);
+                out.push(to_tcl_string(&value));
+            }
+            Ok(val(crate::list::join(&out)))
+        }
+        [one] => {
+            let name = property_name(&lock(interp).oo, obj, false, &to_tcl_string(one))?;
+            read(interp, vm, &name)
+        }
+        _ => {
+            for pair in args.chunks(2) {
+                let name = property_name(&lock(interp).oo, obj, true, &to_tcl_string(&pair[0]))?;
+                slot_call(interp, vm, obj, &format!("<WriteProp{name}>"), &pair[1..])?;
+            }
+            Ok(val(""))
+        }
+    }
 }
 
 /// The class a definition names, refused with `msg` when it names an object
@@ -4444,9 +4918,10 @@ fn info_object(interp: &Shared, ns: &str, args: &[Value]) -> Result<Value, TclEr
             }
         }
         _ => {
-            return Err(TclError::plain(format!(
-                "info object {sub} is not supported yet: properties are not modelled"
-            )))
+            let [name, options @ ..] = rest else {
+                return Err(usage("objName ?options...?"));
+            };
+            info_properties(oo, object(name)?, false, options)?
         }
     };
     Ok(val(answer))
@@ -4615,9 +5090,10 @@ fn info_class(interp: &Shared, ns: &str, args: &[Value]) -> Result<Value, TclErr
             ns.clone().unwrap_or_default()
         }
         _ => {
-            return Err(TclError::plain(format!(
-                "info class {sub} is not supported yet: properties are not modelled"
-            )))
+            let [name, options @ ..] = rest else {
+                return Err(usage("className ?options...?"));
+            };
+            info_properties(oo, class(name)?, true, options)?
         }
     };
     Ok(val(answer))
@@ -4638,6 +5114,7 @@ impl Oo {
             variables: o.variables.clone(),
             private_vars: o.private_vars.clone(),
             private_epoch: o.private_epoch,
+            properties: o.properties.clone(),
             class_data: o.class_data.as_ref().map(|c| ClassData {
                 superclasses: c.superclasses.clone(),
                 mixins: c.mixins.clone(),
@@ -4663,6 +5140,7 @@ impl Oo {
             variables: Vec::new(),
             private_vars: Vec::new(),
             private_epoch: 0,
+            properties: Props::default(),
             class_data: None,
             destructing: false,
             filter_handling: false,

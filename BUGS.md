@@ -635,7 +635,6 @@ approximated, and nothing is silently mis-run.
   not for a procedure that is redefined or deleted with its namespace.
 - **What TclOO leaves out.** The core object system is in `src/oo.rs` (see
   *Implemented*); measured against tclsh 9.1, these parts are not:
-  * Properties (`oo::configurable`, `property`, `info … properties`).
   * `$obj variable x` from outside a method, and `my variable` with a computed
     name, link only at the global level; inside a procedure they are refused.
     `classvariable` with a computed name is refused for the same reason.
