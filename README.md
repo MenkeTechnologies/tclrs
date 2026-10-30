@@ -393,7 +393,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | Errors | `catch` (with a result variable and an options variable), `try` (`on`, `trap`, `finally`, with `-during`), `error`, `throw`, `return -options` and any other option `return` is given; `-errorcode` for the errors builtins raise, and `-errorinfo`, `-errorstack`, `-errorline`, `$::errorInfo` and `$::errorCode` as the error leaves each command, procedure body and nested script, with `return -errorinfo` and `error`'s `errorInfo` argument; Tcl return codes across every boundary — a `break` or `continue` out of an `eval`, `uplevel` or `source` script reaches the loop, and one out of a procedure reaches its caller |
 | Coroutines | `coroutine`, `yield`, `yieldto`, `info coroutine` |
 | Namespaces | `namespace` — `eval`, `current`, `qualifiers`, `tail`, `parent`, `children`, `exists`, `delete`, `code`, `inscope`, `export`, `import`, `forget`, `origin`, `which`, `upvar`, `ensemble exists` / `create` / `configure`, and calls through the ensemble command (`-map`, `-subcommands`, `-prefixes`); `variable`; `rename`; every built-in under its global spelling (`::puts`, `::string length`, `::tcl::prefix`), as a call and as a `proc` name |
-| Objects | TclOO: `oo::class`, `oo::object`, `oo::singleton`, `oo::abstract`, `oo::define`, `oo::objdefine`, `oo::copy`; constructors, destructors, methods, forwards, `export` / `unexport` / `private`, `superclass`, `mixin`, `filter` and `variable` with their slot operations, `deletemethod`, `renamemethod`; `self`, `my`, `next`, `nextto`, `myclass`, and the `oo::Helpers` commands `callback`, `mymethod`, `classvariable` and `link`; see [TclOO](#tcloo) |
+| Objects | TclOO: `oo::class`, `oo::object`, `oo::singleton`, `oo::abstract`, `oo::define`, `oo::objdefine`, `oo::copy`; constructors, destructors, methods, forwards, `export` / `unexport` / `private`, `superclass`, `mixin`, `filter` and `variable` with their slot operations, `deletemethod`, `renamemethod`, `classmethod`, `definitionnamespace`; `oo::DelegateName`; `self`, `my`, `next`, `nextto`, `myclass`, and the `oo::Helpers` commands `callback`, `mymethod`, `classvariable` and `link`; see [TclOO](#tcloo) |
 | The event loop | `after` — `ms`, `ms script`, `idle script`, `cancel`, `info`; `update`, `update idletasks`; `vwait` |
 | Scope | `uplevel`, `upvar`, `apply` |
 | Introspection | `info` — `args`, `body`, `commands`, `complete`, `coroutine`, `default`, `exists`, `functions`, `frame`, `globals`, `hostname`, `level`, `library`, `locals`, `nameofexecutable`, `object`, `class`, `patchlevel`, `procs`, `script`, `sharedlibextension`, `tclversion`, `vars` |
@@ -750,8 +750,11 @@ serves every instance. `oo::singleton` and `oo::abstract` are the metaclasses
 instance, which refuses `destroy` and `oo::copy`, and an abstract class has no
 `new` or `create` while its subclasses do. A private variable (TIP 500) is kept
 in the object's namespace as `"<creation id> : <name>"` of its declarer, so
-two classes' private `x` are two variables. What TclOO leaves out — class
-methods, properties, slots as objects — is listed in
+two classes' private `x` are two variables. Every class has a delegate
+(`<namespace>:: oo ::delegate`) mixed into it, which
+holds its `classmethod`s, and `definitionnamespace` chooses where `oo::define`
+and `oo::objdefine` run. What TclOO leaves out — properties, slots as objects —
+is listed in
 [`BUGS.md`](BUGS.md).
 
 

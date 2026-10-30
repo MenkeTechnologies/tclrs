@@ -509,7 +509,7 @@ impl Registry {
     }
 
     /// Every command in `ns`, fully qualified and sorted.
-    fn commands_in(&self, ns: &str) -> Vec<String> {
+    pub(crate) fn commands_in(&self, ns: &str) -> Vec<String> {
         self.commands
             .keys()
             .filter(|name| parent_of(name) == ns)

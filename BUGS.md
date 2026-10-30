@@ -635,10 +635,6 @@ approximated, and nothing is silently mis-run.
   not for a procedure that is redefined or deleted with its namespace.
 - **What TclOO leaves out.** The core object system is in `src/oo.rs` (see
   *Implemented*); measured against tclsh 9.1, these parts are not:
-  * `oo::define … classmethod`, `definitionnamespace` and `info class
-    definitionnamespace`, which need the class delegate (`<class>:: oo
-    ::delegate`) — the delegate's object number is spent, so numbering
-    matches, but the delegate does not exist.
   * Properties (`oo::configurable`, `property`, `info … properties`).
   * Slots as objects: `oo::define::superclass` and the rest are definition
     commands here, not instances of `oo::Slot`, so `info object class

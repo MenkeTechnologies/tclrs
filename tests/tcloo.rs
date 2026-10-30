@@ -670,3 +670,119 @@ p q
 "#;
     assert_eq!(run(script), expected);
 }
+
+/// Every class gets a delegate, `<namespace>:: oo ::delegate`, made before its
+/// definition script runs and mixed into it afterwards with its superclasses'
+/// delegates as superclasses (`TclOO_Class_Constructor`, `MixinClassDelegates`);
+/// `classmethod` puts a method on the delegate and a `myclass` forward on the
+/// class; `oo::copy` of a class copies the delegate (`TclOO_Class_Cloned`);
+/// `definitionnamespace` and `info class definitionnamespace` choose where
+/// `oo::define` and `oo::objdefine` run (`TclOOGetDefineContextNamespace`);
+/// `oo::DelegateName` and `oo::UnknownDefinition`.
+#[test]
+fn class_delegates_classmethod_and_definition_namespaces() {
+    let script = r#"oo::class create A
+oo::class create B {superclass A}
+puts [oo::DelegateName A]|[oo::DelegateName B]
+set d [oo::DelegateName B]
+puts [info object class $d]|[info class superclasses $d]|[info object mixins B]|[info object mixins A]
+puts [info class superclasses [oo::DelegateName A]]
+puts [info object namespace $d]
+puts [lrange [info class instances oo::class] end-3 end]
+puts [catch {oo::DelegateName} m]$m
+puts [catch {oo::DelegateName nope} m]$m
+puts [catch {oo::DelegateName [B new]} m]$m
+oo::define A classmethod cm {x} {return "cm:[self]:$x"}
+puts [B cm 1]|[A cm 2]
+puts [catch {[B new] cm 3} m]$m
+puts [info class methods $d]|[info class methods [oo::DelegateName A]]
+oo::class create Z {classmethod zz {} {return zz}}
+puts [Z zz]
+puts [info object methods Z]|[lsort [info object methods Z -all]]
+puts [info class definition [oo::DelegateName Z] zz]
+puts [info class forward Z zz]
+puts [info class definitionnamespace A]x
+namespace eval ::foo {proc hello {} {return hi}}
+namespace eval ::bar {proc hey {} {return hey}}
+oo::define A definitionnamespace ::foo
+puts [info class definitionnamespace A]
+puts [info class definitionnamespace A -instance]x
+oo::define A definitionnamespace -instance ::bar
+puts [info class definitionnamespace A -instance]
+puts [info class definitionnamespace oo::class]|[info class definitionnamespace oo::object -instance]
+puts [catch {oo::define A2 hello} m]$m
+set ai [A new]
+puts [catch {oo::objdefine $ai hey} m]$m
+puts [catch {oo::objdefine $ai {hey}} m]$m
+puts [catch {oo::objdefine $ai {method x {} {}}} m]$m
+oo::define A definitionnamespace {}
+puts [info class definitionnamespace A]x
+puts [catch {oo::define A classmethod} m]$m
+puts [catch {oo::define oo::class definitionnamespace ::foo} m]$m
+puts [catch {oo::define A definitionnamespace ::nope} m]$m
+puts [catch {oo::define A definitionnamespace -bogus ::foo} m]$m
+oo::class create Meta {superclass oo::class}
+oo::define Meta definitionnamespace ::foo
+Meta create K
+puts [catch {oo::define K hello} m]$m
+puts [catch {oo::define K {hello}} m]$m
+puts [catch {oo::define K {method q {} {}}} m]$m
+oo::define Z private classmethod pz {} {return pz}
+puts [catch {Z pz} m]$m
+puts [info class methods Z -private]
+oo::copy Z Z2
+puts [Z2 zz][oo::DelegateName Z2]
+oo::define Z classmethod zz {} {return zz2}
+puts [Z zz][Z2 zz]
+puts [info object mixins Z2]
+puts [catch {::oo::UnknownDefinition} m]$m|$::errorCode
+puts [catch {::oo::UnknownDefinition meth} m]$m
+puts [catch {oo::define Z {meth y {} {return y}}} m]$m[[Z new] y]
+puts [catch {oo::define Z {s}} m]$m
+puts [info commands ::oo::DelegateName][info commands ::oo::UnknownDefinition]
+"#;
+    let expected = r#"::oo::Obj20:: oo ::delegate|::oo::Obj22:: oo ::delegate
+::oo::class|::oo::object {::oo::Obj20:: oo ::delegate}|{::oo::Obj22:: oo ::delegate}|{::oo::Obj20:: oo ::delegate}
+::oo::object
+::oo::Obj23
+::A {::oo::Obj20:: oo ::delegate} ::B {::oo::Obj22:: oo ::delegate}
+1wrong # args: should be "oo::DelegateName class"
+1nope does not refer to an object
+1"::oo::Obj24" is not a class
+cm:::B:1|cm:::A:2
+0cm:::B:3
+|cm
+zz
+|create destroy new zz
+{} {return zz}
+myclass zz
+x
+::foo
+x
+::bar
+::oo::define|::oo::objdefine
+1A2 does not refer to an object
+0hey
+0hey
+1invalid command name "method"
+x
+1wrong # args: should be "classmethod name ?args body?"
+1may not modify the definition namespace of the root classes
+1namespace "::nope" not found
+1bad kind "-bogus": must be -class or -instance
+0hi
+0hi
+1invalid command name "method"
+1unknown method "pz": must be create, destroy, new or zz
+zz
+zz::oo::Obj33:: oo ::delegate
+zz2zz
+{::oo::Obj33:: oo ::delegate}
+1bad call of unknown handler|TCL OO BAD_UNKNOWN
+1this command may only be called from within the context of an ::oo::define or ::oo::objdefine command
+0y
+1invalid command name "s"
+::oo::DelegateName::oo::UnknownDefinition
+"#;
+    assert_eq!(run(script), expected);
+}

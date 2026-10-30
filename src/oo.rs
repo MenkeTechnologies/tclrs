@@ -162,6 +162,8 @@ pub(crate) enum Builtin {
     SingletonDestroy,
     /// `TclOO_SingletonInstance_Cloned`.
     SingletonCloned,
+    /// `TclOO_Class_Cloned`.
+    ClassCloned,
 }
 
 /// One entry of a method table: the export flags and, unless the record only
@@ -187,6 +189,12 @@ struct ClassData {
     methods: BTreeMap<String, Method>,
     constructor: Option<Method>,
     destructor: Option<Method>,
+    /// `clsDefinitionNs`: where `oo::define` runs for a class whose class
+    /// this is (`definitionnamespace -class`).
+    cls_def_ns: Option<String>,
+    /// `objDefinitionNs`: where `oo::objdefine` runs for an instance
+    /// (`definitionnamespace -instance`).
+    obj_def_ns: Option<String>,
 }
 
 struct Object {
@@ -251,6 +259,9 @@ pub(crate) enum Frame {
         /// The namespace the definition was invoked from, which a class name
         /// inside it is resolved against (`GetClassInOuterContext`).
         outer: String,
+        /// The namespace the definition runs in (`TclOOGetDefineContextNamespace`):
+        /// `::oo::define`, `::oo::objdefine` or a definition namespace.
+        space: String,
     },
 }
 
@@ -268,6 +279,9 @@ pub(crate) struct Oo {
     /// The commands `link` made, by key: the object whose `my` each calls and
     /// the method it names (`TclAliasCreate` onto the object's `my`).
     links: BTreeMap<String, (Id, String)>,
+    /// The objects whose deletion is under way (`OBJECT_DESTRUCTING`): a
+    /// descendant that reaches back to one of them leaves it alone.
+    deleting: HashSet<Id>,
 }
 
 impl Default for Oo {
@@ -307,6 +321,7 @@ impl Oo {
             "createWithNamespace".to_string(),
             builtin(0, Builtin::CreateNs),
         );
+        class_methods.insert("<cloned>".to_string(), builtin(0, Builtin::ClassCloned));
         let object = Object {
             command: "::oo::object".to_string(),
             ns: "::oo::Obj1".to_string(),
@@ -320,6 +335,7 @@ impl Oo {
             class_data: Some(ClassData {
                 subclasses: vec![1],
                 methods: object_methods,
+                obj_def_ns: Some("::oo::objdefine".to_string()),
                 ..ClassData::default()
             }),
             destructing: false,
@@ -349,6 +365,7 @@ impl Oo {
                 instances: vec![0, 1],
                 methods: class_methods,
                 constructor: Some(builtin(PUBLIC_METHOD, Builtin::ClassCtor)),
+                cls_def_ns: Some("::oo::define".to_string()),
                 ..ClassData::default()
             }),
             destructing: false,
@@ -367,6 +384,7 @@ impl Oo {
             class_cls: 1,
             graveyard: Default::default(),
             links: BTreeMap::new(),
+            deleting: HashSet::new(),
         };
         oo.make_additional_classes();
         for id in [0, 1, SINGLETON, SINGLETON_INSTANCE, ABSTRACT] {
@@ -523,6 +541,96 @@ impl Oo {
                 format!("{}::{rest}", store_key(&self.obj(obj).ns))
             }
             _ => format!("\u{0}oo-gone::{rest}"),
+        }
+    }
+
+    /// `TclOOGetDefineContextNamespace`: the namespace `oo::define` (when
+    /// `for_class`) or `oo::objdefine` runs a definition of `obj` in — the
+    /// first definition namespace along `obj`'s class and mixins, with their
+    /// superclasses and class mixins (`AddSimpleDefineNamespaces`, mixins
+    /// first), that names an existing namespace.
+    fn define_space(&self, reg: &Registry, obj: Id, for_class: bool) -> Option<String> {
+        let mut chain: Vec<(Id, String)> = Vec::new();
+        for flags in [BUILDING_MIXINS, 0] {
+            for &m in &self.obj(obj).mixins {
+                self.add_define_namespaces(m, &mut chain, for_class, flags | TRAVERSED_MIXIN);
+            }
+            self.add_define_namespaces(self.obj(obj).class, &mut chain, for_class, flags);
+        }
+        chain
+            .into_iter()
+            .map(|(_, ns)| ns)
+            .find(|ns| reg.exists(ns))
+    }
+
+    /// `AddSimpleClassDefineNamespaces` and `AddDefinitionNamespaceToChain`.
+    fn add_define_namespaces(
+        &self,
+        cls: Id,
+        chain: &mut Vec<(Id, String)>,
+        for_class: bool,
+        flags: u32,
+    ) {
+        if !self.alive(cls) || !self.is_class(cls) {
+            return;
+        }
+        let c = self.class(cls);
+        for &m in &c.mixins {
+            self.add_define_namespaces(m, chain, for_class, flags | TRAVERSED_MIXIN);
+        }
+        let ns = if for_class {
+            &c.cls_def_ns
+        } else {
+            &c.obj_def_ns
+        };
+        if let (Some(ns), true) = (ns, mixin_consistent(flags)) {
+            match chain.iter().position(|(d, _)| *d == cls) {
+                // The entry moves as late as it can, exactly as the C shifts
+                // the entries after it down one and writes it at its old place.
+                Some(i) if i + 1 < chain.len() => {
+                    let len = chain.len();
+                    for j in i..len - 1 {
+                        chain[j] = chain[j + 1].clone();
+                    }
+                    chain[i] = (cls, ns.clone());
+                }
+                Some(_) => {}
+                None => chain.push((cls, ns.clone())),
+            }
+        }
+        for &s in &c.superclasses {
+            self.add_define_namespaces(s, chain, for_class, flags);
+        }
+    }
+
+    /// The class delegate of `cls` (`GetClassDelegate`): the class named
+    /// `<namespace>:: oo ::delegate`, when there is one.
+    fn delegate_of(&self, cls: Id) -> Option<Id> {
+        let name = format!("{}:: oo ::delegate", self.ns_of(cls));
+        let id = *self.by_command.get(store_key(&name))?;
+        self.is_class(id).then_some(id)
+    }
+
+    /// `MixinClassDelegates`: the delegate takes the delegates of `cls`'s
+    /// superclasses as superclasses (`SetDelegateSuperclasses`) and is mixed
+    /// into `cls` itself (`InstallDelegateAsMixin`).
+    fn mixin_class_delegates(&mut self, cls: Id, delegate: Id) {
+        if !self.alive(cls) || !self.alive(delegate) || !self.is_class(delegate) {
+            return;
+        }
+        let supers = self.class(cls).superclasses.clone();
+        for s in supers {
+            let Some(sd) = self.delegate_of(s) else {
+                continue;
+            };
+            if !self.class(delegate).superclasses.contains(&sd) {
+                self.class_mut(delegate).superclasses.push(sd);
+                self.class_mut(sd).subclasses.push(delegate);
+            }
+        }
+        if !self.obj(cls).mixins.contains(&delegate) {
+            self.obj_mut(cls).mixins.push(delegate);
+            self.class_mut(delegate).instances.push(cls);
         }
     }
 
@@ -1154,6 +1262,9 @@ fn bad_index(what: &str, given: &str, table: &[&str], ambiguous: bool) -> TclErr
     let list = match table {
         [] => String::new(),
         [only] => (*only).to_string(),
+        // `Tcl_GetIndexFromObj` puts a comma before the `or` only in a
+        // list of three or more.
+        [first, last] => format!("{first} or {last}"),
         [init @ .., last] => format!("{}, or {last}", init.join(", ")),
     };
     let adjective = if ambiguous { "ambiguous" } else { "bad" };
@@ -1253,6 +1364,8 @@ pub(crate) fn install(reg: &mut Registry) {
         "::oo::objdefine",
         "::oo::InfoObject",
         "::oo::InfoClass",
+        "::oo::DelegateName",
+        "::oo::UnknownDefinition",
         "::oo::Helpers::self",
         "::oo::Helpers::next",
         "::oo::Helpers::nextto",
@@ -1308,6 +1421,11 @@ enum Target {
     MyClass(Id),
     /// A command `link` made: the object's `my` with the method named.
     Link(Id, String),
+    /// `oo::DelegateName`.
+    DelegateName,
+    /// `oo::UnknownDefinition`, the unknown handler of the definition
+    /// namespaces.
+    UnknownDefinition,
 }
 
 /// A unique prefix of one of `table`'s names, as `TclOOUnknownDefinition`
@@ -1359,6 +1477,8 @@ impl Oo {
             "oo::copy" => return Some(Target::Copy),
             "oo::InfoObject" => return Some(Target::InfoObject),
             "oo::InfoClass" => return Some(Target::InfoClass),
+            "oo::DelegateName" => return Some(Target::DelegateName),
+            "oo::UnknownDefinition" => return Some(Target::UnknownDefinition),
             "oo::Helpers::callback" => return Some(Target::Helper("callback")),
             "oo::Helpers::mymethod" => return Some(Target::Helper("mymethod")),
             "oo::Helpers::classvariable" => return Some(Target::Helper("classvariable")),
@@ -1385,13 +1505,12 @@ impl Oo {
                 "myclass" => Some(Target::MyClass(*obj)),
                 _ => None,
             },
-            Frame::Define { class, .. } => {
-                let (space, table) = if *class {
-                    ("oo::define::", DEFINE_CMDS)
-                } else {
-                    ("oo::objdefine::", OBJDEFINE_CMDS)
-                };
-                let simple = key.strip_prefix(space).unwrap_or(&key);
+            Frame::Define { space, .. } => {
+                // Only `::oo::define` and `::oo::objdefine` hold the definition
+                // commands; a definition namespace holds what was put in it.
+                let table = define_table(space)?;
+                let prefix = format!("{}::", store_key(space));
+                let simple = key.strip_prefix(prefix.as_str()).unwrap_or(&key);
                 if simple.contains("::") {
                     return None;
                 }
@@ -1443,6 +1562,15 @@ pub(crate) fn try_dispatch(
         Target::CurrentNs => Ok(val(lock(interp).oo.map_ns(METHOD_NS))),
         Target::DefineCmd(cmd) => define_sub(interp, vm, cmd, name, &strings(args)),
         Target::Helper(which) => helper(interp, which, name, args),
+        Target::DelegateName => match args {
+            [class] => {
+                let state = lock(interp);
+                class_of(&state.oo, &to_tcl_string(class), &ns)
+                    .map(|c| val(format!("{}:: oo ::delegate", state.oo.ns_of(c))))
+            }
+            _ => Err(wrong_args(&format!("{name} class"))),
+        },
+        Target::UnknownDefinition => unknown_definition(interp, vm, args),
         Target::MyClass(id) => {
             if args.is_empty() {
                 return Some(Err(wrong_args(&format!("{name} methodName ?arg ...?"))));
@@ -1800,7 +1928,12 @@ fn run_builtin(
     usage: &str,
     ns: &str,
 ) -> Result<Value, TclError> {
-    let Frame::Method { obj, ref chain, .. } = frame else {
+    let Frame::Method {
+        obj,
+        ref chain,
+        index,
+    } = frame
+    else {
         unreachable!("a method runs in a method frame")
     };
     match b {
@@ -1947,23 +2080,90 @@ fn run_builtin(
         }
         Builtin::SingletonDestroy => Err(oo_err("may not destroy a singleton object", "SINGLETON")),
         Builtin::SingletonCloned => Err(oo_err("may not clone a singleton object", "SINGLETON")),
+        // `TclOO_Class_Cloned`: the rest of the chain, then
+        // `UpdateClassDelegatesAfterClone` gives the copy a copy of the
+        // origin's delegate in place of the origin's own, so the two classes'
+        // class methods evolve apart.
+        Builtin::ClassCloned => {
+            let [origin] = args else {
+                return Err(wrong_args(&usage_of(usage, "originObject")));
+            };
+            let origin_name = to_tcl_string(origin);
+            let origin = lock(interp)
+                .oo
+                .lookup(&origin_name, ns)
+                .ok_or_else(|| not_an_object(&origin_name))?;
+            if index + 1 < chain.calls.len() {
+                invoke_context(
+                    interp,
+                    vm,
+                    obj,
+                    Arc::clone(chain),
+                    index + 1,
+                    args,
+                    usage,
+                    ns,
+                )?;
+            }
+            let (origin_delegate, target_name) = {
+                let state = lock(interp);
+                let oo = &state.oo;
+                if !oo.alive(origin) || !oo.is_class(origin) || !oo.is_class(obj) {
+                    return Ok(val(""));
+                }
+                let Some(d) = oo.delegate_of(origin) else {
+                    return Ok(val(""));
+                };
+                (d, format!("{}:: oo ::delegate", oo.ns_of(obj)))
+            };
+            let source = lock(interp).oo.name(origin_delegate);
+            copy_cmd(interp, vm, "::", &[val(source), val(target_name.clone())])?;
+            let mut state = lock(interp);
+            let oo = &mut state.oo;
+            let Some(&copy) = oo.by_command.get(store_key(&target_name)) else {
+                return Ok(val(""));
+            };
+            if let Some(at) = oo
+                .obj(obj)
+                .mixins
+                .iter()
+                .position(|&m| m == origin_delegate)
+            {
+                oo.class_mut(origin_delegate)
+                    .instances
+                    .retain(|&i| i != obj);
+                oo.obj_mut(obj).mixins[at] = copy;
+                oo.class_mut(copy).instances.push(obj);
+            }
+            Ok(val(""))
+        }
         Builtin::ClassCtor => {
             if args.len() > 1 {
                 return Err(wrong_args(&usage_of(usage, "?definitionScript?")));
             }
             // `TclOO_Class_Constructor` makes the class's delegate
-            // (`<class>:: oo ::delegate`) before the definition script runs,
-            // and it takes the next object number — which is why classes are
-            // numbered in twos. The delegate itself is not modelled.
-            lock(interp).oo.ns_count += 1;
-            match args {
+            // (`<class>:: oo ::delegate`), an instance of `oo::class` whose
+            // constructor does not run, before the definition script runs —
+            // it takes the next object number, which is why classes are
+            // numbered in twos — and mixes it in afterwards, whatever the
+            // script did (`PostClassConstructor`).
+            let delegate = {
+                let mut state = lock(interp);
+                let name = format!("{}:: oo ::delegate", state.oo.ns_of(obj));
+                let crate::runtime::State { oo, ns: reg, .. } = &mut *state;
+                let class_cls = oo.class_cls;
+                oo.alloc(reg, class_cls, Some(name), None)
+            };
+            let result = match args {
                 [script] => {
                     let script = to_tcl_string(script);
                     run_definition(interp, vm, obj, true, false, ns, "class", &script)
                         .map(|_| val(""))
                 }
                 _ => Ok(val("")),
-            }
+            };
+            lock(interp).oo.mixin_class_delegates(obj, delegate);
+            result
         }
     }
 }
@@ -2281,8 +2481,8 @@ fn destroy_object(interp: &Shared, vm: &mut VM, id: Id) -> Result<(), TclError> 
 /// `TclOODeleteDescendants` does.
 fn delete_object(interp: &Shared, vm: &mut VM, id: Id) {
     let descendants: Vec<Id> = {
-        let state = lock(interp);
-        if !state.oo.alive(id) {
+        let mut state = lock(interp);
+        if !state.oo.alive(id) || !state.oo.deleting.insert(id) {
             return;
         }
         match &state.oo.obj(id).class_data {
@@ -2296,6 +2496,7 @@ fn delete_object(interp: &Shared, vm: &mut VM, id: Id) {
                 .chain(c.instances.iter().rev())
                 .copied()
                 .filter(|&d| d != id)
+                .filter(|d| !state.oo.deleting.contains(d))
                 .collect(),
             None => Vec::new(),
         }
@@ -2343,9 +2544,11 @@ fn delete_object(interp: &Shared, vm: &mut VM, id: Id) {
         ..
     } = &mut *state;
     if !oo.alive(id) {
+        oo.deleting.remove(&id);
         return;
     }
     let o = oo.objects[id].take().expect("a live object");
+    oo.deleting.remove(&id);
     oo.graveyard.insert(id, (o.command.clone(), o.ns.clone()));
     // Out of the class's instances, the superclasses' subclasses and the
     // mixins' users.
@@ -2744,24 +2947,120 @@ fn define_cmd(
         let kind = if class { "class" } else { "object" };
         return run_definition(interp, vm, id, class, false, ns, kind, &words[1]);
     }
-    let table = if class { DEFINE_CMDS } else { OBJDEFINE_CMDS };
+    let space = definition_space(interp, id, class)?;
     let frame = Frame::Define {
         obj: id,
         class,
         private: false,
         outer: ns.to_string(),
+        space: space.clone(),
     };
-    // `MagicDefinitionInvoke`: a word that is not a definition command is
-    // run as the command it names, inside the definition context.
-    let Some(cmd) = define_prefix(&words[1], table) else {
+    // `MagicDefinitionInvoke`: the word is found in the definition namespace
+    // by exact name or unique prefix (`FindCommand`); a word that names no
+    // command there is run as written, inside the definition context.
+    if let Some(cmd) = define_table(&space).and_then(|t| define_prefix(&words[1], t)) {
+        let usage = format!("{written} {} {}", words[0], words[1]);
         return with_frame(interp, frame, || {
-            crate::procs::call_words_sync(interp, vm, &args[1..], Some(ns))
+            define_sub(interp, vm, cmd, &usage, &words[2..])
         });
-    };
-    let usage = format!("{written} {} {}", words[0], words[1]);
+    }
+    let mut call = args[1..].to_vec();
+    if let Some(full) = find_in_namespace(interp, &space, &words[1]) {
+        call[0] = val(full);
+    }
     with_frame(interp, frame, || {
-        define_sub(interp, vm, cmd, &usage, &words[2..])
+        crate::procs::call_words_sync(interp, vm, &call, Some(&space))
     })
+}
+
+/// The namespace a definition of `obj` runs in, or `InitDefineContext`'s
+/// refusal when no definition namespace along its classes exists.
+fn definition_space(interp: &Shared, obj: Id, class: bool) -> Result<String, TclError> {
+    let state = lock(interp);
+    state
+        .oo
+        .define_space(&state.ns, obj, class)
+        .ok_or_else(|| oo_err("no definition namespace available", "MONKEY_BUSINESS"))
+}
+
+/// The definition commands a definition namespace holds: `::oo::define`'s
+/// and `::oo::objdefine`'s, which this module implements; any other
+/// definition namespace holds only what the script put in it.
+fn define_table(space: &str) -> Option<&'static [&'static str]> {
+    match space {
+        "::oo::define" => Some(DEFINE_CMDS),
+        "::oo::objdefine" => Some(OBJDEFINE_CMDS),
+        _ => None,
+    }
+}
+
+/// `FindCommand`: the command of namespace `space` named `word` exactly, or
+/// the one it is a unique prefix of — never a name with `::` in it.
+fn find_in_namespace(interp: &Shared, space: &str, word: &str) -> Option<String> {
+    if word.is_empty() || word.contains("::") {
+        return None;
+    }
+    let names: Vec<String> = lock(interp)
+        .ns
+        .commands_in(space)
+        .iter()
+        .map(|fqn| tail(fqn).to_string())
+        .collect();
+    if names.iter().any(|n| n == word) {
+        return Some(format!("{space}::{word}"));
+    }
+    let mut hits = names.iter().filter(|n| n.starts_with(word));
+    match (hits.next(), hits.next()) {
+        (Some(one), None) => Some(format!("{space}::{one}")),
+        _ => None,
+    }
+}
+
+/// `TclOOUnknownDefinition`: the command of the definition namespace that the
+/// word is a unique prefix of, run with the rest of the words.
+fn unknown_definition(interp: &Shared, vm: &mut VM, args: &[Value]) -> Result<Value, TclError> {
+    let words = strings(args);
+    let Some(sought) = words.first() else {
+        return Err(oo_err("bad call of unknown handler", "BAD_UNKNOWN"));
+    };
+    let space =
+        match lock(interp).oo.stack.last() {
+            Some(Frame::Define { space, .. }) => space.clone(),
+            _ => return Err(oo_err(
+                "this command may only be called from within the context of an ::oo::define or \
+                 ::oo::objdefine command",
+                "MONKEY_BUSINESS",
+            )),
+        };
+    let names: Vec<String> = match define_table(&space) {
+        Some(table) => table.iter().map(|s| s.to_string()).collect(),
+        None => lock(interp)
+            .ns
+            .commands_in(&space)
+            .iter()
+            .map(|fqn| tail(fqn).to_string())
+            .collect(),
+    };
+    let mut hits = names
+        .iter()
+        .filter(|n| !sought.is_empty() && n.starts_with(sought.as_str()));
+    let matched = match (hits.next(), hits.next()) {
+        (Some(one), None) => one.clone(),
+        _ => {
+            return Err(coded_err(
+                format!("invalid command name \"{sought}\""),
+                &["TCL", "LOOKUP", "COMMAND", sought],
+            ))
+        }
+    };
+    match define_table(&space).and_then(|t| define_prefix(&matched, t)) {
+        Some(cmd) => define_sub(interp, vm, cmd, &matched, &words[1..]),
+        None => {
+            let mut call = vec![val(format!("{space}::{matched}"))];
+            call.extend_from_slice(&args[1..]);
+            crate::procs::call_words_sync(interp, vm, &call, Some(&space))
+        }
+    }
 }
 
 /// Evaluate a definition script: in `::oo::define` (or `::oo::objdefine`),
@@ -2778,13 +3077,10 @@ fn run_definition(
     kind: &str,
     script: &str,
 ) -> Result<Value, TclError> {
-    let space = if class {
-        "::oo::define"
-    } else {
-        "::oo::objdefine"
-    };
+    let space = definition_space(interp, id, class)?;
     let src = format!(
-        "namespace eval {space} {}",
+        "namespace eval {} {}",
+        crate::list::quote(&space, false),
         crate::list::quote(script, false)
     );
     let frame = Frame::Define {
@@ -2792,6 +3088,7 @@ fn run_definition(
         class,
         private,
         outer: outer.to_string(),
+        space: space.clone(),
     };
     let saved = lock(interp).oo.name(id);
     crate::runtime::with_written_back(interp, vm, |interp| {
@@ -2813,9 +3110,11 @@ fn run_definition(
             Some((at, _)) => format!("{}...", &name[..at]),
             None => name,
         };
-        relabel(e, &format!("namespace eval {space} "), |line| {
-            format!("(in definition script for {kind} \"{name}\" line {line})")
-        })
+        relabel(
+            e,
+            &format!("namespace eval {} ", crate::list::quote(&space, false)),
+            |line| format!("(in definition script for {kind} \"{name}\" line {line})"),
+        )
     })
 }
 
@@ -2870,14 +3169,15 @@ fn define_sub(
     written: &str,
     args: &[String],
 ) -> Result<Value, TclError> {
-    let (obj, class, private, outer) =
+    let (obj, class, private, outer, space) =
         match lock(interp).oo.stack.last() {
             Some(Frame::Define {
                 obj,
                 class,
                 private,
                 outer,
-            }) => (*obj, *class, *private, outer.clone()),
+                space,
+            }) => (*obj, *class, *private, outer.clone(), space.clone()),
             _ => return Err(oo_err(
                 "this command may only be called from within the context of an ::oo::define or \
                  ::oo::objdefine command",
@@ -3065,6 +3365,7 @@ fn define_sub(
                         class: false,
                         private,
                         outer: outer.clone(),
+                        space: definition_space(interp, obj, false)?,
                     };
                     let usage = format!("{written} {sub}");
                     with_frame(interp, frame, || {
@@ -3089,6 +3390,7 @@ fn define_sub(
                     class,
                     private: true,
                     outer: outer.clone(),
+                    space: space.clone(),
                 };
                 let usage = format!("{written} {sub}");
                 with_frame(interp, frame, || {
@@ -3158,10 +3460,77 @@ fn define_sub(
                 crate::runtime::run_source(interp, &src)
             })
         }
-        other => Err(TclError::plain(format!(
-            "oo::define {other} is not supported yet: class methods and definition namespaces are \
-             not modelled"
-        ))),
+        // `TclOODefineClassMethodObjCmd`: the method goes on the class's
+        // delegate, and the class gets a forward `myclass name` to it.
+        "classmethod" => {
+            let (name, body) = match args {
+                [name] => (name, None),
+                [name, params, body] => (name, Some((params, body))),
+                _ => return Err(wrong_args(&usage_of(written, "name ?args body?"))),
+            };
+            let public = public_by_default(name) & PUBLIC_METHOD;
+            if let Some((params, body)) = body {
+                let delegate_name = format!("{}:: oo ::delegate", lock(interp).oo.ns_of(obj));
+                let delegate = class_of(&lock(interp).oo, &delegate_name, "::")?;
+                let flags = if private { 0 } else { public };
+                let imp = proc_method(params, body)?;
+                lock(interp).oo.class_mut(delegate).methods.insert(
+                    name.clone(),
+                    Method {
+                        flags,
+                        imp: Some(imp),
+                    },
+                );
+            }
+            let flags = if private { TRUE_PRIVATE_METHOD } else { public };
+            let prefix = vec!["myclass".to_string(), name.clone()];
+            lock(interp).oo.class_mut(obj).methods.insert(
+                name.clone(),
+                Method {
+                    flags,
+                    imp: Some(Arc::new(Imp::Forward(prefix))),
+                },
+            );
+            empty
+        }
+        // `TclOODefineDefnNsObjCmd`.
+        "definitionnamespace" => {
+            {
+                let oo = &lock(interp).oo;
+                if obj == oo.object_cls || obj == oo.class_cls {
+                    return Err(oo_err(
+                        "may not modify the definition namespace of the root classes",
+                        "MONKEY_BUSINESS",
+                    ));
+                }
+            }
+            let (instance, name) = match args {
+                [name] => (false, name),
+                [kind, name] => (
+                    index_of("kind", kind, &["-class", "-instance"])? == "-instance",
+                    name,
+                ),
+                _ => return Err(wrong_args(&usage_of(written, "?kind? namespace"))),
+            };
+            let target = if name.is_empty() {
+                None
+            } else {
+                let fqn = resolve(ns, name);
+                if !lock(interp).ns.exists(&fqn) {
+                    return Err(crate::cmd_namespace::namespace_not_found(name, ns));
+                }
+                Some(fqn)
+            };
+            let mut state = lock(interp);
+            let c = state.oo.class_mut(obj);
+            if instance {
+                c.obj_def_ns = target;
+            } else {
+                c.cls_def_ns = target;
+            }
+            empty
+        }
+        other => Err(TclError::plain(format!("invalid command name \"{other}\""))),
     }
 }
 
@@ -3952,10 +4321,27 @@ fn info_class(interp: &Shared, ns: &str, args: &[Value]) -> Result<Value, TclErr
                 None => return Err(TclError::plain("cannot construct any call chain")),
             }
         }
+        "definitionnamespace" => {
+            let (name, kind) = match rest {
+                [name] => (name, None),
+                [name, kind] => (name, Some(kind)),
+                _ => return Err(usage("className ?kind?")),
+            };
+            let c = oo.class(class(name)?);
+            let instance = match kind {
+                Some(k) => index_of("kind", k, &["-class", "-instance"])? == "-instance",
+                None => false,
+            };
+            let ns = if instance {
+                &c.obj_def_ns
+            } else {
+                &c.cls_def_ns
+            };
+            ns.clone().unwrap_or_default()
+        }
         _ => {
             return Err(TclError::plain(format!(
-                "info class {sub} is not supported yet: properties and definition namespaces are \
-                 not modelled"
+                "info class {sub} is not supported yet: properties are not modelled"
             )))
         }
     };
@@ -4014,6 +4400,7 @@ impl Oo {
             class_cls: self.class_cls,
             graveyard: Default::default(),
             links: BTreeMap::new(),
+            deleting: HashSet::new(),
         }
     }
 }
