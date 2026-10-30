@@ -1707,7 +1707,10 @@ fn define_prefix(given: &str, table: &[&'static str]) -> Option<&'static str> {
 }
 
 impl Oo {
-    fn resolve_command(&self, name: &str, ns: &str) -> Option<Target> {
+    /// `nested` is whether the call comes from a script `eval` or `uplevel`
+    /// ran, which runs in the namespace of the frame that called it — a
+    /// namespace this frontend does not carry into the nested script.
+    fn resolve_command(&self, name: &str, ns: &str, nested: bool) -> Option<Target> {
         if let Some(id) = self.lookup(name, ns) {
             return Some(Target::Object { id, public: true });
         }
@@ -1745,6 +1748,9 @@ impl Oo {
             "oo::Helpers::mymethod" => return Some(Target::Helper("mymethod")),
             "oo::Helpers::classvariable" => return Some(Target::Helper("classvariable")),
             "oo::Helpers::link" => return Some(Target::Helper("link")),
+            "oo::Helpers::self" => return Some(Target::SelfCmd),
+            "oo::Helpers::next" => return Some(Target::Next),
+            "oo::Helpers::nextto" => return Some(Target::NextTo),
             k if k == store_key(&resolve("::", CLASSVAR_CHECK_CMD)) => {
                 return Some(Target::Helper("classvariable-check"))
             }
@@ -1752,14 +1758,17 @@ impl Oo {
             _ => {}
         }
         match self.stack.last()? {
+            // The helpers are reached by an unqualified name only from an
+            // object's namespace, whose path holds `::oo::Helpers`.
+            Frame::Method { .. } if !nested && !self.by_ns.contains_key(ns) => None,
             Frame::Method { obj, .. } => match key.as_str() {
                 "my" => Some(Target::Object {
                     id: *obj,
                     public: false,
                 }),
-                "self" | "oo::Helpers::self" => Some(Target::SelfCmd),
-                "next" | "oo::Helpers::next" => Some(Target::Next),
-                "nextto" | "oo::Helpers::nextto" => Some(Target::NextTo),
+                "self" => Some(Target::SelfCmd),
+                "next" => Some(Target::Next),
+                "nextto" => Some(Target::NextTo),
                 "callback" => Some(Target::Helper("callback")),
                 "mymethod" => Some(Target::Helper("mymethod")),
                 "classvariable" => Some(Target::Helper("classvariable")),
@@ -1805,11 +1814,12 @@ pub(crate) fn try_dispatch(
     let (target, ns) = {
         let state = lock(interp);
         let ns = state.oo.map_ns(ns.unwrap_or("::"));
-        (state.oo.resolve_command(name, &ns)?, ns)
+        let nested = vm.frames.iter().all(|f| f.entry_ip.is_none());
+        (state.oo.resolve_command(name, &ns, nested)?, ns)
     };
     Some(match target {
         Target::Object { id, public } => invoke_object(interp, vm, id, public, name, &ns, args),
-        Target::SelfCmd => self_cmd(interp, name, args),
+        Target::SelfCmd => self_cmd(interp, vm, name, args),
         Target::Next => next_cmd(interp, vm, name, &ns, args),
         Target::NextTo => nextto_cmd(interp, vm, name, &ns, args),
         Target::Define { class } => define_cmd(interp, vm, class, name, &ns, args),
@@ -1822,7 +1832,7 @@ pub(crate) fn try_dispatch(
         Target::InfoClass => info_class(interp, &ns, args),
         Target::CurrentNs => Ok(val(lock(interp).oo.map_ns(METHOD_NS))),
         Target::DefineCmd(cmd) => define_sub(interp, vm, cmd, name, &strings(args)),
-        Target::Helper(which) => helper(interp, which, name, args),
+        Target::Helper(which) => helper(interp, vm, which, name, args),
         Target::DelegateName => match args {
             [class] => {
                 let state = lock(interp);
@@ -2957,9 +2967,25 @@ pub(crate) fn is_object(state: &crate::runtime::State, fqn: &str) -> bool {
 
 // ── self, next, nextto ───────────────────────────────────────────────────
 
-fn current_frame(interp: &Shared, written: &str) -> Result<(Id, Arc<Chain>, usize), TclError> {
+/// Whether the code running in `vm` is a method body (`FRAME_IS_METHOD`): its
+/// innermost procedure activation is one, or it has none — a script `eval` or
+/// `uplevel` runs in the frame that called it.
+fn in_method_frame(vm: &VM) -> bool {
+    match vm.frames.iter().rev().find_map(|f| f.entry_ip) {
+        Some(entry) => method_call_words(&vm.chunk, entry).is_some(),
+        None => true,
+    }
+}
+
+fn current_frame(
+    interp: &Shared,
+    vm: &VM,
+    written: &str,
+) -> Result<(Id, Arc<Chain>, usize), TclError> {
     match lock(interp).oo.stack.last() {
-        Some(Frame::Method { obj, chain, index }) => Ok((*obj, Arc::clone(chain), *index)),
+        Some(Frame::Method { obj, chain, index }) if in_method_frame(vm) => {
+            Ok((*obj, Arc::clone(chain), *index))
+        }
         _ => Err(oo_err(
             format!("{written} may only be called from inside a method"),
             "CONTEXT_REQUIRED",
@@ -2990,8 +3016,10 @@ const SELF_SUBCOMMANDS: &[&str] = &[
 ];
 
 /// `TclOOSelfObjCmd`.
-fn self_cmd(interp: &Shared, written: &str, args: &[Value]) -> Result<Value, TclError> {
-    let (obj, chain, index) = current_frame(interp, written)?;
+fn self_cmd(interp: &Shared, vm: &VM, written: &str, args: &[Value]) -> Result<Value, TclError> {
+    // The compiled `self` (`TclCompileObjectSelfCmd`) names itself `self`
+    // however it was written.
+    let (obj, chain, index) = current_frame(interp, vm, "self")?;
     let sub = match args {
         [] => "object",
         [sub] => index_of("subcommand", &to_tcl_string(sub), SELF_SUBCOMMANDS)?,
@@ -3081,14 +3109,21 @@ fn self_cmd(interp: &Shared, written: &str, args: &[Value]) -> Result<Value, Tcl
 /// The `oo::Helpers` commands `callback` / `mymethod` (`TclOOCallbackObjCmd`),
 /// `classvariable` (`TclOOClassVariableObjCmd`) and `link`
 /// (`TclOOLinkObjCmd`), and the check a compiled `classvariable` runs.
-fn helper(interp: &Shared, which: &str, written: &str, args: &[Value]) -> Result<Value, TclError> {
+fn helper(
+    interp: &Shared,
+    vm: &VM,
+    which: &str,
+    written: &str,
+    args: &[Value],
+) -> Result<Value, TclError> {
     let words = strings(args);
     let classvariable = which.starts_with("classvariable");
     if classvariable && words.is_empty() {
         return Err(wrong_args(&format!("{written} name ...")));
     }
     let mut state = lock(interp);
-    let in_method = matches!(state.oo.stack.last(), Some(Frame::Method { .. }));
+    let in_method =
+        matches!(state.oo.stack.last(), Some(Frame::Method { .. })) && in_method_frame(vm);
     let (obj, declarer) = match state.oo.current_method() {
         Some((obj, chain, index)) if in_method => (obj, chain.calls[index].declarer),
         _ => {
@@ -3176,7 +3211,7 @@ fn next_cmd(
     ns: &str,
     args: &[Value],
 ) -> Result<Value, TclError> {
-    let (obj, chain, index) = current_frame(interp, written)?;
+    let (obj, chain, index) = current_frame(interp, vm, written)?;
     if index + 1 >= chain.calls.len() {
         return Err(oo_err(
             format!("no next {} implementation", chain_kind(&chain)),
@@ -3194,7 +3229,7 @@ fn nextto_cmd(
     ns: &str,
     args: &[Value],
 ) -> Result<Value, TclError> {
-    let (obj, chain, index) = current_frame(interp, written)?;
+    let (obj, chain, index) = current_frame(interp, vm, written)?;
     let Some(class_word) = args.first().map(to_tcl_string) else {
         return Err(wrong_args(&format!("{written} class ?arg...?")));
     };

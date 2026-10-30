@@ -639,9 +639,10 @@ approximated, and nothing is silently mis-run.
     name, link only at the global level; inside a procedure they are refused.
     `classvariable` with a computed name is refused for the same reason.
     `my variable` with its names written out is compiled as `variable`.
-  * `self`, `my` and `next` answer from the innermost method invocation even
-    when called from a plain procedure that method called, where tclsh says
-    `self may only be called from inside a method`.
+  * `self`, `my`, `next` and the other helpers inside a script that `eval` or
+    `uplevel` runs answer from the innermost method invocation, because the
+    nested script does not carry the namespace or the frame it runs in; tclsh
+    answers from that frame.
   * `upvar` and `uplevel` from a method body reach the caller's frame only
     when the caller is the global level: a method runs as a call across
     chunks, with the limit every procedure defined in another chunk has.

@@ -1059,3 +1059,54 @@ x-v
 "#;
     assert_eq!(run(script), expected);
 }
+
+/// `self`, `next`, `my` and the other helpers are reached by a plain name only
+/// from an object's namespace, and answer only from a method's own frame
+/// (`FRAME_IS_METHOD`): a procedure a method calls gets `invalid command name`,
+/// one defined in the object's namespace gets `self may only be called from
+/// inside a method`, as does `::oo::Helpers::next` at the top level.
+#[test]
+fn helpers_answer_only_inside_a_method_frame() {
+    let script = r#"proc helper {} {self}
+proc helper2 {} {next}
+proc helper3 {} {my foo}
+proc helper4 {} {callback foo}
+proc helper5 {} {::oo::Helpers::self}
+oo::class create A {method m {} {return a}}
+oo::class create C {
+  superclass A
+  method t1 {} {list [catch helper m] $m}
+  method t2 {} {list [catch helper2 m] $m}
+  method t3 {} {list [catch helper3 m] $m}
+  method t4 {} {list [catch helper4 m] $m}
+  method t5 {} {list [catch helper5 m] $m}
+  method t6 {} {apply {{} {self}}}
+  method t7 {} {eval {self}}
+  method t8 {} {proc inner {} {self}; list [catch inner m] $m}
+  method t9 {} {uplevel 0 {self}}
+  method foo {} {return foo}
+  method m {} {list [catch {helper} m] $m}
+}
+C create o
+foreach t {t1 t2 t3 t4 t5 t7 t8 t9 m} {puts "$t [o $t]"}
+puts [catch {o t6} m]$m
+puts [catch {self} m]$m
+puts [catch {::oo::Helpers::next} m]$m
+puts [catch {my x} m]$m
+"#;
+    let expected = r#"t1 1 {invalid command name "self"}
+t2 1 {invalid command name "next"}
+t3 1 {invalid command name "my"}
+t4 1 {invalid command name "callback"}
+t5 1 {self may only be called from inside a method}
+t7 ::o
+t8 1 {self may only be called from inside a method}
+t9 ::o
+m 1 {invalid command name "self"}
+1invalid command name "self"
+1invalid command name "self"
+1::oo::Helpers::next may only be called from inside a method
+1invalid command name "my"
+"#;
+    assert_eq!(run(script), expected);
+}
