@@ -36,18 +36,18 @@ use std::sync::Arc;
 use fusevm::{Op, Value, VM};
 use num_bigint::{BigInt, BigUint};
 
-use crate::assoc::{target_of, Target};
+use crate::assoc::target_of;
 use crate::compiler::{CompileError, Compiler};
 use crate::list;
 use crate::parser::Word;
-use crate::runtime::{format_double, place_at, set_scalar, to_tcl_string};
+use crate::runtime::{format_double, to_tcl_string};
 
 /// Extension opcode ids owned by this module.
 pub mod ext {
     pub use crate::compiler::ext::BINARY_BASE as BASE;
     /// `[format, arg …, count]` → the byte string.
     pub const FORMAT: u16 = BASE;
-    /// `[value, format, (name, in_frame, place) …, count]` → how many variables
+    /// `[value, format, (name, in_frame, place, index) …, count]` → how many variables
     /// were written.
     pub const SCAN: u16 = BASE + 1;
     /// `[option …, data, count]` → the encoded text. The inline operand is the
@@ -113,24 +113,27 @@ fn compile_scan(c: &mut Compiler, args: &[Word]) -> Result<(), CompileError> {
     if args.len() < 2 {
         return c.error("wrong # args: should be \"binary scan value formatString ?varName ...?\"");
     }
-    let mut names = Vec::with_capacity(args.len() - 2);
+    let mut targets = Vec::with_capacity(args.len() - 2);
     for w in &args[2..] {
         match target_of(w) {
-            Some(Target::Scalar(name)) => names.push(name),
-            _ => return c.error("\"binary scan\" into an array element is not supported yet"),
+            Some(target) => targets.push(target),
+            None => {
+                return c
+                    .error("\"binary scan\" into a computed variable name is not supported yet")
+            }
         }
     }
 
     c.word(&args[0])?;
     c.word(&args[1])?;
-    for name in &names {
-        c.push_str(name);
-        let place = c.var_place(name);
-        c.push_value(Value::Int(i64::from(place.in_frame())));
-        c.emit(Op::LoadInt(place.frame_operand()), 1);
+    for target in &targets {
+        crate::cmd_scan::push_result_var(c, target)?;
     }
-    c.emit(Op::LoadInt(names.len() as i64), 1);
-    c.emit(Op::Extended(ext::SCAN, 0), -(3 * names.len() as i32 + 2));
+    c.emit(Op::LoadInt(targets.len() as i64), 1);
+    c.emit(
+        Op::Extended(ext::SCAN, 0),
+        -(crate::cmd_scan::RESULT_VAR_WORDS * targets.len() as i32 + 2),
+    );
     Ok(())
 }
 
@@ -1307,14 +1310,7 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
         }
         ext::SCAN => {
             let count = popped_count(vm);
-            let mut places = Vec::with_capacity(count);
-            for _ in 0..count {
-                let operand = vm.pop();
-                let in_frame = to_tcl_string(&vm.pop()) == "1";
-                let name = to_tcl_string(&vm.pop());
-                places.push((place_at(&operand, in_frame)?, name));
-            }
-            places.reverse();
+            let vars = crate::cmd_scan::ResultVar::pop_all(vm, count)?;
             let fmt = to_tcl_string(&vm.pop());
             let data = as_bytes(&to_tcl_string(&vm.pop()))?;
 
@@ -1323,9 +1319,9 @@ pub(crate) fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
             // The first variable that refuses ends the command, the ones
             // before it keeping their values: `BinaryScanCmd` returns at the
             // first failed `Tcl_ObjSetVar2`.
-            for ((place, name), value) in places.into_iter().zip(scanned.values) {
+            for (var, value) in vars.iter().zip(scanned.values) {
                 assigned += 1;
-                set_scalar(vm, place, &name, Value::Str(Arc::new(value)))?;
+                var.set(vm, Value::Str(Arc::new(value)))?;
             }
             // A refused format is reported after the fields before it were set.
             if let Some(msg) = scanned.error {

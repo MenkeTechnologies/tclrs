@@ -584,7 +584,7 @@ impl Compiler {
 
     /// Note that `name` is used as an array somewhere in the script, so that the
     /// second compilation pass knows to guard scalar uses of it.
-    fn note_array(&mut self, name: &str) {
+    pub(crate) fn note_array(&mut self, name: &str) {
         self.seen_arrays.insert(name.to_string());
     }
 

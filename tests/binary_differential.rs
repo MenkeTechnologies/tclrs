@@ -106,6 +106,8 @@ const PROGRAMS: &[&str] = &[
     "puts [hex [binary format c* {}]]",
     "puts [hex [binary format i* {1 2}]]",
     "puts [hex [binary format {  c  c  } 1 2]]",
+    // Into array elements, in a procedure too, and a scalar refusing one.
+    "puts [binary scan abc a1a2 c(1) c(2)]; puts [lsort [array get c]]\nset s 1\nputs [list [catch {binary scan abc a1 s(z)} m] $m]\nproc q {} { binary scan \\x01\\x02 cc v(a) v(b); return [lsort [array get v]] }\nputs [q]",
     // binary scan, including what stops it.
     "binary scan \\x07\\x86\\x05 c2c* a b\nputs \"$a|$b\"",
     "binary scan \\x07\\x86\\x05 cu2cu* a b\nputs \"$a|$b\"",

@@ -21,6 +21,7 @@ use fusevm::{Op, Value, VM};
 use num_bigint::BigInt;
 
 use crate::assoc::{target_of, Target};
+use crate::compiler::Place;
 use crate::compiler::{CompileError, Compiler};
 use crate::list;
 use crate::parser::Word;
@@ -30,7 +31,7 @@ use crate::runtime::{format_double, place_at, set_scalar, to_tcl_string};
 /// `format`'s inverse and shares its range rather than opening a new one.
 pub mod ext {
     pub use crate::compiler::ext::STRING_BASE as BASE;
-    /// `[string, format, (name, in_frame, place) …, count]` → the number of
+    /// `[string, format, (name, in_frame, place, index) …, count]` → the number of
     /// conversions assigned, or the converted values as a list when `count` is
     /// zero.
     pub const SCAN: u16 = BASE + 40;
@@ -47,25 +48,88 @@ pub(crate) fn compile(c: &mut Compiler, args: &[Word]) -> Result<(), CompileErro
     // Every name is resolved before anything is emitted, so a bad one is a
     // compile error rather than a half-run command — the same rule `lassign`
     // follows.
-    let mut names = Vec::with_capacity(vars.len());
+    let mut targets = Vec::with_capacity(vars.len());
     for w in vars {
         match target_of(w) {
-            Some(Target::Scalar(name)) => names.push(name),
-            _ => return c.error("\"scan\" into an array element is not supported yet"),
+            Some(target) => targets.push(target),
+            None => return c.error("\"scan\" into a computed variable name is not supported yet"),
         }
     }
 
     c.word(&args[0])?;
     c.word(&args[1])?;
-    for name in &names {
-        c.push_str(name);
-        let place = c.var_place(name);
-        c.push_value(Value::Int(i64::from(place.in_frame())));
-        c.emit(Op::LoadInt(place.frame_operand()), 1);
+    for target in &targets {
+        push_result_var(c, target)?;
     }
-    c.emit(Op::LoadInt(names.len() as i64), 1);
-    c.emit(Op::Extended(ext::SCAN, 0), -(3 * names.len() as i32 + 2));
+    c.emit(Op::LoadInt(targets.len() as i64), 1);
+    c.emit(
+        Op::Extended(ext::SCAN, 0),
+        -(RESULT_VAR_WORDS * targets.len() as i32 + 2),
+    );
     Ok(())
+}
+
+/// How many values [`push_result_var`] pushes for one variable.
+pub(crate) const RESULT_VAR_WORDS: i32 = 4;
+
+/// Push what an op that assigns its own result variables needs to reach one
+/// — `scan`'s and `binary scan`'s: `[name, in_frame, place, index]`, the index
+/// `Undef` for a scalar and the element's name, substituted, for `a(i)`.
+pub(crate) fn push_result_var(c: &mut Compiler, target: &Target) -> Result<(), CompileError> {
+    let (name, place, index) = match target {
+        Target::Scalar(name) => (name, c.var_place(name), None),
+        Target::Elem { name, index } => (name, c.array_place_of(name), Some(index)),
+    };
+    c.push_str(name);
+    c.push_value(Value::Int(i64::from(place.in_frame())));
+    c.emit(Op::LoadInt(place.frame_operand()), 1);
+    match index {
+        Some(index) => c.index_value(index)?,
+        None => c.push_value(Value::Undef),
+    }
+    Ok(())
+}
+
+/// One variable an op assigns, as [`push_result_var`] described it.
+pub(crate) struct ResultVar {
+    place: Place,
+    name: String,
+    index: Option<String>,
+}
+
+impl ResultVar {
+    /// `count` of them off the stack, in the order they were pushed.
+    pub(crate) fn pop_all(vm: &mut VM, count: usize) -> Result<Vec<ResultVar>, String> {
+        let mut vars = Vec::with_capacity(count);
+        for _ in 0..count {
+            let index = match vm.pop() {
+                Value::Undef => None,
+                other => Some(to_tcl_string(&other)),
+            };
+            let operand = vm.pop();
+            let in_frame = to_tcl_string(&vm.pop()) == "1";
+            let name = to_tcl_string(&vm.pop());
+            vars.push(ResultVar {
+                place: place_at(&operand, in_frame)?,
+                name,
+                index,
+            });
+        }
+        vars.reverse();
+        Ok(vars)
+    }
+
+    /// Assign `value` as `Tcl_ObjSetVar2` does: a scalar refuses when the
+    /// variable is an array, an element when it is not one.
+    pub(crate) fn set(&self, vm: &mut VM, value: Value) -> Result<(), String> {
+        let Some(index) = &self.index else {
+            return set_scalar(vm, self.place, &self.name, value);
+        };
+        crate::assoc::element_map(vm, self.place)
+            .ok_or_else(|| format!("can't set \"{}({index})\": variable isn't array", self.name))?
+            .insert(index.clone(), value);
+        Ok(())
+    }
 }
 
 // ── running ──────────────────────────────────────────────────────────────
@@ -74,14 +138,7 @@ pub(crate) fn extension(vm: &mut VM) -> Result<(), String> {
     let count = to_tcl_string(&vm.pop())
         .parse::<usize>()
         .expect("the variable count is emitted as an integer");
-    let mut places = Vec::with_capacity(count);
-    for _ in 0..count {
-        let operand = vm.pop();
-        let in_frame = to_tcl_string(&vm.pop()) == "1";
-        let name = to_tcl_string(&vm.pop());
-        places.push((place_at(&operand, in_frame)?, name));
-    }
-    places.reverse();
+    let vars = ResultVar::pop_all(vm, count)?;
     let format = to_tcl_string(&vm.pop());
     let subject = to_tcl_string(&vm.pop());
 
@@ -109,10 +166,10 @@ pub(crate) fn extension(vm: &mut VM) -> Result<(), String> {
     // `code = TCL_ERROR`, leaving the message of the first.
     let mut assigned = 0i64;
     let mut refused: Option<String> = None;
-    for ((place, name), value) in places.into_iter().zip(scanned.values) {
+    for (var, value) in vars.iter().zip(scanned.values) {
         let Some(value) = value else { continue };
         assigned += 1;
-        if let Err(msg) = set_scalar(vm, place, &name, Value::Str(Arc::new(value))) {
+        if let Err(msg) = var.set(vm, Value::Str(Arc::new(value))) {
             refused.get_or_insert(msg);
         }
     }

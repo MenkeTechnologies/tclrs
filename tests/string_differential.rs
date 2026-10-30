@@ -552,6 +552,10 @@ const PROGRAMS: &[&str] = &[
     // up to `ULONG_MAX` to a long before the int range check.
     "foreach v {18446744073709551615 4294967296 -1 99999999999999999999 2147483648 18446744073709551616 18446744071562067968 9223372036854775808} {puts [list [scan $v %u] [scan $v %d]]}\nputs [scan FFFFFFFFFFFFFFFF %x]",
     "puts [scan {1 2 3} {%d %d %d}]",
+    // Into array elements, the index substituted, a missing conversion leaving
+    // its element unset, and a scalar refusing an element of itself.
+    "puts [scan \"12 34\" \"%d %d\" a(x) a(y)]; puts [lsort [array get a]]\nset i k\nputs [scan \"5 abc\" \"%d %s\" b($i) b(s$i)]; puts [lsort [array get b]]\nputs [scan \"1 2\" \"%d %d %d\" d(a) d(b) d(c)]; puts [lsort [array names d]]",
+    "set s 1\nputs [list [catch {scan 7 %d s(q)} m] $m]\narray set e {}\nputs [list [catch {scan 9 %d e} m] $m]\nproc p {} { scan \"3 4\" \"%d %d\" r(a) r(b); return [lsort [array get r]] }\nputs [p]",
     "puts [scan abc %s]",
     "puts [scan abc123 {%[a-z]%d}]",
     "puts [scan 42abc {%d%s}]",
