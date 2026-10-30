@@ -2702,6 +2702,15 @@ impl Compiler {
                 }
                 Ok(())
             }
+            // `classvariable a b` in a method body links the locals to the
+            // variables of the class that declared the method, which is only
+            // known when the method runs (`crate::oo::CLASS_VAR_MARK`).
+            "classvariable"
+                if self.ns.current == crate::oo::METHOD_NS
+                    && args.iter().all(|w| w.as_literal().is_some()) =>
+            {
+                self.cmd_classvariable(args)
+            }
             // ── end of TclOO ─────────────────────────────────────────────
             // ── namespaces, `rename` and `source` ────────────────────────
             // One block, so that the module owning them merges as one hunk.

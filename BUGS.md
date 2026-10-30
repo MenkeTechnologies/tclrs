@@ -639,9 +639,7 @@ approximated, and nothing is silently mis-run.
     definitionnamespace`, which need the class delegate (`<class>:: oo
     ::delegate`) — the delegate's object number is spent, so numbering
     matches, but the delegate does not exist.
-  * Properties (`oo::configurable`, `property`, `info … properties`), and
-    the `oo::Helpers` commands `callback`, `mymethod`, `classvariable` and
-    `link`; `myclass`.
+  * Properties (`oo::configurable`, `property`, `info … properties`).
   * Slots as objects: `oo::define::superclass` and the rest are definition
     commands here, not instances of `oo::Slot`, so `info object class
     filter` inside a definition is `filter does not refer to an object`.
@@ -651,6 +649,7 @@ approximated, and nothing is silently mis-run.
     variable here.
   * `$obj variable x` from outside a method, and `my variable` with a computed
     name, link only at the global level; inside a procedure they are refused.
+    `classvariable` with a computed name is refused for the same reason.
     `my variable` with its names written out is compiled as `variable`.
   * `self`, `my` and `next` answer from the innermost method invocation even
     when called from a plain procedure that method called, where tclsh says

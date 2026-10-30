@@ -914,6 +914,33 @@ impl Compiler {
         Ok(())
     }
 
+    /// `classvariable name ...` in a method body, every name written out: each
+    /// name becomes a local linked to the variable of that name in the
+    /// namespace of the class that declared the running method
+    /// (`TclOOClassVariableObjCmd`). The checks it makes before linking —
+    /// a method context, a class-declared method, names that can be locals —
+    /// are made when the command runs, by the call this emits.
+    pub(crate) fn cmd_classvariable(&mut self, args: &[Word]) -> Result<(), CompileError> {
+        let here = self.ns.current.clone();
+        for w in args {
+            let name = w.as_literal().expect("the dispatch arm asked").to_string();
+            if name.contains("::") || crate::assoc::string_match(&name, "*(*)") {
+                continue;
+            }
+            let fqn = format!("{here}::{}{name}", crate::oo::CLASS_VAR_MARK);
+            if let Some(scope) = self.scope.as_mut() {
+                if scope.locals.contains_key(&name) {
+                    return self.error(format!("variable \"{name}\" already exists"));
+                }
+                scope.globals.insert(name.clone());
+                self.ns
+                    .links
+                    .insert((here.clone(), name), Link::Variable(fqn));
+            }
+        }
+        self.call_runtime(crate::oo::CLASSVAR_CHECK_CMD, args)
+    }
+
     /// `global ?varname ...?`, recording that the names belong to the root
     /// namespace rather than to the enclosing one.
     ///

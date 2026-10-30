@@ -518,3 +518,99 @@ flt:f g 9:g:next 9
 "#;
     assert_eq!(run(script), expected);
 }
+
+/// The `oo::Helpers` commands inside a method — `callback` / `mymethod` naming the
+/// object's `my`, `classvariable` linking to the declaring class's namespace,
+/// `link` making commands that call `my` — and every object's `myclass`; with
+/// the refusals `TclOOCallbackObjCmd`, `TclOOClassVariableObjCmd` and
+/// `TclOOLinkObjCmd` raise.
+#[test]
+fn oo_helpers_callback_classvariable_link_and_myclass() {
+    let script = r#"oo::class create C {
+  method cb {} {callback m 1 2}
+  method mm {} {mymethod m 3}
+  method m args {return "m:$args"}
+  method cv {} {classvariable count; incr count}
+  method ln {} {link m {alias m}; return [list [m a] [alias b]]}
+  method mc {} {myclass foo}
+  self method foo {} {return foo}
+}
+C create o
+set cb [o cb]
+puts [llength $cb]:[lindex $cb 1]:[lrange $cb 2 end]
+puts [{*}$cb]
+puts [{*}[o mm]]
+puts [o cv][o cv]
+puts [set [info object namespace C]::count]
+puts [lindex $cb 0]|[info object namespace C]|[info object namespace o]
+puts [info vars [info object namespace C]::*]
+puts [o ln]
+puts [lsort [info commands [info object namespace o]::*]]
+puts [o mc]
+puts [catch {callback x} m]$m|$::errorCode
+puts [catch {classvariable x} m]$m
+puts [catch {link x} m]$m
+puts [catch {myclass} m]$m
+puts [lsort [info commands ::oo::Helpers::*]]
+oo::objdefine o method cv2 {} {classvariable q}
+puts [catch {o cv2} m]$m|$::errorCode
+oo::define C method bad {} {classvariable a(b)}
+puts [catch {o bad} m]$m|$::errorCode
+oo::define C method bad2 {} {link {a b c}}
+puts [catch {o bad2} m]$m|$::errorCode
+o destroy
+puts [info commands ::oo::Obj23::m]x
+puts [catch {::oo::Helpers::callback x} m]$m|$::errorCode
+puts [catch {::oo::Helpers::classvariable} m]$m
+oo::class create K {
+  method add {v} {classvariable items; lappend items $v; return [llength $items]}
+  method gl {} {link {::gk show}; return ok}
+  method show {} {return "show:[self]"}
+  method mc {} {myclass create kk}
+  method cbn {} {callback}
+  constructor {} {classvariable n; incr n}
+}
+set a [K new]; set b [K new]
+puts [$a add 1][$b add 2][$a add 3]
+puts [set [info object namespace K]::n]
+$a gl
+puts [gk]
+puts [catch {$a mc} m]$m
+puts [catch {$a cbn} m]$m
+puts [lsort [info commands [info object namespace $a]::*]]
+puts [lsort [info commands ::oo::Obj1::*]]
+$a destroy
+puts [info commands ::gk]x
+"#;
+    let expected = r#"4:m:1 2
+m:1 2
+m:3
+12
+2
+::oo::Obj22::my|::oo::Obj20|::oo::Obj22
+::oo::Obj20::count
+m:a m:b
+::oo::Obj22::alias ::oo::Obj22::m ::oo::Obj22::my ::oo::Obj22::myclass
+foo
+1invalid command name "callback"|TCL LOOKUP COMMAND callback
+1invalid command name "classvariable"
+1invalid command name "link"
+1invalid command name "myclass"
+::oo::Helpers::callback ::oo::Helpers::classvariable ::oo::Helpers::link ::oo::Helpers::mymethod ::oo::Helpers::next ::oo::Helpers::nextto ::oo::Helpers::self
+1method not defined by a class|TCL OO UNMATCHED_CONTEXT
+1bad variable name "a(b)": can't create a scalar variable that looks like an array element|TCL UPVAR LOCAL_ELEMENT
+1bad link description; must only have one or two elements|TCL OO CMDLINK_FORMAT
+x
+1::oo::Helpers::callback may only be called from inside a method|TCL OO CONTEXT_REQUIRED
+1wrong # args: should be "::oo::Helpers::classvariable name ..."
+123
+2
+show:::oo::Obj25
+0::oo::Obj25::kk
+1wrong # args: should be "callback method ..."
+::oo::Obj25::kk ::oo::Obj25::my ::oo::Obj25::myclass
+::oo::Obj1::my ::oo::Obj1::myclass
+x
+"#;
+    assert_eq!(run(script), expected);
+}

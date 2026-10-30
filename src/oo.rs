@@ -65,6 +65,13 @@ pub(crate) const CURRENT_NS_CMD: &str = "\u{0}oo::current";
 /// The hidden procedure-name prefix of a compiled method body; what follows it
 /// is the context line `errorInfo` reports, `class "::C" method "m"`.
 pub(crate) const METHOD_PROC_PREFIX: &str = "\u{0}oo:";
+/// The [`METHOD_NS`] sub-namespace a method body's `classvariable` names are
+/// compiled in: it stands for the namespace of the class that declared the
+/// running method.
+pub(crate) const CLASS_VAR_MARK: &str = "\u{3}class::";
+/// The check a compiled `classvariable` runs, raising what
+/// `TclOOClassVariableObjCmd` raises before it links anything.
+pub(crate) const CLASSVAR_CHECK_CMD: &str = "\u{0}oo::classvariable";
 
 /// `TCLOO_VERSION` and `TCLOO_PATCHLEVEL` (`generic/tclOO.h`).
 pub(crate) const TCLOO_VERSION: &str = "1.3";
@@ -254,6 +261,9 @@ pub(crate) struct Oo {
     class_cls: Id,
     /// The command and namespace names of deleted objects, by id.
     graveyard: std::collections::HashMap<Id, (String, String)>,
+    /// The commands `link` made, by key: the object whose `my` each calls and
+    /// the method it names (`TclAliasCreate` onto the object's `my`).
+    links: BTreeMap<String, (Id, String)>,
 }
 
 impl Default for Oo {
@@ -352,6 +362,7 @@ impl Oo {
             object_cls: 0,
             class_cls: 1,
             graveyard: Default::default(),
+            links: BTreeMap::new(),
         };
         oo.make_additional_classes();
         for id in [0, 1, SINGLETON, SINGLETON_INSTANCE, ABSTRACT] {
@@ -492,6 +503,17 @@ impl Oo {
     /// or the object gone — the name goes nowhere: a key beginning with NUL,
     /// which the interpreter never stores.
     pub(crate) fn method_var_key(&self, rest: &str) -> String {
+        if let Some(name) = rest.strip_prefix(CLASS_VAR_MARK) {
+            return match self.current_method() {
+                Some((_, chain, index)) => match chain.calls[index].declarer {
+                    Declarer::Class(c) if self.alive(c) => {
+                        format!("{}::{name}", store_key(&self.obj(c).ns))
+                    }
+                    _ => format!("\u{0}oo-gone::{name}"),
+                },
+                None => format!("\u{0}oo-gone::{name}"),
+            };
+        }
         match self.current_method() {
             Some((obj, ..)) if self.alive(obj) => {
                 format!("{}::{rest}", store_key(&self.obj(obj).ns))
@@ -596,6 +618,7 @@ impl Oo {
         reg.ensure(&ns);
         reg.define(&command);
         reg.define(&format!("{ns}::my"));
+        reg.define(&format!("{ns}::myclass"));
         id
     }
 }
@@ -1200,14 +1223,23 @@ pub(crate) fn install(reg: &mut Registry) {
         "::oo::Helpers::self",
         "::oo::Helpers::next",
         "::oo::Helpers::nextto",
+        "::oo::Helpers::callback",
+        "::oo::Helpers::mymethod",
+        "::oo::Helpers::classvariable",
+        "::oo::Helpers::link",
         "::oo::Obj1::my",
         "::oo::Obj2::my",
+        "::oo::Obj1::myclass",
+        "::oo::Obj2::myclass",
         "::oo::singleton",
         "::oo::SingletonInstance",
         "::oo::abstract",
         "::oo::Obj15::my",
         "::oo::Obj16::my",
         "::oo::Obj17::my",
+        "::oo::Obj15::myclass",
+        "::oo::Obj16::myclass",
+        "::oo::Obj17::myclass",
     ] {
         reg.define(cmd);
     }
@@ -1221,16 +1253,28 @@ pub(crate) fn install(reg: &mut Registry) {
 
 /// What a command name reaches in the object system.
 enum Target {
-    Object { id: Id, public: bool },
+    Object {
+        id: Id,
+        public: bool,
+    },
     SelfCmd,
     Next,
     NextTo,
-    Define { class: bool },
+    Define {
+        class: bool,
+    },
     Copy,
     InfoObject,
     InfoClass,
     CurrentNs,
     DefineCmd(&'static str),
+    /// `callback`, `mymethod`, `classvariable` and `link` of `oo::Helpers`,
+    /// and the check a compiled `classvariable` runs.
+    Helper(&'static str),
+    /// An object's `myclass`: its class, called with private access.
+    MyClass(Id),
+    /// A command `link` made: the object's `my` with the method named.
+    Link(Id, String),
 }
 
 /// A unique prefix of one of `table`'s names, as `TclOOUnknownDefinition`
@@ -1263,6 +1307,18 @@ impl Oo {
                 return Some(Target::Object { id, public: false });
             }
         }
+        if tail(&qualified) == "myclass" {
+            if let Some(&id) = self.by_ns.get(qualifiers(&qualified)) {
+                return Some(Target::MyClass(id));
+            }
+        }
+        // A command `link` made, looked up as `Tcl_FindCommand` would: the
+        // namespace written in, then the root.
+        for at in [qualified.as_str(), &resolve("::", name)] {
+            if let Some((id, method)) = self.links.get(store_key(at)) {
+                return Some(Target::Link(*id, method.clone()));
+            }
+        }
         let key = store_key(&resolve("::", name)).to_string();
         match key.as_str() {
             "oo::define" => return Some(Target::Define { class: true }),
@@ -1270,6 +1326,13 @@ impl Oo {
             "oo::copy" => return Some(Target::Copy),
             "oo::InfoObject" => return Some(Target::InfoObject),
             "oo::InfoClass" => return Some(Target::InfoClass),
+            "oo::Helpers::callback" => return Some(Target::Helper("callback")),
+            "oo::Helpers::mymethod" => return Some(Target::Helper("mymethod")),
+            "oo::Helpers::classvariable" => return Some(Target::Helper("classvariable")),
+            "oo::Helpers::link" => return Some(Target::Helper("link")),
+            k if k == store_key(&resolve("::", CLASSVAR_CHECK_CMD)) => {
+                return Some(Target::Helper("classvariable-check"))
+            }
             k if k == store_key(&resolve("::", CURRENT_NS_CMD)) => return Some(Target::CurrentNs),
             _ => {}
         }
@@ -1282,6 +1345,11 @@ impl Oo {
                 "self" | "oo::Helpers::self" => Some(Target::SelfCmd),
                 "next" | "oo::Helpers::next" => Some(Target::Next),
                 "nextto" | "oo::Helpers::nextto" => Some(Target::NextTo),
+                "callback" => Some(Target::Helper("callback")),
+                "mymethod" => Some(Target::Helper("mymethod")),
+                "classvariable" => Some(Target::Helper("classvariable")),
+                "link" => Some(Target::Helper("link")),
+                "myclass" => Some(Target::MyClass(*obj)),
                 _ => None,
             },
             Frame::Define { class, .. } => {
@@ -1337,6 +1405,19 @@ pub(crate) fn try_dispatch(
         Target::InfoClass => info_class(interp, &ns, args),
         Target::CurrentNs => Ok(val(lock(interp).oo.map_ns(METHOD_NS))),
         Target::DefineCmd(cmd) => define_sub(interp, vm, cmd, name, &strings(args)),
+        Target::Helper(which) => helper(interp, which, name, args),
+        Target::MyClass(id) => {
+            if args.is_empty() {
+                return Some(Err(wrong_args(&format!("{name} methodName ?arg ...?"))));
+            }
+            let class = lock(interp).oo.obj(id).class;
+            invoke_object(interp, vm, class, false, name, &ns, args)
+        }
+        Target::Link(id, method) => {
+            let mut words = vec![val(method)];
+            words.extend_from_slice(args);
+            invoke_object(interp, vm, id, false, name, &ns, &words)
+        }
     })
 }
 
@@ -2241,6 +2322,17 @@ fn delete_object(interp: &Shared, vm: &mut VM, id: Id) {
     oo.by_ns.remove(&o.ns);
     reg.forget_command(&o.command);
     reg.forget_namespace(&o.ns);
+    // `link`'s commands go with the object (`linkedCmdsList`).
+    let gone: Vec<String> = oo
+        .links
+        .iter()
+        .filter(|(_, (owner, _))| *owner == id)
+        .map(|(k, _)| k.clone())
+        .collect();
+    for key in gone {
+        oo.links.remove(&key);
+        reg.forget_command(&format!("::{key}"));
+    }
     let prefix = format!("{}::", store_key(&o.ns));
     globals.retain(|k, _| !k.starts_with(&prefix));
 }
@@ -2392,6 +2484,95 @@ fn self_cmd(interp: &Shared, written: &str, args: &[Value]) -> Result<Value, Tcl
         _ => unreachable!("index_of answers a table entry"),
     };
     Ok(val(answer))
+}
+
+/// The `oo::Helpers` commands `callback` / `mymethod` (`TclOOCallbackObjCmd`),
+/// `classvariable` (`TclOOClassVariableObjCmd`) and `link`
+/// (`TclOOLinkObjCmd`), and the check a compiled `classvariable` runs.
+fn helper(interp: &Shared, which: &str, written: &str, args: &[Value]) -> Result<Value, TclError> {
+    let words = strings(args);
+    let classvariable = which.starts_with("classvariable");
+    if classvariable && words.is_empty() {
+        return Err(wrong_args(&format!("{written} name ...")));
+    }
+    let mut state = lock(interp);
+    let in_method = matches!(state.oo.stack.last(), Some(Frame::Method { .. }));
+    let (obj, declarer) = match state.oo.current_method() {
+        Some((obj, chain, index)) if in_method => (obj, chain.calls[index].declarer),
+        _ => {
+            return Err(oo_err(
+                format!("{written} may only be called from inside a method"),
+                "CONTEXT_REQUIRED",
+            ))
+        }
+    };
+    let obj_ns = state.oo.ns_of(obj);
+    match which {
+        "callback" | "mymethod" => {
+            if words.is_empty() {
+                return Err(wrong_args(&format!("{written} method ...")));
+            }
+            let mut list = vec![format!("{obj_ns}::my")];
+            list.extend(words);
+            Ok(val(crate::list::join(&list)))
+        }
+        "link" => {
+            let mut made = Vec::new();
+            for word in &words {
+                let parts = crate::list::split(word).map_err(TclError::plain)?;
+                let (src, dst) = match parts.as_slice() {
+                    [one] => (one.clone(), one.clone()),
+                    [src, dst] => (src.clone(), dst.clone()),
+                    _ => {
+                        return Err(oo_err(
+                            "bad link description; must only have one or two elements",
+                            "CMDLINK_FORMAT",
+                        ))
+                    }
+                };
+                let src = if src.starts_with("::") {
+                    src
+                } else {
+                    format!("{obj_ns}::{src}")
+                };
+                made.push((src, dst));
+            }
+            let crate::runtime::State { oo, ns: reg, .. } = &mut *state;
+            for (src, dst) in made {
+                reg.define(&src);
+                oo.links.insert(store_key(&src).to_string(), (obj, dst));
+            }
+            Ok(val(""))
+        }
+        _ => {
+            let Declarer::Class(_) = declarer else {
+                return Err(oo_err("method not defined by a class", "UNMATCHED_CONTEXT"));
+            };
+            for name in &words {
+                let what = if crate::assoc::string_match(name, "*(*)") {
+                    "scalar variable that looks like an array element"
+                } else if name.contains("::") {
+                    "local variable with a namespace separator in it"
+                } else {
+                    continue;
+                };
+                return Err(coded_err(
+                    format!("bad variable name \"{name}\": can't create a {what}"),
+                    &["TCL", "UPVAR", "LOCAL_ELEMENT"],
+                ));
+            }
+            if which == "classvariable" {
+                // Reached at run time only when a name was computed: the link
+                // is to a local slot, which only the compiler can address.
+                return Err(TclError::plain(format!(
+                    "linking the class variable \"{}\" into a method's frame at run time is not \
+                     supported yet: write \"classvariable {}\" with the name spelt out",
+                    words[0], words[0]
+                )));
+            }
+            Ok(val(""))
+        }
+    }
 }
 
 /// `TclOONextObjCmd`: the next implementation in the chain, called with the
@@ -3764,6 +3945,7 @@ impl Oo {
             object_cls: self.object_cls,
             class_cls: self.class_cls,
             graveyard: Default::default(),
+            links: BTreeMap::new(),
         }
     }
 }
