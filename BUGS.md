@@ -636,9 +636,6 @@ approximated, and nothing is silently mis-run.
 - **What TclOO leaves out.** The core object system is in `src/oo.rs` (see
   *Implemented*); measured against tclsh 9.1, these parts are not:
   * Properties (`oo::configurable`, `property`, `info … properties`).
-  * Slots as objects: `oo::define::superclass` and the rest are definition
-    commands here, not instances of `oo::Slot`, so `info object class
-    filter` inside a definition is `filter does not refer to an object`.
   * `$obj variable x` from outside a method, and `my variable` with a computed
     name, link only at the global level; inside a procedure they are refused.
     `classvariable` with a computed name is refused for the same reason.

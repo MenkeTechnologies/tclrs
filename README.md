@@ -753,8 +753,9 @@ in the object's namespace as `"<creation id> : <name>"` of its declarer, so
 two classes' private `x` are two variables. Every class has a delegate
 (`<namespace>:: oo ::delegate`) mixed into it, which
 holds its `classmethod`s, and `definitionnamespace` chooses where `oo::define`
-and `oo::objdefine` run. What TclOO leaves out — properties, slots as objects —
-is listed in
+and `oo::objdefine` run. The slots (`::oo::define::superclass` and the rest) are instances of `oo::Slot`,
+as `TclOODefineSlots` makes them. What TclOO leaves out — properties — is listed
+in
 [`BUGS.md`](BUGS.md).
 
 

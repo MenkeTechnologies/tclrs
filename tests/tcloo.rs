@@ -816,3 +816,136 @@ x
 "#;
     assert_eq!(run(script), expected);
 }
+
+/// The slots are objects (`TclOODefineSlots`): `oo::Slot` with `-append`,
+/// `-appendifnew`, `-clear`, `-prepend`, `-remove`, `-set` built on `Get`,
+/// `Set` and `Resolve`, and an `unknown` that hands a non-option word to the
+/// `--default-operation`; `::oo::define::superclass` and the other standard
+/// slots are its instances, so a definition script can ask `info object class
+/// superclass` and a script can subclass `oo::Slot`.
+#[test]
+fn slots_are_objects_of_oo_slot() {
+    let script = r#"puts [info object class ::oo::define::superclass]|[info object namespace ::oo::Slot]|[info object namespace ::oo::define::filter]|[info object namespace ::oo::objdefine::variable]
+puts [lsort [info class methods oo::Slot -private]]
+puts [lsort [info class methods oo::Slot]]
+puts [lsort [info object methods ::oo::define::superclass -private]]
+puts [lsort [info object methods ::oo::define::filter -private]]
+puts [lrange [info class instances oo::Slot] 0 6]
+oo::class create A; oo::class create B
+oo::class create C {
+  superclass A
+  puts [info object class superclass]
+  superclass -append B
+  puts [info class superclasses [self]]
+  variable x y
+  variable -append z
+  filter -set f1 f2
+  filter -remove f1
+}
+puts [info class superclasses C]|[info class variables C]|[info class filters C]
+oo::define C superclass -clear
+puts [info class superclasses C]
+puts [catch {oo::define C superclass -clear x} m]$m
+puts [catch {oo::define C superclass -bogus x} m]$m
+puts [catch {oo::define C {superclass -bogus x}} m]$m
+puts [catch {::oo::define::superclass A} m]$m
+puts [catch {oo::define C {superclass Get x}} m]$m
+puts [catch {oo::define C {superclass Set}} m]$m
+puts [catch {oo::define C {superclass Set a b}} m]$m
+puts [catch {oo::define C {mixin -set nope}} m]$m
+puts [catch {oo::define C {superclass Resolve}} m]$m
+puts [catch {::oo::Slot new} m]$m
+oo::define C mixin -append A B
+puts [info class mixins C]
+oo::define C mixin -remove A
+puts [info class mixins C]
+oo::define C mixin -prepend A
+puts [info class mixins C]
+oo::define C mixin -appendifnew B A
+puts [info class mixins C]
+C create o
+oo::objdefine o {mixin A; variable q; filter -append g}
+puts [info object mixins o]|[info object variables o]|[info object filters o]
+oo::objdefine o mixin
+puts [info object mixins o]x
+oo::define C {superclass}
+puts [info class superclasses C]
+oo::define C variable
+puts [info class variables C]
+oo::class create MySlot {superclass oo::Slot; variable items; method Get {} {return $items}; method Set {l} {set items $l}; method Resolve {x} {string toupper $x}}
+MySlot create s
+s -set a b; s -append c; s d
+puts [s Get]
+puts [catch {s destroy} m]$m
+puts [catch {oo::define C {private variable p q}} m]$m[info class variables C -private]
+catch {A destroy}; oo::class create A
+catch {C destroy}; oo::class create C
+puts [catch {oo::define C {superclass -clear x}} m]$m
+puts [catch {oo::define C {superclass A A}} m]$m|$::errorCode
+puts [catch {oo::define C {superclass C}} m]$m
+puts [catch {oo::define C {variable a::b}} m]$m
+puts [catch {oo::define C {mixin -append nope}} m]$m
+puts [catch {oo::define C superclass {a b}} m]$m
+puts [catch {oo::objdefine [C new] {superclass A}} m]$m
+puts [catch {oo::define oo::object superclass A} m]$m
+oo::define C {mixin A; mixin}
+puts [info class mixins C]x
+oo::define C filter a b a
+puts [info class filters C]
+oo::define C {self filter x}
+puts [info object filters C]
+oo::define C {self {variable v w}}
+puts [info object variables C]
+puts [info object methods oo::define::superclass -all -private]
+puts [::oo::Slot create my1]
+puts [catch {my1 -set a} m]$m|$::errorCode
+"#;
+    let expected = r#"::oo::Slot|::oo::Obj3|::oo::Obj4|::oo::Obj10
+--default-operation -append -appendifnew -clear -prepend -remove -set Get Resolve Set unknown
+-append -appendifnew -clear -prepend -remove -set
+--default-operation Get Resolve Set
+Get Set
+::oo::define::filter ::oo::define::mixin ::oo::define::superclass ::oo::define::variable ::oo::objdefine::filter ::oo::objdefine::mixin ::oo::objdefine::variable
+::oo::Slot
+::A ::B
+::A ::B|x y z|f2
+::oo::object
+1wrong # args: should be "oo::define C superclass -clear"
+1unknown method "-bogus": must be -append, -appendifnew, -clear, -prepend, -remove or -set
+1unknown method "-bogus": must be -append, -appendifnew, -clear, -prepend, -remove or -set
+1this command may only be called from within the context of an ::oo::define or ::oo::objdefine command
+1Get does not refer to an object
+1Set does not refer to an object
+1Set does not refer to an object
+1nope does not refer to an object
+1Resolve does not refer to an object
+0::oo::Obj26
+::A ::B
+::B
+::A ::B
+::A ::B
+::A|q|g
+x
+::oo::object
+x y z
+A B C D GET
+0A B C D GET DESTROY
+0p q
+1wrong # args: should be "superclass -clear"
+1class should only be a direct superclass once|TCL OO REPETITIOUS
+1attempt to form circular dependency graph
+1invalid declared variable name "a::b": must not contain namespace separators
+1nope does not refer to an object
+1a b does not refer to an object
+1invalid command name "superclass"
+1may not modify the superclass of the root object
+x
+a b a
+x
+v w
+--default-operation -append -appendifnew -clear -prepend -remove -set <cloned> Get Resolve Set destroy eval unknown variable varname
+::my1
+1unimplemented|TCL OO ABSTRACT_SLOT
+"#;
+    assert_eq!(run(script), expected);
+}

@@ -164,6 +164,21 @@ pub(crate) enum Builtin {
     SingletonCloned,
     /// `TclOO_Class_Cloned`.
     ClassCloned,
+    /// `oo::Slot`'s `Get` and `Set`: `Slot_Unimplemented`.
+    SlotUnimplemented,
+    /// `oo::Slot`'s `Resolve`: `Slot_Resolve`.
+    SlotResolve,
+    /// `oo::Slot`'s `-append`, `-appendifnew`, `-clear`, `-prepend`, `-remove`
+    /// and `-set`.
+    SlotOp(&'static str),
+    /// `oo::Slot`'s `unknown`: `Slot_Unknown`.
+    SlotUnknown,
+    /// A standard slot's `Get`: which slot, and whether it is `oo::define`'s.
+    SlotGet(Slot, bool),
+    /// A standard slot's `Set`.
+    SlotSet(Slot, bool),
+    /// `Slot_ResolveClass`, the `Resolve` of the `mixin` and `superclass` slots.
+    SlotResolveClass,
 }
 
 /// One entry of a method table: the export flags and, unless the record only
@@ -397,6 +412,7 @@ impl Oo {
             deleting: HashSet::new(),
         };
         oo.make_additional_classes();
+        oo.make_slots();
         for id in [0, 1, SINGLETON, SINGLETON_INSTANCE, ABSTRACT] {
             let (cmd, ns) = {
                 let o = oo.obj(id);
@@ -471,6 +487,131 @@ impl Oo {
             let class_cls = self.class_cls;
             self.class_mut(class_cls).instances.push(id);
         }
+    }
+
+    /// `TclOODefineSlots`: the class `oo::Slot` (`::oo::Obj3`) with its
+    /// `slotMethods`, a `--default-operation` forward to `-append` and an
+    /// unexported `destroy`; then the standard slots, `::oo::Obj4` onwards,
+    /// each with its own `Get`, `Set` and — for the class-valued ones —
+    /// `Resolve`, and a `--default-operation` forward to `-set` where the
+    /// slot's default is not `-append`.
+    fn make_slots(&mut self) {
+        let mut methods = BTreeMap::new();
+        for (name, flags, b) in [
+            ("Get", 0, Builtin::SlotUnimplemented),
+            ("Resolve", 0, Builtin::SlotResolve),
+            ("Set", 0, Builtin::SlotUnimplemented),
+            ("-append", PUBLIC_METHOD, Builtin::SlotOp("-append")),
+            (
+                "-appendifnew",
+                PUBLIC_METHOD,
+                Builtin::SlotOp("-appendifnew"),
+            ),
+            ("-clear", PUBLIC_METHOD, Builtin::SlotOp("-clear")),
+            ("-prepend", PUBLIC_METHOD, Builtin::SlotOp("-prepend")),
+            ("-remove", PUBLIC_METHOD, Builtin::SlotOp("-remove")),
+            ("-set", PUBLIC_METHOD, Builtin::SlotOp("-set")),
+            ("unknown", 0, Builtin::SlotUnknown),
+        ] {
+            methods.insert(name.to_string(), builtin(flags, b));
+        }
+        let forward = |op: &str| Method {
+            flags: 0,
+            imp: Some(Arc::new(Imp::Forward(vec![
+                "my".to_string(),
+                op.to_string(),
+            ]))),
+        };
+        methods.insert("--default-operation".to_string(), forward("-append"));
+        methods.insert(
+            "destroy".to_string(),
+            Method {
+                flags: 0,
+                imp: None,
+            },
+        );
+        let slot_cls = self.push_builtin_object("::oo::Slot", 3, Some((self.object_cls, methods)));
+        // `TclOODefineSlots` runs before `MakeAdditionalClasses`, so `oo::Slot`
+        // comes before `oo::singleton` in the lists it joins.
+        let (object_cls, class_cls) = (self.object_cls, self.class_cls);
+        self.class_mut(class_cls)
+            .instances
+            .retain(|&x| x != slot_cls);
+        self.class_mut(class_cls).instances.insert(2, slot_cls);
+        self.class_mut(object_cls)
+            .subclasses
+            .retain(|&x| x != slot_cls);
+        self.class_mut(object_cls).subclasses.insert(1, slot_cls);
+        let slots = [
+            ("::oo::define::filter", Slot::Filter, true),
+            ("::oo::define::mixin", Slot::Mixin, true),
+            ("::oo::define::superclass", Slot::Superclass, true),
+            ("::oo::define::variable", Slot::Variable, true),
+            ("::oo::objdefine::filter", Slot::Filter, false),
+            ("::oo::objdefine::mixin", Slot::Mixin, false),
+            ("::oo::objdefine::variable", Slot::Variable, false),
+        ];
+        for (i, (command, which, class)) in slots.into_iter().enumerate() {
+            let id = self.push_builtin_object(command, 4 + i as u64, None);
+            self.obj_mut(id).class = slot_cls;
+            let own = &mut self.obj_mut(id).methods;
+            own.insert(
+                "Get".to_string(),
+                builtin(0, Builtin::SlotGet(which, class)),
+            );
+            own.insert(
+                "Set".to_string(),
+                builtin(0, Builtin::SlotSet(which, class)),
+            );
+            if matches!(which, Slot::Mixin | Slot::Superclass) {
+                own.insert("Resolve".to_string(), builtin(0, Builtin::SlotResolveClass));
+                own.insert("--default-operation".to_string(), forward("-set"));
+            }
+            let class_cls = self.class_cls;
+            self.class_mut(class_cls).instances.retain(|&x| x != id);
+            self.class_mut(slot_cls).instances.push(id);
+        }
+    }
+
+    /// An object `InitFoundation` makes before any script runs: an instance of
+    /// `oo::class` named `command` with namespace and creation id `number`,
+    /// and — when `class` gives its superclass and methods — a class.
+    fn push_builtin_object(
+        &mut self,
+        command: &str,
+        number: u64,
+        class: Option<(Id, BTreeMap<String, Method>)>,
+    ) -> Id {
+        let id = self.objects.len();
+        let is_class = class.is_some();
+        self.objects.push(Some(Object {
+            command: command.to_string(),
+            ns: format!("::oo::Obj{number}"),
+            class: self.class_cls,
+            creation_id: number,
+            methods: BTreeMap::new(),
+            mixins: Vec::new(),
+            filters: Vec::new(),
+            variables: Vec::new(),
+            private_vars: Vec::new(),
+            private_epoch: 0,
+            class_data: class.map(|(superclass, methods)| ClassData {
+                superclasses: vec![superclass],
+                methods,
+                ..ClassData::default()
+            }),
+            destructing: false,
+            filter_handling: false,
+        }));
+        if let (true, Some(Some(o))) = (is_class, self.objects.get(id)) {
+            let superclass = o.class_data.as_ref().expect("a class").superclasses[0];
+            self.class_mut(superclass).subclasses.push(id);
+        }
+        let class_cls = self.class_cls;
+        self.class_mut(class_cls).instances.push(id);
+        self.by_command.insert(store_key(command).to_string(), id);
+        self.by_ns.insert(format!("::oo::Obj{number}"), id);
+        id
     }
 
     fn obj(&self, id: Id) -> &Object {
@@ -1362,6 +1503,14 @@ pub(crate) fn install(reg: &mut Registry) {
         "::oo::Helpers",
         "::oo::Obj1",
         "::oo::Obj2",
+        "::oo::Obj3",
+        "::oo::Obj4",
+        "::oo::Obj5",
+        "::oo::Obj6",
+        "::oo::Obj7",
+        "::oo::Obj8",
+        "::oo::Obj9",
+        "::oo::Obj10",
         "::oo::Obj15",
         "::oo::Obj16",
         "::oo::Obj17",
@@ -1396,10 +1545,16 @@ pub(crate) fn install(reg: &mut Registry) {
         "::oo::Obj16::my",
         "::oo::Obj17::my",
         "::oo::Obj15::myclass",
+        "::oo::Slot",
         "::oo::Obj16::myclass",
         "::oo::Obj17::myclass",
     ] {
         reg.define(cmd);
+    }
+    // `oo::Slot` and the standard slots.
+    for n in 3..=10 {
+        reg.define(&format!("::oo::Obj{n}::my"));
+        reg.define(&format!("::oo::Obj{n}::myclass"));
     }
     for cmd in DEFINE_CMDS {
         reg.define(&format!("::oo::define::{cmd}"));
@@ -2092,6 +2247,36 @@ fn run_builtin(
         }
         Builtin::SingletonDestroy => Err(oo_err("may not destroy a singleton object", "SINGLETON")),
         Builtin::SingletonCloned => Err(oo_err("may not clone a singleton object", "SINGLETON")),
+        Builtin::SlotUnimplemented => Err(oo_err("unimplemented", "ABSTRACT_SLOT")),
+        Builtin::SlotResolve => match args {
+            [item] => Ok(item.clone()),
+            _ => Err(wrong_args(&usage_of(usage, "list"))),
+        },
+        Builtin::SlotOp(op) => slot_op(interp, vm, obj, op, usage, args),
+        // `Slot_Unknown`: a word that is not an option is an item for the
+        // default operation; an unknown option goes on down the chain.
+        Builtin::SlotUnknown => match args.first().map(to_tcl_string) {
+            Some(first) if first.starts_with('-') => {
+                if index + 1 < chain.calls.len() {
+                    invoke_context(
+                        interp,
+                        vm,
+                        obj,
+                        Arc::clone(chain),
+                        index + 1,
+                        args,
+                        usage,
+                        ns,
+                    )
+                } else {
+                    Err(unknown_method_named(&first))
+                }
+            }
+            _ => slot_call(interp, vm, obj, "--default-operation", args),
+        },
+        Builtin::SlotGet(which, class) => slot_get(interp, which, class, usage, args),
+        Builtin::SlotSet(which, class) => slot_set(interp, which, class, usage, args),
+        Builtin::SlotResolveClass => slot_resolve_class(interp, usage, args),
         // `TclOO_Class_Cloned`: the rest of the chain, then
         // `UpdateClassDelegatesAfterClone` gives the copy a copy of the
         // origin's delegate in place of the origin's own, so the two classes'
@@ -3155,17 +3340,8 @@ fn table_of(oo: &mut Oo, obj: Id, class: bool) -> &mut BTreeMap<String, Method> 
 /// definition script's error context repeats.
 const OBJNAME_LIMIT: usize = 30;
 
-const SLOT_OPS: &[&str] = &[
-    "-append",
-    "-appendifnew",
-    "-clear",
-    "-prepend",
-    "-remove",
-    "-set",
-];
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Slot {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Slot {
     Superclass,
     Mixin,
     Filter,
@@ -3334,28 +3510,21 @@ fn define_sub(
             }
             empty
         }
-        "superclass" => slot(
-            interp,
-            Slot::Superclass,
-            obj,
-            class,
-            private,
-            written,
-            ns,
-            args,
-        ),
-        "mixin" => slot(interp, Slot::Mixin, obj, class, private, written, ns, args),
-        "filter" => slot(interp, Slot::Filter, obj, class, private, written, ns, args),
-        "variable" => slot(
-            interp,
-            Slot::Variable,
-            obj,
-            class,
-            private,
-            written,
-            ns,
-            args,
-        ),
+        // The slots are objects (`TclOODefineSlots`): `::oo::define::superclass`
+        // and the rest, called as the definition wrote them.
+        "superclass" | "mixin" | "filter" | "variable" => {
+            let space = if class {
+                "::oo::define"
+            } else {
+                "::oo::objdefine"
+            };
+            let slot = lock(interp)
+                .oo
+                .lookup(&format!("{space}::{cmd}"), "::")
+                .ok_or_else(|| not_an_object(cmd))?;
+            let words: Vec<Value> = args.iter().map(|a| val(a.as_str())).collect();
+            invoke_object(interp, vm, slot, true, written, space, &words)
+        }
         "self" => {
             if !class {
                 return match args {
@@ -3546,62 +3715,58 @@ fn define_sub(
     }
 }
 
-/// The slots `superclass`, `mixin`, `filter` and `variable` (`oo::Slot` and
-/// its `-append`, `-appendifnew`, `-clear`, `-prepend`, `-remove` and `-set`).
-#[allow(clippy::too_many_arguments)]
-fn slot(
+/// The definition being run, for a slot's accessors (`TclOOGetDefineCmdContext`):
+/// the object, whether it is `oo::define`'s class definition, whether the
+/// definition is `private`, and the namespace class names resolve from.
+fn define_context(interp: &Shared) -> Result<(Id, bool, bool, String), TclError> {
+    let state = lock(interp);
+    let Some(Frame::Define {
+        obj,
+        class,
+        private,
+        outer,
+        ..
+    }) = state.oo.stack.last()
+    else {
+        return Err(oo_err(
+            "this command may only be called from within the context of an ::oo::define or \
+             ::oo::objdefine command",
+            "MONKEY_BUSINESS",
+        ));
+    };
+    if !state.oo.alive(*obj) {
+        return Err(oo_err(
+            "this command cannot be called when the object has been deleted",
+            "MONKEY_BUSINESS",
+        ));
+    }
+    Ok((*obj, *class, *private, outer.clone()))
+}
+
+/// A slot's `Get` (`ClassFilter_Get`, `ObjMixin_Get` and the rest): the
+/// contents of the slot of the object being defined. `class` is whether the
+/// slot is one of `oo::define`'s, which needs a class.
+fn slot_get(
     interp: &Shared,
     which: Slot,
-    obj: Id,
     class: bool,
-    private: bool,
-    written: &str,
-    ns: &str,
-    args: &[String],
+    usage: &str,
+    args: &[Value],
 ) -> Result<Value, TclError> {
-    let default = match which {
-        Slot::Superclass | Slot::Mixin => "-set",
-        Slot::Filter | Slot::Variable => "-append",
-    };
-    let (op, items) = match args.first() {
-        None => (default, args),
-        Some(first) if first == "--default-operation" => (default, &args[1..]),
-        Some(first) if first.starts_with('-') => match SLOT_OPS.iter().find(|op| *op == first) {
-            Some(op) => (*op, &args[1..]),
-            None => {
-                return Err(coded_err(
-                    format!(
-                    "unknown method \"{first}\": must be -append, -appendifnew, -clear, -prepend, \
-                         -remove or -set"
-                ),
-                    &["TCL", "LOOKUP", "METHOD", first],
-                ))
-            }
-        },
-        Some(_) => (default, args),
-    };
-    let mut state = lock(interp);
-    let oo = &mut state.oo;
-    // `Slot_ResolveClass`: a class name becomes the class's own name, so that
-    // `-remove` and the duplicate checks compare like with like.
-    let resolve_item = |oo: &Oo, item: &str| -> String {
-        match which {
-            Slot::Superclass | Slot::Mixin => match oo.lookup(item, ns) {
-                Some(id) if oo.is_class(id) => oo.name(id),
-                _ => item.to_string(),
-            },
-            _ => item.to_string(),
-        }
-    };
-    let current: Vec<String> = match (which, class) {
-        (Slot::Superclass, _) => oo
-            .class(obj)
-            .superclasses
-            .iter()
-            .map(|&s| oo.name(s))
-            .collect(),
-        (Slot::Mixin, true) => oo.class(obj).mixins.iter().map(|&s| oo.name(s)).collect(),
-        (Slot::Mixin, false) => oo.obj(obj).mixins.iter().map(|&s| oo.name(s)).collect(),
+    let (obj, _, private, _) = define_context(interp)?;
+    let state = lock(interp);
+    let oo = &state.oo;
+    if class && !oo.is_class(obj) {
+        return Err(oo_err("attempt to misuse API", "MONKEY_BUSINESS"));
+    }
+    if !args.is_empty() {
+        return Err(wrong_args(usage));
+    }
+    let names = |ids: &[Id]| ids.iter().map(|&s| oo.name(s)).collect::<Vec<_>>();
+    let list = match (which, class) {
+        (Slot::Superclass, _) => names(&oo.class(obj).superclasses),
+        (Slot::Mixin, true) => names(&oo.class(obj).mixins),
+        (Slot::Mixin, false) => names(&oo.obj(obj).mixins),
         (Slot::Filter, true) => oo.class(obj).filters.clone(),
         (Slot::Filter, false) => oo.obj(obj).filters.clone(),
         (Slot::Variable, true) if private => oo.class(obj).private_vars.clone(),
@@ -3609,59 +3774,60 @@ fn slot(
         (Slot::Variable, true) => oo.class(obj).variables.clone(),
         (Slot::Variable, false) => oo.obj(obj).variables.clone(),
     };
-    let items: Vec<String> = items.iter().map(|i| resolve_item(oo, i)).collect();
-    let next: Vec<String> = match op {
-        "-append" => current.iter().cloned().chain(items).collect(),
-        "-appendifnew" => {
-            let mut out = current.clone();
-            for i in items {
-                if !out.contains(&i) {
-                    out.push(i);
-                }
-            }
-            out
-        }
-        "-clear" => {
-            if !items.is_empty() {
-                return Err(wrong_args(&format!("{written} -clear")));
-            }
-            Vec::new()
-        }
-        "-prepend" => items.into_iter().chain(current.iter().cloned()).collect(),
-        "-remove" => current
-            .iter()
-            .filter(|c| !items.contains(c))
-            .cloned()
-            .collect(),
-        _ => items,
+    Ok(val(crate::list::join(&list)))
+}
+
+/// A slot's `Set` (`ClassSuper_Set`, `ObjVars_Set` and the rest): replace the
+/// contents of the slot of the object being defined with one list.
+fn slot_set(
+    interp: &Shared,
+    which: Slot,
+    class: bool,
+    usage: &str,
+    args: &[Value],
+) -> Result<Value, TclError> {
+    let (obj, _, private, ns) = define_context(interp)?;
+    let mut state = lock(interp);
+    let oo = &mut state.oo;
+    if class && !oo.is_class(obj) {
+        return Err(oo_err("attempt to misuse API", "MONKEY_BUSINESS"));
+    }
+    let [list] = args else {
+        let what = match (which, class) {
+            (Slot::Superclass, _) => "superclassList",
+            (Slot::Mixin, _) => "mixinList",
+            (Slot::Variable, false) => "variableList",
+            _ => "filterList",
+        };
+        return Err(wrong_args(&usage_of(usage, what)));
     };
+    let items = crate::list::split(&to_tcl_string(list)).map_err(TclError::plain)?;
     match which {
-        Slot::Superclass => set_superclasses(oo, obj, &next, ns)?,
-        Slot::Mixin => set_mixins(oo, obj, class, &next, ns)?,
+        Slot::Superclass => set_superclasses(oo, obj, &items, &ns)?,
+        Slot::Mixin => set_mixins(oo, obj, class, &items, &ns)?,
         Slot::Filter => {
             if class {
-                oo.class_mut(obj).filters = next;
+                oo.class_mut(obj).filters = items;
             } else {
-                oo.obj_mut(obj).filters = next;
+                oo.obj_mut(obj).filters = items;
             }
         }
         Slot::Variable => {
-            for v in &next {
-                if v.contains("::") {
-                    return Err(oo_err(
-                        format!("invalid declared variable name \"{v}\": must not contain namespace separators"),
-                        "BAD_DECLVAR",
-                    ));
-                }
-                if crate::assoc::string_match(v, "*(*)") {
-                    return Err(oo_err(
-                        format!("invalid declared variable name \"{v}\": must not refer to an array element"),
-                        "BAD_DECLVAR",
-                    ));
-                }
+            for v in &items {
+                let why = if v.contains("::") {
+                    "contain namespace separators"
+                } else if crate::assoc::string_match(v, "*(*)") {
+                    "refer to an array element"
+                } else {
+                    continue;
+                };
+                return Err(oo_err(
+                    format!("invalid declared variable name \"{v}\": must not {why}"),
+                    "BAD_DECLVAR",
+                ));
             }
-            let mut unique: Vec<String> = Vec::with_capacity(next.len());
-            for v in next {
+            let mut unique: Vec<String> = Vec::with_capacity(items.len());
+            for v in items {
                 if !unique.contains(&v) {
                     unique.push(v);
                 }
@@ -3673,17 +3839,101 @@ fn slot(
                     c.private_vars = unique;
                     c.private_epoch = epoch;
                 }
-                (true, false) => oo.class_mut(obj).variables = unique,
                 (false, true) => {
                     let o = oo.obj_mut(obj);
                     o.private_vars = unique;
                     o.private_epoch = o.creation_id;
                 }
+                (true, false) => oo.class_mut(obj).variables = unique,
                 (false, false) => oo.obj_mut(obj).variables = unique,
             }
         }
     }
     Ok(val(""))
+}
+
+/// `Slot_ResolveClass`: a slot element that names a class becomes the
+/// class's own name; anything else is kept as written.
+fn slot_resolve_class(interp: &Shared, usage: &str, args: &[Value]) -> Result<Value, TclError> {
+    let (_, _, _, ns) = define_context(interp)?;
+    let [item] = args else {
+        return Err(wrong_args(&usage_of(usage, "slotElement")));
+    };
+    let item = to_tcl_string(item);
+    let oo = &lock(interp).oo;
+    Ok(val(match oo.lookup(&item, &ns) {
+        Some(id) if oo.is_class(id) => oo.name(id),
+        _ => item,
+    }))
+}
+
+/// Call one of slot `slot`'s own methods as `my` does (`CallSlotGet`,
+/// `CallSlotSet`, `CallSlotResolve`).
+fn slot_call(
+    interp: &Shared,
+    vm: &mut VM,
+    slot: Id,
+    method: &str,
+    args: &[Value],
+) -> Result<Value, TclError> {
+    let mut words = vec![val(method)];
+    words.extend_from_slice(args);
+    let ns = lock(interp).oo.ns_of(slot);
+    invoke_object(interp, vm, slot, false, "my", &ns, &words)
+}
+
+/// The `oo::Slot` operations `-append`, `-appendifnew`, `-clear`,
+/// `-prepend`, `-remove` and `-set` (`Slot_Append` and the rest), built on the
+/// slot's own `Get`, `Set` and `Resolve`.
+fn slot_op(
+    interp: &Shared,
+    vm: &mut VM,
+    slot: Id,
+    op: &str,
+    usage: &str,
+    args: &[Value],
+) -> Result<Value, TclError> {
+    if op == "-clear" {
+        if !args.is_empty() {
+            return Err(wrong_args(usage));
+        }
+        return slot_call(interp, vm, slot, "Set", &[val("")]);
+    }
+    if args.is_empty() && op != "-set" {
+        return Ok(val(""));
+    }
+    let mut resolved = Vec::with_capacity(args.len());
+    for item in args {
+        resolved.push(to_tcl_string(&slot_call(
+            interp,
+            vm,
+            slot,
+            "Resolve",
+            std::slice::from_ref(item),
+        )?));
+    }
+    let list: Vec<String> = match op {
+        "-set" => resolved,
+        _ => {
+            let old = to_tcl_string(&slot_call(interp, vm, slot, "Get", &[])?);
+            let old = crate::list::split(&old).map_err(TclError::plain)?;
+            match op {
+                "-append" => old.into_iter().chain(resolved).collect(),
+                "-appendifnew" => {
+                    let mut out = old;
+                    for item in resolved {
+                        if !out.contains(&item) {
+                            out.push(item);
+                        }
+                    }
+                    out
+                }
+                "-prepend" => resolved.into_iter().chain(old).collect(),
+                _ => old.into_iter().filter(|o| !resolved.contains(o)).collect(),
+            }
+        }
+    };
+    slot_call(interp, vm, slot, "Set", &[val(crate::list::join(&list))])
 }
 
 /// The class a definition names, refused with `msg` when it names an object
