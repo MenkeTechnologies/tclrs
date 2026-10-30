@@ -1502,21 +1502,56 @@ fn run_proc(
         errorcode: Some("TCL WRONGARGS".to_string()),
         ..TclError::plain(msg)
     })?;
-    crate::runtime::with_written_back(interp, vm, |interp| {
+    // What `info level` names this activation by: the words of the command
+    // that invoked the method (`o m 1`, `next 1`, `my n`, `C create o 1`),
+    // as `objv` is to `InfoLevelCmd`, not the procedure the body compiled to.
+    let mut words = crate::list::split(usage).unwrap_or_else(|_| vec![usage.to_string()]);
+    words.extend(args.iter().map(to_tcl_string));
+    METHOD_CALLS.with(|c| {
+        c.borrow_mut()
+            .push((crate::procs::body_of(&compiled), words))
+    });
+    let result = crate::runtime::with_written_back(interp, vm, |interp| {
         with_frame(interp, frame, || {
             crate::procs::call_compiled(interp, &compiled, actuals)
         })
-    })
-    // The namespace standing for the object's is not one a script can name, so
-    // it never appears in what the script is told.
-    .map_err(|mut e| {
-        if e.msg.contains(METHOD_NS_KEY) {
-            e.msg = e
-                .msg
-                .replace(&format!("::{METHOD_NS_KEY}"), "")
-                .replace(METHOD_NS_KEY, "");
-        }
-        e
+    });
+    METHOD_CALLS.with(|c| c.borrow_mut().pop());
+    result
+        // The namespace standing for the object's is not one a script can name, so
+        // it never appears in what the script is told.
+        .map_err(|mut e| {
+            if e.msg.contains(METHOD_NS_KEY) {
+                e.msg = e
+                    .msg
+                    .replace(&format!("::{METHOD_NS_KEY}"), "")
+                    .replace(METHOD_NS_KEY, "");
+            }
+            e
+        })
+}
+
+/// Where a method body starts — its chunk and entry point — and the words of
+/// the command that invoked it.
+type MethodCall = ((crate::procs::ChunkKey, usize), Vec<String>);
+
+thread_local! {
+    /// The method bodies running, innermost last.
+    static METHOD_CALLS: std::cell::RefCell<Vec<MethodCall>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The words that invoked the running method whose body starts at `entry` of
+/// `chunk` — what `info level` answers for that activation — or `None` when
+/// the activation is no method body.
+pub(crate) fn method_call_words(chunk: &fusevm::Chunk, entry: usize) -> Option<Vec<String>> {
+    let key = (crate::procs::chunk_key(chunk), entry);
+    METHOD_CALLS.with(|c| {
+        c.borrow()
+            .iter()
+            .rev()
+            .find(|(body, _)| *body == key)
+            .map(|(_, words)| words.clone())
     })
 }
 

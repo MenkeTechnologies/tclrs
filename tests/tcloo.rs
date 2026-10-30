@@ -464,3 +464,57 @@ x
 "#;
     assert_eq!(run(script), expected);
 }
+
+/// `info level` inside a method names the command that invoked it — `o m 1`,
+/// `next 1`, `my n`, `C create o 1`, the empty list for a destructor — as
+/// `InfoLevelCmd` reads `objv`, never the procedure the body compiled to; and
+/// `-errorstack`'s `CALL` element agrees.
+#[test]
+fn info_level_names_the_command_that_invoked_a_method() {
+    let script = r#"oo::class create A {method m {a} {return "A:[info level 0]"}}
+oo::class create C {superclass A; method m {a {b 2}} {return "[info level 0]|[next $a]|[my n]"}; method n {} {info level 0}; constructor {x} {puts "ctor [info level 0]"}}
+C create o 1
+puts [o m 1]
+set p [C new 2]
+puts [$p m 5 6]
+proc q {} {o m 7}
+puts [q]
+oo::objdefine o method z args {list [info level] [info level 0]}
+puts [o z 1 2]
+puts [::o z]
+A destroy
+oo::class create A {method m {a} {return "A:[info level 0]"}}
+oo::class create C {superclass A
+  method m {a} {return "[info level 0]|[nextto A $a]"}
+  method unknown {name args} {return "unk:[info level 0]"}
+  destructor {puts "dtor:[info level 0]"}
+  method e {} {error boom}
+  method f {} {proc inner {} {return [info level 1]}; inner}
+}
+C create o
+puts [o m 3]
+puts [o zork 1 2]
+puts [o f]
+catch {o e} m opts
+puts [dict get $opts -errorstack]
+o destroy
+oo::class create F {method g {x} {return g:[info level 0]}; filter flt; method flt args {return "flt:[info level 0]:[next {*}$args]"}}
+F create f
+puts [f g 9]
+"#;
+    let expected = r#"ctor C create o 1
+o m 1|A:next 1|my n
+ctor C new 2
+::oo::Obj25 m 5 6|A:next 5|my n
+o m 7|A:next 7|my n
+1 {o z 1 2}
+1 {::o z}
+o m 3|A:nextto A 3
+unk:o zork 1 2
+o f
+INNER {returnImm boom {}} CALL {o e}
+dtor:
+flt:f g 9:g:next 9
+"#;
+    assert_eq!(run(script), expected);
+}

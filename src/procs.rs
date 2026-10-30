@@ -238,9 +238,9 @@ pub(crate) struct RuntimeProc {
     sig: Signature,
 }
 
-type ChunkKey = (u64, usize);
+pub(crate) type ChunkKey = (u64, usize);
 
-fn chunk_key(chunk: &fusevm::Chunk) -> ChunkKey {
+pub(crate) fn chunk_key(chunk: &fusevm::Chunk) -> ChunkKey {
     (chunk.op_hash, chunk.ops.len())
 }
 
@@ -448,6 +448,12 @@ pub(crate) fn defined_proc(interp: &Shared, name: &str) -> Option<RuntimeProc> {
 /// two-step search — `here`, then the root for a name not written absolute —
 /// and an imported command followed to its origin. `None` when the name reaches
 /// no procedure.
+/// Where `p`'s body starts: its chunk, as [`chunk_key`] names it, and the
+/// entry point in that chunk.
+pub(crate) fn body_of(p: &RuntimeProc) -> (ChunkKey, usize) {
+    (chunk_key(&p.chunk), p.entry)
+}
+
 pub(crate) fn find_proc(interp: &Shared, here: &str, name: &str) -> Option<Signature> {
     use crate::cmd_namespace::resolve;
     let state = interp.lock().expect("interpreter lock");

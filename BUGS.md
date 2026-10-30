@@ -658,8 +658,7 @@ approximated, and nothing is silently mis-run.
   * `upvar` and `uplevel` from a method body reach the caller's frame only
     when the caller is the global level: a method runs as a call across
     chunks, with the limit every procedure defined in another chunk has.
-  * `info level 0` inside a method names the hidden procedure the body compiled
-    to. `info object creationid` is the object's number, not tclsh's internal
+  * `info object creationid` is the object's number, not tclsh's internal
     epoch. `info object methods` without `-all`, `info object vars` and `info
     class methods` without `-all` are sorted where tclsh answers in hash order.
   * Renaming an object's `my`, variable traces firing as an object's namespace

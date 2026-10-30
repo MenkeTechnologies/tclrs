@@ -930,6 +930,14 @@ pub(crate) fn call_words(vm: &VM, at: usize) -> Vec<String> {
     let Some(frame) = vm.frames.get(at) else {
         return Vec::new();
     };
+    // A method body is a procedure only in how it is compiled; the call that
+    // made the level is the command that invoked the method.
+    if let Some(words) = frame
+        .entry_ip
+        .and_then(|entry| crate::oo::method_call_words(&vm.chunk, entry))
+    {
+        return words;
+    }
     // The call op of the caller, which the frame remembers the way back to.
     // `return_ip` is the op after the call, so a call that is the chunk's last
     // op returns to `ops.len()` itself.
