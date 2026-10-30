@@ -143,6 +143,15 @@ const PROGRAMS: &[&str] = &[
     // The self-deletion `tkInit` performs: the call that follows must refuse.
     "proc h {} {rename h {}\n  return H}\nputs [h]\nputs [catch {h} m]\nputs $m",
     "proc a {} {return A}\nputs [catch {rename nosuch x} m]\nputs $m\nputs [catch {rename} m2]\nputs $m2\nputs [catch {rename onlyone} m3]\nputs $m3\nnamespace eval ns {}\nrename a ::ns::a\nputs [namespace which -command ::ns::a]\nputs \"<[namespace which -command ::a]>\"",
+    // ── a namespace command named after a built-in ──
+    // The current namespace is searched before the global one, built-ins
+    // included; a `::`-qualified name and the global level still reach the
+    // built-in.
+    "namespace eval zn {proc string {args} {return \"mine:$args\"}; puts [string length abc]; puts [::string length abcd]}\nputs [string length abc]\nputs [zn::string q]",
+    "namespace eval zn {proc lindex {l i} {return li:$i}; proc t {} {return [lindex {a b} 1]}}\nputs [zn::t]\nputs [lindex {a b} 1]",
+    "namespace eval lib {proc format {args} {return fmt}; namespace export format}\nnamespace eval app {namespace import ::lib::format; puts [format %d 3]}\nputs [format %d 3]",
+    "namespace eval zn {if 1 {proc clock {args} {return clk}}; puts [clock seconds]}",
+    "namespace eval zn {proc set {args} {return myset}; puts [set x 1]}\nputs [set y 2]",
 ];
 
 fn tclsh() -> Option<PathBuf> {

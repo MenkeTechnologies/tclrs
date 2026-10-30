@@ -2573,6 +2573,22 @@ impl Compiler {
             words.extend(args.iter().cloned());
             return self.call_expanded(&words);
         }
+        // A command of the current namespace is found before a global one of
+        // the same name, built-ins included: `TclGetNamespaceForQualName`'s
+        // two-step search, so `namespace eval n {proc string args {}; string x}`
+        // calls `::n::string`.
+        if self.ns_shadows(name) {
+            if let Some(key) = self.runtime_ns_key(name) {
+                return self.call_runtime(&key, args);
+            }
+            return crate::cmd_namespace::call(self, name, args);
+        }
+        self.dispatch_named(name, args)
+    }
+
+    /// [`Compiler::dispatch`] once the name is known to reach no traced command
+    /// and no procedure of the current namespace.
+    fn dispatch_named(&mut self, name: &str, args: &[Word]) -> Result<(), CompileError> {
         match name {
             "set" => self.cmd_set(args),
             "eval" => self.cmd_eval(args),
@@ -2624,9 +2640,7 @@ impl Compiler {
             // Tk never registered.
             "package" => crate::cmd_package::compile(self, args),
             "regexp" | "regsub" => crate::regexp::compile(self, name, args),
-            // The channel ensemble. Ahead of the namespace block below for the
-            // same reason every other builtin above is: a builtin name wins
-            // over a namespace procedure of that name in this frontend.
+            // The channel ensemble.
             name if crate::cmd_channel::COMMANDS.contains(&name) => {
                 crate::cmd_channel::compile(self, name, args)
             }
@@ -2745,7 +2759,7 @@ impl Compiler {
             // in tclsh as here.
             other if crate::names::global_command(other).is_some() => {
                 let simple = crate::names::global_command(other).expect("the arm asked first");
-                self.dispatch(simple, args)
+                self.dispatch_named(simple, args)
                     .map_err(|e| e.respelled(simple, other))
             }
             // A function an inline `rust { ... }` block exported. Asked after

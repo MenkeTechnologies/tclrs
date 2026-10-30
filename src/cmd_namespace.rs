@@ -1147,6 +1147,19 @@ impl Compiler {
         self.runtime.contains(&target).then_some(target)
     }
 
+    /// Whether an unqualified `name` written outside the global namespace
+    /// reaches a procedure of the current namespace — defined there or imported
+    /// into it — which then wins over a global command of the same name.
+    pub(crate) fn ns_shadows(&self, name: &str) -> bool {
+        if self.ns.at_global() || name.contains("::") {
+            return false;
+        }
+        let scoped = store_key(&resolve(&self.ns.current, name)).to_string();
+        self.ns.imports.contains_key(&scoped)
+            || self.procs.contains_key(&scoped)
+            || self.runtime.contains(&scoped)
+    }
+
     /// Whether this module claims the command name `name`, and under what
     /// qualified name.
     ///
