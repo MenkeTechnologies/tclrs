@@ -1361,7 +1361,7 @@
           <h3><a class="doc-anchor" href="#doc-info-globals">#</a> <code>info globals</code></h3>
           <pre><code class="lang-tcl">info globals ?pattern?
 </code></pre>
-          <p>The global variable names matching the glob pattern, sorted. Global here means the VM's own global table, which is where a script's top-level variables live.</p>
+          <p>The names of the global namespace's variables matching the glob pattern, sorted. A namespace's variables are not listed, a leading <code>::</code> on the pattern is ignored, and the names are answered bare.</p>
         </article>
         <article class="doc-entry" id="doc-info-hostname">
           <h3><a class="doc-anchor" href="#doc-info-hostname">#</a> <code>info hostname</code></h3>

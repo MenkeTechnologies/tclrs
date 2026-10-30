@@ -1448,7 +1448,7 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "globals",
         synopsis: "info globals ?pattern?",
-        summary: "The global variable names matching the glob pattern, sorted. Global here means the VM's own global table, which is where a script's top-level variables live.",
+        summary: "The names of the global namespace's variables matching the glob pattern, sorted. A namespace's variables are not listed, a leading `::` on the pattern is ignored, and the names are answered bare.",
     },
     Entry {
         name: "hostname",

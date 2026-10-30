@@ -2600,6 +2600,24 @@ fn info_names_op(interp: &Shared, vm: &mut VM, which: u8) -> Result<(), TclError
         (given.then_some(pattern), None)
     };
 
+    // `InfoGlobalsCmd` (`generic/tclVar.c`) walks the global namespace's own
+    // variable table — a namespace's variables are not in it — strips a
+    // pattern's leading `::`s, and answers bare names whatever the pattern.
+    if which == crate::cmd_info::GLOBALS {
+        let pattern = filter
+            .as_deref()
+            .map(|p| if p.starts_with("::") { p.trim_start_matches(':') } else { p });
+        let mut names: Vec<String> = global_names_of(interp, vm)
+            .into_iter()
+            .filter(|name| !name.contains("::"))
+            .filter(|name| pattern.is_none_or(|p| crate::list::glob_match(p, name)))
+            .collect();
+        names.sort();
+        names.dedup();
+        vm.push(Value::Str(Arc::new(crate::list::join(&names))));
+        return Ok(());
+    }
+
     let mut names: Vec<String> = match which {
         // commands and procs: the built-in vocabulary (`crate::names::commands`,
         // the same assembly the REPL's completer uses) and the procedures the

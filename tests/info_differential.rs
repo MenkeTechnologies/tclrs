@@ -125,6 +125,14 @@ const PROGRAMS: &[&str] = &[
     "set zza(k) 1\nputs [info globals zz*]",
     "set zzalpha 1\nputs [lsort [info vars zz*]]",
     "proc p {} {global zzg\nreturn [info globals zz*]}\nset zzg 1\nputs [p]",
+    // `InfoGlobalsCmd` walks the global namespace's own table: a namespace's
+    // variables — a script's or `::oo`'s — are never listed, a leading `::` on
+    // the pattern is stripped, and the answer is bare names.
+    "namespace eval zzn {variable zzx 1}\nset ::zzn::zzy 2\nset zzg 1\nputs [lsort [info globals *zz*]]",
+    "set zzg 1\nputs [list [info globals ::zzg] [info globals :::zzg] [info globals ::zz*]]",
+    "namespace eval zzn {variable x 1}\nputs [info globals zzn::*]x[info globals ::zzn::*]x",
+    "puts [info globals oo::*]x[info globals *version*]",
+    "namespace eval zzn {set ::zzg 1; puts [info globals zz*]}",
     // A pattern that names a namespace is matched and answered in fully
     // qualified form, whichever spelling it was written in; one with no
     // separator answers the bare names.
