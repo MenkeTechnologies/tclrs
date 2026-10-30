@@ -751,7 +751,11 @@ approximated, and nothing is silently mis-run.
 - **The error dictionary is the common shapes' exact, not every shape's.**
   `catch {…} m o` carries `-code`, `-level`, `-errorstack`, `-errorcode`,
   `-errorinfo` and `-errorline`, and `::errorInfo` and `::errorCode` are set
-  when a `catch` or `try` takes the error. The record behind them is built by
+  when a `catch` or `try` takes the error. The dictionary is built in tclsh's
+  order — the options the exception stated (any option `return` was given,
+  `error`'s and `throw`'s own, `try`'s `-during`), then `-code` and `-level`,
+  then the record — and `try` and the compiled forms of `dict update` and
+  `dict with` merge what they hand on as `returnStk` does. The record behind them is built by
   `src/errinfo.rs`: the compiler keeps, per chunk, every command's op range,
   source text and line, and when an error is raised the running VM's frames are
   walked into the commands tclsh would have logged — the failing command, the
@@ -764,17 +768,23 @@ approximated, and nothing is silently mis-run.
 
   - `-errorstack`'s `INNER` element names the failing *instruction* in tclsh
     (`loadStk`, `incrStk`, `dictGet`, `invokeReplace`, `lindexMulti`, …), which
-    this frontend has no counterpart of; `returnImm` for `error` and `throw` and
-    `syntax` are the exceptions that are exact, and every other failure is
-    `invokeStk1` with the command's words as written. The `CALL` / `UP`
-    elements after it are exact, with the *source* words of the call where
-    tclsh has the substituted ones.
+    this frontend has no counterpart of; `returnImm` for `error`, `throw` and
+    `return` is exact, and every other failure is `invokeStk1` with the
+    command's words as written. The `CALL` / `UP` elements after it are one
+    per logged script, `CALL` with the call's substituted words, except where
+    a nested script was compiled into a chunk of its own (a computed `dict
+    with` body in a procedure logs once where tclsh logs twice).
+  - An `error` given an `errorInfo` argument, and a `return -errorinfo`, leave
+    tclsh's error stack as the previous error left it (the command is not
+    logged, so the stack is not reset); here such an error's `-errorstack` is
+    empty.
+  - An operator whose operands are all literals fails "invoked from within",
+    as tclsh's compile-time fold does, but its `-errorstack` is not tclsh's
+    `INNER {syntax …}` and its options are not in that fold's order.
   - `(-compare command)`, `(-command substitution computation script)` and the
     other contexts the commands that call back into the interpreter add are not
     logged, and an error raised by such a callback loses the record of the
     callback.
-  - `try … finally {error x}` logs `("try ... finally" body line N)` whether or
-    not the body raised; tclsh logs it only when it did.
   - `catch {tailcall …}` and the record of an error a coroutine raises are not
     modelled.
   - A `-errorinfo` ends with the container of the command the `catch` is in
@@ -869,17 +879,18 @@ approximated, and nothing is silently mis-run.
   is the one with a sub-table entry, even when a conditional definition of the
   same name ran later and every ordinary call site would reach the newer one.
 - **The `info` subcommands that name machinery this frontend has none of.**
-  `errorstack` and `cmdcount` need a record this frontend keeps only per
-  error; `class`, `object`, `consts`, `constant` and `cmdtype` need an object
-  system. Each is `info cmdcount is not supported yet` and the like rather than
-  mis-answered.
+  `cmdcount` needs a count this frontend does not keep, `cmdtype` a command
+  type it does not record, and `info errorstack` naming an interpreter a
+  second interpreter. Each is `info cmdcount is not supported yet` and the like
+  rather than mis-answered.
 - **`info level N` and `info frame N` read the command record.** The words of
   the call that entered a level are its source words when the call wrote every
   one out, because `Op::Call` pushes the actual arguments and nothing that
   names the command; a call that substituted something, or reached the
   procedure from another chunk, is rebuilt from the procedure's name and its
-  formals as they stand — which differs from tclsh when the body assigned to a
-  formal or a default stood in for an argument. `info frame` counts the
+  formals as they stand, as many as the call's words passed — which differs
+  from tclsh when the body assigned to a formal, or when an expanded call left
+  a default standing in for an argument. `info frame` counts the
   scripts running and the activations of the machine that asks; a frame
   belonging to a script further out is described by its `level` alone, since
   that script's machine is suspended in the host stack above this one, and the

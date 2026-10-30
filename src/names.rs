@@ -288,7 +288,7 @@ pub const CORPUS: &[Entry] = &[
     Entry {
         name: "info",
         synopsis: "info subcommand ?arg ...?",
-        summary: "Interpreter introspection. Variables, procedure signatures and bodies, command names, the call frame's level and its locals, the math functions, whether text is a complete command, and the versions; the subcommands naming machinery this frontend has none of — `frame`, `errorstack`, `cmdcount`, `cmdtype`, the object-system queries, `constant`, `loaded` — are refused by name rather than mis-answered.",
+        summary: "Interpreter introspection. Variables, procedure signatures and bodies, command names, the call frame's level and its locals, the math functions, whether text is a complete command, and the versions; the subcommands naming machinery this frontend has none of — `cmdcount`, `cmdtype`, `loaded` — are refused by name rather than mis-answered.",
     },
     Entry {
         name: "join",
@@ -1428,7 +1428,7 @@ const INFO_CORPUS: &[Entry] = &[
     Entry {
         name: "errorstack",
         synopsis: "info errorstack ?interp?",
-        summary: "The `CALL`/`INNER` trace of the most recent error, as a list. Refused: errors here carry a message and a line, not a captured call chain.",
+        summary: "The `-errorstack` of the error a `catch` (or a `try`, or anything built on one) last took: its `INNER` element, then a `CALL` with the call's words or an `UP` for every script it was logged in. Naming another interpreter is refused; there is only one.",
     },
     Entry {
         name: "exists",

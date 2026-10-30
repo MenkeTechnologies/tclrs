@@ -163,7 +163,7 @@
             <div class="stat-label">Commands</div>
           </div>
           <div class="stat-card">
-            <div class="stat-val">160/169</div>
+            <div class="stat-val">161/169</div>
             <div class="stat-label">Ensemble subcommands</div>
           </div>
           <div class="stat-card">
@@ -390,7 +390,7 @@
           <h3><a class="doc-anchor" href="#doc-cmd-info">#</a> <code>info</code></h3>
           <pre><code class="lang-tcl">info subcommand ?arg ...?
 </code></pre>
-          <p>Interpreter introspection. Variables, procedure signatures and bodies, command names, the call frame's level and its locals, the math functions, whether text is a complete command, and the versions; the subcommands naming machinery this frontend has none of — <code>frame</code>, <code>errorstack</code>, <code>cmdcount</code>, <code>cmdtype</code>, the object-system queries, <code>constant</code>, <code>loaded</code> — are refused by name rather than mis-answered.</p>
+          <p>Interpreter introspection. Variables, procedure signatures and bodies, command names, the call frame's level and its locals, the math functions, whether text is a complete command, and the versions; the subcommands naming machinery this frontend has none of — <code>cmdcount</code>, <code>cmdtype</code>, <code>loaded</code> — are refused by name rather than mis-answered.</p>
         </article>
         <article class="doc-entry" id="doc-cmd-join">
           <h3><a class="doc-anchor" href="#doc-cmd-join">#</a> <code>join</code></h3>
@@ -1263,7 +1263,7 @@
 
       <section class="tutorial-section" id="ch-info">
         <h2>The <code>info</code> ensemble</h2>
-        <p class="chapter-meta">29 subcommands recognised &middot; 25 implemented &middot; 4 refused</p>
+        <p class="chapter-meta">29 subcommands recognised &middot; 26 implemented &middot; 3 refused</p>
         <p>An ensemble resolves its subcommand the way <code>Tcl_GetIndexFromObj</code> does &mdash; an exact match, else a prefix that fits exactly one entry &mdash; so this chapter carries the names the frontend <em>recognises</em>, which is what decides whether an abbreviation is ambiguous. Recognising a name is not implementing it. Each entry says what the subcommand does in the language; an entry the runtime refused says so, in the frontend's own words, after the description. The refusal is deferred rather than raised while compiling, so an unexecuted one costs nothing and a <code>catch</code> can trap it.</p>
         <article class="doc-entry" id="doc-info-args">
           <h3><a class="doc-anchor" href="#doc-info-args">#</a> <code>info args</code></h3>
@@ -1337,8 +1337,7 @@
           <h3><a class="doc-anchor" href="#doc-info-errorstack">#</a> <code>info errorstack</code></h3>
           <pre><code class="lang-tcl">info errorstack ?interp?
 </code></pre>
-          <p>The <code>CALL</code>/<code>INNER</code> trace of the most recent error, as a list. Refused: errors here carry a message and a line, not a captured call chain.</p>
-        <p class="doc-state"><span class="state-no">Refused at run time:</span> <code>info errorstack is not supported yet: the interpreter does not keep it</code></p>
+          <p>The <code>-errorstack</code> of the error a <code>catch</code> (or a <code>try</code>, or anything built on one) last took: its <code>INNER</code> element, then a <code>CALL</code> with the call's words or an <code>UP</code> for every script it was logged in. Naming another interpreter is refused; there is only one.</p>
         </article>
         <article class="doc-entry" id="doc-info-exists">
           <h3><a class="doc-anchor" href="#doc-info-exists">#</a> <code>info exists</code></h3>
