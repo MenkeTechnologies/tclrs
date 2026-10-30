@@ -786,3 +786,33 @@ zz2zz
 "#;
     assert_eq!(run(script), expected);
 }
+
+/// `Tcl_CopyObjectInstance` duplicates the private-variable mappings with their
+/// full names, so a copy (object or class) keeps the origin's creation id in
+/// them.
+#[test]
+fn oo_copy_keeps_the_origins_private_variable_names() {
+    let script = r#"oo::class create A
+oo::objdefine A {private variable z; method sz v {set z $v; my varname z}}
+A create o
+oo::objdefine o {private variable q; method sq v {set q $v; my varname q}}
+puts [o sq 1]
+oo::copy o o2
+puts [o2 sq 2]
+puts [info object variables o2 -private]
+oo::copy A A2
+puts [A2 sz 3]
+oo::class create C {private variable x; method sx v {set x $v; my varname x}}
+oo::copy C C2
+puts [[C2 new] sx 4]
+puts [info class variables C2 -private]
+"#;
+    let expected = r#"::oo::Obj22::22 : q
+::oo::Obj23::22 : q
+q
+::oo::Obj24::20 : z
+::oo::Obj30::26 : x
+x
+"#;
+    assert_eq!(run(script), expected);
+}

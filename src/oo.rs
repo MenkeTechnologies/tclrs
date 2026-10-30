@@ -186,6 +186,10 @@ struct ClassData {
     variables: Vec<String>,
     /// The variables declared under `private` (TIP 500).
     private_vars: Vec<String>,
+    /// The creation id the private variables are named with
+    /// (`PrivateVariableMapping`'s `fullNameObj`): the declarer's own when
+    /// they were declared, the origin's in a copy.
+    private_epoch: u64,
     methods: BTreeMap<String, Method>,
     constructor: Option<Method>,
     destructor: Option<Method>,
@@ -211,6 +215,10 @@ struct Object {
     variables: Vec<String>,
     /// The variables declared under `private` (TIP 500).
     private_vars: Vec<String>,
+    /// The creation id the private variables are named with
+    /// (`PrivateVariableMapping`'s `fullNameObj`): the declarer's own when
+    /// they were declared, the origin's in a copy.
+    private_epoch: u64,
     class_data: Option<ClassData>,
     /// The destructor has been called (`DESTRUCTOR_CALLED`).
     destructing: bool,
@@ -332,6 +340,7 @@ impl Oo {
             filters: Vec::new(),
             variables: Vec::new(),
             private_vars: Vec::new(),
+            private_epoch: 0,
             class_data: Some(ClassData {
                 subclasses: vec![1],
                 methods: object_methods,
@@ -360,6 +369,7 @@ impl Oo {
             filters: Vec::new(),
             variables: Vec::new(),
             private_vars: Vec::new(),
+            private_epoch: 0,
             class_data: Some(ClassData {
                 superclasses: vec![0],
                 instances: vec![0, 1],
@@ -448,6 +458,7 @@ impl Oo {
                 filters: Vec::new(),
                 variables: Vec::new(),
                 private_vars: Vec::new(),
+                private_epoch: 0,
                 class_data: Some(ClassData {
                     superclasses: vec![superclass],
                     methods,
@@ -644,7 +655,7 @@ impl Oo {
         };
         let (vars, epoch) = match chain.calls[*index].declarer {
             Declarer::Object(o) if o == obj && self.alive(o) => {
-                (&self.obj(o).private_vars, self.obj(o).creation_id)
+                (&self.obj(o).private_vars, self.obj(o).private_epoch)
             }
             Declarer::Class(c) if self.alive(c) && self.alive(obj) => {
                 let o = self.obj(obj);
@@ -653,7 +664,7 @@ impl Oo {
                 if !instance {
                     return name.to_string();
                 }
-                (&self.class(c).private_vars, self.obj(c).creation_id)
+                (&self.class(c).private_vars, self.class(c).private_epoch)
             }
             _ => return name.to_string(),
         };
@@ -742,6 +753,7 @@ impl Oo {
             filters: Vec::new(),
             variables: Vec::new(),
             private_vars: Vec::new(),
+            private_epoch: 0,
             class_data: makes_class.then(|| ClassData {
                 superclasses: vec![self.object_cls],
                 ..ClassData::default()
@@ -1732,12 +1744,12 @@ fn run_proc(
             Declarer::Class(c) if oo.alive(c) => declared_vars(
                 &oo.class(c).private_vars,
                 &oo.class(c).variables,
-                oo.obj(c).creation_id,
+                oo.class(c).private_epoch,
             ),
             Declarer::Object(o) if oo.alive(o) => declared_vars(
                 &oo.obj(o).private_vars,
                 &oo.obj(o).variables,
-                oo.obj(o).creation_id,
+                oo.obj(o).private_epoch,
             ),
             _ => Vec::new(),
         };
@@ -3655,9 +3667,18 @@ fn slot(
                 }
             }
             match (class, private) {
-                (true, true) => oo.class_mut(obj).private_vars = unique,
+                (true, true) => {
+                    let epoch = oo.obj(obj).creation_id;
+                    let c = oo.class_mut(obj);
+                    c.private_vars = unique;
+                    c.private_epoch = epoch;
+                }
                 (true, false) => oo.class_mut(obj).variables = unique,
-                (false, true) => oo.obj_mut(obj).private_vars = unique,
+                (false, true) => {
+                    let o = oo.obj_mut(obj);
+                    o.private_vars = unique;
+                    o.private_epoch = o.creation_id;
+                }
                 (false, false) => oo.obj_mut(obj).variables = unique,
             }
         }
@@ -3825,13 +3846,14 @@ fn copy_cmd(interp: &Shared, vm: &mut VM, ns: &str, args: &[Value]) -> Result<Va
         let crate::runtime::State { oo, ns: reg, .. } = &mut *state;
         let class = oo.obj(src).class;
         let id = oo.alloc(reg, class, name, target_ns);
-        let (methods, mixins, filters, variables) = {
+        let (methods, mixins, filters, variables, privates) = {
             let s = oo.obj(src);
             (
                 s.methods.clone(),
                 s.mixins.clone(),
                 s.filters.clone(),
                 s.variables.clone(),
+                (s.private_vars.clone(), s.private_epoch),
             )
         };
         let mixin_names: Vec<String> = mixins.iter().map(|&m| oo.name(m)).collect();
@@ -3840,10 +3862,11 @@ fn copy_cmd(interp: &Shared, vm: &mut VM, ns: &str, args: &[Value]) -> Result<Va
             o.methods = methods;
             o.filters = filters;
             o.variables = variables;
+            (o.private_vars, o.private_epoch) = privates;
         }
         set_mixins(oo, id, false, &mixin_names, "::")?;
         if oo.is_class(src) && oo.is_class(id) {
-            let (supers, methods, ctor, dtor, mixins, filters, variables) = {
+            let (supers, methods, ctor, dtor, mixins, filters, variables, privates) = {
                 let c = oo.class(src);
                 (
                     c.superclasses.clone(),
@@ -3853,6 +3876,7 @@ fn copy_cmd(interp: &Shared, vm: &mut VM, ns: &str, args: &[Value]) -> Result<Va
                     c.mixins.clone(),
                     c.filters.clone(),
                     c.variables.clone(),
+                    (c.private_vars.clone(), c.private_epoch),
                 )
             };
             replace_superclasses(oo, id, supers);
@@ -3864,6 +3888,7 @@ fn copy_cmd(interp: &Shared, vm: &mut VM, ns: &str, args: &[Value]) -> Result<Va
                 c.destructor = dtor;
                 c.filters = filters;
                 c.variables = variables;
+                (c.private_vars, c.private_epoch) = privates;
             }
             set_mixins(oo, id, true, &mixin_names, "::")?;
         }
@@ -4362,6 +4387,7 @@ impl Oo {
             filters: o.filters.clone(),
             variables: o.variables.clone(),
             private_vars: o.private_vars.clone(),
+            private_epoch: o.private_epoch,
             class_data: o.class_data.as_ref().map(|c| ClassData {
                 superclasses: c.superclasses.clone(),
                 mixins: c.mixins.clone(),
@@ -4386,6 +4412,7 @@ impl Oo {
             filters: Vec::new(),
             variables: Vec::new(),
             private_vars: Vec::new(),
+            private_epoch: 0,
             class_data: None,
             destructing: false,
             filter_handling: false,
