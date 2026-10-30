@@ -86,7 +86,7 @@ approximated, and nothing is silently mis-run.
   nothing runs nothing and answers the empty string, as tclsh does. Only a command
   that has a `{*}` pays anything. Compared against tclsh in
   `tests/expand_differential.rs`.
-- **TclOO.** `oo::object`, `oo::class`, `oo::define`, `oo::objdefine`,
+- **TclOO.** `oo::object`, `oo::class`, `oo::singleton`, `oo::abstract`, `oo::define`, `oo::objdefine`,
   `oo::copy`, `self`, `my`, `next`, `nextto`, `info object` and `info class`
   (`src/oo.rs`, a port of `generic/tclOO*.c`). An object is a command and a
   namespace, `::oo::Obj<n>` numbered as tclsh 9.1 numbers them, registered with
@@ -639,9 +639,9 @@ approximated, and nothing is silently mis-run.
     definitionnamespace`, which need the class delegate (`<class>:: oo
     ::delegate`) — the delegate's object number is spent, so numbering
     matches, but the delegate does not exist.
-  * Properties (`oo::configurable`, `property`, `info … properties`),
-    `oo::singleton`, `oo::abstract`, and the `oo::Helpers` commands
-    `callback`, `mymethod`, `classvariable` and `link`; `myclass`.
+  * Properties (`oo::configurable`, `property`, `info … properties`), and
+    the `oo::Helpers` commands `callback`, `mymethod`, `classvariable` and
+    `link`; `myclass`.
   * Slots as objects: `oo::define::superclass` and the rest are definition
     commands here, not instances of `oo::Slot`, so `info object class
     filter` inside a definition is `filter does not refer to an object`.

@@ -1,5 +1,6 @@
-//! TclOO — `oo::object`, `oo::class`, `oo::define`, `oo::objdefine`,
-//! `oo::copy`, `self`, `my`, `next`, `nextto` and `info object` / `info class`.
+//! TclOO — `oo::object`, `oo::class`, `oo::singleton`, `oo::abstract`,
+//! `oo::define`, `oo::objdefine`, `oo::copy`, `self`, `my`, `next`, `nextto`
+//! and `info object` / `info class`.
 //!
 //! A port of the object system in `generic/tclOO*.c` (Tcl 9.0.4), measured
 //! against tclsh 9.1.
@@ -71,6 +72,11 @@ pub(crate) const TCLOO_PATCHLEVEL: &str = "1.3.1";
 
 pub(crate) type Id = usize;
 
+/// The classes `MakeAdditionalClasses` makes, by their place in [`Oo::objects`].
+const SINGLETON: Id = 2;
+const SINGLETON_INSTANCE: Id = 3;
+const ABSTRACT: Id = 4;
+
 // Method flags (`enum TclOOCallChainFlags`, `tclOOInt.h`).
 const PUBLIC_METHOD: u32 = 0x01;
 const CONSTRUCTOR: u32 = 0x08;
@@ -139,6 +145,12 @@ pub(crate) enum Builtin {
     New,
     CreateNs,
     ClassCtor,
+    /// `TclOO_Singleton_New`.
+    SingletonNew,
+    /// `TclOO_SingletonInstance_Destroy`.
+    SingletonDestroy,
+    /// `TclOO_SingletonInstance_Cloned`.
+    SingletonCloned,
 }
 
 /// One entry of a method table: the export flags and, unless the record only
@@ -341,7 +353,8 @@ impl Oo {
             class_cls: 1,
             graveyard: Default::default(),
         };
-        for id in [0, 1] {
+        oo.make_additional_classes();
+        for id in [0, 1, SINGLETON, SINGLETON_INSTANCE, ABSTRACT] {
             let (cmd, ns) = {
                 let o = oo.obj(id);
                 (store_key(&o.command).to_string(), o.ns.clone())
@@ -350,6 +363,70 @@ impl Oo {
             oo.by_ns.insert(ns, id);
         }
         oo
+    }
+
+    /// The part of `MakeAdditionalClasses` (`generic/tclOO.c`) this port has:
+    /// `oo::singleton`, `oo::SingletonInstance` and `oo::abstract`, each an
+    /// instance of `oo::class` under the namespace and creation number tclsh
+    /// gives it, with `TclOODefineBasicMethods`' methods and
+    /// `TclOOUnexportMethods`' records. `MarkAsMetaclass` makes the two
+    /// metaclasses subclasses of `oo::class`.
+    fn make_additional_classes(&mut self) {
+        let hidden = || Method {
+            flags: 0,
+            imp: None,
+        };
+        let mut singleton = BTreeMap::new();
+        singleton.insert(
+            "new".to_string(),
+            builtin(PUBLIC_METHOD, Builtin::SingletonNew),
+        );
+        singleton.insert("create".to_string(), hidden());
+        singleton.insert("createWithNamespace".to_string(), hidden());
+        let mut instance = BTreeMap::new();
+        instance.insert(
+            "destroy".to_string(),
+            builtin(PUBLIC_METHOD, Builtin::SingletonDestroy),
+        );
+        instance.insert("<cloned>".to_string(), builtin(0, Builtin::SingletonCloned));
+        let mut abstract_ = BTreeMap::new();
+        for name in ["create", "createWithNamespace", "new"] {
+            abstract_.insert(name.to_string(), hidden());
+        }
+        for (id, command, number, superclass, methods) in [
+            (SINGLETON, "::oo::singleton", 15, self.class_cls, singleton),
+            (
+                SINGLETON_INSTANCE,
+                "::oo::SingletonInstance",
+                16,
+                self.object_cls,
+                instance,
+            ),
+            (ABSTRACT, "::oo::abstract", 17, self.class_cls, abstract_),
+        ] {
+            debug_assert_eq!(self.objects.len(), id);
+            self.objects.push(Some(Object {
+                command: command.to_string(),
+                ns: format!("::oo::Obj{number}"),
+                class: self.class_cls,
+                creation_id: number,
+                methods: BTreeMap::new(),
+                mixins: Vec::new(),
+                filters: Vec::new(),
+                variables: Vec::new(),
+                private_vars: Vec::new(),
+                class_data: Some(ClassData {
+                    superclasses: vec![superclass],
+                    methods,
+                    ..ClassData::default()
+                }),
+                destructing: false,
+                filter_handling: false,
+            }));
+            self.class_mut(superclass).subclasses.push(id);
+            let class_cls = self.class_cls;
+            self.class_mut(class_cls).instances.push(id);
+        }
     }
 
     fn obj(&self, id: Id) -> &Object {
@@ -1106,6 +1183,9 @@ pub(crate) fn install(reg: &mut Registry) {
         "::oo::Helpers",
         "::oo::Obj1",
         "::oo::Obj2",
+        "::oo::Obj15",
+        "::oo::Obj16",
+        "::oo::Obj17",
     ] {
         reg.ensure(ns);
     }
@@ -1122,6 +1202,12 @@ pub(crate) fn install(reg: &mut Registry) {
         "::oo::Helpers::nextto",
         "::oo::Obj1::my",
         "::oo::Obj2::my",
+        "::oo::singleton",
+        "::oo::SingletonInstance",
+        "::oo::abstract",
+        "::oo::Obj15::my",
+        "::oo::Obj16::my",
+        "::oo::Obj17::my",
     ] {
         reg.define(cmd);
     }
@@ -1654,6 +1740,29 @@ fn run_builtin(
             )
         }
         Builtin::New => new_instance(interp, vm, obj, None, None, args, usage, ns),
+        // `TclOO_Singleton_New`: the class's one instance if it has one, else
+        // a new one with `oo::SingletonInstance` prepended to its mixins
+        // (`MarkAsSingleton`).
+        Builtin::SingletonNew => {
+            let existing = {
+                let state = lock(interp);
+                let first = state.oo.class(obj).instances.first();
+                first.map(|&id| state.oo.name(id))
+            };
+            if let Some(name) = existing {
+                return Ok(val(name));
+            }
+            let made = new_instance(interp, vm, obj, None, None, args, usage, ns)?;
+            let mut state = lock(interp);
+            let oo = &mut state.oo;
+            if let Some(&first) = oo.class(obj).instances.first() {
+                oo.obj_mut(first).mixins.insert(0, SINGLETON_INSTANCE);
+                oo.class_mut(SINGLETON_INSTANCE).instances.push(first);
+            }
+            Ok(made)
+        }
+        Builtin::SingletonDestroy => Err(oo_err("may not destroy a singleton object", "SINGLETON")),
+        Builtin::SingletonCloned => Err(oo_err("may not clone a singleton object", "SINGLETON")),
         Builtin::ClassCtor => {
             if args.len() > 1 {
                 return Err(wrong_args(&usage_of(usage, "?definitionScript?")));

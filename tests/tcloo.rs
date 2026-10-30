@@ -395,3 +395,72 @@ string length
 "#;
     assert_eq!(run(script), expected);
 }
+
+/// `oo::singleton`, `oo::SingletonInstance` and `oo::abstract`, the classes
+/// `MakeAdditionalClasses` adds: one instance per singleton class, which can be
+/// neither destroyed nor copied, and an abstract class with no `new` or
+/// `create` of its own while its subclasses keep them.
+#[test]
+fn singleton_and_abstract_metaclasses() {
+    let script = r#"foreach c {oo::singleton oo::abstract oo::SingletonInstance} {puts "$c [info object namespace $c] [info object creationid $c] [info class superclasses $c] [lsort [info class methods $c -private]]"}
+puts [info object isa metaclass oo::singleton][info object isa metaclass oo::abstract][info object isa metaclass oo::SingletonInstance]
+oo::singleton create S {method v {} {return v}}
+set o [S new]
+puts $o
+puts [info object mixins $o]|[info object methods $o -all]|[info object class $o]
+puts [catch {$o destroy} m]$m|$::errorCode
+puts [catch {S create k} m]$m
+puts [catch {oo::copy $o} m]$m|$::errorCode
+puts [expr {[S new] eq $o}]
+puts [$o v]
+oo::abstract create A {method hi {} {return hi}}
+puts [catch {A new} m]$m|$::errorCode
+puts [catch {A create x} m]$m
+puts [info object class A]|[info class superclasses A]
+oo::class create B {superclass A}
+set b [B new]
+puts "[info object class $b] [$b hi]"
+puts [catch {oo::singleton new} m]$m
+puts [catch {oo::abstract} m]$m
+puts [lsort [info class instances oo::singleton]]
+puts [lsort [info class instances oo::SingletonInstance]]
+puts [namespace exists ::oo::Obj15][namespace which oo::abstract]
+oo::class create P
+puts [P new]
+oo::singleton create T
+oo::define T constructor {x} {puts ctor:$x}
+puts [catch {T new} m]$m
+puts [T new 1]
+puts [T new 2]
+S destroy
+puts [info commands $o]x
+"#;
+    let expected = r#"oo::singleton ::oo::Obj15 15 ::oo::class new
+oo::abstract ::oo::Obj17 17 ::oo::class 
+oo::SingletonInstance ::oo::Obj16 16 ::oo::object <cloned> destroy
+110
+::oo::Obj22
+::oo::SingletonInstance|destroy v|::S
+1may not destroy a singleton object|TCL OO SINGLETON
+1unknown method "create": must be destroy or new
+1may not clone a singleton object|TCL OO SINGLETON
+1
+v
+1unknown method "new": must be destroy|TCL LOOKUP METHOD new
+1unknown method "create": must be destroy
+::oo::abstract|::oo::object
+::B hi
+0::oo::Obj29
+1wrong # args: should be "oo::abstract method ?arg ...?"
+::S ::oo::Obj29
+::oo::Obj22
+1::oo::abstract
+::oo::Obj33
+1wrong # args: should be "T new x"
+ctor:1
+::oo::Obj37
+::oo::Obj37
+x
+"#;
+    assert_eq!(run(script), expected);
+}
