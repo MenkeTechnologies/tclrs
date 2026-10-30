@@ -477,6 +477,7 @@ fn dispatch(
         level: 0,
         errorcode: None,
         info: None,
+        opts: Vec::new(),
     };
     match defined {
         // A procedure the script defined shadows a foreign command of the same
@@ -728,6 +729,7 @@ pub(crate) fn expand_call_op(interp: &Shared, vm: &mut VM, argc: u8) -> Result<(
         level: 0,
         errorcode: None,
         info: None,
+        opts: Vec::new(),
     };
     let words = splice(&values[2..]).map_err(here)?;
     let Some((first, args)) = words.split_first() else {
@@ -1141,7 +1143,13 @@ impl Compiler {
         // `-code` and `-level` may be written in either order and any number of
         // times, the last of each winning, which is how `Tcl_ReturnObjCmd`
         // reads them.
-        let mut rest = args;
+        // `Tcl_ReturnObjCmd` (`generic/tclCmdMZ.c`) reads every word but an
+        // odd last one as an option pair, whatever the word is: `return a b c`
+        // states option `a` and returns `c`.
+        let (mut rest, result) = match args.len() % 2 {
+            1 => (&args[..args.len() - 1], args.last()),
+            _ => (args, None),
+        };
         let mut code = crate::runtime::TCL_OK;
         let mut level = 1;
         // `-errorcode`, kept as the WORD so a computed one
@@ -1163,11 +1171,11 @@ impl Compiler {
                         "return" => crate::runtime::TCL_RETURN,
                         "break" => crate::runtime::TCL_BREAK,
                         "continue" => crate::runtime::TCL_CONTINUE,
-                        n => match n.parse() {
-                            Ok(n) => n,
+                        n => match crate::runtime::c_int(n) {
+                            Some(n) => n,
                             // Raised when the command runs, where tclsh
                             // raises it: `catch {return -code bogus}` is 1.
-                            Err(_) => {
+                            None => {
                                 return Err(self.deferrable_err(format!(
                                     "bad completion code \"{n}\": must be ok, error, return, \
                                      break, continue, or an integer"
@@ -1178,8 +1186,8 @@ impl Compiler {
                 }
                 Some("-level") => {
                     let text = self.literal_of(value, "return level")?.to_string();
-                    level = match text.parse::<i32>() {
-                        Ok(n) if n >= 0 => n,
+                    level = match crate::runtime::c_int(&text) {
+                        Some(n) if n >= 0 => n,
                         _ => {
                             return Err(self.deferrable_err(format!(
                                 "bad -level value: expected non-negative integer \
@@ -1192,11 +1200,10 @@ impl Compiler {
                 // The record an error carries is merged when the command runs, as
                 // `-options` is.
                 Some("-errorinfo" | "-errorstack" | "-errorline") => has_options = true,
-                Some("-options") => has_options = true,
-                Some(other) if other.starts_with('-') => {
-                    return self.error(format!("return option \"{other}\" is not supported"))
-                }
-                _ => break,
+                // `-options`, and any option `return` gives no meaning to, is
+                // merged when the command runs and kept in the exception's
+                // dictionary (`TclMergeReturnOptions`).
+                _ => has_options = true,
             }
             pairs.push((first, value));
             rest = tail;
@@ -1209,15 +1216,6 @@ impl Compiler {
             level += 1;
             code = crate::runtime::TCL_OK;
         }
-        let result = match rest {
-            [] => None,
-            [v] => Some(v),
-            _ => {
-                return self.error(
-                    "wrong # args: should be \"return ?-code code? ?-level level? ?result?\"",
-                )
-            }
-        };
         if has_options {
             return self.return_with_options(&pairs, result);
         }

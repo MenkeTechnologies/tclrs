@@ -124,6 +124,15 @@ pub mod ext {
     /// `FinalizeDictWith` (`:3696`) are NRE callbacks that run whatever the body
     /// did and then `Tcl_RestoreInterpState` the saved result.
     pub const RERAISE: u16 = 39;
+    /// [`RERAISE`]'s operand bit for an outcome handed on the way `try` hands
+    /// it on, through `Tcl_SetReturnOptions`: every option but `-code` and
+    /// `-level` becomes one the exception states. Without it the outcome is
+    /// restored as it was, as `dict update` and `dict with` do.
+    pub const RERAISE_MERGE: u8 = 1;
+    /// [`RERAISE`]'s operand bit for a failed `try` handler or `finally`: an
+    /// error gains `-during`, the options of the outcome the script was
+    /// handling, which sit under the triple.
+    pub const RERAISE_DURING: u8 = 2;
 
     // Coroutines (`coro`). Every one but [`CORO_INFO`] parks the VM with a
     // request the driver in [`crate::runtime`] services; see [`crate::coro`].
@@ -3952,6 +3961,19 @@ impl Compiler {
     // ── expressions ──────────────────────────────────────────────────────
 
     pub(crate) fn expr(&mut self, e: &Expr) -> Result<(), CompileError> {
+        let folds = matches!(e, Expr::Unary(..) | Expr::Binary(..) | Expr::Ternary(..))
+            && !Self::substitutes(e);
+        let start = self.b.current_pos();
+        let lowered = self.expr_node(e);
+        if folds {
+            self.emap.folded.push((start, self.b.current_pos()));
+        }
+        lowered
+    }
+
+    /// [`Compiler::expr`] for one node; the caller records whether tclsh would
+    /// have folded it.
+    fn expr_node(&mut self, e: &Expr) -> Result<(), CompileError> {
         match e {
             Expr::Int(v, _) => {
                 self.emit(Op::LoadInt(*v), 1);

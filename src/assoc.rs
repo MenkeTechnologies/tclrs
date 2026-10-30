@@ -1469,7 +1469,16 @@ impl Compiler {
             Op::Extended(ext::DICT_UPDATE_BIND, 0),
             -(3 * count as i32 + 2),
         );
-        self.finally_region(ext::DICT_UPDATE_END, |c| c.emit_body_value(&script))
+        // `TclCompileDictUpdateCmd` (`generic/tclCompCmds.c:1859-1895`)
+        // compiles only where every variable is a local scalar of a procedure.
+        let compiled = self.scope.is_some()
+            && body.as_literal().is_some()
+            && std::iter::once(&dict_name)
+                .chain(&var_names)
+                .all(|n| !n.contains("::") && !(n.ends_with(')') && n.contains('(')));
+        self.finally_region(ext::DICT_UPDATE_END, compiled, |c| {
+            c.emit_body_value(&script)
+        })
     }
 
     /// `dict with d ?key …? {body}` — every key of the dictionary becomes a
@@ -1514,7 +1523,10 @@ impl Compiler {
             Op::Extended(ext::DICT_WITH_BIND, 0),
             -(path.len() as i32 + 2),
         );
-        self.finally_region(ext::DICT_WITH_END, |c| c.emit_body_value(&script))
+        // `TclCompileDictWithCmd` (`generic/tclCompCmds.c:2105-2123`) compiles
+        // a literal body inside a procedure.
+        let compiled = self.scope.is_some() && body.as_literal().is_some();
+        self.finally_region(ext::DICT_WITH_END, compiled, |c| c.emit_body_value(&script))
     }
 
     /// `dict map {k v} $d {body}` — `dict for` that collects.

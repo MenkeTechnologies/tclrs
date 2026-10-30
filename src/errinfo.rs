@@ -54,6 +54,11 @@ pub(crate) enum BodyKind {
     /// `try`: the command itself has no container body; its handlers and its
     /// `finally` script are, and say which with the three kinds below.
     Try,
+    /// The body of a `try` tclsh did not compile — one with handlers outside a
+    /// procedure, where `IssueTryClausesInstructions` has no local variable
+    /// table for its temporaries — which `TryPostBody` evaluates as a script
+    /// of its own and labels (`generic/tclCmdMZ.c:4961-4965`).
+    TryBody,
     TryOn,
     TryTrap,
     TryFinally,
@@ -100,6 +105,7 @@ impl BodyKind {
                 };
                 format!("(in namespace eval \"{ns}\" script line {line})")
             }
+            BodyKind::TryBody => format!("(\"try\" body line {line})"),
             BodyKind::TryOn => format!("(\"try ... on\" handler line {line})"),
             BodyKind::TryTrap => format!("(\"try ... trap\" handler line {line})"),
             BodyKind::TryFinally => format!("(\"try ... finally\" body line {line})"),
@@ -136,6 +142,9 @@ pub(crate) struct CmdRec {
 pub(crate) struct CmdMap {
     pub recs: Vec<CmdRec>,
     pub sources: Vec<Arc<String>>,
+    /// The op ranges of the operator subexpressions tclsh folds while it
+    /// compiles; see [`Builder::folded`].
+    pub folded: Vec<(usize, usize)>,
 }
 
 impl CmdMap {
@@ -246,6 +255,10 @@ pub(crate) struct Entry {
     /// The command is not logged — tclsh does not log `try` — and only what
     /// contained it is.
     pub hidden: bool,
+    /// For the outermost command of a procedure body, the words of the call
+    /// that ran the procedure, as `info level 0` has them: what `CALL` names
+    /// in `-errorstack` (`TclErrorStackResetIf` appends the frame's `objv`).
+    pub call: Option<String>,
 }
 
 /// The trace an error carries: the commands it left, innermost first, and how it
@@ -408,7 +421,9 @@ impl ErrInfo {
             // a region cutting here still reports.
             let clause = matches!(
                 e.ctx,
-                Ctx::Body(BodyKind::TryOn | BodyKind::TryTrap | BodyKind::TryFinally)
+                Ctx::Body(
+                    BodyKind::TryBody | BodyKind::TryOn | BodyKind::TryTrap | BodyKind::TryFinally
+                )
             );
             if i + 1 == upto && !clause {
                 break;
@@ -431,9 +446,16 @@ impl ErrInfo {
         out
     }
 
-    /// `-errorstack`: the failing site, then one element per container the error
-    /// crossed, innermost first — a procedure call with the command that made it,
-    /// or `UP 1` for a nested script.
+    /// `-errorstack`: the failing site, then one element per time the error
+    /// was logged on its way out.
+    ///
+    /// tclsh logs an error once per script it leaves that was evaluated
+    /// rather than compiled inline — the body of a procedure, of an `eval`, of
+    /// a `foreach` it did not compile — and every one of those appends what
+    /// `TclErrorStackResetIf` (`generic/tclNamesp.c:5139-5160`) appends for
+    /// the frame the logging ran in: `UP n` under an `uplevel` that moved the
+    /// variable frame `n` levels off the call frame, `CALL` and the call's
+    /// words in a procedure (or a `namespace eval`), nothing at the top level.
     pub(crate) fn stack(&self, upto: usize) -> String {
         let mut items: Vec<String> = crate::list::split(&self.stack_prefix).unwrap_or_default();
         if items.is_empty() && !self.inner.is_empty() {
@@ -442,28 +464,108 @@ impl ErrInfo {
         }
         let upto = upto.min(self.entries.len());
         for (i, e) in self.entries[..upto].iter().enumerate() {
-            let call = self.entries.get(i + 1).map(|n| n.text.clone());
-            match &e.ctx {
-                Ctx::Body(BodyKind::NsEval) => {
-                    if let Some(call) = call {
-                        items.extend(["CALL".to_string(), call]);
-                    }
+            let logged = match &e.ctx {
+                Ctx::Body(_) | Ctx::Proc(_) | Ctx::Lambda(_) | Ctx::Method(_) => true,
+                // A label a caller wrote out whole.
+                Ctx::Done { stack, .. } if stack == "UP 1" => {
+                    items.extend(["UP".to_string(), "1".to_string()]);
+                    false
                 }
-                Ctx::Body(_) => items.extend(["UP".to_string(), "1".to_string()]),
-                Ctx::Proc(_) | Ctx::Lambda(_) | Ctx::Method(_) => {
-                    if let Some(call) = call {
-                        items.extend(["CALL".to_string(), call]);
-                    }
-                }
-                Ctx::Done { stack, .. } => match (stack.as_str(), call) {
-                    ("UP 1", _) => items.extend(["UP".to_string(), "1".to_string()]),
-                    ("CALL", Some(call)) => items.extend(["CALL".to_string(), call]),
-                    _ => {}
-                },
-                Ctx::None | Ctx::Pending => {}
+                Ctx::Done { stack, .. } => matches!(stack.as_str(), "EVAL" | "UPLEVEL" | "CALL"),
+                Ctx::None | Ctx::Pending => false,
+            };
+            // A command that re-raised a record it was handed (`ERR_ALREADY_LOGGED`)
+            // is not logged, so its frame adds nothing.
+            if !logged || (i == 0 && self.suppress_first) {
+                continue;
+            }
+            let frame = self.frame_of(i);
+            if frame.level != frame.var_level {
+                items.extend([
+                    "UP".to_string(),
+                    (frame.level - frame.var_level).to_string(),
+                ]);
+            } else if let Some(call) = frame.call {
+                items.extend(["CALL".to_string(), call]);
             }
         }
         crate::list::join(&items)
+    }
+
+    /// The frame the command `entries[i]` ran in: the nearest frame-pushing
+    /// container out from it — a procedure, a `namespace eval` — or the
+    /// `uplevel` that moved its variable frame.
+    ///
+    /// A frame's level is its caller's *variable* frame level plus one, as
+    /// `TclPushStackFrame` numbers it, and an `uplevel` keeps the call frame
+    /// while moving the variable frame to the level its first word names.
+    fn frame_of(&self, i: usize) -> Frame {
+        for j in i..self.entries.len() {
+            let pushes = match &self.entries[j].ctx {
+                Ctx::Proc(_) | Ctx::Lambda(_) | Ctx::Method(_) | Ctx::Body(BodyKind::NsEval) => {
+                    true
+                }
+                Ctx::Done { stack, .. } => match stack.as_str() {
+                    "CALL" => true,
+                    "UPLEVEL" => {
+                        let outer = self.frame_of(j + 1);
+                        let target = self
+                            .entries
+                            .get(j + 1)
+                            .and_then(|owner| uplevel_target(&owner.text, outer.var_level))
+                            .unwrap_or(outer.var_level.saturating_sub(1));
+                        return Frame {
+                            var_level: target.min(outer.level),
+                            ..outer
+                        };
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if pushes {
+                let caller = self.frame_of(j + 1);
+                let level = caller.var_level + 1;
+                let call = self.entries[j]
+                    .call
+                    .clone()
+                    .or_else(|| self.entries.get(j + 1).map(|n| n.text.clone()));
+                return Frame {
+                    level,
+                    var_level: level,
+                    call,
+                };
+            }
+        }
+        Frame::default()
+    }
+}
+
+/// A Tcl call frame as the error stack sees it: its level, the level of the
+/// variable frame in effect, and the call that pushed it.
+#[derive(Default)]
+struct Frame {
+    level: usize,
+    var_level: usize,
+    call: Option<String>,
+}
+
+/// The absolute level an `uplevel` command written as `text` runs its script
+/// at, from variable-frame level `current`: `#n` is level `n`, a bare number
+/// counts back from `current`, and anything else is the script with the
+/// default of one level up (`TclGetFrame`).
+fn uplevel_target(text: &str, current: usize) -> Option<usize> {
+    let words = crate::list::split(text.trim_end()).ok()?;
+    let level = words.get(1)?;
+    if words.len() < 3 {
+        return Some(current.saturating_sub(1));
+    }
+    if let Some(abs) = level.strip_prefix('#') {
+        return abs.parse().ok();
+    }
+    match level.parse::<usize>() {
+        Ok(up) => Some(current.saturating_sub(up)),
+        Err(_) => Some(current.saturating_sub(1)),
     }
 }
 
@@ -472,8 +574,8 @@ impl ErrInfo {
 fn unit_context(command: &str, line: usize) -> Ctx {
     let word = first_word(command);
     let (text, stack) = match word {
-        "eval" => (Some(format!("(\"eval\" body line {line})")), "UP 1"),
-        "uplevel" => (Some(format!("(\"uplevel\" body line {line})")), "UP 1"),
+        "eval" => (Some(format!("(\"eval\" body line {line})")), "EVAL"),
+        "uplevel" => (Some(format!("(\"uplevel\" body line {line})")), "UPLEVEL"),
         "namespace" => {
             // `namespace eval NS script`: the namespace is the third word.
             let words = crate::list::split(command.trim_end()).unwrap_or_default();
@@ -534,6 +636,7 @@ pub(crate) fn chain(vm: &VM, chunk: &Chunk, failing: usize, started_inside: bool
                 range: (rec.start, rec.end),
                 kind: rec.kind,
                 hidden,
+                call: None,
             };
             match rec.outer {
                 Some((parent, kind)) if parent < map.recs.len() => {
@@ -543,7 +646,10 @@ pub(crate) fn chain(vm: &VM, chunk: &Chunk, failing: usize, started_inside: bool
                     // `try` is not logged; only what its clause was in.
                     hidden = matches!(
                         kind,
-                        BodyKind::TryOn | BodyKind::TryTrap | BodyKind::TryFinally
+                        BodyKind::TryBody
+                            | BodyKind::TryOn
+                            | BodyKind::TryTrap
+                            | BodyKind::TryFinally
                     );
                 }
                 _ => {
@@ -572,7 +678,14 @@ pub(crate) fn chain(vm: &VM, chunk: &Chunk, failing: usize, started_inside: bool
             Some(name) => Ctx::Proc(name),
             None => Ctx::None,
         };
+        let calls = matches!(ending, Ctx::Proc(_) | Ctx::Lambda(_));
+        let before = out.len();
         container(ip, depth, ending, &mut out);
+        if calls && out.len() > before {
+            if let Some(last) = out.last_mut() {
+                last.call = Some(crate::list::join(&crate::cmd_info::call_words(vm, index)));
+            }
+        }
         // The frame a machine was started inside of returns past the end of the
         // program; what called it is another machine's to log.
         if started_inside && index == 1 {
@@ -589,17 +702,21 @@ pub(crate) fn chain(vm: &VM, chunk: &Chunk, failing: usize, started_inside: bool
 }
 
 /// The `INNER` element for an error whose failing command is `text` and whose
-/// message is `msg`.
-pub(crate) fn inner_of(text: &str, msg: &str, errorcode: Option<&str>) -> String {
+/// message is `msg`. `error`, `throw` and `return` are compiled to tclsh's
+/// `returnImm`, whose context is the message and the options the command
+/// stated (`opts`, as [`crate::runtime::TclError`] keeps them).
+pub(crate) fn inner_of(text: &str, msg: &str, opts: &[(String, String)]) -> String {
     match first_word(text) {
-        "error" | "throw" => {
-            let opts = match errorcode {
-                Some(ec) if first_word(text) == "throw" => {
-                    format!("-errorcode {}", crate::list::quote(ec, false))
-                }
-                _ => String::new(),
-            };
-            crate::list::join(&["returnImm".to_string(), msg.to_string(), opts])
+        "error" | "throw" | "return" => {
+            let opts: Vec<String> = opts
+                .iter()
+                .flat_map(|(k, v)| [k.clone(), v.clone()])
+                .collect();
+            crate::list::join(&[
+                "returnImm".to_string(),
+                msg.to_string(),
+                crate::list::join(&opts),
+            ])
         }
         _ => {
             let words = crate::list::split(text.trim_end()).unwrap_or_default();
@@ -617,6 +734,14 @@ pub(crate) fn inner_of(text: &str, msg: &str, errorcode: Option<&str>) -> String
 pub(crate) struct Builder {
     pub recs: Vec<CmdRec>,
     pub sources: Vec<Arc<String>>,
+    /// The op ranges of operator subexpressions with no substitution in them.
+    /// tclsh evaluates such a subtree while compiling (`CompileExprTree`,
+    /// `generic/tclCompExpr.c:2539-2580`), and one that fails is compiled to
+    /// `TclCompileSyntaxError`, which raises the failure with its `errorInfo`
+    /// already begun — so the first command logged for it is "invoked from
+    /// within" where an operator failing on a run-time value is "while
+    /// executing".
+    pub folded: Vec<(usize, usize)>,
     /// The commands being lowered, innermost last.
     open: Vec<usize>,
     /// The containers whose body is being lowered, innermost last.
@@ -756,6 +881,7 @@ impl Builder {
         CmdMap {
             recs,
             sources: self.sources,
+            folded: self.folded,
         }
     }
 }
@@ -771,12 +897,19 @@ pub(crate) fn region_of(chunk: &Chunk, ip: usize) -> (usize, usize) {
         .unwrap_or((0, 0))
 }
 
-/// Whether an error with this message was begun by an expression or a value
-/// conversion rather than by a command's own failure, which makes tclsh's first
-/// log entry "invoked from within" and not "while executing".
-pub(crate) fn begun_by_expression(msg: &str, command: &str) -> bool {
-    msg == "divide by zero"
-        || msg.starts_with("cannot use ")
+/// Whether an error with this message, raised by the op at `ip`, was begun by
+/// an expression or a value conversion rather than by a command's own failure,
+/// which makes tclsh's first log entry "invoked from within" and not "while
+/// executing": a subexpression tclsh folded while compiling
+/// ([`Builder::folded`]), an expression that would not parse, or `format`
+/// converting its argument.
+pub(crate) fn begun_by_expression(chunk: &Chunk, ip: usize, msg: &str, command: &str) -> bool {
+    let folded = lookup(chunk).is_some_and(|map| {
+        map.folded
+            .iter()
+            .any(|&(start, end)| (start..end).contains(&ip))
+    });
+    folded
         || parsed_expression(msg).is_some()
         || (command == "format" && msg.starts_with("expected integer but got"))
 }

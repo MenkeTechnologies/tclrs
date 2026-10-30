@@ -30,9 +30,8 @@
 //! what tclsh answers (measured: `proc p {} {set l 1; info locals}` is `l`, and
 //! `proc p {} {info locals}` is empty).
 //!
-//! `info frame`, TclOO's queries, `constant`/`consts`, `loaded`, `cmdcount`,
-//! `cmdtype` and `errorstack` are refused by name — see `why_refused` and
-//! BUGS.md.
+//! `loaded`, `cmdcount`, `cmdtype` and `info errorstack` naming another
+//! interpreter are refused by name — see `why_refused` and BUGS.md.
 
 use std::sync::Arc;
 
@@ -112,6 +111,7 @@ const EXECUTABLE: u8 = 1;
 const HOSTNAME: u8 = 2;
 const LIBRARY: u8 = 3;
 const SHAREDLIBEXTENSION: u8 = 4;
+const ERRORSTACK: u8 = 5;
 
 /// The Tcl language version this frontend implements.
 ///
@@ -265,6 +265,15 @@ impl Compiler {
             "sharedlibextension" => {
                 self.info_about(rest, SHAREDLIBEXTENSION, "info sharedlibextension")
             }
+            // `info errorstack ?interp?`: the `-errorstack` of the error a
+            // `catch` (or anything built on one) last took. There is one
+            // interpreter, so only the form that names none is answered.
+            "errorstack" => match rest {
+                [] => self.info_about(rest, ERRORSTACK, "info errorstack ?interp?"),
+                [_] => self
+                    .error("info errorstack is not supported yet: there are no other interpreters"),
+                _ => self.error("wrong # args: should be \"info errorstack ?interp?\""),
+            },
             // TclOO plugs its two ensembles into `info` (`TclOOInitInfo`).
             "object" => self.call_runtime_scoped("oo::InfoObject", rest),
             "class" => self.call_runtime_scoped("oo::InfoClass", rest),
@@ -542,7 +551,7 @@ fn resolve(given: &str) -> Result<&'static str, String> {
 fn why_refused(sub: &str) -> &'static str {
     match sub {
         "loaded" => "loadable extensions are not implemented",
-        "cmdcount" | "cmdtype" | "errorstack" => "the interpreter does not keep it",
+        "cmdcount" | "cmdtype" => "the interpreter does not keep it",
         _ => "not built yet",
     }
 }
@@ -738,6 +747,7 @@ fn describe(which: u8) -> Result<String, String> {
         // The suffix a loadable library has on this platform. Both engines are
         // asked on the same platform, so this is the language's answer and not
         // the machine's.
+        ERRORSTACK => crate::runtime::last_errorstack(),
         SHAREDLIBEXTENSION => {
             if cfg!(target_os = "macos") {
                 ".dylib".to_string()
@@ -873,8 +883,9 @@ fn user_name() -> String {
 /// The words come from the call's own source text when every one of them was
 /// written out, which is what the command was; a call that substituted
 /// something is rebuilt from the procedure's name and its formals as they stand
-/// now, which differs from tclsh when the body assigned to a formal or a
-/// default stood in for an argument.
+/// now — only as many as the call passed, when the call's word count says so —
+/// which differs from tclsh when the body assigned to a formal, or when an
+/// expanded call left a default standing in for an argument.
 fn level_words(vm: &VM, level: i64) -> Vec<String> {
     let activations: Vec<usize> = vm
         .frames
@@ -889,24 +900,39 @@ fn level_words(vm: &VM, level: i64) -> Vec<String> {
     else {
         return Vec::new();
     };
-    let frame = &vm.frames[at];
+    call_words(vm, at)
+}
+
+/// The words of the call that pushed `vm.frames[at]`, a procedure activation:
+/// what `info level` answers for it and what `-errorstack`'s `CALL` names.
+pub(crate) fn call_words(vm: &VM, at: usize) -> Vec<String> {
+    let Some(frame) = vm.frames.get(at) else {
+        return Vec::new();
+    };
     // The call op of the caller, which the frame remembers the way back to.
-    if frame.return_ip < vm.chunk.ops.len() {
+    // `return_ip` is the op after the call, so a call that is the chunk's last
+    // op returns to `ops.len()` itself.
+    let mut argc = None;
+    if (1..=vm.chunk.ops.len()).contains(&frame.return_ip) {
         if let Some((text, _, _)) = crate::errinfo::command_at(&vm.chunk, frame.return_ip - 1) {
-            if let Ok(script) = crate::parser::parse(&text) {
-                let literal: Option<Vec<String>> = script
-                    .commands
-                    .first()
-                    .map(|c| {
-                        c.words
-                            .iter()
-                            .map(|w| (!w.expand).then(|| w.as_literal().map(str::to_string)))
-                            .map(Option::flatten)
-                            .collect()
-                    })
-                    .unwrap_or_default();
+            if let Some(cmd) = crate::parser::parse(&text)
+                .ok()
+                .and_then(|script| script.commands.into_iter().next())
+            {
+                let literal: Option<Vec<String>> = cmd
+                    .words
+                    .iter()
+                    .map(|w| (!w.expand).then(|| w.as_literal().map(str::to_string)))
+                    .map(Option::flatten)
+                    .collect();
                 if let Some(words) = literal {
                     return lambda_call(words);
+                }
+                // Without an expansion the word count is the argument count,
+                // which tells a passed argument from a default the call site
+                // filled in.
+                if !cmd.words.iter().any(|w| w.expand) {
+                    argc = Some(cmd.words.len().saturating_sub(1));
                 }
             }
         }
@@ -929,7 +955,7 @@ fn level_words(vm: &VM, level: i64) -> Vec<String> {
             let value = frame.slots.get(i).map(to_tcl_string).unwrap_or_default();
             if i == last && param == "args" {
                 words.extend(crate::list::split(&value).unwrap_or_default());
-            } else {
+            } else if argc.is_none_or(|n| i < n) {
                 words.push(value);
             }
         }

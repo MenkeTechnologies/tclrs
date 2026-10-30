@@ -115,6 +115,16 @@ pub struct TclError {
     /// ([`crate::errinfo`]); `None` before then and for an error the compiler
     /// reported.
     pub(crate) info: Option<Box<crate::errinfo::ErrInfo>>,
+    /// The interpreter's `returnOpts` for this exception: the options a
+    /// `return`, `error` or `throw` stated, merged by `TclMergeReturnOptions`
+    /// and so without `-code` and `-level`, in the order they were written.
+    /// `Tcl_GetReturnOptions` (`generic/tclResult.c:1017-1068`) starts the
+    /// dictionary a `catch` sees from these, which is where an option this
+    /// frontend gives no meaning to — `-during`, or any `-name` a script
+    /// chose — is kept, and why such a dictionary does not begin with `-code`.
+    /// An outcome restored whole rather than merged ([`TclError::from_options`])
+    /// keeps `-code` and `-level` here too, so it is written back in its order.
+    pub(crate) opts: Vec<(String, String)>,
 }
 
 impl TclError {
@@ -137,6 +147,7 @@ impl TclError {
             level: 0,
             errorcode,
             info: None,
+            opts: Vec::new(),
         }
     }
 
@@ -150,6 +161,7 @@ impl TclError {
             level,
             errorcode: None,
             info: None,
+            opts: Vec::new(),
         }
     }
 
@@ -205,39 +217,51 @@ impl TclError {
             .unwrap_or_else(|| "NONE".to_string())
     }
 
-    /// Tcl's option dictionary for `catch`'s options variable. `-code` and
-    /// `-level` are always present and exact; `-errorcode` joins them for an
-    /// error — the one it carries, the one its message determines
-    /// ([`crate::errorcode::classify_in`]), or `NONE` — and so do the
-    /// `-errorstack`, `-errorinfo` and `-errorline` of the record of what was
-    /// executing, which tclsh places around `-errorcode` in that order.
+    /// Tcl's option dictionary for `catch`'s options variable, built as
+    /// `Tcl_GetReturnOptions` (`generic/tclResult.c:1017-1068`) builds it: the
+    /// stated options ([`TclError::opts`]) first, then `-code` and `-level`,
+    /// then — for an error — `-errorstack`, `-errorcode`, `-errorinfo` and
+    /// `-errorline`. An option already among the stated ones is replaced
+    /// where it stands rather than appended, as `Tcl_DictObjPut` does.
     ///
-    /// Values go through the list quoter, because an error code is itself a
-    /// LIST (`POSIX ENOENT {no such file or directory}`) and the dictionary is
+    /// `-errorcode` is the one the error carries, the one its message
+    /// determines ([`crate::errorcode::classify_in`]), or `NONE`. Values go
+    /// through the list quoter, because an error code is itself a LIST
+    /// (`POSIX ENOENT {no such file or directory}`) and the dictionary is
     /// parsed as one — writing it raw would turn `A B` into two keys.
     pub(crate) fn options_with(&self, trace: Option<&Trace>) -> String {
-        let mut out = format!("-code {} -level {}", self.code, self.level);
+        let mut dict = self.opts.clone();
+        let mut put = |key: &str, value: String| match dict.iter_mut().find(|(k, _)| k == key) {
+            Some(slot) => slot.1 = value,
+            None => dict.push((key.to_string(), value)),
+        };
+        put("-code", self.code.to_string());
+        put("-level", self.level.to_string());
         if let Some(t) = trace {
-            out.push_str(" -errorstack ");
-            out.push_str(&crate::list::quote(&t.stack, false));
+            put("-errorstack", t.stack.clone());
         }
         let classified = match (&self.errorcode, self.code) {
             (None, TCL_ERROR) => crate::errorcode::classify(&self.msg),
             _ => None,
         };
         match self.errorcode.as_ref().or(classified.as_ref()) {
-            Some(ec) => {
-                out.push_str(" -errorcode ");
-                out.push_str(&crate::list::quote(ec, false));
-            }
+            Some(ec) => put("-errorcode", ec.clone()),
             // An error that states no code carries `NONE`.
-            None if self.code == TCL_ERROR => out.push_str(" -errorcode NONE"),
+            None if self.code == TCL_ERROR => put("-errorcode", "NONE".to_string()),
             None => {}
         }
         if let Some(t) = trace {
-            out.push_str(" -errorinfo ");
-            out.push_str(&crate::list::quote(&t.info, false));
-            out.push_str(&format!(" -errorline {}", t.line));
+            put("-errorinfo", t.info.clone());
+            put("-errorline", t.line.to_string());
+        }
+        let mut out = String::new();
+        for (key, value) in &dict {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(&crate::list::quote(key, false));
+            out.push(' ');
+            out.push_str(&crate::list::quote(value, false));
         }
         out
     }
@@ -249,7 +273,16 @@ impl TclError {
     /// Beside `options` rather than anywhere else, because the two are one
     /// format: an option this frontend learns to carry has to be written and
     /// read in the same place or a re-raise silently drops it.
-    pub(crate) fn from_options(options: &str, msg: String) -> Self {
+    ///
+    /// `merge` says which way the dictionary becomes the error's own options.
+    /// `try` hands an outcome on through `Tcl_SetReturnOptions`, which merges
+    /// it — everything but `-code` and `-level` is stated from then on. `dict
+    /// update` and `dict with` restore the state they saved
+    /// (`Tcl_RestoreInterpState`), and a `try` hands what its handlers ended
+    /// with to its `finally` as the dictionary it is; either way the whole
+    /// dictionary is kept in its order, `-code` and `-level` included, and
+    /// [`TclError::options_with`] writes it back as it was.
+    pub(crate) fn from_options(options: &str, msg: String, merge: bool) -> Self {
         let mut error = TclError {
             msg,
             line: None,
@@ -257,6 +290,7 @@ impl TclError {
             level: 0,
             errorcode: None,
             info: None,
+            opts: Vec::new(),
         };
         // Split as a LIST rather than on whitespace: `-errorcode {A B}` is one
         // value of two words, and a whitespace split would read `{A` as the
@@ -264,6 +298,12 @@ impl TclError {
         let words = crate::list::split(options).unwrap_or_default();
         let mut it = words.into_iter();
         while let (Some(key), Some(value)) = (it.next(), it.next()) {
+            if !merge || (key != "-code" && key != "-level") {
+                match error.opts.iter_mut().find(|(k, _)| *k == key) {
+                    Some(slot) => slot.1 = value.clone(),
+                    None => error.opts.push((key.clone(), value.clone())),
+                }
+            }
             match key.as_str() {
                 "-code" => {
                     error.code = match value.as_str() {
@@ -347,8 +387,8 @@ impl std::error::Error for TclError {}
 /// and `-errorcode` that result are then checked. A bad value is the error
 /// the `return` itself raises.
 ///
-/// Options other than those three are accepted and dropped: an exception here
-/// carries no dictionary of its own to keep them in.
+/// Every option but `-code` and `-level` is kept, in order, as the exception's
+/// stated options ([`TclError::opts`]).
 pub(crate) fn merge_return_options(pairs: &str, msg: String) -> Result<TclError, TclError> {
     let illegal = |msg: String, what: &str| TclError {
         errorcode: Some(format!("TCL RESULT {what}")),
@@ -392,9 +432,9 @@ pub(crate) fn merge_return_options(pairs: &str, msg: String) -> Result<TclError,
             "return" => TCL_RETURN,
             "break" => TCL_BREAK,
             "continue" => TCL_CONTINUE,
-            other => match parse_number(other.trim()) {
-                Ok(Num::Int(n)) if i32::try_from(n).is_ok() => n as i32,
-                _ => {
+            other => match c_int(other) {
+                Some(n) => n,
+                None => {
                     return Err(illegal(
                         format!(
                             "bad completion code \"{other}\": must be ok, error, return, \
@@ -408,8 +448,8 @@ pub(crate) fn merge_return_options(pairs: &str, msg: String) -> Result<TclError,
     }
     let mut level = 1;
     if let Some(value) = get("-level") {
-        level = match parse_number(value.trim()) {
-            Ok(Num::Int(n)) if (0..=i64::from(i32::MAX)).contains(&n) => n as i32,
+        level = match c_int(value) {
+            Some(n) if n >= 0 => n,
             _ => {
                 return Err(illegal(
                     format!("bad -level value: expected non-negative integer but got \"{value}\""),
@@ -448,11 +488,22 @@ pub(crate) fn merge_return_options(pairs: &str, msg: String) -> Result<TclError,
             ..Default::default()
         })
     });
+    merged.retain(|(k, _)| k != "-code" && k != "-level");
     Ok(TclError {
         errorcode,
         info,
+        opts: merged,
         ..TclError::coded(code, level, msg)
     })
+}
+
+/// `TclGetIntFromObj`: an integer in any of Tcl's spellings (`0x10`, `0b11`,
+/// `1_0`, surrounded by white space) whose magnitude fits an unsigned C `int`,
+/// kept as the `int` it converts to — so `2147483648` is `-2147483648`, as
+/// tclsh reads a completion code or a level.
+pub(crate) fn c_int(text: &str) -> Option<i32> {
+    let n = crate::list::parse_int_exact(text)?;
+    (n.unsigned_abs() <= u64::from(u32::MAX)).then_some(n as i32)
 }
 
 /// Parse and lower a script, with both failures reported the same way.
@@ -1011,6 +1062,10 @@ fn with_pending_errorcode(mut e: TclError) -> TclError {
     if let Some(ec) = PENDING_ERRORCODE.with(|p| p.borrow_mut().take()) {
         e.errorcode = Some(ec);
     }
+    let opts = PENDING_OPTS.with(|p| std::mem::take(&mut *p.borrow_mut()));
+    if !opts.is_empty() {
+        e.opts = opts;
+    }
     if let Some((info, suppress_first)) = PENDING_ERRORINFO.with(|p| p.borrow_mut().take()) {
         e.info = Some(Box::new(crate::errinfo::ErrInfo {
             preset: Some(info),
@@ -1024,6 +1079,14 @@ fn with_pending_errorcode(mut e: TclError) -> TclError {
 /// Record the `-errorcode` for the error this op is about to raise.
 fn set_pending_errorcode(code: String) {
     PENDING_ERRORCODE.with(|p| *p.borrow_mut() = Some(code));
+}
+
+thread_local! {
+    /// The options `error` and `throw` state, which `Tcl_ErrorObjCmd` and
+    /// `Tcl_ThrowObjCmd` hand to `Tcl_SetReturnOptions`: what becomes the
+    /// error's [`TclError::opts`]. Same lifetime as [`PENDING_ERRORCODE`].
+    static PENDING_OPTS: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 thread_local! {
@@ -2224,7 +2287,9 @@ impl Hooks {
                     // The inline operand is set only by `return -errorcode`,
                     // which pushed the code under the message.
                     if arg == 1 {
-                        e.errorcode = Some(to_tcl_string(&vm.pop()));
+                        let ec = to_tcl_string(&vm.pop());
+                        e.opts.push(("-errorcode".to_string(), ec.clone()));
+                        e.errorcode = Some(ec);
                     } else if code == TCL_ERROR {
                         // `return -code error` with no `-errorcode` carries
                         // `NONE`, as `error` does (`TclMergeReturnOptions`).
@@ -2238,9 +2303,22 @@ impl Hooks {
                 // resumed with rather than from a code the compiler chose.
                 ext::RERAISE => {
                     let msg = to_tcl_string(&vm.pop());
-                    let options = to_tcl_string(&vm.pop());
-                    vm.pop(); // the visible code, superseded by `options`
-                    Err(TclError::from_options(&options, msg))
+                    let mut options = to_tcl_string(&vm.pop());
+                    let code = vm.pop();
+                    if arg & ext::RERAISE_DURING != 0 {
+                        // `During` (`generic/tclCmdMZ.c:4893-4911`): a handler
+                        // that failed carries the outcome it was handling.
+                        let during = to_tcl_string(&vm.pop());
+                        if matches!(code, Value::Int(c) if c == i64::from(TCL_ERROR)) {
+                            options.push_str(" -during ");
+                            options.push_str(&crate::list::quote(&during, false));
+                        }
+                    }
+                    Err(TclError::from_options(
+                        &options,
+                        msg,
+                        arg & ext::RERAISE_MERGE != 0,
+                    ))
                 }
                 _ => extension(vm, id, arg).map_err(|m| with_pending_errorcode(TclError::plain(m))),
             };
@@ -2281,6 +2359,7 @@ impl Hooks {
                     level: 0,
                     errorcode: None,
                     info: None,
+                    opts: Vec::new(),
                 });
                 vm.push(Value::Undef);
                 vm.request_halt();
@@ -3458,7 +3537,7 @@ impl Machine {
         returned |= e.level > 0;
         let started_inside = self.entered;
         let msg = e.msg.clone();
-        let code = e.errorcode.clone();
+        let opts = e.opts.clone();
         let vm = self.vm(self.current);
         let failing = vm.ip.saturating_sub(1);
         let info = e.info.get_or_insert_with(Default::default);
@@ -3492,9 +3571,9 @@ impl Machine {
                 crate::errinfo::first_word(&en.text).to_string()
             });
             if let Some(first) = info.entries.first() {
-                info.inner = crate::errinfo::inner_of(&first.text, &msg, code.as_deref());
+                info.inner = crate::errinfo::inner_of(&first.text, &msg, &opts);
             }
-            info.invoked = crate::errinfo::begun_by_expression(&msg, &command);
+            info.invoked = crate::errinfo::begun_by_expression(&chunk, failing, &msg, &command);
             // An expression that would not parse names itself after the message,
             // which is where `(parsing expression "…")` comes from.
             if let Some(expression) = crate::errinfo::parsed_expression(&msg) {
@@ -3512,7 +3591,9 @@ impl Machine {
     /// The record an error absorbed by the `catch` region `frame`, whose handler
     /// is `handler`, hands its handler — and the globals tclsh sets with it.
     fn absorbed(&mut self, e: &TclError, frame: &CatchFrame, handler: usize) -> Option<Trace> {
-        if e.code != TCL_ERROR {
+        // `return -code error -level 1` is code 2 to the `catch` around it:
+        // no error was logged, so there is no record to hand over.
+        if e.visible_code() != TCL_ERROR {
             return None;
         }
         let chunk = Arc::clone(&self.chunk);
@@ -3538,6 +3619,7 @@ impl Machine {
         };
         self.set_global("errorInfo", &trace.info);
         self.set_global("errorCode", &e.code_text());
+        LAST_ERRORSTACK.with(|s| s.borrow_mut().clone_from(&trace.stack));
         Some(trace)
     }
 
@@ -5001,6 +5083,19 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                 2 => words.get(1).cloned(),
                 _ => None,
             };
+            // `Tcl_ErrorObjCmd` (`generic/tclCmdAH.c:900-915`) states
+            // `-errorinfo` when the word is there, empty or not, and then
+            // `-errorcode`.
+            PENDING_OPTS.with(|p| {
+                let mut opts = p.borrow_mut();
+                opts.clear();
+                if let Some(info) = &given {
+                    opts.push(("-errorinfo".to_string(), info.clone()));
+                }
+                if arg >= 2 {
+                    opts.push(("-errorcode".to_string(), words[0].clone()));
+                }
+            });
             if let Some(info) = given.filter(|i| !i.is_empty()) {
                 PENDING_ERRORINFO.with(|p| *p.borrow_mut() = Some((info, true)));
             }
@@ -5069,7 +5164,11 @@ fn extension(vm: &mut VM, id: u16, arg: u8) -> Result<(), String> {
                 Err(e) => Err(e),
                 Ok(items) if items.is_empty() => Err("type must be non-empty list".to_string()),
                 Ok(_) => {
-                    // The type word is exactly what `-errorcode` becomes.
+                    // The type word is exactly what `-errorcode` becomes,
+                    // and the one option `Tcl_ThrowObjCmd` states.
+                    PENDING_OPTS.with(|p| {
+                        *p.borrow_mut() = vec![("-errorcode".to_string(), kind.clone())];
+                    });
                     set_pending_errorcode(kind);
                     Err(message)
                 }
@@ -5698,6 +5797,18 @@ pub(crate) fn proc_params(vm: &VM, name: &str) -> Option<ProcParams> {
         .expect("proc table lock")
         .as_ref()
         .and_then(|t| t.get(&(id, name.to_string())).cloned())
+}
+
+thread_local! {
+    /// The `-errorstack` of the error a region last absorbed: what `info
+    /// errorstack` answers, as `iPtr->errorStack` is in tclsh.
+    static LAST_ERRORSTACK: std::cell::RefCell<String> =
+        const { std::cell::RefCell::new(String::new()) };
+}
+
+/// See [`LAST_ERRORSTACK`].
+pub(crate) fn last_errorstack() -> String {
+    LAST_ERRORSTACK.with(|s| s.borrow().clone())
 }
 
 /// The file `info script` reports — what the binary was asked to run, empty when

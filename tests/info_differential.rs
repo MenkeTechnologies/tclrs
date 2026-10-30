@@ -32,6 +32,12 @@ const PROGRAMS: &[&str] = &[
     // top level has no level 0 to name.
     "foreach n {0 1 -1 x} {puts [list [catch {info level $n} m] $m]}\nputs [catch {info level 1 2} m]\nputs $m",
     "proc p {} {list [catch {info level 2} m] $m [catch {info level -1} m2] $m2 [catch {info level -5} m3] $m3}\nputs [p]",
+    // `info level 0` names the words the call passed, never a default the call
+    // site filled in: a call that is the script's last command, and a call
+    // whose arguments were substituted.
+    "proc p {a {b B}} {puts [info level 0]}\np x",
+    "proc p {a {b B}} {puts [info level 0]}\nset v x\np $v\np $v y\nproc q {} {p [list z]}\nq",
+    "proc p {a {b B} args} {puts [info level 0]}\nset v x\np $v\np $v 1 2 3",
     // ── info exists ──
     // The question must not be able to create its own answer: asking about an
     // unset variable leaves it unset, so a second ask agrees with the first.

@@ -354,7 +354,21 @@ impl Compiler {
                 )
             }
         };
-        let script = self.body_of(body)?;
+        let mut script = self.body_of(body)?;
+        // `TclCompileCatchCmd` (`generic/tclCompCmds.c:590-621`) compiles a
+        // `catch` that names a variable only where the variable is a local
+        // scalar of a procedure. Any other such `catch` runs
+        // `Tcl_CatchObjCmd`, which evaluates the body as a script of its own,
+        // so the lines its `-errorline` counts start at the body.
+        let local = |name: &Option<String>| {
+            name.as_deref()
+                .is_none_or(|n| !n.contains("::") && !(n.ends_with(')') && n.contains('(')))
+        };
+        if var.is_some() && (self.scope.is_none() || !local(&var) || !local(&opts_var)) {
+            if let Body::Script(script) = &mut script {
+                script.base = crate::parser::Base(Some(0));
+            }
+        }
         let entry = self.depth;
 
         // The handler comes first so its op index is known when the region is
@@ -411,7 +425,17 @@ impl Compiler {
     /// the ordinary path (the body's value), three in the handler (the code, the
     /// options and the message the driver pushed). It consumes the record and
     /// nothing else, so the command leaves one value where the record was.
-    pub(crate) fn finally_region<F>(&mut self, cleanup: u16, body: F) -> Result<(), CompileError>
+    ///
+    /// `compiled` says tclsh would have compiled the command. Its bytecode
+    /// version is the same `catch` and hands the outcome on with `returnStk`,
+    /// which merges the options ([`ext::RERAISE_MERGE`]); the uncompiled one
+    /// restores them as they were.
+    pub(crate) fn finally_region<F>(
+        &mut self,
+        cleanup: u16,
+        compiled: bool,
+        body: F,
+    ) -> Result<(), CompileError>
     where
         F: FnOnce(&mut Self) -> Result<(), CompileError>,
     {
@@ -425,7 +449,8 @@ impl Compiler {
         self.emit(Op::Extended(cleanup, 3), -1);
         // Control leaves here on every path, so nothing follows and the depth
         // this arm reached never has to meet the ordinary path's.
-        self.emit(Op::Extended(ext::RERAISE, 0), -3);
+        let how = if compiled { ext::RERAISE_MERGE } else { 0 };
+        self.emit(Op::Extended(ext::RERAISE, how), -3);
 
         let guarded = self.b.current_pos();
         self.b.patch_jump(over, guarded);
@@ -575,9 +600,20 @@ impl Compiler {
                 self.deferrable_err("last non-finally clause must not have a body of \"-\"")
             );
         }
-        let body = self.body_of(body)?;
+        let mut body = self.body_of(body)?;
+        // `TclCompileTryCmd` compiles a `try` with handlers only where there
+        // is a local variable table for its temporaries — inside a procedure —
+        // and one with only a `finally` everywhere. The other kind is
+        // `Tcl_TryObjCmd`, which evaluates the body as a script of its own
+        // (lines count from it) and labels what fails in it and its `finally`.
+        let uncompiled = !handlers.is_empty() && self.scope.is_none();
+        if uncompiled {
+            if let Body::Script(script) = &mut body {
+                script.base = crate::parser::Base(Some(0));
+            }
+        }
         match finally {
-            None => self.try_core(&body, &handlers),
+            None => self.try_core(&body, &handlers, uncompiled, true),
             Some(cleanup) => {
                 let entry = self.depth;
                 let over = self.emit(Op::Jump(usize::MAX), 0);
@@ -585,32 +621,76 @@ impl Compiler {
                 // cleanup for its effect, then hand the outcome on.
                 let handler = self.b.current_pos();
                 self.depth = entry + 3;
-                self.emap.pending_try = Some(crate::errinfo::BodyKind::TryFinally);
-                self.emit_body(&cleanup)?;
-                self.emap.pending_try = None;
-                self.emit(Op::Extended(ext::RERAISE, 0), -3);
+                // `[code, options, message, options]`: the outcome's options
+                // are the cleanup's `-during`.
+                self.emit(Op::Dup2, 2);
+                self.emit(Op::Pop, -1);
+                self.try_cleanup(&cleanup, uncompiled)?;
+                self.emit(Op::Extended(ext::RERAISE, ext::RERAISE_MERGE), -3);
 
                 let guarded = self.b.current_pos();
                 self.b.patch_jump(over, guarded);
                 self.depth = entry;
                 self.emit(Op::ExtendedWide(ext_wide::CATCH, handler), 0);
                 self.catch_depth += 1;
-                let compiled = self.try_core(&body, &handlers);
+                // What leaves the handlers is handed to the cleanup as it is,
+                // and merged once the cleanup has run.
+                let compiled = self.try_core(&body, &handlers, uncompiled, false);
                 self.catch_depth -= 1;
                 compiled?;
                 self.emit(Op::Extended(ext::CATCH_END, 0), 0);
                 // Outside the region, so an error the cleanup raises leaves
-                // the command instead of re-entering the handler above.
-                self.emap.pending_try = Some(crate::errinfo::BodyKind::TryFinally);
-                let ended = self.emit_body(&cleanup);
-                self.emap.pending_try = None;
-                ended
+                // the command instead of re-entering the handler above. What
+                // completed is code 0, and that is the cleanup's `-during`.
+                self.push_str("-code 0 -level 0");
+                self.try_cleanup(&cleanup, uncompiled)
             }
         }
     }
 
+    /// A `try`'s `finally` script, run for its effect with the options of the
+    /// outcome it follows on top of the stack, which it consumes. An outcome of
+    /// its own other than ok replaces that one and is handed on merged; an
+    /// error also carries the options it replaced as `-during` (`TryPostFinal`,
+    /// `generic/tclCmdMZ.c:5230-5258`).
+    fn try_cleanup(&mut self, cleanup: &Body, uncompiled: bool) -> Result<(), CompileError> {
+        let during = self.depth;
+        let over = self.emit(Op::Jump(usize::MAX), 0);
+        let failed = self.b.current_pos();
+        self.depth = during + 3;
+        self.emit(
+            Op::Extended(ext::RERAISE, ext::RERAISE_DURING | ext::RERAISE_MERGE),
+            -4,
+        );
+        let guarded = self.b.current_pos();
+        self.b.patch_jump(over, guarded);
+        self.depth = during;
+        self.emit(Op::ExtendedWide(ext_wide::CATCH, failed), 0);
+        self.catch_depth += 1;
+        if uncompiled {
+            self.emap.pending_try = Some(crate::errinfo::BodyKind::TryFinally);
+        }
+        let ran = self.emit_body(cleanup);
+        self.emap.pending_try = None;
+        self.catch_depth -= 1;
+        ran?;
+        self.emit(Op::Extended(ext::CATCH_END, 0), 0);
+        self.emit(Op::Pop, -1);
+        Ok(())
+    }
+
     /// The body and its handlers, leaving one value: see [`Compiler::cmd_try`].
-    fn try_core(&mut self, body: &Body, handlers: &[TryHandler]) -> Result<(), CompileError> {
+    /// `uncompiled` is [`Compiler::cmd_try`]'s: the body is a container of its
+    /// own. `merge` says what leaves is merged here, which it is unless a
+    /// `finally` follows and does it.
+    fn try_core(
+        &mut self,
+        body: &Body,
+        handlers: &[TryHandler],
+        uncompiled: bool,
+        merge: bool,
+    ) -> Result<(), CompileError> {
+        let merged = if merge { ext::RERAISE_MERGE } else { 0 };
         let entry = self.depth;
         let over = self.emit(Op::Jump(usize::MAX), 0);
         // The driver resumes here with `[code, options, result]` pushed.
@@ -623,7 +703,11 @@ impl Compiler {
         self.depth = entry;
         self.emit(Op::ExtendedWide(ext_wide::CATCH, caught), 0);
         self.catch_depth += 1;
+        if uncompiled {
+            self.emap.pending_try = Some(crate::errinfo::BodyKind::TryBody);
+        }
         let compiled = self.emit_body_value(body);
+        self.emap.pending_try = None;
         self.catch_depth -= 1;
         compiled?;
         self.emit(Op::Extended(ext::CATCH_END, 0), 0);
@@ -658,7 +742,12 @@ impl Compiler {
             let result_var = vars.next();
             let options_var = vars.next();
             self.store_or_drop(result_var);
-            self.store_or_drop(options_var);
+            // The options stay, under the handler, for its `-during`.
+            if options_var.is_some() {
+                self.emit(Op::Dup, 1);
+                self.store_or_drop(options_var);
+            }
+            self.emit(Op::Swap, 0);
             self.emit(Op::Pop, -1);
             let body = match crate::parser::parse(script) {
                 Ok(mut script) => {
@@ -672,8 +761,27 @@ impl Compiler {
             } else {
                 crate::errinfo::BodyKind::TryTrap
             });
-            self.emit_body_value(&body)?;
+            // The handler runs in a region of its own: an outcome it ends with
+            // is handed on merged, as `TryPostHandler` hands it on through
+            // `Tcl_SetReturnOptions`, and an error carries the body's options
+            // as `-during`.
+            let during = self.depth;
+            let over = self.emit(Op::Jump(usize::MAX), 0);
+            let failed = self.b.current_pos();
+            self.depth = during + 3;
+            self.emit(Op::Extended(ext::RERAISE, ext::RERAISE_DURING | merged), -4);
+            let guarded = self.b.current_pos();
+            self.b.patch_jump(over, guarded);
+            self.depth = during;
+            self.emit(Op::ExtendedWide(ext_wide::CATCH, failed), 0);
+            self.catch_depth += 1;
+            let compiled = self.emit_body_value(&body);
+            self.catch_depth -= 1;
+            compiled?;
+            self.emit(Op::Extended(ext::CATCH_END, 0), 0);
             self.emap.pending_try = None;
+            self.emit(Op::Swap, 0);
+            self.emit(Op::Pop, -1);
             to_end.push(self.emit(Op::Jump(usize::MAX), 0));
             let next = self.b.current_pos();
             self.b.patch_jump(miss, next);
@@ -695,7 +803,7 @@ impl Compiler {
         self.b.patch_jump(reraise, here);
         self.depth = entry + 4;
         self.emit(Op::Pop, -1);
-        self.emit(Op::Extended(ext::RERAISE, 0), -3);
+        self.emit(Op::Extended(ext::RERAISE, merged), -3);
 
         let end = self.b.current_pos();
         for j in to_end {
@@ -742,6 +850,6 @@ fn completion_code(word: &str) -> Option<i64> {
         "return" => Some(2),
         "break" => Some(3),
         "continue" => Some(4),
-        _ => list::parse_int(word),
+        _ => crate::runtime::c_int(word).map(i64::from),
     }
 }
