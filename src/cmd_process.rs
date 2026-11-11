@@ -191,10 +191,20 @@ fn overridden(interp: &Shared, vm: &mut VM, id: u16, arg: u8) -> Option<Result<(
     Some(crate::procs::invoke(interp, vm, name, &args, 0))
 }
 
-/// Flush everything buffered and end the process.
+/// What `exit` unwinds with in an interpreter whose output is captured: the
+/// process belongs to the host that is collecting the output, not to the
+/// script. [`crate::runtime::eval_captured`] catches it and reports the status.
+pub(crate) struct ScriptExit(pub(crate) i32);
+
+/// Flush everything buffered and end the process — or, for an interpreter
+/// whose output is captured, unwind to the host with [`ScriptExit`].
+/// `resume_unwind` skips the panic hook, so nothing is printed on the way.
 pub(crate) fn terminate(out: &Output, code: i32) -> ! {
     out.flush();
     crate::cmd_channel::flush_all();
+    if let Output::Capture(_) = out {
+        std::panic::resume_unwind(Box::new(ScriptExit(code)));
+    }
     std::process::exit(code)
 }
 

@@ -368,7 +368,7 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | `Interp::set_recursion_limit` | How deep `eval` may nest. The default is `DEFAULT_RECURSION_LIMIT` (1000), which needs `RECOMMENDED_STACK` (256 MiB) of thread stack; the binary spawns a thread that size. Nesting deeper is a script error, never a stack overflow. |
 | `parser::MAX_NESTING_DEPTH` | How deeply command substitutions and array indices may nest in the *input*, which is the parser's own recursion — 64_000, measured against the stack above. Deeper is a script error, for the same reason: an exhausted stack is a signal with nothing to report. |
 | `Interp::cache_stats` | `(hits, misses)` from the source-keyed chunk cache — one miss per compilation, so the same `eval` text in a loop is lowered once. |
-| `tclrs::eval_captured` | `eval` for a caller that wants both halves of a failing run: the error *and* whatever the script had already printed. |
+| `tclrs::eval_captured` | `eval` for a caller that wants both halves of a failing run: the error *and* whatever the script had already printed. `exit` ends the script rather than the process: `exit 0` is `Ok`, `exit N` is `Err("exit status N")`, and the output before it is kept. |
 | `tclrs::parse` | The parsed `Script` without running it, for tooling that wants the word structure. |
 | `tclrs::aot` | `compile_object`, `compile_executable`, and `run_native` — the same codegen driven in-process. |
 | `tclrs::tiers` | `report` and `inspect`: which fusevm tiers a chunk reaches. |
@@ -376,6 +376,26 @@ assert_eq!(interp.global("total").as_deref(), Some("6"));
 | `tclrs::lsp` | `run_stdio` for the whole server, or `diagnostics`, `completion`, `hover`, `signature_help` and `document_symbols` one answer at a time, for a host that already owns the transport. |
 | `tclrs::dap` | `run_stdio`: the debug adapter, over stdio. |
 | `tclrs::cursor` | `word_at` and `context_at`: what a position in a line is inside, which is how the REPL and the language server agree about it. |
+
+### Embedding
+
+`tclrs::run_program` runs a whole script with a string as its stdin and returns
+what it wrote to stdout:
+
+```rust
+pub fn run_program(src: &str, input: &str) -> Result<String, String>
+```
+
+Each call runs on its own thread, sized `RECOMMENDED_STACK`, with a fresh
+interpreter and a fresh channel table, so concurrent calls never share state or
+output. `puts`, `puts stdout` and `chan puts stdout` are collected; `gets stdin`
+and `read stdin` read `input`. An uncaught error is `Err` with its message;
+`exit 0` returns `Ok` with the output so far; `exit N` is `Err("exit status N")`.
+
+```rust
+let src = "while {[gets stdin l] >= 0} { puts [string toupper $l] }";
+assert_eq!(tclrs::run_program(src, "ab\ncd\n")?, "AB\nCD\n");
+```
 
 ---
 

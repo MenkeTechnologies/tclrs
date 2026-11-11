@@ -535,9 +535,22 @@ pub fn eval(src: &str) -> Result<Outcome, String> {
 /// both halves: a Tcl program that prints and then fails has an observable
 /// outcome on stdout as well as an error, and comparing only the error would
 /// let a divergence in the printed part go unnoticed.
+///
+/// `exit` ends the script, not the process: `exit` / `exit 0` is `Ok` with an
+/// empty result, and `exit N` for any other `N` is `Err("exit status N")`.
+/// The output written before it is returned either way.
 pub fn eval_captured(src: &str) -> (Result<String, String>, String) {
+    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+
     let mut interp = Interp::capturing();
-    let result = interp.eval(src).map_err(|e| e.to_string());
+    let result = match catch_unwind(AssertUnwindSafe(|| interp.eval(src))) {
+        Ok(result) => result.map_err(|e| e.to_string()),
+        Err(payload) => match payload.downcast::<crate::cmd_process::ScriptExit>() {
+            Ok(exit) if exit.0 == 0 => Ok(String::new()),
+            Ok(exit) => Err(format!("exit status {}", exit.0)),
+            Err(panic) => resume_unwind(panic),
+        },
+    };
     (result, interp.take_output())
 }
 

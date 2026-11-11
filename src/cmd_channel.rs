@@ -344,6 +344,9 @@ struct Table {
     /// that a channel closed explicitly is not silently recreated
     /// (`generic/tclIO.c:777-778`).
     std_initialized: [bool; 3],
+    /// Bytes the standard input channel reads instead of descriptor 0, set by
+    /// [`feed_stdin`] and moved into the channel when it is created.
+    stdin_feed: Option<Vec<u8>>,
 }
 
 thread_local! {
@@ -429,8 +432,13 @@ enum StdKind {
 /// standard output channel is handed the sink at the call and writes through
 /// it. Writing to `std::io::stdout()` directly would make `puts stdout x`
 /// invisible to every caller of [`crate::eval`] while `puts x` was captured.
+///
+/// The read side is descriptor 0 unless the thread was given bytes to read
+/// instead ([`feed_stdin`]), which is how an embedding host supplies a
+/// script's input.
 struct StdDevice {
     kind: StdKind,
+    feed: Option<std::io::Cursor<Vec<u8>>>,
 }
 
 impl Device for StdDevice {
@@ -440,7 +448,10 @@ impl Device for StdDevice {
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         match self.kind {
-            StdKind::In => std::io::stdin().read(buf).map_err(|e| errno_message(&e)),
+            StdKind::In => match &mut self.feed {
+                Some(feed) => feed.read(buf).map_err(|e| errno_message(&e)),
+                None => std::io::stdin().read(buf).map_err(|e| errno_message(&e)),
+            },
             _ => Err("bad file descriptor".to_string()),
         }
     }
@@ -465,6 +476,9 @@ impl Device for StdDevice {
     }
 
     fn handle(&self, _direction: i32) -> Option<isize> {
+        if self.feed.is_some() {
+            return None;
+        }
         Some(match self.kind {
             StdKind::In => 0,
             StdKind::Out => 1,
@@ -579,6 +593,15 @@ pub fn set_std(kind: i32, id: Option<usize>) {
     });
 }
 
+/// Make this thread's `stdin` channel read `input` instead of descriptor 0.
+///
+/// Takes effect when the channel is created, which is the first time a script
+/// on this thread names `stdin`; call it before running the script. The
+/// channel table is per thread, so the feed is too.
+pub fn feed_stdin(input: Vec<u8>) {
+    with_table(|t| t.stdin_feed = Some(input));
+}
+
 /// `Tcl_GetStdChannel` (`generic/tclIO.c:763-830`), including its lazy
 /// creation: the slot is filled from the process's own descriptor the first
 /// time it is asked for, and the channel gets the artificial reference that
@@ -611,7 +634,11 @@ pub fn std_channel(kind: i32) -> Option<usize> {
             Buffering::None,
         ),
     };
-    let id = create(name, Box::new(StdDevice { kind: device }), mode);
+    let feed = match device {
+        StdKind::In => with_table(|t| t.stdin_feed.take()).map(std::io::Cursor::new),
+        _ => None,
+    };
+    let id = create(name, Box::new(StdDevice { kind: device, feed }), mode);
     with_table(|t| {
         if let Some(c) = t.channels.get_mut(&id) {
             // The measured defaults: `fconfigure stdin -translation` is `auto`,
@@ -2206,7 +2233,10 @@ mod tests {
     fn auto_translation_joins_a_split_carriage_return() {
         let mut c = Channel {
             name: "test".to_string(),
-            device: Box::new(StdDevice { kind: StdKind::In }),
+            device: Box::new(StdDevice {
+                kind: StdKind::In,
+                feed: None,
+            }),
             mode: TCL_READABLE,
             ref_count: 0,
             input_translation: Translation::Auto,
