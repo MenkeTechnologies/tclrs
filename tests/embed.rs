@@ -42,8 +42,14 @@ fn errors_are_err() {
 #[test]
 fn exit_ends_the_script() {
     assert_eq!(run_program("puts a; exit; puts b", "").unwrap(), "a\n");
-    assert_eq!(run_program("puts a; catch {exit 0}; puts b", "").unwrap(), "a\n");
-    assert_eq!(run_program("puts a; exit 3", "").unwrap_err(), "exit status 3");
+    assert_eq!(
+        run_program("puts a; catch {exit 0}; puts b", "").unwrap(),
+        "a\n"
+    );
+    assert_eq!(
+        run_program("puts a; exit 3", "").unwrap_err(),
+        "exit status 3"
+    );
 }
 
 /// Concurrent runs each read their own input and return their own output.
@@ -63,4 +69,27 @@ fn concurrent_runs_do_not_mix() {
     for r in runs {
         r.join().unwrap();
     }
+}
+
+/// `exec` output sent to `>@stdout` and `2>@stdout` lands in the returned
+/// output, after what the script printed before the `exec`.
+#[test]
+fn exec_to_stdout_is_captured() {
+    let src = r#"
+        puts before
+        exec sh -c {echo out} >@stdout
+        exec sh -c {echo err >&2} 2>@stdout
+        puts after
+    "#;
+    assert_eq!(run_program(src, "").unwrap(), "before\nout\nerr\nafter\n");
+}
+
+/// At the end of the script `exit` is invoked with its status, as the binary
+/// does, so a redefined `exit` runs; after a failure the error is kept.
+#[test]
+fn redefined_exit_runs_at_the_end() {
+    let src = "proc exit {code} { puts \"exit $code\" }; puts body";
+    assert_eq!(run_program(src, "").unwrap(), "body\nexit 0\n");
+    let src = "proc exit {code} { puts \"exit $code\" }; error boom";
+    assert!(run_program(src, "").unwrap_err().starts_with("boom"));
 }

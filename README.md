@@ -388,9 +388,13 @@ pub fn run_program(src: &str, input: &str) -> Result<String, String>
 
 Each call runs on its own thread, sized `RECOMMENDED_STACK`, with a fresh
 interpreter and a fresh channel table, so concurrent calls never share state or
-output. `puts`, `puts stdout` and `chan puts stdout` are collected; `gets stdin`
-and `read stdin` read `input`. An uncaught error is `Err` with its message;
-`exit 0` returns `Ok` with the output so far; `exit N` is `Err("exit status N")`.
+output. `puts`, `puts stdout`, `chan puts stdout` and what an `exec` pipeline
+sends to `>@stdout` or `2>@stdout` are collected (a background `exec … &` still
+writes to the process stdout); `gets stdin` and `read stdin` read `input`. When
+the script ends without calling `exit`, `exit 0` (or `exit 1` after a failure) is
+invoked as the binary does, so a redefined `exit` runs. An uncaught error is
+`Err` with its message; `exit 0` returns `Ok` with the output so far; `exit N`
+is `Err("exit status N")`.
 
 ```rust
 let src = "while {[gets stdin l] >= 0} { puts [string toupper $l] }";

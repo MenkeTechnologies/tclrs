@@ -585,7 +585,14 @@ fn signal_names(signal: i32) -> (String, String) {
 
 /// Run `words` as `exec` does and answer the command's value.
 fn exec(words: &[String], out: &Output) -> Result<String, TclError> {
-    let plan = parse(words)?;
+    let mut plan = parse(words)?;
+    // `>@stdout` hands the children fd 1, but a capturing interpreter's stdout
+    // is its buffer: collect the output and write it to the `stdout` channel
+    // once the pipeline finishes, as `>@chan` does for any other channel.
+    let captured = matches!(out, Output::Capture(_)) && !plan.background;
+    if captured && matches!(plan.stdout, Sink::Inherit) {
+        plan.stdout = Sink::Channel("stdout".to_string());
+    }
     crate::cmd_channel::flush_all();
 
     // Standard input of the first stage.

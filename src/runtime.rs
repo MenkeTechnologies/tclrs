@@ -540,18 +540,36 @@ pub fn eval(src: &str) -> Result<Outcome, String> {
 /// empty result, and `exit N` for any other `N` is `Err("exit status N")`.
 /// The output written before it is returned either way.
 pub fn eval_captured(src: &str) -> (Result<String, String>, String) {
-    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
-
     let mut interp = Interp::capturing();
-    let result = match catch_unwind(AssertUnwindSafe(|| interp.eval(src))) {
-        Ok(result) => result.map_err(|e| e.to_string()),
-        Err(payload) => match payload.downcast::<crate::cmd_process::ScriptExit>() {
-            Ok(exit) if exit.0 == 0 => Ok(String::new()),
-            Ok(exit) => Err(format!("exit status {}", exit.0)),
-            Err(panic) => resume_unwind(panic),
-        },
+    let result = match eval_until_exit(&mut interp, src) {
+        Ended::Returned(result) => result,
+        Ended::Exited(0) => Ok(String::new()),
+        Ended::Exited(code) => Err(format!("exit status {code}")),
     };
     (result, interp.take_output())
+}
+
+/// How an evaluation in a capturing interpreter ended.
+pub(crate) enum Ended {
+    /// The script ran to its end: its result, or its error message.
+    Returned(Result<String, String>),
+    /// `exit` was called with this status.
+    Exited(i32),
+}
+
+/// Evaluate `src` in a capturing interpreter, where `exit` unwinds with
+/// [`crate::cmd_process::ScriptExit`] instead of ending the process. Any other
+/// panic continues to unwind.
+pub(crate) fn eval_until_exit(interp: &mut Interp, src: &str) -> Ended {
+    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+
+    match catch_unwind(AssertUnwindSafe(|| interp.eval(src))) {
+        Ok(result) => Ended::Returned(result.map_err(|e| e.to_string())),
+        Err(payload) => match payload.downcast::<crate::cmd_process::ScriptExit>() {
+            Ok(exit) => Ended::Exited(exit.0),
+            Err(panic) => resume_unwind(panic),
+        },
+    }
 }
 
 // ── the interpreter ──────────────────────────────────────────────────────

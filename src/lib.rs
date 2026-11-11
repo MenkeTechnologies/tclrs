@@ -60,8 +60,8 @@ pub mod cursor;
 pub mod dap;
 mod dict_cache;
 pub(crate) mod dtoa;
-pub mod embed;
 pub mod dump;
+pub mod embed;
 /// The `.enc` tables, generated. See `scripts/gen_encoding_tables.py`.
 pub mod encoding_tables;
 pub(crate) mod errinfo;
@@ -89,6 +89,6 @@ pub mod tiers;
 #[cfg(feature = "tk")]
 pub mod tk;
 
-pub use parser::{parse, Command, ParseError, Part, Script, Word};
 pub use embed::run_program;
+pub use parser::{parse, Command, ParseError, Part, Script, Word};
 pub use runtime::{eval, eval_captured, Interp, Outcome, TclError};
